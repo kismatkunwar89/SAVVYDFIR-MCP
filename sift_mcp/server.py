@@ -1,0 +1,1139 @@
+"""SAVVYDFIR-MCP Server — Purpose-built forensic MCP backend for Protocol SIFT.
+
+This server exposes 24 typed, read-only forensic tools through the Model Context
+Protocol (MCP) using stdio transport. It is designed to be used with Claude Code
+as the primary agentic execution engine on SANS SIFT Workstation.
+
+Architecture
+------------
+* **SafeRunner** — all subprocess calls go through a read-only enforcement layer
+  that validates paths, deny-lists destructive commands, and logs every execution
+  to ``audit.jsonl`` before and after the subprocess runs.
+* **AuditLogger** — append-only JSONL audit trail; every tool invocation produces
+  a ``started`` entry before execution and a ``completed`` entry after.
+* **CaseStateManager** — single-source-of-truth JSON state file (``state.json``);
+  holds all findings with F-NNN IDs, executions with E-NNN IDs, and open questions.
+* **FastMCP** — synchronous MCP server over stdio; all tool functions are sync
+  because ``SafeRunner`` uses ``subprocess.run()``.
+
+Tool namespaces (24 tools)
+--------------------------
+Evidence (2):   verify_integrity, get_provenance
+Disk (6):       extract_prefetch, get_amcache, extract_mft_timeline,
+                list_deleted_files, summarize_evtx, extract_registry_run_keys
+Memory (6):     detect_profile, list_processes, scan_processes,
+                scan_network, detect_injection, list_dlls
+Timeline (2):   build_timeline, query_timeline
+YARA (2):       scan_files, scan_memory
+Correlation (2): compare_disk_and_memory, flag_discrepancy
+State (2):      read_state, export_trace
+Graph (2):      generate_graph, serve_graph
+
+Novel contributions
+-------------------
+1. Cross-artifact contradiction detection via ``compare_disk_and_memory()``
+   (6 specific forensic checks — absent from all existing Protocol SIFT
+   extensions and published DFIR-LLM systems).
+2. Evidence-triggered self-correction: CORRECTION_EVENTs fire when physical
+   evidence contradicts itself, not when the LLM contradicts itself.
+3. Architectural read-only enforcement at the transport layer via SafeRunner
+   (path validation, deny-listed commands, fail-closed audit).
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Optional
+
+from fastmcp import FastMCP
+
+# ---------------------------------------------------------------------------
+# Server instance
+# ---------------------------------------------------------------------------
+
+mcp = FastMCP(
+    name="savvydfir-mcp",
+    instructions=(
+        "Autonomous DFIR triage agent with cross-artifact correlation and "
+        "self-correction. Exposes 24 typed forensic tools over stdio MCP transport "
+        "for use with Claude Code on SANS SIFT Workstation."
+    ),
+)
+
+# ---------------------------------------------------------------------------
+# Shared infrastructure (created at import time)
+# ---------------------------------------------------------------------------
+
+# Ensure the default analysis directory exists so audit + state files can be written.
+_ANALYSIS_DIR = Path("./analysis").resolve()
+_ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
+
+from sift_mcp.audit import AuditLogger
+from sift_mcp.state import CaseStateManager
+
+_audit_logger = AuditLogger(output_path=str(_ANALYSIS_DIR / "audit.jsonl"))
+_state_manager = CaseStateManager(state_path=str(_ANALYSIS_DIR / "state.json"))
+
+# ---------------------------------------------------------------------------
+# Tool module init
+# ---------------------------------------------------------------------------
+
+from sift_mcp.tools import init_all_tools  # noqa: E402
+
+init_all_tools(
+    audit_logger=_audit_logger,
+    state_manager=_state_manager,
+)
+
+# ---------------------------------------------------------------------------
+# Import all tool functions
+# ---------------------------------------------------------------------------
+
+from sift_mcp.tools.evidence import verify_integrity as _verify_integrity
+from sift_mcp.tools.evidence import get_provenance as _get_provenance
+
+from sift_mcp.tools.disk import extract_prefetch as _extract_prefetch
+from sift_mcp.tools.disk import get_amcache as _get_amcache
+from sift_mcp.tools.disk import extract_mft_timeline as _extract_mft_timeline
+from sift_mcp.tools.disk import list_deleted_files as _list_deleted_files
+from sift_mcp.tools.disk import summarize_evtx as _summarize_evtx
+from sift_mcp.tools.disk import extract_registry_run_keys as _extract_registry_run_keys
+
+from sift_mcp.tools.timeline import build_timeline as _build_timeline
+from sift_mcp.tools.timeline import query_timeline as _query_timeline
+
+from sift_mcp.tools.yara import scan_files as _scan_files
+from sift_mcp.tools.yara import scan_memory as _scan_memory
+
+from sift_mcp.tools.correlation import compare_disk_and_memory as _compare_disk_and_memory
+from sift_mcp.tools.correlation import flag_discrepancy as _flag_discrepancy
+
+from sift_mcp.tools.state_tools import read_state as _read_state
+from sift_mcp.tools.state_tools import export_trace as _export_trace
+
+# Memory tools — optional (module may not be built yet)
+try:
+    from sift_mcp.tools.memory import detect_profile as _detect_profile  # type: ignore[import]
+    from sift_mcp.tools.memory import list_processes as _list_processes  # type: ignore[import]
+    from sift_mcp.tools.memory import scan_processes as _scan_processes  # type: ignore[import]
+    from sift_mcp.tools.memory import scan_network as _scan_network  # type: ignore[import]
+    from sift_mcp.tools.memory import detect_injection as _detect_injection  # type: ignore[import]
+    from sift_mcp.tools.memory import list_dlls as _list_dlls  # type: ignore[import]
+    _MEMORY_AVAILABLE = True
+except ImportError:
+    _MEMORY_AVAILABLE = False
+
+
+def _memory_unavailable(tool_name: str) -> dict[str, Any]:
+    return {
+        "status": "error",
+        "error": (
+            f"Memory tool '{tool_name}' is not available — "
+            "sift_mcp/tools/memory.py has not been created yet. "
+            "Run memory analysis manually using Volatility 3 or wait for "
+            "the memory tool module to be added."
+        ),
+    }
+
+
+# ===========================================================================
+# EVIDENCE NAMESPACE (2 tools)
+# ===========================================================================
+
+
+@mcp.tool()
+def verify_integrity(image_path: str) -> dict[str, Any]:
+    """Verify the cryptographic integrity of a disk image or memory dump.
+
+    Runs ``ewfverify`` (for E01 images) or ``sha256sum`` (for raw/dd images)
+    to compute and compare the image hash against any stored reference hash.
+
+    This is the FIRST tool that should be called when evidence is registered —
+    the computed hash is recorded in the audit log and must match the
+    case-opening hash when the case is closed (zero-spoliation guarantee).
+
+    Parameters
+    ----------
+    image_path:
+        Absolute path to the evidence file (E01, raw, dd, AFF, or memory dump).
+
+    Returns
+    -------
+    dict
+        IntegrityResult fields: image_path, stored_hash, computed_hash,
+        algorithm, verified (bool), verification_time.
+    """
+    try:
+        return _verify_integrity(image_path=image_path)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "verify_integrity"}
+
+
+@mcp.tool()
+def get_provenance(finding_id: str) -> dict[str, Any]:
+    """Trace a forensic finding back to the exact tool execution that produced it.
+
+    Looks up the E-NNN execution ID on *finding_id* and returns the full
+    provenance chain: the finding record, the matched audit entries (started +
+    completed), the exact command line that was run, and any CORRECTION_EVENTs
+    that modified this finding.
+
+    Parameters
+    ----------
+    finding_id:
+        The F-NNN finding identifier (e.g. ``"F-003"``).
+
+    Returns
+    -------
+    dict
+        ProvenanceRecord fields: finding_id, finding, execution entries,
+        command_line, correction_events.
+    """
+    try:
+        return _get_provenance(finding_id=finding_id)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "get_provenance"}
+
+
+# ===========================================================================
+# DISK NAMESPACE (6 tools)
+# ===========================================================================
+
+
+@mcp.tool()
+def extract_prefetch(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 200,
+) -> dict[str, Any]:
+    """Extract Windows Prefetch execution artefacts from a disk image.
+
+    Runs ``dotnet PECmd.dll`` (EZ Tools) against the Prefetch directory on
+    *image_path* and returns a list of PrefetchRecord dicts.  Prefetch files
+    prove binary execution and record the last 8 run times (v26+) plus the
+    list of files opened at launch.
+
+    The ``source_created`` timestamp of the .PF file equals the FIRST
+    execution time of the binary — forensically significant for establishing
+    initial compromise time.
+
+    Parameters
+    ----------
+    image_path:
+        Absolute path to the evidence disk image or mounted directory.
+    case_id:
+        Case identifier — used to derive the output CSV path.
+    max_entries:
+        Maximum number of PrefetchRecord entries to return.
+
+    Returns
+    -------
+    dict
+        status, records (list of PrefetchRecord dicts), count, execution_id.
+    """
+    try:
+        return _extract_prefetch(image_path=image_path, case_id=case_id, max_entries=max_entries)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "extract_prefetch"}
+
+
+@mcp.tool()
+def get_amcache(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract Amcache.hve execution evidence from a disk image.
+
+    Runs ``dotnet AmcacheParser.dll`` (EZ Tools) to parse Amcache.hve.
+    Returns a list of AmcacheRecord dicts with SHA-1 hashes of executed
+    binaries — hashes survive even after the binary is deleted.
+
+    Use the SHA-1 hash to pivot into threat intelligence even for deleted
+    binaries.
+
+    Parameters
+    ----------
+    image_path:
+        Absolute path to the evidence disk image or mounted directory.
+    case_id:
+        Case identifier for output file naming.
+    max_entries:
+        Maximum number of AmcacheRecord entries to return.
+
+    Returns
+    -------
+    dict
+        status, records (list of AmcacheRecord dicts), count, execution_id.
+    """
+    try:
+        return _get_amcache(image_path=image_path, case_id=case_id, max_entries=max_entries)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "get_amcache"}
+
+
+@mcp.tool()
+def extract_mft_timeline(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 1000,
+) -> dict[str, Any]:
+    """Parse the NTFS $MFT to build a file system timeline.
+
+    Runs ``dotnet MFTECmd.dll`` (EZ Tools) to parse the Master File Table.
+    Returns a list of MftEntry dicts with both ``$STANDARD_INFORMATION``
+    (SI) and ``$FILE_NAME`` (FN) timestamps for each file.
+
+    SI timestamps can be modified by user-level APIs (timestomping), but FN
+    timestamps require kernel access.  Compare SI vs FN to detect timestamp
+    manipulation.
+
+    Parameters
+    ----------
+    image_path:
+        Absolute path to the evidence disk image or mounted directory.
+    case_id:
+        Case identifier for output file naming.
+    max_entries:
+        Maximum number of MftEntry records to return.
+
+    Returns
+    -------
+    dict
+        status, records (list of MftEntry dicts), count, execution_id.
+    """
+    try:
+        return _extract_mft_timeline(image_path=image_path, case_id=case_id, max_entries=max_entries)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "extract_mft_timeline"}
+
+
+@mcp.tool()
+def list_deleted_files(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """List deleted files from the filesystem using Sleuth Kit.
+
+    Runs ``fls -rd`` to enumerate deleted directory entries and recover
+    file metadata (inode, path, size, timestamps) without writing to the
+    evidence volume.
+
+    Cross-reference with Prefetch/Amcache entries to detect tools that were
+    executed and then deleted (post-exploitation cleanup).
+
+    Parameters
+    ----------
+    image_path:
+        Absolute path to the evidence disk image.
+    case_id:
+        Case identifier for output file naming.
+    max_entries:
+        Maximum number of DeletedFile entries to return.
+
+    Returns
+    -------
+    dict
+        status, records (list of DeletedFile dicts), count, execution_id.
+    """
+    try:
+        return _list_deleted_files(image_path=image_path, case_id=case_id, max_entries=max_entries)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "list_deleted_files"}
+
+
+@mcp.tool()
+def summarize_evtx(
+    image_path: str,
+    channel: str = "Security",
+    case_id: str = "default",
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Parse Windows Event Log (EVTX) files from a disk image.
+
+    Runs ``dotnet EvtxECmd.dll`` (EZ Tools) to extract events from the
+    specified log channel.  Returns a list of EventRecord dicts.
+
+    Key event IDs:
+    * **4624** — Successful logon (reveals lateral movement)
+    * **4625** — Failed logon (brute force indicator)
+    * **4688** — Process creation (requires audit policy)
+    * **7045** — New service installed (persistence indicator)
+
+    Parameters
+    ----------
+    image_path:
+        Absolute path to the evidence disk image or EVTX file.
+    channel:
+        Event log channel to parse. Common values: ``"Security"``,
+        ``"System"``, ``"Application"``, ``"Sysmon/Operational"``.
+    case_id:
+        Case identifier for output file naming.
+    max_entries:
+        Maximum number of EventRecord entries to return.
+
+    Returns
+    -------
+    dict
+        status, records (list of EventRecord dicts), count, execution_id.
+    """
+    try:
+        return _summarize_evtx(image_path=image_path, channel=channel, case_id=case_id, max_entries=max_entries)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "summarize_evtx"}
+
+
+@mcp.tool()
+def extract_registry_run_keys(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 200,
+) -> dict[str, Any]:
+    """Extract Windows registry persistence keys from a disk image.
+
+    Runs ``dotnet RECmd.dll`` (EZ Tools) to extract persistence entries from
+    Run/RunOnce, AppInit_DLLs, Winlogon Shell/Userinit, Services, and other
+    autostart locations.
+
+    Cross-reference the ``value_data`` (binary path) against disk artefacts
+    to detect persistence keys pointing to deleted or non-existent binaries
+    (see ``compare_disk_and_memory()`` Check 5).
+
+    Parameters
+    ----------
+    image_path:
+        Absolute path to the evidence disk image or hive file.
+    case_id:
+        Case identifier for output file naming.
+    max_entries:
+        Maximum number of RegistryRunKey entries to return.
+
+    Returns
+    -------
+    dict
+        status, records (list of RegistryRunKey dicts), count, execution_id.
+    """
+    try:
+        return _extract_registry_run_keys(image_path=image_path, case_id=case_id, max_entries=max_entries)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "extract_registry_run_keys"}
+
+
+# ===========================================================================
+# MEMORY NAMESPACE (6 tools)
+# ===========================================================================
+
+
+@mcp.tool()
+def detect_profile(dump_path: str) -> dict[str, Any]:
+    """Detect the Windows OS profile from a memory dump.
+
+    Runs Volatility 3 ``windows.info.Info`` to identify the OS name, version,
+    build number, architecture, and kernel base address.
+
+    This MUST be the first memory tool called on a new dump to confirm that
+    Volatility can parse it and to identify the correct symbol tables.
+
+    Parameters
+    ----------
+    dump_path:
+        Absolute path to the raw memory dump (.raw, .mem, .lime, .vmem).
+
+    Returns
+    -------
+    dict
+        ProfileResult fields: os_name, os_version, architecture, build_number,
+        kernel_base, execution_id.
+    """
+    if not _MEMORY_AVAILABLE:
+        return _memory_unavailable("detect_profile")
+    try:
+        return _detect_profile(dump_path=dump_path)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "detect_profile"}
+
+
+@mcp.tool()
+def list_processes(dump_path: str) -> dict[str, Any]:
+    """List running processes from a memory dump using the PEB linked list.
+
+    Runs Volatility 3 ``windows.pslist.PsList`` — walks the
+    ``PsActiveProcessHead`` doubly-linked list to enumerate OS-visible
+    processes.  Compare against ``scan_processes()`` (pool tag scan) to
+    detect DKOM-hidden processes.
+
+    Parameters
+    ----------
+    dump_path:
+        Absolute path to the raw memory dump.
+
+    Returns
+    -------
+    dict
+        status, processes (list of ProcessRecord dicts), count, execution_id.
+    """
+    if not _MEMORY_AVAILABLE:
+        return _memory_unavailable("list_processes")
+    try:
+        return _list_processes(dump_path=dump_path)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "list_processes"}
+
+
+@mcp.tool()
+def scan_processes(dump_path: str) -> dict[str, Any]:
+    """Scan physical memory for EPROCESS structures (pool tag scan).
+
+    Runs Volatility 3 ``windows.psscan.PsScan`` — searches raw memory pages
+    for EPROCESS pool tags rather than walking the linked list.  This surfaces
+    unlinked (DKOM-hidden) processes missed by ``list_processes()``.
+
+    Compare results against ``list_processes()`` — processes appearing in
+    psscan but not pslist are DKOM-hidden.
+
+    Parameters
+    ----------
+    dump_path:
+        Absolute path to the raw memory dump.
+
+    Returns
+    -------
+    dict
+        status, processes (list of ProcessRecord dicts with source="psscan"),
+        count, execution_id.
+    """
+    if not _MEMORY_AVAILABLE:
+        return _memory_unavailable("scan_processes")
+    try:
+        return _scan_processes(dump_path=dump_path)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "scan_processes"}
+
+
+@mcp.tool()
+def scan_network(dump_path: str) -> dict[str, Any]:
+    """Extract network connections and sockets from a memory dump.
+
+    Runs Volatility 3 ``windows.netscan.NetScan`` to find TCP/UDP endpoints
+    and connections, including closed/unlinked socket structures that netstat
+    would not show.
+
+    Network connections with owning PIDs whose executables have no disk
+    evidence are a critical indicator of fileless attacks (see
+    ``compare_disk_and_memory()`` Check 4).
+
+    Parameters
+    ----------
+    dump_path:
+        Absolute path to the raw memory dump.
+
+    Returns
+    -------
+    dict
+        status, connections (list of NetworkArtifact dicts), count, execution_id.
+    """
+    if not _MEMORY_AVAILABLE:
+        return _memory_unavailable("scan_network")
+    try:
+        return _scan_network(dump_path=dump_path)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "scan_network"}
+
+
+@mcp.tool()
+def detect_injection(
+    dump_path: str,
+    pid: Optional[int] = None,
+) -> dict[str, Any]:
+    """Detect process injection via VAD region analysis (malfind).
+
+    Runs Volatility 3 ``windows.malfind.Malfind`` to identify memory regions
+    that are executable, writable, and anonymous (no backing file on disk) —
+    a strong indicator of process injection or shellcode.
+
+    Injection in a process running from a legitimate path (System32,
+    Program Files) is the most forensically significant case (see
+    ``compare_disk_and_memory()`` Check 3).
+
+    Parameters
+    ----------
+    dump_path:
+        Absolute path to the raw memory dump.
+    pid:
+        When provided, restrict the scan to a single PID.
+        When ``None``, all processes are scanned.
+
+    Returns
+    -------
+    dict
+        status, injections (list of InjectionIndicator dicts), count, execution_id.
+    """
+    if not _MEMORY_AVAILABLE:
+        return _memory_unavailable("detect_injection")
+    try:
+        return _detect_injection(dump_path=dump_path, pid=pid)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "detect_injection"}
+
+
+@mcp.tool()
+def list_dlls(dump_path: str, pid: int) -> dict[str, Any]:
+    """List DLLs loaded into a specific process from memory.
+
+    Runs Volatility 3 ``windows.dlllist.DllList`` for *pid*.  Unexpected
+    DLLs loaded from temp directories, AppData, or without a backing file on
+    disk are indicators of DLL injection or sideloading.
+
+    Parameters
+    ----------
+    dump_path:
+        Absolute path to the raw memory dump.
+    pid:
+        PID of the target process. Use ``list_processes()`` or
+        ``scan_processes()`` first to obtain a valid PID.
+
+    Returns
+    -------
+    dict
+        status, dlls (list of DllRecord dicts), count, execution_id.
+    """
+    if not _MEMORY_AVAILABLE:
+        return _memory_unavailable("list_dlls")
+    try:
+        return _list_dlls(dump_path=dump_path, pid=pid)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "list_dlls"}
+
+
+# ===========================================================================
+# TIMELINE NAMESPACE (2 tools)
+# ===========================================================================
+
+
+@mcp.tool()
+def build_timeline(
+    source_path: str,
+    case_id: str,
+    parsers: str = "win10",
+) -> dict[str, Any]:
+    """Build a Plaso super-timeline from an evidence source.
+
+    Runs ``log2timeline.py`` to ingest all artefact types from *source_path*
+    and write a ``.plaso`` storage file.  This step is slow (30–120 minutes
+    for a 100 GB image) — for demos, pre-generate the ``.plaso`` file.
+
+    Common parser presets: ``"win10"`` (default), ``"win7"``, ``"linux"``.
+
+    Parameters
+    ----------
+    source_path:
+        Absolute path to the evidence source (image, mounted directory, or
+        memory dump).
+    case_id:
+        Case identifier — used to derive the ``.plaso`` output path in
+        ``./analysis/<case_id>/``.
+    parsers:
+        Plaso parser preset or comma-separated list of parser names.
+
+    Returns
+    -------
+    dict
+        status, storage_path, parser_preset, estimated_event_count,
+        duration_seconds, execution_id.
+    """
+    try:
+        return _build_timeline(source_path=source_path, case_id=case_id, parsers=parsers)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "build_timeline"}
+
+
+@mcp.tool()
+def query_timeline(
+    plaso_path: str,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    filter_expr: Optional[str] = None,
+    output_format: str = "dynamic",
+) -> dict[str, Any]:
+    """Query a Plaso storage file and return structured timeline events.
+
+    Runs ``psort.py`` on *plaso_path* with optional time-range and content
+    filters.  Returns a list of TimelineEvent dicts sorted chronologically.
+
+    Time filtering example:
+        ``start="2026-05-01T00:00:00"`` and ``end="2026-05-01T23:59:59"``
+
+    Content filtering example:
+        ``filter_expr="message contains 'cmd.exe'"``
+
+    Both can be combined.
+
+    Parameters
+    ----------
+    plaso_path:
+        Absolute path to the ``.plaso`` storage file from ``build_timeline()``.
+    start:
+        ISO-8601 lower time bound (e.g. ``"2026-05-01T00:00:00"``).
+    end:
+        ISO-8601 upper time bound (e.g. ``"2026-05-31T23:59:59"``).
+    filter_expr:
+        Plaso filter expression (e.g. ``"message contains 'mimikatz'``).
+    output_format:
+        Plaso output module. Default: ``"dynamic"`` (CSV).
+
+    Returns
+    -------
+    dict
+        status, events (list of TimelineEvent dicts), event_count, execution_id.
+    """
+    try:
+        return _query_timeline(
+            plaso_path=plaso_path,
+            start=start,
+            end=end,
+            filter_expr=filter_expr,
+            output_format=output_format,
+        )
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "query_timeline"}
+
+
+# ===========================================================================
+# YARA NAMESPACE (2 tools)
+# ===========================================================================
+
+
+@mcp.tool()
+def scan_files(
+    rules_path: str,
+    target_path: str,
+    recursive: bool = False,
+) -> dict[str, Any]:
+    """Scan a file or directory for YARA rule matches.
+
+    Runs the ``yara`` CLI against *target_path* using the rule set at
+    *rules_path*.  Returns a list of match dicts: ``rule_name``,
+    ``target_file``, ``matched_strings``.
+
+    An empty match list with ``status="ok"`` means no rules fired — a clean
+    result, not an error.
+
+    Parameters
+    ----------
+    rules_path:
+        Absolute path to the YARA rules file (.yar / .yara / .yarc).
+    target_path:
+        Absolute path to the file or directory to scan.
+    recursive:
+        When ``True``, recursively scan all files in *target_path* (``-r``).
+
+    Returns
+    -------
+    dict
+        status, matches (list), match_count, execution_id.
+    """
+    try:
+        return _scan_files(rules_path=rules_path, target_path=target_path, recursive=recursive)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "scan_files"}
+
+
+@mcp.tool()
+def scan_memory(
+    rules_path: str,
+    dump_path: str,
+) -> dict[str, Any]:
+    """Scan a raw memory dump for YARA rule matches.
+
+    Treats *dump_path* as a flat byte stream and searches for YARA patterns.
+    Surfaces in-memory artefacts not present on disk: reflectively loaded
+    DLLs, shellcode stubs (Cobalt Strike, Meterpreter), unpacked payloads.
+
+    Cross-reference hits with Volatility ``malfind`` to identify process context.
+
+    Parameters
+    ----------
+    rules_path:
+        Absolute path to the YARA rules file (.yar / .yara / .yarc).
+    dump_path:
+        Absolute path to the raw memory dump.
+
+    Returns
+    -------
+    dict
+        status, matches (list), match_count, execution_id.
+    """
+    try:
+        return _scan_memory(rules_path=rules_path, dump_path=dump_path)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "scan_memory"}
+
+
+# ===========================================================================
+# CORRELATION NAMESPACE (2 tools) — THE CORE DIFFERENTIATOR
+# ===========================================================================
+
+
+@mcp.tool()
+def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
+    """Run all 6 cross-artifact correlation checks against the case state.
+
+    THIS IS THE CORE NOVEL CONTRIBUTION of SAVVYDFIR-MCP.
+
+    Reads the authoritative case state and runs 6 forensic checks that no
+    existing Protocol SIFT extension or DFIR-LLM system implements:
+
+    1. **process_no_disk_binary** (HIGH) — Running process with no on-disk
+       binary → fileless malware or reflective injection.
+    2. **execution_evidence_deleted_binary** (HIGH) — Prefetch/Amcache entry
+       for a binary in the deleted-file list → post-exploitation cleanup.
+    3. **injection_legitimate_path** (HIGH) — VAD injection on a System32/
+       Program Files process → process hollowing or DLL injection.
+    4. **network_no_disk_evidence** (MEDIUM) — Network connection from a PID
+       with no disk execution evidence → fileless attack.
+    5. **persistence_missing_binary** (HIGH) — Run key pointing to a binary
+       not found on disk → compromised but remediated host.
+    6. **timestomping_detected** (HIGH) — SI timestamps differ from FN
+       timestamps by >1 hour → user-level timestamp manipulation.
+
+    For each discrepancy found, the affected findings' ``contradicted_by``
+    lists are updated to enable the self-correction loop.
+
+    Parameters
+    ----------
+    case_id:
+        The forensic case identifier (e.g. ``"SRL-2018-WKSTN-01"``).
+
+    Returns
+    -------
+    dict
+        CorrelationReport: case_id, discrepancies (list of DiscrepancyAlert),
+        discrepancy_count, disk_findings_count, memory_findings_count,
+        confirmed_consistencies, checked_at, summary.
+    """
+    try:
+        return _compare_disk_and_memory(case_id=case_id)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "compare_disk_and_memory"}
+
+
+@mcp.tool()
+def flag_discrepancy(
+    finding_id_a: str,
+    finding_id_b: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Manually flag a discrepancy between two forensic findings.
+
+    Creates a DiscrepancyAlert and updates both findings' ``contradicted_by``
+    lists in the authoritative case state.  Use this when the agent identifies
+    a contradiction that the automated correlation engine did not catch — for
+    example, when Volatility and a disk artefact give conflicting PID/process
+    information.
+
+    This is the manual trigger for the self-correction loop.
+
+    Parameters
+    ----------
+    finding_id_a:
+        F-NNN ID of the first finding (e.g. ``"F-003"``).
+    finding_id_b:
+        F-NNN ID of the second finding (e.g. ``"F-007"``).
+    reason:
+        Human-readable explanation of the contradiction.
+
+    Returns
+    -------
+    dict
+        status, discrepancy (DiscrepancyAlert), finding_a (updated),
+        finding_b (updated).
+    """
+    try:
+        return _flag_discrepancy(
+            finding_id_a=finding_id_a,
+            finding_id_b=finding_id_b,
+            reason=reason,
+        )
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "flag_discrepancy"}
+
+
+# ===========================================================================
+# STATE NAMESPACE (2 tools)
+# ===========================================================================
+
+
+@mcp.tool()
+def read_state(case_id: str) -> dict[str, Any]:
+    """Return the current authoritative case state summary.
+
+    Reads the ``state.json`` managed by CaseStateManager and returns:
+    investigation status, finding/execution counts by category, open
+    questions, and the 10 most recently added findings.
+
+    Call this at the start of each triage iteration to resume correctly
+    after a server restart.
+
+    Parameters
+    ----------
+    case_id:
+        The forensic case identifier.
+
+    Returns
+    -------
+    dict
+        CaseState summary: case_id, investigation_status, findings_count,
+        executions_count, confirmed_count, hypothesis_count, rejected_count,
+        unresolved_discrepancies, open_questions, latest_findings,
+        created_at, updated_at.
+    """
+    try:
+        return _read_state(case_id=case_id)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "read_state"}
+
+
+@mcp.tool()
+def export_trace(case_id: str) -> dict[str, Any]:
+    """Export the full execution trace as a list of audit entries.
+
+    Returns every entry from ``audit.jsonl`` in chronological order.  Each
+    entry is either ``event_type="started"`` or ``event_type="completed"``.
+    Completed entries include exit code, duration, finding IDs generated, and
+    any CORRECTION_EVENT that was produced.
+
+    Use this tool to:
+    * Reconstruct the investigation timeline.
+    * Verify every finding has a corresponding audit entry.
+    * Export for court-admissible documentation.
+
+    Parameters
+    ----------
+    case_id:
+        The forensic case identifier (used for labelling only — the audit
+        log is server-global).
+
+    Returns
+    -------
+    dict
+        status, case_id, entry_count, entries (list of AuditEntry dicts),
+        started_count, completed_count, correction_events_count.
+    """
+    try:
+        return _export_trace(case_id=case_id)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "export_trace"}
+
+
+# ===========================================================================
+# GRAPH NAMESPACE (2 tools)
+# ===========================================================================
+
+
+@mcp.tool()
+def generate_graph(
+    case_id: str,
+    state_path: Optional[str] = None,
+    audit_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+) -> dict[str, Any]:
+    """Generate an interactive D3.js investigation graph from case data.
+
+    Runs ``scripts/investigation_graph.py`` to read ``audit.jsonl`` and
+    ``state.json`` and produce:
+
+    1. ``graph.json`` — Node/edge graph data for D3.js.
+    2. ``graph.html`` — Self-contained interactive HTML visualization with
+       force-directed layout, hover tooltips, click provenance, and filters.
+
+    Node types: case, evidence_source, finding (colored by evidence_kind),
+    correction.  Edge types: contains, produced, corrected, related,
+    contradicts.
+
+    Parameters
+    ----------
+    case_id:
+        The forensic case identifier — used to derive default paths.
+    state_path:
+        Override path to ``state.json``. Defaults to
+        ``./analysis/state.json``.
+    audit_path:
+        Override path to ``audit.jsonl``. Defaults to
+        ``./analysis/audit.jsonl``.
+    output_path:
+        Override path for ``graph.html`` output. Defaults to
+        ``./reports/<case_id>_graph.html``.
+
+    Returns
+    -------
+    dict
+        status, graph_html_path, graph_json_path, node_count, edge_count.
+    """
+    # Resolve paths
+    analysis_dir = Path("./analysis").resolve()
+    reports_dir = Path("./reports").resolve()
+
+    resolved_state = Path(state_path).resolve() if state_path else analysis_dir / "state.json"
+    resolved_audit = Path(audit_path).resolve() if audit_path else analysis_dir / "audit.jsonl"
+
+    safe_case = case_id.replace("/", "_").replace("\\", "_")
+    resolved_output = (
+        Path(output_path).resolve() if output_path
+        else reports_dir / f"{safe_case}_graph.html"
+    )
+
+    # Locate investigation_graph.py relative to this file
+    server_dir = Path(__file__).resolve().parent
+    graph_script = (server_dir / ".." / "scripts" / "investigation_graph.py").resolve()
+
+    if not graph_script.exists():
+        # Try relative to workspace
+        graph_script = Path("./scripts/investigation_graph.py").resolve()
+
+    if not graph_script.exists():
+        return {
+            "status": "error",
+            "error": (
+                f"investigation_graph.py not found at {graph_script}. "
+                "Ensure scripts/investigation_graph.py exists in the project root."
+            ),
+        }
+
+    # Ensure output directory exists
+    try:
+        resolved_output.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {"status": "error", "error": f"Cannot create output directory: {exc}"}
+
+    cmd = [
+        sys.executable,
+        str(graph_script),
+        "--state", str(resolved_state),
+        "--audit", str(resolved_audit),
+        "--output", str(resolved_output),
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": "generate_graph timed out (120 s)"}
+    except Exception as exc:
+        return {"status": "error", "error": f"Failed to run investigation_graph.py: {exc}"}
+
+    if proc.returncode != 0:
+        return {
+            "status": "error",
+            "error": f"investigation_graph.py exited {proc.returncode}",
+            "stderr": proc.stderr[:2000],
+        }
+
+    # Parse node/edge counts from stdout
+    node_count = 0
+    edge_count = 0
+    for line in proc.stdout.splitlines():
+        import re
+        m = re.search(r"nodes:\s*(\d+)", line)
+        if m:
+            node_count = int(m.group(1))
+        m = re.search(r"edges:\s*(\d+)", line)
+        if m:
+            edge_count = int(m.group(1))
+
+    graph_json_path = str(resolved_output.with_name("graph.json"))
+
+    return {
+        "status": "ok",
+        "case_id": case_id,
+        "graph_html_path": str(resolved_output),
+        "graph_json_path": graph_json_path,
+        "node_count": node_count,
+        "edge_count": edge_count,
+        "stdout": proc.stdout[-1000:],  # Last 1000 chars of progress output
+    }
+
+
+@mcp.tool()
+def serve_graph(
+    case_id: str,
+    port: int = 8080,
+    graph_html_path: Optional[str] = None,
+) -> dict[str, Any]:
+    """Return the URL and instructions for viewing the investigation graph.
+
+    Does NOT start a web server (the MCP server is a background process that
+    should not spawn long-lived subprocesses).  Instead, returns the path to
+    the ``graph.html`` file and instructions for the analyst to serve it.
+
+    For browser-accessible serving, run in a separate terminal::
+
+        cd /path/to/graph/dir && python3 -m http.server <port>
+
+    Parameters
+    ----------
+    case_id:
+        The forensic case identifier — used to derive the default graph path.
+    port:
+        Port number for the suggested http.server command (default 8080).
+    graph_html_path:
+        Override path to ``graph.html``. Defaults to
+        ``./reports/<case_id>_graph.html``.
+
+    Returns
+    -------
+    dict
+        status, graph_html_path, url (the URL to open after serving),
+        serve_command (the exact shell command to run).
+    """
+    safe_case = case_id.replace("/", "_").replace("\\", "_")
+    reports_dir = Path("./reports").resolve()
+
+    resolved_html = (
+        Path(graph_html_path).resolve() if graph_html_path
+        else reports_dir / f"{safe_case}_graph.html"
+    )
+
+    if not resolved_html.exists():
+        return {
+            "status": "error",
+            "error": (
+                f"graph.html not found at {resolved_html}. "
+                "Run generate_graph() first to produce the visualization."
+            ),
+        }
+
+    serve_dir = str(resolved_html.parent)
+    url = f"http://localhost:{port}/{resolved_html.name}"
+    serve_command = f"cd {serve_dir} && python3 -m http.server {port}"
+
+    return {
+        "status": "ok",
+        "case_id": case_id,
+        "graph_html_path": str(resolved_html),
+        "url": url,
+        "serve_command": serve_command,
+        "instructions": (
+            f"Run the following command in a terminal, then open {url} in a browser:\n"
+            f"  {serve_command}"
+        ),
+    }
+
+
+# ===========================================================================
+# Entry point
+# ===========================================================================
+
+
+if __name__ == "__main__":
+    mcp.run()

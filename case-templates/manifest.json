@@ -1,0 +1,131 @@
+{
+  "_schema_version": "1.0",
+  "_description": "SAVVYDFIR-MCP case manifest template. Replace all placeholder values. This file is read by the MCP server via evidence.load_manifest() and by the agent at case start.",
+  "_instructions": "Remove all '_comment' fields before use in production.",
+
+  "case_id": "{{CASE_ID}}",
+  "case_name": "{{CASE_NAME}}",
+  "date_opened": "{{YYYY-MM-DDTHH:MM:SSZ}}",
+  "investigator": "{{INVESTIGATOR_NAME}}",
+  "investigation_goal": "{{INVESTIGATION_GOAL — one sentence describing what the agent must determine}}",
+  "max_iterations": 4,
+
+  "disk_images": [
+    {
+      "host": "{{HOST_01}}",
+      "path": "/cases/{{CASE_ID}}/evidence/{{DISK_IMAGE_FILENAME_01}}",
+      "image_type": "{{E01|raw|dd|AFF}}",
+      "size_bytes": 0,
+      "expected_sha256": "{{SHA256_HASH_64_HEX_CHARS}}",
+      "expected_md5": "{{MD5_HASH_32_HEX_CHARS}}",
+      "acquired_utc": "{{YYYY-MM-DDTHH:MM:SSZ}}",
+      "acquired_by": "{{ACQUISTION_TOOL_AND_VERSION}}",
+      "mount_point": "/mnt/{{HOST_01}}",
+      "_comment": "Add one entry per disk image. Duplicate this block for additional hosts."
+    }
+  ],
+
+  "memory_dumps": [
+    {
+      "host": "{{HOST_01}}",
+      "path": "/cases/{{CASE_ID}}/evidence/{{MEMORY_DUMP_FILENAME_01}}",
+      "size_bytes": 0,
+      "expected_sha256": "{{SHA256_HASH_64_HEX_CHARS}}",
+      "expected_md5": "{{MD5_HASH_32_HEX_CHARS}}",
+      "acquired_utc": "{{YYYY-MM-DDTHH:MM:SSZ}}",
+      "acquired_by": "{{ACQUISTION_TOOL_AND_VERSION}}",
+      "_comment": "Add one entry per memory dump. Duplicate this block for additional hosts."
+    }
+  ],
+
+  "target_time_window": {
+    "start": "{{YYYY-MM-DDTHH:MM:SSZ}}",
+    "end": "{{YYYY-MM-DDTHH:MM:SSZ}}",
+    "source": "{{TIMEWINDOW_SOURCE — e.g., 'Help desk ticket opened 2026-04-30T13:00:00Z', 'Firewall alert at 14:22 UTC'}}",
+    "_comment": "UTC ISO-8601. Set to null if unknown: 'target_time_window': null"
+  },
+
+  "known_iocs": {
+    "file_hashes_sha256": [
+      "{{SHA256_HASH_01}}",
+      "{{SHA256_HASH_02}}"
+    ],
+    "file_hashes_md5": [
+      "{{MD5_HASH_01}}"
+    ],
+    "file_names": [
+      "{{SUSPICIOUS_FILENAME_01}}",
+      "{{SUSPICIOUS_FILENAME_02}}"
+    ],
+    "file_paths": [
+      "{{SUSPICIOUS_FULL_PATH_01}}"
+    ],
+    "ip_addresses": [
+      "{{SUSPICIOUS_IP_01}}",
+      "{{SUSPICIOUS_IP_02}}"
+    ],
+    "domains": [
+      "{{SUSPICIOUS_DOMAIN_01}}"
+    ],
+    "registry_keys": [
+      "{{SUSPICIOUS_REGISTRY_KEY_01}}"
+    ],
+    "process_names": [
+      "{{SUSPICIOUS_PROCESS_NAME_01}}"
+    ],
+    "yara_rule_sets": [
+      "{{YARA_RULE_SET_NAME_01}}"
+    ],
+    "_comment": "All lists may be empty ([]) if no IOCs are known at case open. Add entries as discovered."
+  },
+
+  "network_topology": {
+    "hosts": [
+      {
+        "hostname": "{{HOST_01}}",
+        "ip_address": "{{IP_01}}",
+        "role": "{{ROLE — e.g., workstation, domain_controller, file_server, web_server}}",
+        "os": "{{OS_VERSION — e.g., Windows 10 22H2, Windows Server 2019}}",
+        "domain": "{{DOMAIN_NAME}}"
+      }
+    ],
+    "segments": [
+      {
+        "name": "{{SEGMENT_NAME_01}}",
+        "cidr": "{{CIDR_01 — e.g., 192.168.1.0/24}}",
+        "description": "{{SEGMENT_DESCRIPTION_01}}"
+      }
+    ],
+    "known_safe_external_ips": [
+      {
+        "ip": "{{SAFE_EXTERNAL_IP_01}}",
+        "description": "{{DESCRIPTION — e.g., Windows Update CDN}}"
+      }
+    ],
+    "_comment": "Provide as much topology context as available. The agent uses this to classify network connections as internal vs. external and to identify lateral movement."
+  },
+
+  "prior_investigation_notes": "{{FREEFORM_TEXT — prior findings, analyst observations, context from help desk, SIEM alerts. Set to null if none.}}",
+
+  "output_paths": {
+    "analysis": "./analysis/",
+    "reports": "./reports/",
+    "exports": "./exports/",
+    "_comment": "Do not change these values. They must match the write_paths in settings.json."
+  },
+
+  "agent_config": {
+    "autonomous": true,
+    "max_iterations": 4,
+    "severity_threshold_for_contradiction_block": "medium",
+    "require_corroboration_before_completion": true,
+    "_comment": "autonomous:true means the agent will not ask questions during the investigation. max_iterations caps the triage loop. severity_threshold controls which contradiction severity levels block completion."
+  },
+
+  "_metadata": {
+    "created_utc": "{{YYYY-MM-DDTHH:MM:SSZ}}",
+    "template_version": "1.0",
+    "savvydfir_mcp_version": "{{SAVVYDFIR_MCP_VERSION}}",
+    "sift_workstation_version": "{{SIFT_VERSION}}"
+  }
+}

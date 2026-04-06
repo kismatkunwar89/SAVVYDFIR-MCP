@@ -1,0 +1,103 @@
+{
+  "_comment": "SAVVYDFIR-MCP Claude Code settings — extends Protocol SIFT's settings.json. All Protocol SIFT allow/deny rules are preserved and MCP server permissions are added.",
+
+  "permissions": {
+    "allow": [
+      "mcp__savvydfir-mcp__*",
+
+      "python3 /opt/volatility3-2.20.0/vol.py *",
+      "log2timeline.py *",
+      "psort.py *",
+      "fls *",
+      "icat *",
+      "mmls *",
+      "fsstat *",
+      "ewfmount *",
+      "ewfverify *",
+      "dotnet /opt/zimmermantools/MFTECmd.dll *",
+      "dotnet /opt/zimmermantools/PECmd.dll *",
+      "dotnet /opt/zimmermantools/AmcacheParser.dll *",
+      "dotnet /opt/zimmermantools/EvtxECmd.dll *",
+      "dotnet /opt/zimmermantools/RECmd.dll *",
+      "yara *",
+      "sha256sum *",
+      "md5sum *",
+      "file *",
+      "strings *",
+      "grep *",
+      "find *",
+      "cat *",
+      "head *",
+      "tail *",
+      "wc *",
+      "sort *",
+      "uniq *",
+      "jq *",
+      "python3 scripts/trace_finding.py *",
+      "python3 scripts/generate_accuracy_report.py *",
+      "python3 scripts/build_graph.py *",
+      "python3 generate_pdf_report.py *"
+    ],
+
+    "deny": [
+      "Read(./secrets/**)",
+      "Bash(rm -rf:*)",
+      "Bash(rm -r:*)",
+      "Bash(dd:*)",
+      "Bash(wget:*)",
+      "Bash(curl:*)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "Bash(mkfs:*)",
+      "Bash(fdisk:*)",
+      "Bash(shred:*)",
+      "Bash(chmod 777:*)",
+      "WebFetch"
+    ]
+  },
+
+  "write_paths": [
+    "./analysis/*",
+    "./reports/*",
+    "./exports/*"
+  ],
+
+  "deny_paths": [
+    "/mnt/",
+    "/cases/*/evidence/",
+    "/dev/",
+    "/proc/",
+    "/sys/"
+  ],
+
+  "mcp_servers": {
+    "savvydfir-mcp": {
+      "command": "python3",
+      "args": ["-m", "sift_mcp.server"],
+      "transport": "stdio",
+      "env": {}
+    }
+  },
+
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": {"tool_name": "mcp__savvydfir-mcp__*"},
+        "action": "classify_error",
+        "description": "After every MCP tool call, check exit_code and classify any errors. Non-zero exit codes trigger retry logic documented in skills/self-correction/SKILL.md."
+      }
+    ],
+    "Stop": [
+      {
+        "action": "export_state",
+        "command": "python3 -c \"from sift_mcp.state import export_final_state; export_final_state()\"",
+        "description": "On session end: export final case state to ./exports/case_state.json, re-verify evidence integrity hashes, close and flush ./analysis/audit.jsonl, append session summary to forensic_audit.log."
+      },
+      {
+        "action": "append_audit_log",
+        "command": "python3 -c \"from sift_mcp.audit import append_session_summary; append_session_summary('forensic_audit.log')\"",
+        "description": "Append human-readable session summary line to forensic_audit.log. Format: ISO-8601-timestamp | case_id | findings_count | corrections_count | status."
+      }
+    ]
+  }
+}
