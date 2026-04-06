@@ -1,0 +1,270 @@
+"""
+execution.py — Tool execution and self-correction data models for SAVVYDFIR-MCP.
+
+Every time the agent invokes an MCP tool, one ``Execution`` record is written
+to ``<case_dir>/audit.jsonl``.  If that tool call reveals evidence that
+contradicts a previously recorded finding, a ``CorrectionEvent`` is attached
+to the ``Execution`` before it is persisted.
+
+This module also provides the thread-safe counter used to generate ``E-NNN``
+execution IDs.
+"""
+
+from __future__ import annotations
+
+import threading
+from datetime import datetime, timezone
+from typing import Literal, Optional
+
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+# ---------------------------------------------------------------------------
+# Auto-incrementing ID counter (thread-safe)
+# ---------------------------------------------------------------------------
+
+
+class _ExecutionIDCounter:
+    """Thread-safe, process-lifetime counter for generating E-NNN IDs."""
+
+    _lock = threading.Lock()
+    _value: int = 0
+
+    @classmethod
+    def next(cls) -> str:
+        with cls._lock:
+            cls._value += 1
+            return f"E-{cls._value:03d}"
+
+    @classmethod
+    def reset(cls, value: int = 0) -> None:
+        """Reset counter (test use only)."""
+        with cls._lock:
+            cls._value = value
+
+
+# ---------------------------------------------------------------------------
+# Correction event
+# ---------------------------------------------------------------------------
+
+
+class CorrectionEvent(BaseModel):
+    """Records a self-correction triggered by contradicting physical evidence.
+
+    A ``CorrectionEvent`` is attached to the ``Execution`` record whose tool
+    output caused the contradiction.  It is NEVER produced by LLM
+    introspection alone — it must be backed by concrete artifact evidence.
+
+    Attributes:
+        prior_claim:             The exact text of the finding that is being
+                                 revised (copied verbatim from the original
+                                 ``Finding.description``).
+        contradiction_source:    Which MCP tool or finding ID produced the
+                                 contradicting evidence.
+        revised_claim:           The corrected claim that replaces the prior
+                                 one.
+        affected_finding_ids:    Finding IDs whose status should be updated to
+                                 ``CORRECTED`` or ``REJECTED`` as a result of
+                                 this event.
+        confidence_delta:        Change in analyst confidence (positive →
+                                 increased certainty, negative → decreased).
+                                 Range: -1.0 to +1.0.
+        correction_type:         Semantic category of the correction:
+                                   - ``evidence_contradiction``: physical
+                                     evidence contradicts a prior finding.
+                                   - ``tool_error_recovery``: a tool failed
+                                     and was retried with different parameters.
+                                   - ``reclassification``: the finding's
+                                     ``evidence_kind`` changed (e.g.
+                                     HYPOTHESIS → REJECTED).
+    """
+
+    prior_claim: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Verbatim text of the finding being revised.  Must match the "
+            "original Finding.description exactly."
+        ),
+    )
+    contradiction_source: str = Field(
+        ...,
+        description=(
+            "MCP tool name or Finding ID that produced the contradicting evidence "
+            "(e.g. 'detect_injection', 'F-003')."
+        ),
+    )
+    revised_claim: str = Field(
+        ...,
+        min_length=1,
+        description="The corrected claim that replaces prior_claim.",
+    )
+    affected_finding_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        description="Finding IDs (F-NNN) whose status is changed by this correction.",
+    )
+    confidence_delta: float = Field(
+        ...,
+        ge=-1.0,
+        le=1.0,
+        description=(
+            "Change in analyst confidence caused by this correction "
+            "(positive = more certain, negative = less certain)."
+        ),
+    )
+    correction_type: Literal[
+        "evidence_contradiction",
+        "tool_error_recovery",
+        "reclassification",
+    ] = Field(
+        ...,
+        description=(
+            "Semantic category of the correction.  "
+            "'evidence_contradiction' is the highest-signal value — it means "
+            "a physical artifact contradicted a prior analytic conclusion."
+        ),
+    )
+    occurred_at: datetime = Field(
+        default_factory=lambda: datetime.now(tz=timezone.utc),
+        description="UTC timestamp when the correction was logged.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Execution record
+# ---------------------------------------------------------------------------
+
+
+class Execution(BaseModel):
+    """Record of a single MCP tool invocation — one line in ``audit.jsonl``.
+
+    Every execution is self-contained: it records WHY the agent called the
+    tool (``agent_reason``), WHAT command was actually run (``command_line``),
+    WHAT the outcome was (``exit_code``, ``stdout_ref``, ``stderr_ref``), and
+    WHAT findings resulted (``finding_ids_generated``).  Together, the chain
+    Execution → Finding → CorrectionEvent forms the complete provenance graph.
+
+    Attributes:
+        execution_id:          Auto-generated sequential ID in ``E-NNN`` format.
+        case_id:               Parent case identifier.
+        iteration:             Triage iteration that triggered this execution
+                               (≥ 1).
+        tool_name:             MCP tool that was invoked.
+        parameters:            The exact parameters dict passed to the tool.
+        command_line:          The subprocess command constructed by the tool
+                               backend (for reproducibility / peer review).
+        start_time:            UTC timestamp when the tool was invoked.
+        end_time:              UTC timestamp when the tool returned.
+        duration_seconds:      Wall-clock duration of the execution.
+        exit_code:             OS exit code (0 = success).
+        stdout_ref:            Absolute path to the file where the tool's full
+                               stdout was saved (None if stdout was empty or
+                               not captured).
+        stderr_ref:            Absolute path to the file where the tool's full
+                               stderr was saved (None if stderr was empty or
+                               not captured).
+        finding_ids_generated: F-NNN IDs of every finding created by this
+                               execution.
+        correction_event:      Populated when this execution's output
+                               triggered a self-correction of a prior finding.
+        agent_reason:          One-sentence explanation of why the agent chose
+                               to call this tool at this point in the
+                               investigation.
+    """
+
+    execution_id: str = Field(
+        default_factory=_ExecutionIDCounter.next,
+        pattern=r"^E-\d{3,}$",
+        description="Auto-generated sequential ID: E-001, E-002, …",
+    )
+    case_id: str = Field(..., description="Parent case identifier.")
+    iteration: int = Field(
+        ..., ge=1, description="Triage iteration that triggered this execution."
+    )
+    tool_name: str = Field(
+        ..., description="MCP tool name that was invoked."
+    )
+    parameters: dict = Field(
+        default_factory=dict,
+        description="Exact parameters dict passed to the MCP tool.",
+    )
+    command_line: str = Field(
+        ...,
+        description=(
+            "Exact subprocess command constructed by the tool backend, "
+            "including all flags and paths, for reproducibility."
+        ),
+    )
+    start_time: datetime = Field(
+        default_factory=lambda: datetime.now(tz=timezone.utc),
+        description="UTC timestamp when the tool invocation began.",
+    )
+    end_time: Optional[datetime] = Field(
+        None,
+        description="UTC timestamp when the tool returned (None while running).",
+    )
+    duration_seconds: Optional[float] = Field(
+        None,
+        ge=0.0,
+        description="Wall-clock duration of the execution in seconds.",
+    )
+    exit_code: Optional[int] = Field(
+        None,
+        description="OS exit code returned by the subprocess (0 = success).",
+    )
+    stdout_ref: Optional[str] = Field(
+        None,
+        description=(
+            "Absolute path to the file where the tool's full stdout was "
+            "saved (e.g. '<case_dir>/executions/E-001_stdout.txt')."
+        ),
+    )
+    stderr_ref: Optional[str] = Field(
+        None,
+        description=(
+            "Absolute path to the file where the tool's full stderr was "
+            "saved (e.g. '<case_dir>/executions/E-001_stderr.txt')."
+        ),
+    )
+    finding_ids_generated: list[str] = Field(
+        default_factory=list,
+        description="F-NNN IDs of every Finding created by this execution.",
+    )
+    correction_event: Optional[CorrectionEvent] = Field(
+        None,
+        description=(
+            "Populated when this execution's output triggered a self-correction "
+            "of one or more prior findings."
+        ),
+    )
+    agent_reason: str = Field(
+        ...,
+        min_length=5,
+        description=(
+            "One-sentence explanation of why the agent chose to call this "
+            "tool at this point in the investigation."
+        ),
+    )
+
+    @field_validator("execution_id", mode="before")
+    @classmethod
+    def _coerce_auto_id(cls, v: object) -> str:
+        """Allow callers to pass None/empty to trigger auto-generation."""
+        if not v:
+            return _ExecutionIDCounter.next()
+        return str(v)
+
+    @model_validator(mode="after")
+    def _compute_duration(self) -> "Execution":
+        """Auto-compute duration_seconds from start/end times when both present."""
+        if (
+            self.duration_seconds is None
+            and self.end_time is not None
+            and self.start_time is not None
+        ):
+            delta = (self.end_time - self.start_time).total_seconds()
+            object.__setattr__(self, "duration_seconds", max(0.0, delta))
+        return self
+
+    model_config = {"validate_assignment": True}

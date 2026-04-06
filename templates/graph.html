@@ -1,0 +1,1604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SAVVYDFIR-MCP Investigation Graph</title>
+
+  <!-- D3.js v7 — only external dependency -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+
+  <style>
+    /* ================================================================
+       Reset & base
+       ================================================================ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-base:      #0f172a;
+      --bg-surface:   #1e293b;
+      --bg-elevated:  #273449;
+      --border:       #334155;
+      --text-primary: #e2e8f0;
+      --text-muted:   #94a3b8;
+      --text-dim:     #64748b;
+      --accent:       #93c5fd;
+      --accent-hover: #bfdbfe;
+      --red:          #ef4444;
+      --red-dark:     #dc2626;
+      --green:        #22c55e;
+      --yellow:       #eab308;
+      --orange:       #f97316;
+      --blue:         #3b82f6;
+      --radius:       8px;
+      --font-mono:    'Fira Mono', 'Cascadia Code', 'Consolas', monospace;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    /* ================================================================
+       Layout — three-column: sidebar | canvas | detail panel
+       ================================================================ */
+    #app {
+      display: grid;
+      grid-template-columns: 260px 1fr 320px;
+      grid-template-rows: 48px 1fr 36px;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ================================================================
+       Header
+       ================================================================ */
+    #header {
+      grid-column: 1 / -1;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 16px;
+    }
+
+    #header .logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #header .logo svg { flex-shrink: 0; }
+
+    #header h1 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: var(--accent);
+    }
+
+    #header .case-badge {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 8px;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    #header .spacer { flex: 1; }
+
+    /* Search input */
+    #search-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    #search {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      font-size: 13px;
+      padding: 4px 10px 4px 28px;
+      width: 200px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    #search:focus { border-color: var(--accent); }
+
+    #search-icon {
+      position: absolute;
+      left: 8px;
+      color: var(--text-dim);
+      pointer-events: none;
+    }
+
+    /* ================================================================
+       Left sidebar — summary + filters
+       ================================================================ */
+    #sidebar {
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .panel-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+    }
+
+    /* Summary stats */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .stat-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 8px;
+    }
+
+    .stat-value {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1.1;
+    }
+
+    .stat-label {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* Kind breakdown */
+    .kind-list { display: flex; flex-direction: column; gap: 6px; }
+
+    .kind-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .kind-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .kind-name { flex: 1; font-size: 12px; color: var(--text-muted); }
+
+    .kind-count {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+    }
+
+    /* Filter checkboxes */
+    .filter-list { display: flex; flex-direction: column; gap: 6px; }
+
+    .filter-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+
+    .filter-row input[type="checkbox"] {
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      background: var(--bg-elevated);
+      cursor: pointer;
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .filter-row input[type="checkbox"]:checked {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .filter-row input[type="checkbox"]:checked::after {
+      content: '';
+      position: absolute;
+      top: 1px;
+      left: 4px;
+      width: 4px;
+      height: 7px;
+      border: 2px solid var(--bg-base);
+      border-top: none;
+      border-left: none;
+      transform: rotate(45deg);
+    }
+
+    .filter-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .filter-swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      display: inline-block;
+    }
+
+    /* Reset button */
+    #reset-btn {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-muted);
+      font-size: 12px;
+      padding: 5px 10px;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+      width: 100%;
+    }
+
+    #reset-btn:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* ================================================================
+       Main canvas area
+       ================================================================ */
+    #canvas-wrap {
+      position: relative;
+      overflow: hidden;
+      background: var(--bg-base);
+    }
+
+    #graph-svg {
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+    }
+
+    #graph-svg:active { cursor: grabbing; }
+
+    /* Zoom controls */
+    #zoom-controls {
+      position: absolute;
+      bottom: 16px;
+      right: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .zoom-btn {
+      width: 30px;
+      height: 30px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-primary);
+      font-size: 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s;
+    }
+
+    .zoom-btn:hover { background: var(--bg-elevated); }
+
+    /* ================================================================
+       Tooltip
+       ================================================================ */
+    #tooltip {
+      position: fixed;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px 12px;
+      pointer-events: none;
+      z-index: 1000;
+      max-width: 280px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      opacity: 0;
+      transition: opacity 0.12s;
+    }
+
+    #tooltip.visible { opacity: 1; }
+
+    .tooltip-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 6px;
+    }
+
+    .tooltip-row {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      gap: 6px;
+      margin-bottom: 3px;
+    }
+
+    .tooltip-row .key { color: var(--text-dim); min-width: 70px; }
+
+    .tooltip-row .val {
+      color: var(--text-muted);
+      word-break: break-all;
+    }
+
+    /* ================================================================
+       Right detail panel
+       ================================================================ */
+    #detail {
+      background: var(--bg-surface);
+      border-left: 1px solid var(--border);
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #detail-header {
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated);
+    }
+
+    #detail-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    #detail-subtitle {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    #detail-body {
+      padding: 12px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .detail-section { display: flex; flex-direction: column; gap: 6px; }
+
+    .detail-field {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .field-key {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+    }
+
+    .field-val {
+      font-size: 12px;
+      color: var(--text-muted);
+      word-break: break-all;
+    }
+
+    .field-val.mono { font-family: var(--font-mono); font-size: 11px; }
+
+    .field-val.description {
+      color: var(--text-primary);
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    /* Confidence bar */
+    .confidence-bar-wrap {
+      background: var(--bg-elevated);
+      border-radius: 4px;
+      height: 6px;
+      overflow: hidden;
+      margin-top: 2px;
+    }
+
+    .confidence-bar {
+      height: 100%;
+      border-radius: 4px;
+      background: var(--green);
+      transition: width 0.3s;
+    }
+
+    /* Badge */
+    .badge {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .badge-OBSERVATION { background: #14532d; color: var(--green); }
+    .badge-INFERENCE   { background: #713f12; color: var(--yellow); }
+    .badge-HYPOTHESIS  { background: #7c2d12; color: var(--orange); }
+    .badge-REJECTED    { background: #450a0a; color: var(--red); }
+    .badge-CORRECTION  { background: #450a0a; color: var(--red-dark); }
+    .badge-case        { background: #0c1a2e; color: var(--accent); }
+
+    /* Provenance chain */
+    .provenance-block {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .provenance-step {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+    }
+
+    .provenance-step-icon {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: var(--bg-base);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      font-size: 9px;
+      color: var(--text-dim);
+      margin-top: 2px;
+    }
+
+    .provenance-step-body { flex: 1; }
+
+    .provenance-step-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-dim);
+      margin-bottom: 2px;
+    }
+
+    .provenance-step-val {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+      word-break: break-all;
+    }
+
+    .prov-divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 0;
+    }
+
+    /* Indicator tags */
+    .tag-list { display: flex; flex-wrap: wrap; gap: 4px; }
+
+    .tag {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 10px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      padding: 1px 6px;
+    }
+
+    /* Empty state */
+    #detail-empty {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: var(--text-dim);
+      padding: 24px;
+      text-align: center;
+    }
+
+    #detail-empty svg { opacity: 0.3; }
+    #detail-empty p { font-size: 13px; }
+
+    /* ================================================================
+       Footer
+       ================================================================ */
+    #footer {
+      grid-column: 1 / -1;
+      background: var(--bg-surface);
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 16px;
+    }
+
+    #footer span {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    #footer .accent { color: var(--accent); }
+
+    /* ================================================================
+       D3 graph elements
+       ================================================================ */
+    .node circle {
+      stroke-width: 2;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    .node:hover circle { stroke-width: 3; }
+
+    .node.dimmed circle { opacity: 0.25; }
+    .node.dimmed text  { opacity: 0.15; }
+
+    .node.highlighted circle {
+      stroke: white;
+      stroke-width: 3;
+      filter: drop-shadow(0 0 6px rgba(147,197,253,0.6));
+    }
+
+    .node text {
+      font-size: 11px;
+      fill: var(--text-muted);
+      pointer-events: none;
+      user-select: none;
+    }
+
+    .link {
+      stroke-opacity: 0.6;
+      fill: none;
+    }
+
+    .link.dashed { stroke-dasharray: 5 3; }
+
+    .link.correction-animated {
+      stroke-dasharray: 8 4;
+      animation: dash-flow 1.5s linear infinite;
+    }
+
+    @keyframes dash-flow {
+      to { stroke-dashoffset: -60; }
+    }
+
+    .link:hover { stroke-opacity: 1; }
+
+    /* Node shapes */
+    .node-case rect {
+      cursor: pointer;
+      rx: 6;
+      ry: 6;
+    }
+
+    /* ================================================================
+       Scrollbar styling
+       ================================================================ */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ================================================================
+       Header
+       ================================================================ -->
+  <header id="header">
+    <div class="logo">
+      <!-- Inline SVG logo — forensic graph icon -->
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-label="SAVVYDFIR-MCP logo">
+        <circle cx="12" cy="12" r="3" fill="#93c5fd"/>
+        <circle cx="4"  cy="4"  r="2" fill="#3b82f6"/>
+        <circle cx="20" cy="4"  r="2" fill="#3b82f6"/>
+        <circle cx="4"  cy="20" r="2" fill="#22c55e"/>
+        <circle cx="20" cy="20" r="2" fill="#f97316"/>
+        <line x1="12" y1="9"  x2="4"  y2="4"  stroke="#334155" stroke-width="1.5"/>
+        <line x1="12" y1="9"  x2="20" y2="4"  stroke="#334155" stroke-width="1.5"/>
+        <line x1="12" y1="15" x2="4"  y2="20" stroke="#334155" stroke-width="1.5"/>
+        <line x1="12" y1="15" x2="20" y2="20" stroke="#334155" stroke-width="1.5"/>
+      </svg>
+      <h1>SAVVYDFIR-MCP Investigation Graph</h1>
+    </div>
+    <span id="case-badge-hdr" class="case-badge">Loading…</span>
+    <span class="spacer"></span>
+    <div id="search-wrap">
+      <svg id="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+      </svg>
+      <input id="search" type="text" placeholder="Search findings…" autocomplete="off"/>
+    </div>
+  </header>
+
+  <!-- ================================================================
+       Left sidebar
+       ================================================================ -->
+  <aside id="sidebar">
+    <!-- Summary stats -->
+    <section>
+      <p class="panel-title">Case Summary</p>
+      <div class="stat-grid" id="stat-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="stat-total">—</div>
+          <div class="stat-label">Total Findings</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-corrections">—</div>
+          <div class="stat-label">Corrections</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-executions">—</div>
+          <div class="stat-label">Executions</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-iteration">—</div>
+          <div class="stat-label">Iteration</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- By kind -->
+    <section>
+      <p class="panel-title">By Evidence Kind</p>
+      <div class="kind-list" id="kind-list"></div>
+    </section>
+
+    <!-- Filters -->
+    <section>
+      <p class="panel-title">Filter Nodes</p>
+      <div class="filter-list" id="filter-list"></div>
+    </section>
+
+    <!-- Reset -->
+    <button id="reset-btn">Reset View</button>
+  </aside>
+
+  <!-- ================================================================
+       Main canvas
+       ================================================================ -->
+  <main id="canvas-wrap">
+    <svg id="graph-svg">
+      <defs>
+        <!-- Arrow markers for directed edges -->
+        <marker id="arrow-default" markerWidth="8" markerHeight="6"
+                refX="7" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#475569"/>
+        </marker>
+        <marker id="arrow-red" markerWidth="8" markerHeight="6"
+                refX="7" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#dc2626"/>
+        </marker>
+        <marker id="arrow-green" markerWidth="8" markerHeight="6"
+                refX="7" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#22c55e"/>
+        </marker>
+        <marker id="arrow-blue" markerWidth="8" markerHeight="6"
+                refX="7" refY="3" orient="auto">
+          <path d="M0,0 L0,6 L8,3 z" fill="#3b82f6"/>
+        </marker>
+      </defs>
+      <g id="graph-root"></g>
+    </svg>
+
+    <!-- Zoom controls -->
+    <div id="zoom-controls">
+      <button class="zoom-btn" id="zoom-in"  title="Zoom in">+</button>
+      <button class="zoom-btn" id="zoom-out" title="Zoom out">−</button>
+      <button class="zoom-btn" id="zoom-fit" title="Fit to screen" style="font-size:12px">⊡</button>
+    </div>
+  </main>
+
+  <!-- ================================================================
+       Right detail panel
+       ================================================================ -->
+  <aside id="detail">
+    <div id="detail-header">
+      <div id="detail-title" class="detail-title">Node Details</div>
+      <div id="detail-subtitle" class="detail-subtitle">Click a node to inspect</div>
+    </div>
+    <div id="detail-body">
+      <div id="detail-empty">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="1.5">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <circle cx="12" cy="16" r="1" fill="currentColor"/>
+        </svg>
+        <p>Select a node in the graph to view full provenance details.</p>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ================================================================
+       Footer
+       ================================================================ -->
+  <footer id="footer">
+    <span>Generated from <span class="accent">audit.jsonl</span> — every finding traceable to exact tool execution</span>
+    <span id="footer-generated" style="margin-left:auto"></span>
+  </footer>
+</div>
+
+<!-- ================================================================
+     Tooltip (floats over everything)
+     ================================================================ -->
+<div id="tooltip"></div>
+
+<!-- ================================================================
+     Inline graph data injected by investigation_graph.py
+     ================================================================ -->
+<script>
+  const GRAPH_DATA = /*GRAPH_DATA_PLACEHOLDER*/null;
+</script>
+
+<!-- ================================================================
+     D3.js visualisation
+     ================================================================ -->
+<script>
+(function () {
+  "use strict";
+
+  // ----------------------------------------------------------------
+  // Guard: ensure data was injected
+  // ----------------------------------------------------------------
+  if (!GRAPH_DATA || !GRAPH_DATA.nodes) {
+    document.getElementById("detail-empty").querySelector("p").textContent =
+      "No graph data available. Run investigation_graph.py first.";
+    return;
+  }
+
+  const { nodes: RAW_NODES, edges: RAW_EDGES, meta: META } = GRAPH_DATA;
+
+  // ----------------------------------------------------------------
+  // Colour + size helpers
+  // ----------------------------------------------------------------
+  const COLORS = {
+    OBSERVATION:     "#22c55e",
+    INFERENCE:       "#eab308",
+    HYPOTHESIS:      "#f97316",
+    REJECTED:        "#ef4444",
+    CORRECTION:      "#dc2626",
+    evidence_source: "#3b82f6",
+    case:            "#0f172a",
+  };
+
+  const NODE_RADII = {
+    case:            36,
+    evidence_source: 22,
+    finding:         16,
+    correction:      11,
+  };
+
+  function nodeColor(d) {
+    if (d.type === "case")            return COLORS.case;
+    if (d.type === "evidence_source") return COLORS.evidence_source;
+    if (d.type === "correction")      return COLORS.CORRECTION;
+    // finding — colour by evidence_kind
+    const kind = (d.details?.evidence_kind || "").toUpperCase();
+    return COLORS[kind] || "#94a3b8";
+  }
+
+  function nodeRadius(d) {
+    return d.size || NODE_RADII[d.type] || 14;
+  }
+
+  function edgeColor(d) {
+    if (d.type === "corrected" || d.type === "contradicts") return "#dc2626";
+    if (d.type === "contains")                              return "#475569";
+    if (d.type === "produced")                              return "#3b82f6";
+    if (d.type === "related")                               return "#22c55e";
+    return "#475569";
+  }
+
+  function edgeWidth(d) {
+    if (d.type === "corrected")  return 2;
+    if (d.type === "contradicts") return 2;
+    if (d.type === "contains")   return 1.5;
+    return 1;
+  }
+
+  function arrowMarkerId(d) {
+    if (d.type === "corrected" || d.type === "contradicts") return "url(#arrow-red)";
+    if (d.type === "produced")  return "url(#arrow-blue)";
+    if (d.type === "related")   return "url(#arrow-green)";
+    return "url(#arrow-default)";
+  }
+
+  // ----------------------------------------------------------------
+  // Populate metadata summary
+  // ----------------------------------------------------------------
+  document.getElementById("case-badge-hdr").textContent = META.case_id || "—";
+  document.getElementById("stat-total").textContent      = META.total_findings ?? "—";
+  document.getElementById("stat-corrections").textContent = META.correction_count ?? "—";
+  document.getElementById("stat-executions").textContent  = META.total_executions ?? "—";
+  document.getElementById("stat-iteration").textContent   = META.current_iteration ?? "—";
+
+  if (META.generated_at) {
+    document.getElementById("footer-generated").textContent =
+      "Generated " + new Date(META.generated_at).toLocaleString();
+  }
+
+  // Kind breakdown list
+  const kindColors = {
+    OBSERVATION: "#22c55e",
+    INFERENCE:   "#eab308",
+    HYPOTHESIS:  "#f97316",
+    REJECTED:    "#ef4444",
+  };
+
+  const kindList = document.getElementById("kind-list");
+  const kindsByCount = Object.entries(META.findings_by_kind || {})
+    .sort((a, b) => b[1] - a[1]);
+
+  kindsByCount.forEach(([kind, count]) => {
+    const row = document.createElement("div");
+    row.className = "kind-row";
+    row.innerHTML =
+      `<span class="kind-dot" style="background:${kindColors[kind] || '#94a3b8'}"></span>` +
+      `<span class="kind-name">${kind}</span>` +
+      `<span class="kind-count">${count}</span>`;
+    kindList.appendChild(row);
+  });
+
+  // ----------------------------------------------------------------
+  // Filter controls
+  // ----------------------------------------------------------------
+  const filterTypes = [
+    { key: "case",            label: "Case",            color: "#0f172a",  stroke: "#334155" },
+    { key: "evidence_source", label: "Evidence Source", color: "#3b82f6"  },
+    { key: "finding",         label: "Findings",        color: "#22c55e"  },
+    { key: "correction",      label: "Corrections",     color: "#dc2626"  },
+  ];
+
+  const filterState = {};
+  filterTypes.forEach(ft => { filterState[ft.key] = true; });
+
+  const filterListEl = document.getElementById("filter-list");
+  filterTypes.forEach(ft => {
+    const row = document.createElement("label");
+    row.className = "filter-row";
+
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.dataset.filterKey = ft.key;
+    cb.addEventListener("change", () => {
+      filterState[ft.key] = cb.checked;
+      applyFilters();
+    });
+
+    const lbl = document.createElement("span");
+    lbl.className = "filter-label";
+    lbl.innerHTML =
+      `<span class="filter-swatch" style="background:${ft.color};border:1px solid ${ft.stroke || ft.color}"></span>` +
+      ft.label;
+
+    row.appendChild(cb);
+    row.appendChild(lbl);
+    filterListEl.appendChild(row);
+  });
+
+  // ----------------------------------------------------------------
+  // Clone nodes/edges to avoid mutating GRAPH_DATA originals
+  // ----------------------------------------------------------------
+  const nodes = RAW_NODES.map(d => Object.assign({}, d));
+  const edges = RAW_EDGES.map(d => Object.assign({}, d));
+
+  // ----------------------------------------------------------------
+  // SVG + zoom setup
+  // ----------------------------------------------------------------
+  const svgEl = document.getElementById("graph-svg");
+  const svg = d3.select(svgEl);
+  const root = svg.select("#graph-root");
+  const width  = () => svgEl.clientWidth;
+  const height = () => svgEl.clientHeight;
+
+  const zoom = d3.zoom()
+    .scaleExtent([0.1, 4])
+    .on("zoom", e => root.attr("transform", e.transform));
+
+  svg.call(zoom);
+
+  // ----------------------------------------------------------------
+  // Force simulation
+  // ----------------------------------------------------------------
+  const simulation = d3.forceSimulation(nodes)
+    .force("link",   d3.forceLink(edges)
+      .id(d => d.id)
+      .distance(d => {
+        // Longer links for high-level connections, shorter for findings
+        if (d.type === "contains")  return 180;
+        if (d.type === "produced")  return 120;
+        if (d.type === "corrected") return 90;
+        return 80;
+      })
+      .strength(0.6)
+    )
+    .force("charge", d3.forceManyBody()
+      .strength(d => -Math.pow(nodeRadius(d), 1.8) * 4)
+    )
+    .force("center", d3.forceCenter(width() / 2, height() / 2))
+    .force("collision", d3.forceCollide().radius(d => nodeRadius(d) + 8))
+    .alphaDecay(0.025);
+
+  // ----------------------------------------------------------------
+  // Draw edges
+  // ----------------------------------------------------------------
+  const linkGroup = root.append("g").attr("class", "links");
+
+  const link = linkGroup.selectAll(".link")
+    .data(edges)
+    .join("line")
+    .attr("class", d => {
+      let cls = "link";
+      if (d.style === "dashed") cls += " dashed";
+      if (d.type  === "corrected") cls += " correction-animated";
+      return cls;
+    })
+    .attr("stroke",       edgeColor)
+    .attr("stroke-width", edgeWidth)
+    .attr("marker-end",   arrowMarkerId);
+
+  // ----------------------------------------------------------------
+  // Draw nodes
+  // ----------------------------------------------------------------
+  const nodeGroup = root.append("g").attr("class", "nodes");
+
+  const node = nodeGroup.selectAll(".node")
+    .data(nodes)
+    .join("g")
+    .attr("class", "node")
+    .call(
+      d3.drag()
+        .on("start", (e, d) => {
+          if (!e.active) simulation.alphaTarget(0.3).restart();
+          d.fx = d.x; d.fy = d.y;
+        })
+        .on("drag", (e, d) => { d.fx = e.x; d.fy = e.y; })
+        .on("end",  (e, d) => {
+          if (!e.active) simulation.alphaTarget(0);
+          d.fx = null; d.fy = null;
+        })
+    );
+
+  // Case node — rounded rectangle
+  node.filter(d => d.type === "case")
+    .append("rect")
+    .attr("width",  d => nodeRadius(d) * 2.5)
+    .attr("height", d => nodeRadius(d) * 1.4)
+    .attr("rx", 8)
+    .attr("ry", 8)
+    .attr("x", d => -nodeRadius(d) * 1.25)
+    .attr("y", d => -nodeRadius(d) * 0.7)
+    .attr("fill",   d => nodeColor(d))
+    .attr("stroke", "#93c5fd")
+    .attr("stroke-width", 2);
+
+  // Correction node — diamond shape (rotated square)
+  node.filter(d => d.type === "correction")
+    .append("rect")
+    .attr("width",  d => nodeRadius(d) * 1.6)
+    .attr("height", d => nodeRadius(d) * 1.6)
+    .attr("x", d => -nodeRadius(d) * 0.8)
+    .attr("y", d => -nodeRadius(d) * 0.8)
+    .attr("fill",   d => nodeColor(d))
+    .attr("stroke", "#fca5a5")
+    .attr("stroke-width", 1.5)
+    .attr("transform", "rotate(45)");
+
+  // Evidence source — rounded square
+  node.filter(d => d.type === "evidence_source")
+    .append("rect")
+    .attr("width",  d => nodeRadius(d) * 2)
+    .attr("height", d => nodeRadius(d) * 2)
+    .attr("rx", 4)
+    .attr("ry", 4)
+    .attr("x", d => -nodeRadius(d))
+    .attr("y", d => -nodeRadius(d))
+    .attr("fill",   d => nodeColor(d))
+    .attr("stroke", "#60a5fa")
+    .attr("stroke-width", 1.5);
+
+  // Finding + default — circle
+  node.filter(d => d.type === "finding")
+    .append("circle")
+    .attr("r",      nodeRadius)
+    .attr("fill",   nodeColor)
+    .attr("stroke", d => d3.color(nodeColor(d)).brighter(0.8).formatHex())
+    .attr("stroke-width", 1.5);
+
+  // Labels
+  node.append("text")
+    .attr("dy",          d => nodeRadius(d) + 13)
+    .attr("text-anchor", "middle")
+    .text(d => {
+      const lbl = d.label || d.id;
+      // Truncate long labels
+      return lbl.length > 24 ? lbl.slice(0, 22) + "…" : lbl;
+    });
+
+  // ----------------------------------------------------------------
+  // Tick handler
+  // ----------------------------------------------------------------
+  simulation.on("tick", () => {
+    link
+      .attr("x1", d => d.source.x)
+      .attr("y1", d => d.source.y)
+      .attr("x2", d => {
+        // Shorten edge to stop at node boundary
+        const r   = nodeRadius(d.target);
+        const dx  = d.target.x - d.source.x;
+        const dy  = d.target.y - d.source.y;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        return d.target.x - (dx / len) * (r + 2);
+      })
+      .attr("y2", d => {
+        const r   = nodeRadius(d.target);
+        const dx  = d.target.x - d.source.x;
+        const dy  = d.target.y - d.source.y;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        return d.target.y - (dy / len) * (r + 2);
+      });
+
+    node.attr("transform", d => `translate(${d.x},${d.y})`);
+  });
+
+  // ----------------------------------------------------------------
+  // Tooltip
+  // ----------------------------------------------------------------
+  const tooltip = document.getElementById("tooltip");
+
+  function showTooltip(event, d) {
+    const det = d.details || {};
+    let html = `<div class="tooltip-title">${escHtml(d.label || d.id)}</div>`;
+
+    if (d.type === "finding") {
+      html += tooltipRow("Kind",       `<span class="badge badge-${det.evidence_kind}">${det.evidence_kind}</span>`);
+      html += tooltipRow("Confidence", fmtPct(det.confidence));
+      html += tooltipRow("Tool",       det.tool_name);
+      html += tooltipRow("Artifact",   truncate(det.artifact_path, 50));
+    } else if (d.type === "evidence_source") {
+      html += tooltipRow("Host",  det.host);
+      html += tooltipRow("Type",  det.source_type);
+      html += tooltipRow("Path",  truncate(det.path, 50));
+    } else if (d.type === "correction") {
+      html += tooltipRow("Type",   det.correction_type);
+      html += tooltipRow("Source", det.contradiction_source);
+      html += tooltipRow("ΔConf",  (det.confidence_delta > 0 ? "+" : "") + (det.confidence_delta || 0).toFixed(2));
+    } else if (d.type === "case") {
+      html += tooltipRow("Status",    det.status);
+      html += tooltipRow("Iteration", det.current_iteration);
+    }
+
+    tooltip.innerHTML = html;
+    tooltip.classList.add("visible");
+    moveTooltip(event);
+  }
+
+  function moveTooltip(event) {
+    const pad   = 12;
+    const tw    = tooltip.offsetWidth;
+    const th    = tooltip.offsetHeight;
+    let   left  = event.clientX + pad;
+    let   top   = event.clientY + pad;
+    if (left + tw > window.innerWidth  - pad) left = event.clientX - tw - pad;
+    if (top  + th > window.innerHeight - pad) top  = event.clientY - th - pad;
+    tooltip.style.left = left + "px";
+    tooltip.style.top  = top  + "px";
+  }
+
+  function hideTooltip() {
+    tooltip.classList.remove("visible");
+  }
+
+  node
+    .on("mouseover", showTooltip)
+    .on("mousemove", (e) => moveTooltip(e))
+    .on("mouseleave", hideTooltip);
+
+  // ----------------------------------------------------------------
+  // Click → show detail panel
+  // ----------------------------------------------------------------
+  let selectedId = null;
+
+  node.on("click", (event, d) => {
+    event.stopPropagation();
+    selectedId = d.id;
+    highlightNeighbours(d);
+    renderDetail(d);
+  });
+
+  svg.on("click", () => {
+    selectedId = null;
+    clearHighlight();
+    renderDetailEmpty();
+  });
+
+  function highlightNeighbours(d) {
+    const neighbourIds = new Set([d.id]);
+    edges.forEach(e => {
+      const sid = typeof e.source === "object" ? e.source.id : e.source;
+      const tid = typeof e.target === "object" ? e.target.id : e.target;
+      if (sid === d.id) neighbourIds.add(tid);
+      if (tid === d.id) neighbourIds.add(sid);
+    });
+
+    node.classed("dimmed",      n => !neighbourIds.has(n.id));
+    node.classed("highlighted", n => n.id === d.id);
+    link
+      .attr("stroke-opacity", e => {
+        const sid = typeof e.source === "object" ? e.source.id : e.source;
+        const tid = typeof e.target === "object" ? e.target.id : e.target;
+        return (sid === d.id || tid === d.id) ? 1 : 0.08;
+      });
+  }
+
+  function clearHighlight() {
+    node.classed("dimmed", false).classed("highlighted", false);
+    link.attr("stroke-opacity", 0.6);
+  }
+
+  // ----------------------------------------------------------------
+  // Detail panel rendering
+  // ----------------------------------------------------------------
+  const detailBody   = document.getElementById("detail-body");
+  const detailTitle  = document.getElementById("detail-title");
+  const detailSub    = document.getElementById("detail-subtitle");
+  const detailEmpty  = document.getElementById("detail-empty");
+
+  function renderDetailEmpty() {
+    detailTitle.textContent = "Node Details";
+    detailSub.textContent   = "Click a node to inspect";
+    detailBody.innerHTML    = "";
+    detailBody.appendChild(detailEmpty);
+  }
+
+  function renderDetail(d) {
+    const det = d.details || {};
+    detailTitle.textContent = d.label || d.id;
+    detailSub.textContent   = d.type.replace("_", " ").toUpperCase();
+
+    detailBody.innerHTML = "";
+
+    if (d.type === "finding") renderFindingDetail(d, det);
+    else if (d.type === "correction") renderCorrectionDetail(d, det);
+    else if (d.type === "evidence_source") renderSourceDetail(d, det);
+    else if (d.type === "case") renderCaseDetail(d, det);
+  }
+
+  function renderFindingDetail(d, det) {
+    // Badge + confidence
+    const sec1 = makeSec();
+    appendField(sec1, "Evidence Kind",
+      `<span class="badge badge-${det.evidence_kind}">${det.evidence_kind || "—"}</span>`);
+    appendField(sec1, "Status",    escHtml(det.finding_status || "—"));
+    appendField(sec1, "Iteration", escHtml(String(det.iteration || "—")));
+
+    const confPct = Math.round((det.confidence || 0) * 100);
+    const confHtml =
+      `<div>${confPct}%</div>` +
+      `<div class="confidence-bar-wrap"><div class="confidence-bar" style="width:${confPct}%"></div></div>`;
+    appendField(sec1, "Confidence", confHtml);
+    detailBody.appendChild(sec1);
+
+    // Description
+    const sec2 = makeSec();
+    const descField = makeField("Description");
+    const descVal = document.createElement("div");
+    descVal.className = "field-val description";
+    descVal.textContent = det.description || "—";
+    descField.appendChild(descVal);
+    sec2.appendChild(descField);
+    detailBody.appendChild(sec2);
+
+    // Artifact info
+    const sec3 = makeSec();
+    appendField(sec3, "Tool",     escHtml(det.tool_name || "—"), "mono");
+    appendField(sec3, "Artifact", escHtml(det.artifact_path || "—"), "mono");
+    if (det.artifact_offset) {
+      appendField(sec3, "Offset", escHtml(det.artifact_offset), "mono");
+    }
+    if (det.mitre_technique) {
+      appendField(sec3, "ATT&CK",
+        `${escHtml(det.mitre_tactic || "")} / ${escHtml(det.mitre_technique)}`);
+    }
+    detailBody.appendChild(sec3);
+
+    // Indicators
+    if ((det.supporting_indicators || []).length > 0) {
+      const sec4 = makeSec();
+      const f = makeField("Supporting Indicators");
+      const tagList = document.createElement("div");
+      tagList.className = "tag-list";
+      det.supporting_indicators.forEach(ind => {
+        const t = document.createElement("span");
+        t.className = "tag";
+        t.textContent = ind;
+        tagList.appendChild(t);
+      });
+      f.appendChild(tagList);
+      sec4.appendChild(f);
+      detailBody.appendChild(sec4);
+    }
+
+    // Provenance chain
+    const prov = det.provenance || {};
+    if (prov.execution_id) {
+      const sec5 = makeSec();
+      const f = makeField("Provenance Chain");
+
+      const block = document.createElement("div");
+      block.className = "provenance-block";
+
+      block.appendChild(provStep("EID", prov.execution_id));
+
+      if (prov.agent_reason) {
+        block.appendChild(document.createElement("hr")).className = "prov-divider";
+        block.appendChild(provStep("WHY", prov.agent_reason));
+      }
+      if (prov.command_line) {
+        block.appendChild(makeDivider());
+        block.appendChild(provStep("CMD", prov.command_line));
+      }
+      if (prov.outputs_summary) {
+        block.appendChild(makeDivider());
+        block.appendChild(provStep("OUT", prov.outputs_summary));
+      }
+      if (prov.duration_seconds !== undefined && prov.duration_seconds !== "") {
+        block.appendChild(makeDivider());
+        block.appendChild(provStep("DUR",
+          prov.duration_seconds + "s  (exit " + prov.exit_code + ")"));
+      }
+
+      f.appendChild(block);
+      sec5.appendChild(f);
+      detailBody.appendChild(sec5);
+    }
+
+    // Related IDs
+    if ((det.contradicted_by || []).length || (det.corroborated_by || []).length) {
+      const sec6 = makeSec();
+      if ((det.contradicted_by || []).length) {
+        appendField(sec6, "Contradicted By",
+          det.contradicted_by.map(id => `<span class="tag">${id}</span>`).join(" "));
+      }
+      if ((det.corroborated_by || []).length) {
+        appendField(sec6, "Corroborated By",
+          det.corroborated_by.map(id => `<span class="tag">${id}</span>`).join(" "));
+      }
+      detailBody.appendChild(sec6);
+    }
+  }
+
+  function renderCorrectionDetail(d, det) {
+    const sec1 = makeSec();
+    appendField(sec1, "Correction Type",
+      `<span class="badge badge-CORRECTION">${escHtml(det.correction_type || "—")}</span>`);
+    appendField(sec1, "Contradiction Source", escHtml(det.contradiction_source || "—"), "mono");
+    appendField(sec1, "Confidence ΔΔ",
+      (det.confidence_delta > 0 ? "+" : "") + (det.confidence_delta || 0).toFixed(2));
+    detailBody.appendChild(sec1);
+
+    if (det.prior_claim) {
+      const sec2 = makeSec();
+      const f = makeField("Prior Claim");
+      const v = document.createElement("div");
+      v.className = "field-val description";
+      v.textContent = det.prior_claim;
+      f.appendChild(v);
+      sec2.appendChild(f);
+      detailBody.appendChild(sec2);
+    }
+
+    if (det.revised_claim) {
+      const sec3 = makeSec();
+      const f = makeField("Revised Claim");
+      const v = document.createElement("div");
+      v.className = "field-val description";
+      v.style.color = "#22c55e";
+      v.textContent = det.revised_claim;
+      f.appendChild(v);
+      sec3.appendChild(f);
+      detailBody.appendChild(sec3);
+    }
+
+    if (det.command_line) {
+      const sec4 = makeSec();
+      appendField(sec4, "Triggering Command", escHtml(det.command_line), "mono");
+      if (det.outputs_summary) {
+        appendField(sec4, "Output Summary", escHtml(det.outputs_summary));
+      }
+      detailBody.appendChild(sec4);
+    }
+
+    if ((det.affected_finding_ids || []).length) {
+      const sec5 = makeSec();
+      appendField(sec5, "Affected Findings",
+        det.affected_finding_ids.map(id => `<span class="tag">${id}</span>`).join(" "));
+      detailBody.appendChild(sec5);
+    }
+  }
+
+  function renderSourceDetail(d, det) {
+    const sec = makeSec();
+    appendField(sec, "Host",         escHtml(det.host || "—"));
+    appendField(sec, "Source Type",  escHtml(det.source_type || "—"));
+    appendField(sec, "Image Type",   escHtml(det.image_type || det.profile || "—"));
+    appendField(sec, "Path",         escHtml(det.path || "—"), "mono");
+    detailBody.appendChild(sec);
+  }
+
+  function renderCaseDetail(d, det) {
+    const sec = makeSec();
+    appendField(sec, "Case ID",     escHtml(det.case_id || "—"), "mono");
+    appendField(sec, "Status",      escHtml(det.status || "—"));
+    appendField(sec, "Iteration",   escHtml(String(det.current_iteration || "—")));
+    appendField(sec, "Started",     escHtml(det.started_at || "—"));
+    if (det.completed_at) {
+      appendField(sec, "Completed", escHtml(det.completed_at));
+    }
+    detailBody.appendChild(sec);
+
+    if (det.investigation_goal) {
+      const sec2 = makeSec();
+      const f = makeField("Investigation Goal");
+      const v = document.createElement("div");
+      v.className = "field-val description";
+      v.textContent = det.investigation_goal;
+      f.appendChild(v);
+      sec2.appendChild(f);
+      detailBody.appendChild(sec2);
+    }
+
+    if ((det.known_iocs || []).length) {
+      const sec3 = makeSec();
+      const f = makeField("Known IOCs");
+      const tagList = document.createElement("div");
+      tagList.className = "tag-list";
+      det.known_iocs.forEach(ioc => {
+        const t = document.createElement("span");
+        t.className = "tag";
+        t.textContent = ioc;
+        tagList.appendChild(t);
+      });
+      f.appendChild(tagList);
+      sec3.appendChild(f);
+      detailBody.appendChild(sec3);
+    }
+  }
+
+  // ----------------------------------------------------------------
+  // Detail panel helpers
+  // ----------------------------------------------------------------
+  function makeSec() {
+    const s = document.createElement("div");
+    s.className = "detail-section";
+    return s;
+  }
+
+  function makeField(key) {
+    const f = document.createElement("div");
+    f.className = "detail-field";
+    const k = document.createElement("div");
+    k.className = "field-key";
+    k.textContent = key;
+    f.appendChild(k);
+    return f;
+  }
+
+  function appendField(parent, key, valHtml, extraClass) {
+    const f = makeField(key);
+    const v = document.createElement("div");
+    v.className = "field-val" + (extraClass ? " " + extraClass : "");
+    v.innerHTML = valHtml;
+    f.appendChild(v);
+    parent.appendChild(f);
+  }
+
+  function provStep(stepKey, stepVal) {
+    const wrap = document.createElement("div");
+    wrap.className = "provenance-step";
+
+    const icon = document.createElement("div");
+    icon.className = "provenance-step-icon";
+    icon.textContent = stepKey.slice(0, 1);
+
+    const body = document.createElement("div");
+    body.className = "provenance-step-body";
+
+    const lbl = document.createElement("div");
+    lbl.className = "provenance-step-label";
+    lbl.textContent = stepKey;
+
+    const val = document.createElement("div");
+    val.className = "provenance-step-val";
+    val.textContent = stepVal || "—";
+
+    body.appendChild(lbl);
+    body.appendChild(val);
+    wrap.appendChild(icon);
+    wrap.appendChild(body);
+    return wrap;
+  }
+
+  function makeDivider() {
+    const hr = document.createElement("hr");
+    hr.className = "prov-divider";
+    return hr;
+  }
+
+  // ----------------------------------------------------------------
+  // Filter application
+  // ----------------------------------------------------------------
+  function applyFilters() {
+    node.style("display", d => filterState[d.type] ? null : "none");
+    link.style("display", e => {
+      const sid = typeof e.source === "object" ? e.source.id : e.source;
+      const tid = typeof e.target === "object" ? e.target.id : e.target;
+      const srcNode = nodes.find(n => n.id === sid);
+      const tgtNode = nodes.find(n => n.id === tid);
+      if (!srcNode || !tgtNode) return "none";
+      return (filterState[srcNode.type] && filterState[tgtNode.type]) ? null : "none";
+    });
+  }
+
+  // ----------------------------------------------------------------
+  // Search / highlight
+  // ----------------------------------------------------------------
+  const searchInput = document.getElementById("search");
+  searchInput.addEventListener("input", () => {
+    const query = searchInput.value.trim().toLowerCase();
+    if (!query) {
+      clearHighlight();
+      return;
+    }
+    node.classed("highlighted", d => {
+      const lbl = (d.label || "").toLowerCase();
+      const desc = ((d.details || {}).description || "").toLowerCase();
+      const ftype = ((d.details || {}).finding_type || "").toLowerCase();
+      return lbl.includes(query) || desc.includes(query) || ftype.includes(query);
+    });
+    node.classed("dimmed", d => {
+      const lbl = (d.label || "").toLowerCase();
+      const desc = ((d.details || {}).description || "").toLowerCase();
+      const ftype = ((d.details || {}).finding_type || "").toLowerCase();
+      return !(lbl.includes(query) || desc.includes(query) || ftype.includes(query));
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // Zoom controls
+  // ----------------------------------------------------------------
+  document.getElementById("zoom-in").addEventListener("click", () => {
+    svg.transition().duration(300).call(zoom.scaleBy, 1.4);
+  });
+  document.getElementById("zoom-out").addEventListener("click", () => {
+    svg.transition().duration(300).call(zoom.scaleBy, 1 / 1.4);
+  });
+  document.getElementById("zoom-fit").addEventListener("click", fitView);
+
+  function fitView() {
+    const w  = width();
+    const h  = height();
+    const xs = nodes.map(n => n.x).filter(Boolean);
+    const ys = nodes.map(n => n.y).filter(Boolean);
+    if (!xs.length) return;
+    const x0 = Math.min(...xs);
+    const x1 = Math.max(...xs);
+    const y0 = Math.min(...ys);
+    const y1 = Math.max(...ys);
+    const pad = 60;
+    const scale = Math.min(
+      0.9 * w / (x1 - x0 + pad * 2),
+      0.9 * h / (y1 - y0 + pad * 2),
+      2
+    );
+    const tx = w / 2 - scale * ((x0 + x1) / 2);
+    const ty = h / 2 - scale * ((y0 + y1) / 2);
+    svg.transition().duration(600).call(
+      zoom.transform,
+      d3.zoomIdentity.translate(tx, ty).scale(scale)
+    );
+  }
+
+  document.getElementById("reset-btn").addEventListener("click", () => {
+    clearHighlight();
+    searchInput.value = "";
+    // Reset filter checkboxes
+    document.querySelectorAll("#filter-list input[type=checkbox]").forEach(cb => {
+      cb.checked = true;
+      filterState[cb.dataset.filterKey] = true;
+    });
+    applyFilters();
+    fitView();
+  });
+
+  // Fit after simulation settles
+  simulation.on("end", fitView);
+
+  // ----------------------------------------------------------------
+  // Utility functions
+  // ----------------------------------------------------------------
+  function escHtml(s) {
+    if (s === null || s === undefined) return "—";
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function truncate(s, n) {
+    if (!s) return "—";
+    return s.length > n ? s.slice(0, n - 1) + "…" : s;
+  }
+
+  function fmtPct(v) {
+    if (v === undefined || v === null) return "—";
+    return Math.round(v * 100) + "%";
+  }
+
+  function tooltipRow(key, val) {
+    return `<div class="tooltip-row"><span class="key">${escHtml(key)}</span><span class="val">${val}</span></div>`;
+  }
+
+  // ----------------------------------------------------------------
+  // Handle window resize
+  // ----------------------------------------------------------------
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      simulation.force("center", d3.forceCenter(width() / 2, height() / 2));
+      simulation.alpha(0.1).restart();
+    }, 200);
+  });
+
+})();
+</script>
+</body>
+</html>
