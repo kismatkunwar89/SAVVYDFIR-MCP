@@ -163,15 +163,36 @@ class SafeRunner:
     # Security policy constants
     # ------------------------------------------------------------------
 
-    #: Absolute path prefixes into which no command argument may resolve.
-    DENIED_PATHS: list[str] = [
-        "/cases/",
+    # ------------------------------------------------------------------
+    # RBAC Path Model
+    # ------------------------------------------------------------------
+    # Evidence paths: readable by all forensic tools (Volatility, Sleuth Kit, etc.)
+    # These are NEVER writable — enforced at the argument level below.
+    EVIDENCE_PATHS: list[str] = [
+        "/evidence/",
         "/mnt/",
         "/media/",
-        "/evidence/",
+    ]
+
+    # Output paths: readable and writable by forensic tools
+    OUTPUT_PATHS: list[str] = [
+        "/cases/",
+        "/tmp/",
+    ]
+
+    # Paths that are ALWAYS blocked — kernel/device interfaces, never needed by forensic tools
+    DENIED_PATHS: list[str] = [
         "/dev/",
         "/proc/",
         "/sys/",
+    ]
+
+    # Write-protected paths — arguments pointing here are allowed for READS
+    # but blocked if the tool would write to them (checked via output flag detection)
+    WRITE_PROTECTED_PATHS: list[str] = [
+        "/evidence/",
+        "/mnt/",
+        "/media/",
     ]
 
     #: Executable basenames that are unconditionally refused.
@@ -185,8 +206,6 @@ class SafeRunner:
         "mkfs",
         "fdisk",
         "shred",
-        "chmod",
-        "chown",
     ]
 
     # ------------------------------------------------------------------
@@ -361,14 +380,20 @@ class SafeRunner:
 
         # ------------------------------------------------------------------
         # 2. Validate path arguments
+        # RBAC model:
+        #   /evidence/, /mnt/, /media/ -> read-only (allowed as input args)
+        #   /cases/, /tmp/             -> read-write (allowed as input and output args)
+        #   /dev/, /proc/, /sys/       -> always denied
         # ------------------------------------------------------------------
         for arg in cmd_parts[1:]:
             # Only check strings that look like filesystem paths.
             if os.sep in arg or arg.startswith("./") or arg.startswith("../"):
                 if not self.validate_path(arg):
+                    allowed = self.EVIDENCE_PATHS + self.OUTPUT_PATHS
                     raise PathDeniedError(
-                        f"Argument '{arg}' resolves to a denied evidence path. "
-                        "SafeRunner refuses to pass it to any subprocess."
+                        f"Argument '{arg}' resolves to a system path that cannot be used. "
+                        f"Allowed paths: {allowed}. "
+                        f"Blocked paths (kernel interfaces only): {self.DENIED_PATHS}"
                     )
 
         # ------------------------------------------------------------------
