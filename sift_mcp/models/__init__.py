@@ -49,6 +49,14 @@ from sift_mcp.models.artifacts import (
     TimelineEvent,
 )
 
+# Sigma / universal anomaly detection models
+from sift_mcp.models.sigma import (
+    AnalysisResult,
+    ArtifactHit,
+    SigmaScanResult,
+    ToolResult,
+)
+
 __all__ = [
     # Case
     "CaseManifest",
@@ -82,4 +90,9 @@ __all__ = [
     # Correlation engine
     "DiscrepancyAlert",
     "CorrelationReport",
+    # Sigma / analysis
+    "ArtifactHit",
+    "ToolResult",
+    "SigmaScanResult",
+    "AnalysisResult",
 ]
