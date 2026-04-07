@@ -1131,6 +1131,372 @@ def serve_graph(
 
 
 # ===========================================================================
+# INVESTIGATION LIFECYCLE NAMESPACE (3 tools)
+# ===========================================================================
+
+
+@mcp.tool()
+def start_investigation(manifest_path: str) -> dict[str, Any]:
+    """Start a new investigation from a case manifest.
+
+    Reads the manifest JSON, initialises the case state, and returns
+    investigation parameters.  Supports both "blind" and "seeded" modes:
+    in blind mode, known_iocs are NOT included in the response so the
+    agent investigates without bias.
+
+    Parameters
+    ----------
+    manifest_path:
+        Absolute path to the manifest.json file.
+
+    Returns
+    -------
+    dict
+        case_id, mode, investigation_goal, disk_images, memory_dumps,
+        max_iterations, and (if mode=="seeded") known_iocs.
+    """
+    import json as _json
+
+    try:
+        manifest_file = Path(manifest_path).resolve()
+        if not manifest_file.exists():
+            return {"status": "error", "error": f"Manifest not found: {manifest_path}"}
+
+        with manifest_file.open("r", encoding="utf-8") as f:
+            manifest = _json.load(f)
+
+        case_id = manifest.get("case_id", "UNKNOWN")
+        mode = manifest.get("mode", "blind")
+        known_iocs = manifest.get("known_iocs", [])
+
+        # Initialise case state
+        _state_manager.load(case_id)
+
+        result: dict[str, Any] = {
+            "status": "ok",
+            "case_id": case_id,
+            "mode": mode,
+            "investigation_goal": manifest.get("investigation_goal", ""),
+            "disk_images": manifest.get("disk_images", []),
+            "memory_dumps": manifest.get("memory_dumps", []),
+            "max_iterations": manifest.get("max_iterations", 4),
+        }
+
+        # Only include IOCs in seeded mode
+        if mode == "seeded" and known_iocs:
+            result["known_iocs"] = known_iocs
+
+        return result
+
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "start_investigation"}
+
+
+@mcp.tool()
+def add_finding(
+    case_id: str,
+    artifact_type: str,
+    evidence_kind: str,
+    description: str,
+    confidence: float = 0.5,
+    status: str = "HYPOTHESIS",
+    artifact_path: str = "",
+    command: str = "",
+) -> dict[str, Any]:
+    """Record a forensic finding in the authoritative case state.
+
+    Every finding must cite the source artifact and the command that
+    produced it for chain-of-custody compliance.
+
+    Parameters
+    ----------
+    case_id:
+        The forensic case identifier.
+    artifact_type:
+        Type of artifact (e.g. "process", "prefetch", "registry_key",
+        "network_connection", "evtx_event").
+    evidence_kind:
+        One of "MEMORY_ARTIFACT", "DISK_ARTIFACT", "CORRELATION".
+    description:
+        Human-readable description of the finding.
+    confidence:
+        Confidence score 0.0-1.0.
+    status:
+        One of "OBSERVATION", "INFERENCE", "HYPOTHESIS", "REJECTED".
+    artifact_path:
+        Path to the source evidence file.
+    command:
+        The command or tool call that produced this finding.
+
+    Returns
+    -------
+    dict
+        status, finding_id, finding record.
+    """
+    try:
+        finding = {
+            "artifact_type": artifact_type,
+            "evidence_kind": evidence_kind,
+            "description": description,
+            "confidence": confidence,
+            "status": status,
+            "artifact_path": artifact_path,
+            "command": command,
+            "contradicted_by": [],
+        }
+        finding_id = _state_manager.add_finding(finding)
+        return {
+            "status": "ok",
+            "finding_id": finding_id,
+            "finding": finding,
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "add_finding"}
+
+
+@mcp.tool()
+def generate_report(case_id: str) -> dict[str, Any]:
+    """Generate the final investigation report from the case state.
+
+    Produces a summary of all findings, unresolved discrepancies,
+    and open questions.  This should be the LAST tool called in an
+    investigation.
+
+    Parameters
+    ----------
+    case_id:
+        The forensic case identifier.
+
+    Returns
+    -------
+    dict
+        status, summary (CaseState summary), findings_count,
+        unresolved_count, open_questions.
+    """
+    try:
+        summary = _state_manager.to_summary()
+        _state_manager.set_status("COMPLETE")
+        return {
+            "status": "ok",
+            "case_id": case_id,
+            "summary": summary,
+            "findings_count": summary.get("findings_count", 0),
+            "unresolved_count": summary.get("unresolved_discrepancies", 0),
+            "open_questions": summary.get("open_questions", []),
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "generate_report"}
+
+
+# ===========================================================================
+# EVIDENCE MOUNTING NAMESPACE (2 tools)
+# ===========================================================================
+
+
+@mcp.tool()
+def mount_image(
+    image_path: str,
+    mount_point: str = "/mnt/evidence",
+    disk_mount: str = "/mnt/disk",
+) -> dict[str, Any]:
+    """Mount a disk image (E01 or raw) for analysis.
+
+    For E01 images: runs ewfmount then mounts the partition read-only.
+    For raw/dd images: mounts partition directly.
+    Automatically detects partition offset via mmls.
+
+    Parameters
+    ----------
+    image_path:
+        Absolute path to the disk image file (E01, raw, dd).
+    mount_point:
+        Directory for ewfmount output. Default: /mnt/evidence
+    disk_mount:
+        Directory to mount the filesystem. Default: /mnt/disk
+
+    Returns
+    -------
+    dict
+        status, ewf_device (if E01), partition_offset, mount_path.
+    """
+    import subprocess as _sp
+
+    try:
+        image = Path(image_path).resolve()
+        if not image.exists():
+            return {"status": "error", "error": f"Image not found: {image_path}"}
+
+        result: dict[str, Any] = {"status": "ok", "image_path": str(image)}
+        ewf_device = None
+
+        # Determine image type
+        is_e01 = image.suffix.lower() in (".e01", ".ex01", ".s01")
+
+        if is_e01:
+            # Step 1: ewfmount
+            Path(mount_point).mkdir(parents=True, exist_ok=True)
+            proc = _sp.run(
+                ["/usr/bin/ewfmount", str(image), mount_point],
+                capture_output=True, text=True, timeout=120
+            )
+            if proc.returncode != 0:
+                return {"status": "error", "error": f"ewfmount failed: {proc.stderr}"}
+
+            ewf_device = f"{mount_point}/ewf1"
+            result["ewf_device"] = ewf_device
+            device = ewf_device
+        else:
+            device = str(image)
+
+        # Step 2: Get partition offset via mmls
+        proc = _sp.run(
+            ["/usr/bin/mmls", device],
+            capture_output=True, text=True, timeout=60
+        )
+        if proc.returncode != 0:
+            return {"status": "error", "error": f"mmls failed: {proc.stderr}",
+                    "hint": "Try mounting with a known offset manually"}
+
+        # Parse mmls output to find the largest NTFS partition
+        import re
+        offset = None
+        max_length = 0
+        for line in proc.stdout.splitlines():
+            match = re.match(r"\d+:\s+\d+:\s+\d+\s+(\d+)\s+(\d+)\s+(\d+)\s+(.*)", line)
+            if match:
+                start = int(match.group(1))
+                length = int(match.group(3))
+                desc = match.group(4).strip()
+                if length > max_length and "NTFS" in desc:
+                    max_length = length
+                    offset = start
+            # Also try simpler mmls format
+            parts = line.split()
+            if len(parts) >= 5:
+                try:
+                    start_val = int(parts[2])
+                    len_val = int(parts[4])
+                    if len_val > max_length:
+                        max_length = len_val
+                        offset = start_val
+                except (ValueError, IndexError):
+                    pass
+
+        if offset is None:
+            offset = 2048  # Common default for GPT
+            result["offset_source"] = "default (GPT assumed)"
+        else:
+            result["offset_source"] = "mmls"
+
+        result["partition_offset_sectors"] = offset
+        result["partition_offset_bytes"] = offset * 512
+
+        # Step 3: Mount partition read-only
+        Path(disk_mount).mkdir(parents=True, exist_ok=True)
+        byte_offset = str(offset * 512)
+        proc = _sp.run(
+            ["/usr/bin/mount", "-o", f"ro,loop,offset={byte_offset}", device, disk_mount],
+            capture_output=True, text=True, timeout=60
+        )
+        if proc.returncode != 0:
+            result["mount_status"] = "failed"
+            result["mount_error"] = proc.stderr
+            result["manual_command"] = f"mount -o ro,loop,offset={byte_offset} {device} {disk_mount}"
+        else:
+            result["mount_path"] = disk_mount
+            result["mount_status"] = "mounted"
+
+        return result
+
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "mount_image"}
+
+
+@mcp.tool()
+def load_memory(
+    dump_path: str,
+    output_dir: str = "/evidence/memory",
+) -> dict[str, Any]:
+    """Load a memory dump for analysis, extracting from ZIP if needed.
+
+    Checks if the dump is a ZIP archive and extracts it automatically.
+    Returns the path to the raw memory dump ready for Volatility 3.
+
+    Parameters
+    ----------
+    dump_path:
+        Absolute path to the memory dump file (.raw, .mem, .vmem, or .zip).
+    output_dir:
+        Directory for extracted files. Default: /evidence/memory
+
+    Returns
+    -------
+    dict
+        status, raw_dump_path, file_size, was_extracted.
+    """
+    import subprocess as _sp
+
+    try:
+        dump = Path(dump_path).resolve()
+        if not dump.exists():
+            return {"status": "error", "error": f"Memory dump not found: {dump_path}"}
+
+        result: dict[str, Any] = {"status": "ok", "original_path": str(dump)}
+
+        # Check if file is a ZIP archive
+        proc = _sp.run(
+            ["/usr/bin/file", str(dump)],
+            capture_output=True, text=True, timeout=30
+        )
+        file_type = proc.stdout.lower()
+
+        if "zip" in file_type or dump.suffix.lower() == ".zip":
+            # Extract ZIP
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            proc = _sp.run(
+                ["/usr/bin/7z", "x", str(dump), f"-o{output_dir}", "-y"],
+                capture_output=True, text=True, timeout=600
+            )
+            if proc.returncode != 0:
+                return {"status": "error", "error": f"Extraction failed: {proc.stderr}"}
+
+            result["was_extracted"] = True
+
+            # Find the extracted raw file
+            raw_path = None
+            for ext in (".raw", ".mem", ".vmem", ".lime", ".dmp"):
+                for f in Path(output_dir).rglob(f"*{ext}"):
+                    raw_path = f
+                    break
+                if raw_path:
+                    break
+
+            if not raw_path:
+                # Check for any large file
+                for f in Path(output_dir).iterdir():
+                    if f.is_file() and f.stat().st_size > 100_000_000:
+                        raw_path = f
+                        break
+
+            if not raw_path:
+                return {"status": "error", "error": "No memory dump found after extraction",
+                        "extracted_files": [str(f) for f in Path(output_dir).iterdir()]}
+
+            result["raw_dump_path"] = str(raw_path)
+            result["file_size"] = raw_path.stat().st_size
+        else:
+            # File is already a raw dump
+            result["was_extracted"] = False
+            result["raw_dump_path"] = str(dump)
+            result["file_size"] = dump.stat().st_size
+
+        return result
+
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "load_memory"}
+
+
+# ===========================================================================
 # Entry point
 # ===========================================================================
 

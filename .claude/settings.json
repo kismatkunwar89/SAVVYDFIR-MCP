@@ -1,0 +1,50 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(fls:*)",
+      "Bash(mmls:*)",
+      "Bash(icat:*)",
+      "Bash(fsstat:*)",
+      "Bash(ewfmount:*)",
+      "Bash(yara:*)",
+      "Bash(vol3:*)",
+      "Bash(log2timeline.py:*)",
+      "Bash(plaso:*)",
+      "Bash(MFTECmd:*)",
+      "Bash(EvtxECmd:*)",
+      "Bash(AppCompatCacheParser:*)",
+      "Bash(LECmd:*)",
+      "Bash(JLECmd:*)",
+      "Bash(SBECmd:*)",
+      "Bash(regripper:*)",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(file:*)",
+      "Bash(strings:*)",
+      "Bash(xxd:*)",
+      "Bash(sha256sum:*)",
+      "Bash(md5sum:*)",
+      "Bash(mkdir:*)",
+      "Bash(cp:*)",
+      "Bash(mv:*)",
+      "Bash(7z:*)",
+      "Bash(unzip:*)",
+      "Bash(mount:*)",
+      "Bash(umount:*)",
+      "Bash(python3:*)",
+      "Bash(pip3:*)"
+    ],
+    "deny": [
+      "Bash(rm:*)",
+      "Bash(dd:*)",
+      "Bash(mkfs:*)",
+      "Bash(shred:*)",
+      "Bash(chmod 777:*)",
+      "Bash(wget:*)",
+      "Bash(curl:*)"
+    ]
+  },
+  "model": "claude-sonnet-4-5"
+}
