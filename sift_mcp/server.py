@@ -1396,23 +1396,53 @@ def mount_image(
         data: dict[str, Any] = {"image_path": str(image)}
         ewf_device = None
 
-        # Determine image type
-        is_e01 = image.suffix.lower() in (".e01", ".ex01", ".s01")
+        # --- Pre-flight: detect existing mounts ---
+        mount_check = _sp.run(["mount"], capture_output=True, text=True)
+        mounts = mount_check.stdout
 
-        if is_e01:
-            # Step 1: ewfmount
-            Path(mount_point).mkdir(parents=True, exist_ok=True)
-            proc = _sp.run(
-                ["/usr/bin/ewfmount", str(image), mount_point],
-                capture_output=True, text=True, timeout=120
-            )
-            if proc.returncode != 0:
-                return ToolResult(
-                    status="error", tool="mount_image",
-                    error=f"ewfmount failed: {proc.stderr}",
-                ).model_dump()
+        if disk_mount in mounts:
+            # Already fully mounted — return immediately, skip all steps
+            return ToolResult(
+                status="ok", tool="mount_image",
+                message=f"Already mounted at {disk_mount} (pre-existing mount detected)",
+                data={"image_path": str(image), "mount_path": disk_mount,
+                      "mount_status": "already_mounted", "already_mounted": True},
+            ).model_dump()
 
+        if mount_point in mounts or _os.path.exists(f"{mount_point}/ewf1"):
+            # ewfmount already done, skip to partition mount
             ewf_device = f"{mount_point}/ewf1"
+            data["ewf_device"] = ewf_device
+            data["ewfmount_status"] = "already_mounted"
+        else:
+            # --- Determine image type ---
+            is_e01 = image.suffix.lower() in (".e01", ".ex01", ".s01")
+
+            if is_e01:
+                # Step 1: ewfmount
+                Path(mount_point).mkdir(parents=True, exist_ok=True)
+                proc = _sp.run(
+                    ["/usr/bin/ewfmount", str(image), mount_point],
+                    capture_output=True, text=True, timeout=120
+                )
+                if proc.returncode != 0:
+                    # Try with nonempty flag if directory has stale FUSE mount
+                    if "not empty" in proc.stderr or "nonempty" in proc.stderr:
+                        proc = _sp.run(
+                            ["/usr/bin/ewfmount", "-X", "nonempty", str(image), mount_point],
+                            capture_output=True, text=True, timeout=120
+                        )
+                    if proc.returncode != 0:
+                        return ToolResult(
+                            status="error", tool="mount_image",
+                            error=f"ewfmount failed: {proc.stderr}",
+                            data={"hint": f"Try: umount {mount_point} then retry, or use -X nonempty flag"},
+                        ).model_dump()
+
+        # Set device path based on ewf or raw
+        is_e01 = image.suffix.lower() in (".e01", ".ex01", ".s01")
+        if is_e01 or ewf_device:
+            ewf_device = ewf_device or f"{mount_point}/ewf1"
             data["ewf_device"] = ewf_device
             device = ewf_device
         else:
@@ -1471,16 +1501,18 @@ def mount_image(
             capture_output=True, text=True, timeout=60
         )
         if proc.returncode != 0:
-            data["mount_status"] = "failed"
-            data["mount_error"] = proc.stderr
-            data["manual_command"] = f"mount -o ro,loop,offset={byte_offset} {device} {disk_mount}"
-        else:
-            data["mount_path"] = disk_mount
-            data["mount_status"] = "mounted"
+            return ToolResult(
+                status="error", tool="mount_image",
+                error=f"mount failed: {proc.stderr}",
+                data={"hint": f"Run manually: mount -o ro,loop,offset={byte_offset} {device} {disk_mount}"},
+            ).model_dump()
+
+        data["mount_path"] = disk_mount
+        data["mount_status"] = "mounted"
 
         return ToolResult(
             status="ok", tool="mount_image",
-            message=f"Image mounted at {disk_mount}" if data.get("mount_status") == "mounted" else "Mount incomplete",
+            message=f"Image mounted at {disk_mount}",
             data=data,
             duration_seconds=round(_time.monotonic() - _start, 3),
         ).model_dump()
