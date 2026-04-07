@@ -1,7 +1,7 @@
 {
   "case_id": "CASE-001",
   "mode": "blind",
-  "investigation_goal": "Identify initial access, persistence, lateral movement and any data exfiltration. Document all findings with evidence.",
+  "investigation_goal": "Identify initial access vector, persistence mechanisms, lateral movement paths, credential theft, and data exfiltration. Document all findings with evidence artifacts.",
   "disk_images": [
     {
       "path": "/evidence/disk/base-wkstn-01-c-drive.E01",
