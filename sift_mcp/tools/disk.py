@@ -273,8 +273,14 @@ def extract_prefetch(
     # Derive default prefetch directory from image path
     if prefetch_dir is None:
         base = Path(image_path)
-        # Convention: mounted images live at <case_dir>/evidence/mnt/<drive>
-        prefetch_dir = str(base.parent / "mnt" / "C" / "Windows" / "Prefetch")
+        # Detect if image_path IS the mounted filesystem (e.g. /mnt/disk)
+        if (base / "Windows" / "Prefetch").exists():
+            prefetch_dir = str(base / "Windows" / "Prefetch")
+        elif (base / "Windows").exists():
+            prefetch_dir = str(base / "Windows" / "Prefetch")
+        else:
+            # Legacy convention: <case_dir>/evidence/mnt/C/Windows/Prefetch
+            prefetch_dir = str(base / "mnt" / "C" / "Windows" / "Prefetch")
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_pecmd_") as tmp_dir:
         csv_filename = "prefetch.csv"
@@ -437,9 +443,11 @@ def get_amcache(
 
     if hive_path is None:
         base = Path(image_path)
-        hive_path = str(
-            base.parent / "mnt" / "C" / "Windows" / "appcompat" / "Programs" / "Amcache.hve"
-        )
+        _amcache = base / "Windows" / "appcompat" / "Programs" / "Amcache.hve"
+        if _amcache.exists():
+            hive_path = str(_amcache)
+        else:
+            hive_path = str(base / "mnt" / "C" / "Windows" / "appcompat" / "Programs" / "Amcache.hve")
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_amcache_") as tmp_dir:
         csv_filename = "amcache.csv"
@@ -587,7 +595,11 @@ def extract_mft_timeline(
 
     if mft_path is None:
         base = Path(image_path)
-        mft_path = str(base.parent / "mnt" / "C" / "$MFT")
+        _mft = base / "$MFT"
+        if _mft.exists():
+            mft_path = str(_mft)
+        else:
+            mft_path = str(base / "mnt" / "C" / "$MFT")
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_mftecmd_") as tmp_dir:
         csv_filename = "mft_timeline.csv"
@@ -948,9 +960,11 @@ def summarize_evtx(
 
     if evtx_dir is None:
         base = Path(image_path)
-        evtx_dir = str(
-            base.parent / "mnt" / "C" / "Windows" / "System32" / "winevt" / "Logs"
-        )
+        _evtx = base / "Windows" / "System32" / "winevt" / "Logs"
+        if _evtx.exists():
+            evtx_dir = str(_evtx)
+        else:
+            evtx_dir = str(base / "mnt" / "C" / "Windows" / "System32" / "winevt" / "Logs")
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_evtx_") as tmp_dir:
         csv_filename = "evtx_timeline.csv"
@@ -1155,7 +1169,11 @@ def extract_registry_run_keys(
 
     if hive_dir is None:
         base = Path(image_path)
-        hive_dir = str(base.parent / "mnt" / "C" / "Windows" / "System32" / "config")
+        _config = base / "Windows" / "System32" / "config"
+        if _config.exists():
+            hive_dir = str(_config)
+        else:
+            hive_dir = str(base / "mnt" / "C" / "Windows" / "System32" / "config")
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_recmd_") as tmp_dir:
         csv_filename = "registry.csv"
