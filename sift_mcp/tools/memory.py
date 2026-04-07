@@ -559,7 +559,7 @@ def _parse_process_rows(
     return records
 
 
-def list_processes(dump_path: str) -> dict[str, Any]:
+def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: int = 0) -> dict[str, Any]:
     """List running processes from a memory dump using Volatility 3 windows.pslist.
 
     Wraps ``python3 /opt/volatility3-2.20.0/vol.py -r json windows.pslist``
@@ -785,7 +785,7 @@ def scan_processes(dump_path: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def scan_network(dump_path: str) -> dict[str, Any]:
+def scan_network(dump_path: str, case_id: Optional[str] = None, max_results: int = 0) -> dict[str, Any]:
     """Scan memory for network connections and sockets using Volatility 3 windows.netscan.
 
     Wraps ``python3 /opt/volatility3-2.20.0/vol.py -r json windows.netscan``
@@ -971,6 +971,8 @@ def scan_network(dump_path: str) -> dict[str, Any]:
 def detect_injection(
     dump_path: str,
     pid: Optional[int] = None,
+    case_id: Optional[str] = None,
+    max_results: int = 0,
 ) -> dict[str, Any]:
     """Detect process injection using Volatility 3 windows.malfind.
 
