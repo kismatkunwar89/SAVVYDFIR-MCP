@@ -770,9 +770,15 @@ _FLS_LINE_RE = re.compile(
 
 
 def list_deleted_files(
-    device_path: str,
+    device_path: str = "/mnt/disk",
     offset: Optional[int] = None,
+    image_path: Optional[str] = None,
+    case_id: Optional[str] = None,
+    max_entries: int = 500,
 ) -> dict[str, Any]:
+    # image_path is an alias for device_path (server.py compat)
+    if image_path and device_path == "/mnt/disk":
+        device_path = image_path
     """List deleted files in a disk image using The Sleuth Kit ``fls``.
 
     Wraps ``fls -rd`` (recursive, deleted-only) on SIFT Workstation.
@@ -923,6 +929,8 @@ def summarize_evtx(
     image_path: str,
     evtx_dir: Optional[str] = None,
     channel: Optional[str] = None,
+    case_id: Optional[str] = None,
+    max_entries: int = 0,
 ) -> dict[str, Any]:
     """Parse Windows EVTX event logs using EvtxECmd (EZ Tools).
 
