@@ -42,13 +42,23 @@ Novel contributions
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from fastmcp import FastMCP
+
+from sift_mcp.models.sigma import (
+    AnalysisResult,
+    ArtifactHit,
+    SigmaScanResult,
+    ToolResult,
+)
 
 # ---------------------------------------------------------------------------
 # Server instance
@@ -76,6 +86,50 @@ from sift_mcp.state import CaseStateManager
 
 _audit_logger = AuditLogger(output_path=str(_ANALYSIS_DIR / "audit.jsonl"))
 _state_manager = CaseStateManager(state_path=str(_ANALYSIS_DIR / "state.json"))
+
+# ---------------------------------------------------------------------------
+# RBAC path model — case-agnostic read/write enforcement
+# ---------------------------------------------------------------------------
+
+#: Paths that are strictly READ-ONLY (evidence and mount points).
+EVIDENCE_PATHS: list[str] = ["/evidence/", "/mnt/"]
+#: Paths where the agent may write output.
+OUTPUT_PATHS: list[str] = ["/cases/", "/tmp/"]
+#: Commands that are unconditionally blocked.
+BLOCKED_CMDS: list[str] = [
+    "rm", "dd", "mkfs", "shred", "wget", "curl", "ssh", "scp",
+    "fdisk", "parted", "nc", "netcat", "format", "chmod", "chown",
+]
+
+
+def validate_path(path: str, *, write: bool = False) -> bool:
+    """Validate a path against the RBAC model.
+
+    Parameters
+    ----------
+    path:
+        Filesystem path to validate.
+    write:
+        If True, checks that the path is in OUTPUT_PATHS (writable).
+        If False, allows both EVIDENCE_PATHS (read) and OUTPUT_PATHS.
+
+    Returns
+    -------
+    bool
+        True if the path is permitted under the RBAC model.
+    """
+    try:
+        resolved = os.path.realpath(path)
+    except (OSError, ValueError):
+        return False
+
+    if write:
+        return any(resolved.startswith(p) for p in OUTPUT_PATHS)
+
+    # Read access: allow evidence, mount, and output paths
+    allowed = EVIDENCE_PATHS + OUTPUT_PATHS
+    return any(resolved.startswith(p) for p in allowed)
+
 
 # ---------------------------------------------------------------------------
 # Tool module init
@@ -1317,16 +1371,29 @@ def mount_image(
     Returns
     -------
     dict
-        status, ewf_device (if E01), partition_offset, mount_path.
+        ToolResult with status, ewf_device (if E01), partition_offset, mount_path.
     """
     import subprocess as _sp
+    import time as _time
+
+    _start = _time.monotonic()
 
     try:
+        # RBAC: image_path must be readable, mount points are in /mnt/ (evidence paths)
+        if not validate_path(image_path, write=False):
+            return ToolResult(
+                status="error", tool="mount_image",
+                error=f"RBAC: path not permitted: {image_path}",
+            ).model_dump()
+
         image = Path(image_path).resolve()
         if not image.exists():
-            return {"status": "error", "error": f"Image not found: {image_path}"}
+            return ToolResult(
+                status="error", tool="mount_image",
+                error=f"Image not found: {image_path}",
+            ).model_dump()
 
-        result: dict[str, Any] = {"status": "ok", "image_path": str(image)}
+        data: dict[str, Any] = {"image_path": str(image)}
         ewf_device = None
 
         # Determine image type
@@ -1340,10 +1407,13 @@ def mount_image(
                 capture_output=True, text=True, timeout=120
             )
             if proc.returncode != 0:
-                return {"status": "error", "error": f"ewfmount failed: {proc.stderr}"}
+                return ToolResult(
+                    status="error", tool="mount_image",
+                    error=f"ewfmount failed: {proc.stderr}",
+                ).model_dump()
 
             ewf_device = f"{mount_point}/ewf1"
-            result["ewf_device"] = ewf_device
+            data["ewf_device"] = ewf_device
             device = ewf_device
         else:
             device = str(image)
@@ -1354,11 +1424,13 @@ def mount_image(
             capture_output=True, text=True, timeout=60
         )
         if proc.returncode != 0:
-            return {"status": "error", "error": f"mmls failed: {proc.stderr}",
-                    "hint": "Try mounting with a known offset manually"}
+            return ToolResult(
+                status="error", tool="mount_image",
+                error=f"mmls failed: {proc.stderr}",
+                data={"hint": "Try mounting with a known offset manually"},
+            ).model_dump()
 
         # Parse mmls output to find the largest NTFS partition
-        import re
         offset = None
         max_length = 0
         for line in proc.stdout.splitlines():
@@ -1384,12 +1456,12 @@ def mount_image(
 
         if offset is None:
             offset = 2048  # Common default for GPT
-            result["offset_source"] = "default (GPT assumed)"
+            data["offset_source"] = "default (GPT assumed)"
         else:
-            result["offset_source"] = "mmls"
+            data["offset_source"] = "mmls"
 
-        result["partition_offset_sectors"] = offset
-        result["partition_offset_bytes"] = offset * 512
+        data["partition_offset_sectors"] = offset
+        data["partition_offset_bytes"] = offset * 512
 
         # Step 3: Mount partition read-only
         Path(disk_mount).mkdir(parents=True, exist_ok=True)
@@ -1399,17 +1471,24 @@ def mount_image(
             capture_output=True, text=True, timeout=60
         )
         if proc.returncode != 0:
-            result["mount_status"] = "failed"
-            result["mount_error"] = proc.stderr
-            result["manual_command"] = f"mount -o ro,loop,offset={byte_offset} {device} {disk_mount}"
+            data["mount_status"] = "failed"
+            data["mount_error"] = proc.stderr
+            data["manual_command"] = f"mount -o ro,loop,offset={byte_offset} {device} {disk_mount}"
         else:
-            result["mount_path"] = disk_mount
-            result["mount_status"] = "mounted"
+            data["mount_path"] = disk_mount
+            data["mount_status"] = "mounted"
 
-        return result
+        return ToolResult(
+            status="ok", tool="mount_image",
+            message=f"Image mounted at {disk_mount}" if data.get("mount_status") == "mounted" else "Mount incomplete",
+            data=data,
+            duration_seconds=round(_time.monotonic() - _start, 3),
+        ).model_dump()
 
     except Exception as exc:
-        return {"status": "error", "error": str(exc), "tool": "mount_image"}
+        return ToolResult(
+            status="error", tool="mount_image", error=str(exc),
+        ).model_dump()
 
 
 @mcp.tool()
@@ -1432,16 +1511,28 @@ def load_memory(
     Returns
     -------
     dict
-        status, raw_dump_path, file_size, was_extracted.
+        ToolResult with raw_dump_path, file_size, was_extracted.
     """
     import subprocess as _sp
+    import time as _time
+
+    _start = _time.monotonic()
 
     try:
+        if not validate_path(dump_path, write=False):
+            return ToolResult(
+                status="error", tool="load_memory",
+                error=f"RBAC: path not permitted: {dump_path}",
+            ).model_dump()
+
         dump = Path(dump_path).resolve()
         if not dump.exists():
-            return {"status": "error", "error": f"Memory dump not found: {dump_path}"}
+            return ToolResult(
+                status="error", tool="load_memory",
+                error=f"Memory dump not found: {dump_path}",
+            ).model_dump()
 
-        result: dict[str, Any] = {"status": "ok", "original_path": str(dump)}
+        data: dict[str, Any] = {"original_path": str(dump)}
 
         # Check if file is a ZIP archive
         proc = _sp.run(
@@ -1458,9 +1549,12 @@ def load_memory(
                 capture_output=True, text=True, timeout=600
             )
             if proc.returncode != 0:
-                return {"status": "error", "error": f"Extraction failed: {proc.stderr}"}
+                return ToolResult(
+                    status="error", tool="load_memory",
+                    error=f"Extraction failed: {proc.stderr}",
+                ).model_dump()
 
-            result["was_extracted"] = True
+            data["was_extracted"] = True
 
             # Find the extracted raw file
             raw_path = None
@@ -1472,28 +1566,484 @@ def load_memory(
                     break
 
             if not raw_path:
-                # Check for any large file
                 for f in Path(output_dir).iterdir():
                     if f.is_file() and f.stat().st_size > 100_000_000:
                         raw_path = f
                         break
 
             if not raw_path:
-                return {"status": "error", "error": "No memory dump found after extraction",
-                        "extracted_files": [str(f) for f in Path(output_dir).iterdir()]}
+                return ToolResult(
+                    status="error", tool="load_memory",
+                    error="No memory dump found after extraction",
+                    data={"extracted_files": [str(f) for f in Path(output_dir).iterdir()]},
+                ).model_dump()
 
-            result["raw_dump_path"] = str(raw_path)
-            result["file_size"] = raw_path.stat().st_size
+            data["raw_dump_path"] = str(raw_path)
+            data["file_size"] = raw_path.stat().st_size
         else:
-            # File is already a raw dump
-            result["was_extracted"] = False
-            result["raw_dump_path"] = str(dump)
-            result["file_size"] = dump.stat().st_size
+            data["was_extracted"] = False
+            data["raw_dump_path"] = str(dump)
+            data["file_size"] = dump.stat().st_size
 
-        return result
+        return ToolResult(
+            status="ok", tool="load_memory",
+            message=f"Memory dump ready at {data['raw_dump_path']}",
+            data=data,
+            duration_seconds=round(_time.monotonic() - _start, 3),
+        ).model_dump()
 
     except Exception as exc:
-        return {"status": "error", "error": str(exc), "tool": "load_memory"}
+        return ToolResult(
+            status="error", tool="load_memory", error=str(exc),
+        ).model_dump()
+
+
+# ===========================================================================
+# SIGMA / UNIVERSAL ANOMALY DETECTION NAMESPACE
+# ===========================================================================
+
+# ---- Windows constants for case-agnostic detection ----
+
+#: Processes that MUST have services.exe as parent on a healthy Windows system.
+_SVCHOST_PARENT = "services.exe"
+#: Legitimate svchost path (case-insensitive comparison).
+_SVCHOST_PATH = r"c:\windows\system32\svchost.exe"
+#: Processes that should run as SYSTEM.
+_SYSTEM_PROCESSES = {
+    "smss.exe", "csrss.exe", "wininit.exe", "services.exe",
+    "lsass.exe", "svchost.exe", "winlogon.exe",
+}
+#: High-value Windows Security Event IDs.
+_HIGH_VALUE_EVTX = {
+    4624: ("Logon success", "TA0001", "T1078"),      # Initial Access
+    4625: ("Logon failure", "TA0006", "T1110"),       # Credential Access
+    4648: ("Explicit logon", "TA0008", "T1021"),      # Lateral Movement
+    4672: ("Special privileges", "TA0004", "T1134"),   # Privilege Escalation
+    4688: ("Process creation", "TA0002", "T1059"),     # Execution
+    4697: ("Service installed", "TA0003", "T1543"),    # Persistence
+    4698: ("Scheduled task", "TA0003", "T1053"),       # Persistence
+    4720: ("User created", "TA0003", "T1136"),         # Persistence
+    7045: ("New service", "TA0003", "T1543.003"),      # Persistence
+    1116: ("Defender detection", "TA0005", "T1562"),   # Defense Evasion
+}
+
+
+def _detect_process_anomalies(findings: list[dict]) -> list[ArtifactHit]:
+    """Detect universal process anomalies from case state findings.
+
+    Checks:
+    - svchost.exe not spawned by services.exe (masquerading)
+    - System processes running from non-System32 paths
+    - Orphan processes (PPID doesn't exist in process list)
+    - Process name typosquats of system processes
+    """
+    hits: list[ArtifactHit] = []
+    pids = {f.get("pid") for f in findings if f.get("artifact_type") == "process"}
+    process_findings = [f for f in findings if f.get("artifact_type") == "process"]
+
+    for pf in process_findings:
+        name = (pf.get("name") or pf.get("description", "")).lower()
+        ppid = pf.get("ppid", pf.get("parent_pid"))
+        path = (pf.get("artifact_path") or "").lower()
+
+        # Check: svchost not spawned by services.exe
+        if "svchost" in name and ppid is not None:
+            parent_name = ""
+            for f2 in process_findings:
+                if f2.get("pid") == ppid:
+                    parent_name = (f2.get("name") or f2.get("description", "")).lower()
+                    break
+            if parent_name and _SVCHOST_PARENT not in parent_name:
+                hits.append(ArtifactHit(
+                    detector="process_anomaly",
+                    severity="CRITICAL",
+                    description=f"svchost.exe (PID {pf.get('pid')}) has unexpected parent {parent_name} (PID {ppid}) — expected services.exe",
+                    artifact_type="process",
+                    artifact_path=pf.get("artifact_path"),
+                    raw_data={"pid": pf.get("pid"), "ppid": ppid, "parent_name": parent_name},
+                    mitre_technique="T1036.005",
+                    mitre_tactic="TA0005",
+                    pivot_suggestion=f"Call detect_injection(pid={pf.get('pid')}) and list_dlls(pid={pf.get('pid')})",
+                ))
+
+        # Check: orphan process
+        if ppid is not None and ppid not in pids and ppid > 4:
+            hits.append(ArtifactHit(
+                detector="process_anomaly",
+                severity="HIGH",
+                description=f"Orphan process '{name}' (PID {pf.get('pid')}) — parent PID {ppid} not found in process list",
+                artifact_type="process",
+                raw_data={"pid": pf.get("pid"), "ppid": ppid},
+                mitre_technique="T1134",
+                mitre_tactic="TA0005",
+                pivot_suggestion=f"Call scan_processes() to check if parent was DKOM-hidden",
+            ))
+
+        # Check: system process from wrong path
+        base_name = name.split("\\")[-1].split("/")[-1]
+        if base_name in _SYSTEM_PROCESSES and path and "system32" not in path:
+            hits.append(ArtifactHit(
+                detector="process_anomaly",
+                severity="CRITICAL",
+                description=f"System process '{base_name}' running from unexpected path: {path}",
+                artifact_type="process",
+                artifact_path=path,
+                raw_data={"pid": pf.get("pid"), "name": base_name, "path": path},
+                mitre_technique="T1036.005",
+                mitre_tactic="TA0005",
+                pivot_suggestion=f"Hash the binary and check VirusTotal: sha256sum {path}",
+            ))
+
+    return hits
+
+
+def _detect_network_anomalies(findings: list[dict]) -> list[ArtifactHit]:
+    """Detect universal network anomalies.
+
+    Checks:
+    - Outbound connections to non-RFC1918 addresses from system processes
+    - Connections on unusual ports (not 80, 443, 53, 445, 135, 139)
+    - Listening sockets on high ports (>49152) owned by non-system processes
+    """
+    hits: list[ArtifactHit] = []
+    _COMMON_PORTS = {80, 443, 53, 445, 135, 139, 389, 636, 88, 464, 3389}
+    net_findings = [f for f in findings if f.get("artifact_type") == "network_connection"]
+
+    for nf in net_findings:
+        remote = nf.get("remote_addr", "")
+        remote_port = nf.get("remote_port")
+        local_port = nf.get("local_port")
+        owner = (nf.get("owner_process") or nf.get("description", "")).lower()
+        state = (nf.get("state") or "").upper()
+
+        # Skip if no remote address
+        if not remote or remote in ("0.0.0.0", "::", "*", ""):
+            continue
+
+        # Check if remote is non-RFC1918 (external)
+        try:
+            addr = ipaddress.ip_address(remote)
+            is_external = not addr.is_private and not addr.is_loopback and not addr.is_link_local
+        except ValueError:
+            is_external = False
+
+        # System process making external connections
+        if is_external and any(sp in owner for sp in _SYSTEM_PROCESSES):
+            hits.append(ArtifactHit(
+                detector="network_anomaly",
+                severity="HIGH",
+                description=f"System process '{owner}' has external connection to {remote}:{remote_port}",
+                artifact_type="network",
+                raw_data={"remote": remote, "port": remote_port, "owner": owner, "state": state},
+                mitre_technique="T1071",
+                mitre_tactic="TA0011",
+                pivot_suggestion=f"Check if {remote} is a known C2: scan memory for related YARA rules",
+            ))
+
+        # Unusual outbound port
+        if is_external and remote_port and remote_port not in _COMMON_PORTS and state == "ESTABLISHED":
+            hits.append(ArtifactHit(
+                detector="network_anomaly",
+                severity="MEDIUM",
+                description=f"Outbound connection to {remote}:{remote_port} on unusual port from '{owner}'",
+                artifact_type="network",
+                raw_data={"remote": remote, "port": remote_port, "owner": owner},
+                mitre_technique="T1571",
+                mitre_tactic="TA0011",
+                pivot_suggestion=f"Check process tree of owning PID for injection indicators",
+            ))
+
+    return hits
+
+
+def _detect_mft_anomalies(findings: list[dict]) -> list[ArtifactHit]:
+    """Detect SI<FN timestomping from MFT entries.
+
+    If $STANDARD_INFORMATION Created < $FILE_NAME Created by >1 hour,
+    the file was likely timestomped (SI is user-modifiable, FN requires kernel).
+    """
+    hits: list[ArtifactHit] = []
+    mft_findings = [f for f in findings if f.get("artifact_type") in ("mft", "mft_entry")]
+
+    for mf in mft_findings:
+        si_created = mf.get("si_created")
+        fn_created = mf.get("fn_created")
+        if not si_created or not fn_created:
+            continue
+
+        try:
+            if isinstance(si_created, str):
+                si_dt = datetime.fromisoformat(si_created.replace("Z", "+00:00"))
+            else:
+                si_dt = si_created
+            if isinstance(fn_created, str):
+                fn_dt = datetime.fromisoformat(fn_created.replace("Z", "+00:00"))
+            else:
+                fn_dt = fn_created
+
+            delta = abs((si_dt - fn_dt).total_seconds())
+            if delta > 3600:  # >1 hour discrepancy
+                hits.append(ArtifactHit(
+                    detector="mft_timestomp",
+                    severity="HIGH",
+                    description=f"Timestomping detected: SI Created differs from FN Created by {delta/3600:.1f}h for {mf.get('file_path', 'unknown')}",
+                    artifact_type="mft",
+                    artifact_path=mf.get("file_path"),
+                    raw_data={"si_created": str(si_created), "fn_created": str(fn_created), "delta_seconds": delta},
+                    mitre_technique="T1070.006",
+                    mitre_tactic="TA0005",
+                    pivot_suggestion="Check prefetch/amcache for true first execution time of this binary",
+                ))
+        except (ValueError, TypeError):
+            continue
+
+    return hits
+
+
+def _detect_evtx_anomalies(findings: list[dict]) -> list[ArtifactHit]:
+    """Flag high-value Windows Event IDs with ATT&CK technique auto-tagging."""
+    hits: list[ArtifactHit] = []
+    evtx_findings = [f for f in findings if f.get("artifact_type") in ("evtx_event", "event_log")]
+
+    for ef in evtx_findings:
+        event_id = ef.get("event_id")
+        if event_id and event_id in _HIGH_VALUE_EVTX:
+            label, tactic, technique = _HIGH_VALUE_EVTX[event_id]
+            hits.append(ArtifactHit(
+                detector="evtx_anomaly",
+                severity="HIGH" if event_id in (4688, 4697, 7045, 4698) else "MEDIUM",
+                description=f"High-value event {event_id} ({label}): {ef.get('description', ef.get('message_summary', ''))}",
+                artifact_type="evtx",
+                raw_data={"event_id": event_id, "channel": ef.get("channel"), "timestamp": str(ef.get("timestamp"))},
+                mitre_technique=technique,
+                mitre_tactic=tactic,
+                pivot_suggestion=f"Correlate event {event_id} with timeline around this timestamp",
+            ))
+
+    return hits
+
+
+def _detect_persistence_anomalies(findings: list[dict]) -> list[ArtifactHit]:
+    """Detect persistence keys pointing to suspicious paths or missing binaries."""
+    hits: list[ArtifactHit] = []
+    _SUSPICIOUS_PATHS = ["\\temp\\", "\\tmp\\", "\\appdata\\", "\\downloads\\", "\\public\\"]
+    reg_findings = [f for f in findings if f.get("artifact_type") in ("registry_key", "persistence")]
+
+    for rf in reg_findings:
+        value = (rf.get("value_data") or rf.get("artifact_path") or "").lower()
+
+        for sp in _SUSPICIOUS_PATHS:
+            if sp in value:
+                hits.append(ArtifactHit(
+                    detector="persistence_anomaly",
+                    severity="HIGH",
+                    description=f"Persistence key references suspicious path: {value}",
+                    artifact_type="persistence",
+                    artifact_path=rf.get("artifact_path"),
+                    raw_data={"key": rf.get("key_path"), "value": value},
+                    mitre_technique="T1547.001",
+                    mitre_tactic="TA0003",
+                    pivot_suggestion=f"Check if binary exists on disk: fls -r | grep '{Path(value).name}'",
+                ))
+                break
+
+    return hits
+
+
+def _hits_to_markdown(hits: list[ArtifactHit]) -> str:
+    """Convert ArtifactHit list to a markdown summary table."""
+    if not hits:
+        return "No anomalies detected."
+
+    lines = ["| # | Severity | Detector | Description | ATT&CK |",
+             "|---|----------|----------|-------------|--------|"]
+    for i, h in enumerate(hits, 1):
+        technique = h.mitre_technique or "-"
+        desc = h.description[:80] + "..." if len(h.description) > 80 else h.description
+        lines.append(f"| {i} | {h.severity} | {h.detector} | {desc} | {technique} |")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def sigma_scan(case_id: str) -> dict[str, Any]:
+    """Run universal anomaly detection across all findings in the case state.
+
+    Executes 5 independent anomaly detectors against the authoritative case
+    state. Each detector implements case-agnostic detection logic based on
+    universal Windows forensic patterns — no hardcoded IPs, usernames, or
+    filenames.
+
+    Detectors:
+    1. **process_anomaly** — svchost parentage, orphans, wrong-path system procs
+    2. **network_anomaly** — RFC1918 exclusion, unusual ports, system proc C2
+    3. **mft_timestomp** — SI vs FN timestamp discrepancy (>1 hour = timestomping)
+    4. **evtx_anomaly** — High-value Event IDs with auto ATT&CK tagging
+    5. **persistence_anomaly** — Run keys pointing to suspicious paths
+
+    Parameters
+    ----------
+    case_id:
+        The forensic case identifier.
+
+    Returns
+    -------
+    dict
+        SigmaScanResult with hits, counts, and markdown summary.
+    """
+    try:
+        state = _state_manager.load(case_id)
+        all_findings = state.get("findings", [])
+
+        all_hits: list[ArtifactHit] = []
+        detectors_run: list[str] = []
+
+        # Run each detector
+        for name, func in [
+            ("process_anomaly", _detect_process_anomalies),
+            ("network_anomaly", _detect_network_anomalies),
+            ("mft_timestomp", _detect_mft_anomalies),
+            ("evtx_anomaly", _detect_evtx_anomalies),
+            ("persistence_anomaly", _detect_persistence_anomalies),
+        ]:
+            detectors_run.append(name)
+            hits = func(all_findings)
+            all_hits.extend(hits)
+
+        critical = sum(1 for h in all_hits if h.severity == "CRITICAL")
+        high = sum(1 for h in all_hits if h.severity == "HIGH")
+
+        result = SigmaScanResult(
+            case_id=case_id,
+            hits=all_hits,
+            total_hits=len(all_hits),
+            critical_count=critical,
+            high_count=high,
+            detectors_run=detectors_run,
+            summary_markdown=_hits_to_markdown(all_hits),
+        )
+
+        return result.model_dump()
+
+    except Exception as exc:
+        return ToolResult(
+            status="error", tool="sigma_scan", error=str(exc),
+        ).model_dump()
+
+
+@mcp.tool()
+def run_analysis(
+    data_path: str,
+    query: str,
+    output_format: str = "table",
+) -> dict[str, Any]:
+    """Execute a Pandas analysis query on a CSV/JSON data file.
+
+    Provides a safe Pandas interpreter for analyzing forensic tool output
+    (MFTECmd CSVs, EvtxECmd CSVs, timeline exports, etc.) without
+    requiring the agent to write and execute raw Python scripts.
+
+    The query is a Pandas expression applied to the DataFrame loaded from
+    data_path. Available variables: ``df`` (the loaded DataFrame).
+
+    Example queries:
+    - ``df[df['EventID'] == 4624].groupby('TargetUserName').size()``
+    - ``df.sort_values('Created0x10').head(20)``
+    - ``df[df['IsDeleted'] == True][['FileName', 'Created0x10']]``
+
+    Parameters
+    ----------
+    data_path:
+        Absolute path to a CSV or JSON file to load as a DataFrame.
+    query:
+        A Pandas expression to evaluate. The DataFrame is available as ``df``.
+    output_format:
+        Output format: ``"table"`` (tabulate), ``"json"``, ``"csv"``.
+
+    Returns
+    -------
+    dict
+        AnalysisResult with tabulated output, row count, column names, and insights.
+    """
+    try:
+        if not validate_path(data_path, write=False):
+            return ToolResult(
+                status="error", tool="run_analysis",
+                error=f"RBAC: path not permitted: {data_path}",
+            ).model_dump()
+
+        path = Path(data_path).resolve()
+        if not path.exists():
+            return ToolResult(
+                status="error", tool="run_analysis",
+                error=f"File not found: {data_path}",
+            ).model_dump()
+
+        # Block dangerous operations in query
+        _BLOCKED_PATTERNS = [
+            "import ", "exec(", "eval(", "__", "open(", "os.", "sys.",
+            "subprocess", "shutil", "pathlib", "glob",
+        ]
+        for pattern in _BLOCKED_PATTERNS:
+            if pattern in query:
+                return ToolResult(
+                    status="error", tool="run_analysis",
+                    error=f"Query contains blocked pattern: {pattern}",
+                ).model_dump()
+
+        import pandas as pd
+
+        # Load data
+        if path.suffix.lower() == ".json":
+            df = pd.read_json(path)
+        else:
+            df = pd.read_csv(path, low_memory=False)
+
+        # Execute query in restricted namespace
+        namespace = {"df": df, "pd": pd}
+        result_obj = eval(query, {"__builtins__": {}}, namespace)  # noqa: S307
+
+        # Format output
+        if isinstance(result_obj, pd.DataFrame):
+            result_df = result_obj
+        elif isinstance(result_obj, pd.Series):
+            result_df = result_obj.to_frame()
+        else:
+            result_df = pd.DataFrame({"result": [result_obj]})
+
+        # Limit to 500 rows
+        if len(result_df) > 500:
+            result_df = result_df.head(500)
+
+        try:
+            from tabulate import tabulate
+            table_str = tabulate(result_df, headers="keys", tablefmt="pipe", showindex=False)
+        except ImportError:
+            table_str = result_df.to_string()
+
+        # Generate insights
+        insights: list[str] = []
+        if len(result_df) > 0:
+            insights.append(f"Query returned {len(result_df)} rows")
+            for col in result_df.columns:
+                if result_df[col].dtype in ("int64", "float64"):
+                    insights.append(f"{col}: min={result_df[col].min()}, max={result_df[col].max()}, mean={result_df[col].mean():.2f}")
+
+        analysis = AnalysisResult(
+            query=query,
+            result_table=table_str,
+            row_count=len(result_df),
+            columns=list(result_df.columns),
+            insights=insights,
+            data_source=str(path),
+        )
+
+        return analysis.model_dump()
+
+    except Exception as exc:
+        return ToolResult(
+            status="error", tool="run_analysis", error=str(exc),
+        ).model_dump()
 
 
 # ===========================================================================

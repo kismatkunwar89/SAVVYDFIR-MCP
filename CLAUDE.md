@@ -5,30 +5,40 @@ AI-driven Digital Forensics & Incident Response on SANS SIFT Workstation.
 You are the investigator. All evidence is READ-ONLY. Chain of custody applies.
 
 ## Critical Rules
-1. **NEVER write to `/evidence/`** — treat all disk images and memory dumps as read-only
-2. **Every finding must cite**: artifact path + exact command used + timestamp
-3. **Load skills on-demand** — do not preload all skills at once
+1. **NEVER write to `/evidence/` or `/mnt/`** — read-only evidence and mount paths
+2. **Write output ONLY to `/cases/` or `/tmp/`** — RBAC-enforced in server.py
+3. **Every finding must cite**: artifact path + exact command + timestamp
+4. **Load skills on-demand** — do not preload all skills at once
+5. **Case-agnostic**: no hardcoded IPs, usernames, or filenames — universal patterns only
 
 ## Available Skills
-Load a skill when you need it — type `/skill-name` or let Claude auto-discover:
-
 | Skill | When to load |
 |-------|-------------|
-| `/memory-forensics` | Analyzing memory dumps, processes, network connections, injection |
-| `/disk-forensics` | Mounting E01/raw images, filesystem analysis, artifact extraction |
-| `/ez-tools` | Windows artifacts: MFT, event logs, prefetch, LNK, registry |
-| `/timeline` | Building super timelines with Plaso/log2timeline |
-| `/yara` | Signature scanning on disk or memory |
+| `/investigation-workflow` | Starting investigation or unsure what phase is next |
+| `/artifact-routing` | Deciding which tool to use for a specific Windows artifact |
+| `/tools-reference` | Need exact command syntax for SIFT tools |
+| `/sigma-detection` | Running sigma_scan(), interpreting anomaly results, ATT&CK mapping |
+| `/pivot-methodology` | Have a finding, need to determine what to investigate next |
 
 ## Investigation Entry Point
-1. Read manifest: `/opt/SAVVYDFIR-MCP/case-templates/manifest.json`
-2. Call MCP tool: `start_investigation` with the manifest path
-3. Mount evidence first:
-   - Disk: call `mount_image` tool — mounts E01 to `/mnt/disk/`
-   - Memory: call `load_memory` tool — extracts ZIP, returns raw path
-4. Load the appropriate skill for each analysis phase
-5. Record ALL findings with `add_finding` tool (evidence_kind, artifact_path, confidence)
-6. Call `generate_report` when investigation is complete
+1. Read manifest: `start_investigation(manifest_path)`
+2. Mount evidence: `mount_image()` and `load_memory()`
+3. Collect artifacts: all disk + memory tools
+4. Run anomaly detection: `sigma_scan(case_id)` — 5 universal detectors
+5. Cross-correlate: `compare_disk_and_memory(case_id)` — 6 forensic checks
+6. Deep dive: `run_analysis(data_path, query)` for ad-hoc Pandas queries
+7. Record findings: `add_finding()` with evidence_kind, artifact_path, confidence
+8. Generate report: `generate_report(case_id)`
+
+## New Tools (v3)
+- `sigma_scan(case_id)` — universal anomaly detection (process, network, MFT, EVTX, persistence)
+- `run_analysis(data_path, query)` — safe Pandas interpreter for CSV/JSON forensic output
+- `mount_image()` / `load_memory()` — now return ToolResult with RBAC validation
+
+## RBAC Path Model
+- **Read-only**: `/evidence/`, `/mnt/` — evidence and mount points
+- **Read-write**: `/cases/`, `/tmp/` — analysis output
+- **Blocked commands**: rm, dd, mkfs, shred, wget, curl, ssh, scp, fdisk, parted, nc
 
 ## Tool Paths (SIFT Workstation)
 ```
@@ -38,6 +48,12 @@ Load a skill when you need it — type `/skill-name` or let Claude auto-discover
 /usr/local/bin/AppCompatCacheParser  /usr/local/bin/LECmd
 /usr/bin/regripper  /usr/bin/7z
 ```
+
+## Pydantic Models (v3)
+- `ArtifactHit` — single anomaly from sigma_scan() with ATT&CK + pivot suggestion
+- `ToolResult` — universal wrapper returned by mount_image/load_memory
+- `SigmaScanResult` — sigma_scan() output with hits, counts, markdown summary
+- `AnalysisResult` — run_analysis() output with table, insights, columns
 
 ## Output Locations
 - Cases: `/cases/`

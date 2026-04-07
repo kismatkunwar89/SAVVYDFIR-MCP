@@ -1,2 +1,5 @@
 fastmcp>=2.0
 pydantic>=2.0
+pandas>=2.0
+tabulate>=0.9
+mitreattack-python>=0.2

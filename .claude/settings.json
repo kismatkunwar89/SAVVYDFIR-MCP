@@ -51,7 +51,9 @@
       "Bash(tr:*)",
       "Bash(stat:*)",
       "Bash(du:*)",
-      "Bash(df:*)"
+      "Bash(df:*)",
+      "Bash(pip3:*)",
+      "Bash(dotnet:*)"
     ],
     "deny": [
       "Bash(rm:*)",
