@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "savvydfir": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "/opt/SAVVYDFIR-MCP/sift_mcp/server.py"
+      ],
+      "env": {
+        "EVIDENCE_BASE": "/evidence",
+        "MOUNT_BASE": "/mnt/evidence",
+        "OUTPUT_BASE": "/cases"
+      }
+    }
+  }
+}
