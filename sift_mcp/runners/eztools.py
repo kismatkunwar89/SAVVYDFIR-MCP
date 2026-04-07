@@ -52,6 +52,15 @@ from sift_mcp.runners.base import RunResult, SafeRunner
 #: Root directory for all EZ Tools DLLs on SIFT Workstation.
 TOOLS_DIR = "/opt/zimmermantools"
 
+# SIFT installs EZ Tools as wrapper scripts at /usr/local/bin/
+# These are preferred over dotnet invocation
+import shutil as _shutil
+
+def _sift_bin(name: str) -> Optional[str]:
+    """Return path to SIFT wrapper script if it exists, else None."""
+    path = f"/usr/local/bin/{name}"
+    return path if _shutil.which(path) or __import__('os').path.exists(path) else None
+
 #: Default timeout for EZ Tools.  .NET startup adds latency; large MFT or
 #: EVTX sets can take several minutes.
 DEFAULT_TIMEOUT = 300  # seconds
@@ -148,12 +157,10 @@ class EZToolsRunner(SafeRunner):
             Successful run produces a CSV at ``{csv_dir}/{csv_filename}``.
             ``stdout`` contains the MFTECmd progress/summary output.
         """
-        cmd: List[str] = [
-            "dotnet", _dll("MFTECmd.dll"),
-            "-f", mft_path,
-            "--csv", csv_dir,
-            "--csvf", csv_filename,
-        ]
+        _bin = _sift_bin("MFTECmd")
+        cmd: List[str] = (
+            [_bin] if _bin else ["dotnet", _dll("MFTECmd.dll")]
+        ) + ["-f", mft_path, "--csv", csv_dir, "--csvf", csv_filename]
         return self.run(cmd, timeout=timeout)
 
     # ------------------------------------------------------------------
@@ -190,7 +197,7 @@ class EZToolsRunner(SafeRunner):
             CSV.
         """
         cmd: List[str] = [
-            "dotnet", _dll("PECmd.dll"),
+            *([_sift_bin("PECmd")] if _sift_bin("PECmd") else ["dotnet", _dll("PECmd.dll")]),
             "-d", prefetch_dir_or_file,
             "--csv", csv_dir,
             "--csvf", csv_filename,
@@ -232,7 +239,7 @@ class EZToolsRunner(SafeRunner):
             in the CSV.
         """
         cmd: List[str] = [
-            "dotnet", _dll("AmcacheParser.dll"),
+            *([_sift_bin("AmcacheParser")] if _sift_bin("AmcacheParser") else ["dotnet", _dll("AmcacheParser.dll")]),
             "-f", hive_path,
             "--csv", csv_dir,
             "--csvf", csv_filename,
@@ -282,7 +289,7 @@ class EZToolsRunner(SafeRunner):
         ``/opt/zimmermantools/EvtxeCmd/EvtxECmd.dll``
         """
         cmd: List[str] = [
-            "dotnet", _dll("EvtxECmd.dll", subdir="EvtxeCmd"),
+            *([_sift_bin("EvtxECmd")] if _sift_bin("EvtxECmd") else ["dotnet", _dll("EvtxECmd.dll", subdir="EvtxeCmd")]),
             "-d", evtx_dir,
             "--csv", csv_dir,
             "--csvf", csv_filename,
@@ -329,7 +336,7 @@ class EZToolsRunner(SafeRunner):
         ``/opt/zimmermantools/RECmd/RECmd.dll``
         """
         cmd: List[str] = [
-            "dotnet", _dll("RECmd.dll", subdir="RECmd"),
+            *([_sift_bin("RECmd")] if _sift_bin("RECmd") else ["dotnet", _dll("RECmd.dll", subdir="RECmd")]),
             "-d", hive_dir,
             "--csv", csv_dir,
             "--csvf", csv_filename,
@@ -373,7 +380,7 @@ class EZToolsRunner(SafeRunner):
             flag (Windows XP / early Vista only).
         """
         cmd: List[str] = [
-            "dotnet", _dll("AppCompatCacheParser.dll"),
+            *([_sift_bin("AppCompatCacheParser")] if _sift_bin("AppCompatCacheParser") else ["dotnet", _dll("AppCompatCacheParser.dll")]),
             "-f", system_hive,
             "--csv", csv_dir,
             "--csvf", csv_filename,
