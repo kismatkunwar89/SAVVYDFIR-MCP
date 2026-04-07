@@ -36,7 +36,18 @@ from sift_mcp.runners.base import RunResult, SafeRunner
 # ---------------------------------------------------------------------------
 
 #: Invocation prefix exactly as specified in Protocol SIFT's CLAUDE.md.
-VOL_PATH = "/opt/volatility3-2.20.0/vol.py"
+# Auto-detect Volatility 3 path — try SIFT location first, fallback to common paths
+import shutil as _shutil
+_vol_candidates = [
+    "/usr/local/bin/vol",
+    "/usr/local/bin/vol3",
+    "/usr/bin/vol",
+    "/usr/bin/vol3",
+]
+VOL_PATH = next(
+    (p for p in _vol_candidates if _shutil.which(p) or __import__('os').path.exists(p)),
+    "/usr/local/bin/vol"  # default
+)
 
 #: Default timeout for Volatility 3 plugins.  Memory forensics on a 4 GB
 #: dump can take several minutes; malfind on a large dump can take longer.
@@ -114,12 +125,12 @@ class VolatilityRunner(SafeRunner):
             ``output_format="json"``).  ``stderr`` contains any warning or
             error messages emitted by Volatility.
         """
-        cmd: List[str] = [
-            "python3", self.VOL_PATH,
-            "-f", dump_path,
-            "-r", output_format,
-            plugin,
-        ]
+        # If VOL_PATH is a binary (not a .py script), invoke directly
+        # vol3/vol on SIFT is a standalone binary, not a Python script
+        if self.VOL_PATH.endswith(".py"):
+            cmd: List[str] = ["python3", self.VOL_PATH, "-f", dump_path, "-r", output_format, plugin]
+        else:
+            cmd: List[str] = [self.VOL_PATH, "-f", dump_path, "-r", output_format, plugin]
         if extra_args:
             cmd.extend(extra_args)
 

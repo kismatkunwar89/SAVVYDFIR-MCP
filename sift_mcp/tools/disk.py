@@ -236,6 +236,8 @@ _PERSISTENCE_KEY_PATTERNS = {
 def extract_prefetch(
     image_path: str,
     prefetch_dir: Optional[str] = None,
+    case_id: Optional[str] = None,
+    max_entries: int = 0,
 ) -> dict[str, Any]:
     """Extract Windows Prefetch execution evidence using PECmd (EZ Tools).
 
@@ -401,6 +403,8 @@ def extract_prefetch(
 def get_amcache(
     image_path: str,
     hive_path: Optional[str] = None,
+    case_id: Optional[str] = None,
+    max_entries: int = 0,
 ) -> dict[str, Any]:
     """Extract execution evidence from the Amcache.hve registry hive.
 
@@ -547,6 +551,8 @@ def get_amcache(
 def extract_mft_timeline(
     image_path: str,
     mft_path: Optional[str] = None,
+    case_id: Optional[str] = None,
+    max_entries: int = 0,
 ) -> dict[str, Any]:
     """Parse the NTFS Master File Table into a timestomping-aware timeline.
 
@@ -1115,6 +1121,8 @@ def _classify_persistence(key_path: str) -> Optional[str]:
 def extract_registry_run_keys(
     image_path: str,
     hive_dir: Optional[str] = None,
+    case_id: Optional[str] = None,
+    max_entries: int = 0,
 ) -> dict[str, Any]:
     """Extract Windows registry persistence keys using RECmd (EZ Tools).
 
