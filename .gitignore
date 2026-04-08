@@ -13,3 +13,4 @@ exports/
 *.tmp
 .nova-protector/
 local_zep_state.json
+investigations/

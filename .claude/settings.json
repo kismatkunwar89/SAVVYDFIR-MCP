@@ -53,7 +53,10 @@
       "Bash(du:*)",
       "Bash(df:*)",
       "Bash(pip3:*)",
-      "Bash(dotnet:*)"
+      "Bash(dotnet:*)",
+      "Bash(python3 scripts/run_investigation.py *)",
+      "Bash(python3 scripts/merge_graphs.py *)",
+      "Bash(python3 scripts/build_index.py *)"
     ],
     "deny": [
       "Bash(rm:*)",

@@ -29,7 +29,9 @@ You are the investigator. All evidence is READ-ONLY. Chain of custody applies.
 6. Deep dive: `run_analysis(data_path, query)` for ad-hoc Pandas queries
 7. Record findings: `add_finding()` with evidence_kind, artifact_path, confidence
 8. Generate report: `generate_report(case_id)`
-9. Generate graph: `generate_graph(case_id)` — produces graph.json + graph.html for visualization and future chat embedding
+9. Generate graph: `generate_graph(case_id)` — produces reports/{case_id}/graph.html + graph.json for visualization and Graph RAG embedding
+10. After all hosts complete: `merge_host_graphs()` — unified cross-host graph (lateral movement edges from shared IOCs across hosts)
+11. Refresh dashboard: `build_reports_index()` — regenerates reports/index.html with per-host investigation cards
 
 ## New Tools (v3)
 - `sigma_scan(case_id)` — universal anomaly detection (process, network, MFT, EVTX, persistence)
@@ -118,3 +120,58 @@ Always standardise to UTC across all artifacts.
 - Not: "the user accessed the directory"
 - Write: "Prefetch and EVTX EID 4688 corroborate execution at 03:01:58 UTC"
 - Not: "the attacker ran the binary"
+
+
+---
+
+## Multi-host Enterprise Investigation Pipeline
+
+### MCP Tool Workflow (no external scripts)
+
+**Per host** — run as separate Claude sessions, clear analysis/ between each:
+
+```bash
+rm -f analysis/state.json analysis/audit.jsonl
+claude --allowedTools "mcp__savvydfir__*" -p "Read case-templates/manifest.json and investigate."
+```
+
+Claude calls: `start_investigation` → forensic tools → `generate_graph(case_id)`
+Output: `reports/{case_id}/graph.html` + `reports/{case_id}/graph.json`
+
+**After all hosts** — final session or same session:
+
+```
+merge_host_graphs()      # → reports/unified/graph.html (cross-host lateral movement)
+build_reports_index()    # → reports/index.html (dashboard of all investigations)
+```
+
+### Directory Layout
+
+```
+investigations/{SCENARIO}-{HOST}/   ← per-host working state (gitignored)
+    manifest.json
+    state.json
+    audit.jsonl
+reports/
+    index.html                       ← build_reports_index()
+    {SCENARIO}-{HOST}/
+        graph.html                   ← generate_graph(case_id)
+        graph.json
+    unified/
+        graph.html                   ← merge_host_graphs()
+        graph.json
+```
+
+### Cross-host Edge Types (merge_host_graphs)
+- `lateral_movement`  — TA0008 finding shares IOC with finding on another host
+- `shared_ioc`        — same IP / hash / domain in 2+ hosts' findings
+- `shared_account`    — same domain\\user account seen on 2+ hosts
+
+### Case ID Convention
+`{SCENARIO}-{HOST}` — uppercased, spaces/slashes → hyphens.
+Examples: `SRL-2018-WKSTN01`, `SRL-2018-DC`, `SRL-2018-MAIL`
+
+### Per-host Isolation
+`server.py` reads `SAVVYDFIR_ANALYSIS_DIR` at startup.
+Set this env var before launching Claude to redirect all tool writes to that dir.
+The MCP binary is unchanged between hosts — only the env var routes data.

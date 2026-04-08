@@ -1,6 +1,6 @@
 """SAVVYDFIR-MCP Server — Purpose-built forensic MCP backend for Protocol SIFT.
 
-This server exposes 24 typed, read-only forensic tools through the Model Context
+This server exposes 26 typed forensic tools through the Model Context
 Protocol (MCP) using stdio transport. It is designed to be used with Claude Code
 as the primary agentic execution engine on SANS SIFT Workstation.
 
@@ -68,7 +68,7 @@ mcp = FastMCP(
     name="savvydfir-mcp",
     instructions=(
         "Autonomous DFIR triage agent with cross-artifact correlation and "
-        "self-correction. Exposes 24 typed forensic tools over stdio MCP transport "
+        "self-correction. Exposes 26 typed forensic tools over stdio MCP transport "
         "for use with Claude Code on SANS SIFT Workstation."
     ),
 )
@@ -78,7 +78,9 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 # Ensure the default analysis directory exists so audit + state files can be written.
-_ANALYSIS_DIR = Path("./analysis").resolve()
+# SAVVYDFIR_ANALYSIS_DIR env var allows per-host isolation: each host investigation
+# sets this to investigations/{case_id}/ before launching Claude.
+_ANALYSIS_DIR = Path(os.environ.get("SAVVYDFIR_ANALYSIS_DIR", "./analysis")).resolve()
 _ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
 
 from sift_mcp.audit import AuditLogger
@@ -1039,7 +1041,7 @@ def export_trace(case_id: str) -> dict[str, Any]:
 
 
 # ===========================================================================
-# GRAPH NAMESPACE (2 tools)
+# GRAPH NAMESPACE (4 tools)
 # ===========================================================================
 
 
@@ -1082,8 +1084,8 @@ def generate_graph(
     dict
         status, graph_html_path, graph_json_path, node_count, edge_count.
     """
-    # Resolve paths
-    analysis_dir = Path("./analysis").resolve()
+    # Resolve paths — respect per-host analysis dir set by run_investigation.py
+    analysis_dir = _ANALYSIS_DIR
     reports_dir = Path("./reports").resolve()
 
     resolved_state = Path(state_path).resolve() if state_path else analysis_dir / "state.json"
@@ -1092,7 +1094,7 @@ def generate_graph(
     safe_case = case_id.replace("/", "_").replace("\\", "_")
     resolved_output = (
         Path(output_path).resolve() if output_path
-        else reports_dir / f"{safe_case}_graph.html"
+        else reports_dir / safe_case / "graph.html"
     )
 
     # Locate investigation_graph.py relative to this file
@@ -1210,7 +1212,7 @@ def serve_graph(
 
     resolved_html = (
         Path(graph_html_path).resolve() if graph_html_path
-        else reports_dir / f"{safe_case}_graph.html"
+        else reports_dir / safe_case / "graph.html"
     )
 
     if not resolved_html.exists():
@@ -1236,6 +1238,228 @@ def serve_graph(
             f"Run the following command in a terminal, then open {url} in a browser:\n"
             f"  {serve_command}"
         ),
+    }
+
+
+
+
+@mcp.tool()
+def merge_host_graphs(
+    reports_dir: Optional[str] = None,
+    output_path: Optional[str] = None,
+) -> dict[str, Any]:
+    """Merge per-host investigation graphs into a unified cross-host graph.
+
+    Scans all ``reports/{case_id}/graph.json`` files, extracts shared IOCs
+    (IPv4 addresses, MD5/SHA1/SHA256 hashes, domain\\user accounts) from
+    ``supporting_indicators``, and builds a unified graph with cross-host edges:
+
+    * ``lateral_movement`` — TA0008 finding on one host shares an IOC with a
+      finding on another host.
+    * ``shared_ioc`` — same IP, hash, or domain appears in 2+ hosts.
+    * ``shared_account`` — same Windows account seen on 2+ hosts.
+
+    Each shared IOC becomes a purple hub node connecting the related findings
+    across hosts.  Run this after completing investigations on 2+ hosts.
+
+    Parameters
+    ----------
+    reports_dir:
+        Directory containing per-host report subdirectories.
+        Defaults to ``./reports``.
+    output_path:
+        Override path for ``unified/graph.html``.
+        Defaults to ``./reports/unified/graph.html``.
+
+    Returns
+    -------
+    dict
+        status, output_html_path, output_json_path, host_count,
+        total_findings, shared_ioc_nodes, cross_host_edges.
+    """
+    server_dir = Path(__file__).resolve().parent
+    project_root = (server_dir / "..").resolve()
+
+    resolved_reports = (
+        Path(reports_dir).resolve() if reports_dir
+        else project_root / "reports"
+    )
+    resolved_output = (
+        Path(output_path).resolve() if output_path
+        else resolved_reports / "unified" / "graph.html"
+    )
+
+    merge_script = project_root / "scripts" / "merge_graphs.py"
+    if not merge_script.exists():
+        return {
+            "status": "error",
+            "error": (
+                f"merge_graphs.py not found at {merge_script}. "
+                "Ensure scripts/merge_graphs.py exists in the project root."
+            ),
+        }
+
+    # Count available host graphs before running
+    available = sorted(resolved_reports.glob("*/graph.json"))
+    available = [p for p in available if p.parent.name != "unified"]
+    if len(available) < 1:
+        return {
+            "status": "error",
+            "error": (
+                f"No per-host graph.json files found under {resolved_reports}/*/graph.json. "
+                "Run generate_graph() for each host first."
+            ),
+        }
+
+    resolved_output.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        sys.executable, str(merge_script),
+        "--reports-dir", str(resolved_reports),
+        "--output", str(resolved_output),
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            shell=False,
+            cwd=str(project_root),
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": "merge_host_graphs timed out (120 s)"}
+    except Exception as exc:
+        return {"status": "error", "error": f"Failed to run merge_graphs.py: {exc}"}
+
+    if proc.returncode != 0:
+        return {
+            "status": "error",
+            "error": f"merge_graphs.py exited {proc.returncode}",
+            "stderr": proc.stderr[:2000],
+        }
+
+    # Parse summary from stdout
+    import re as _re
+    meta: dict[str, Any] = {}
+    for line in proc.stdout.splitlines():
+        m = _re.search(r"(\d+) host graph", line)
+        if m:
+            meta["host_count"] = int(m.group(1))
+        m = _re.search(r"(\d+) nodes", line)
+        if m:
+            meta["total_nodes"] = int(m.group(1))
+        m = _re.search(r"(\d+) shared IOC nodes", line)
+        if m:
+            meta["shared_ioc_nodes"] = int(m.group(1))
+        m = _re.search(r"(\d+) cross-host edges", line)
+        if m:
+            meta["cross_host_edges"] = int(m.group(1))
+
+    return {
+        "status": "ok",
+        "output_html_path": str(resolved_output),
+        "output_json_path": str(resolved_output.with_name("graph.json")),
+        "hosts_merged": len(available),
+        **meta,
+        "stdout": proc.stdout[-1000:],
+    }
+
+
+@mcp.tool()
+def build_reports_index(
+    reports_dir: Optional[str] = None,
+) -> dict[str, Any]:
+    """Generate reports/index.html — a dashboard listing all investigations.
+
+    Scans all ``reports/{case_id}/graph.json`` files and produces a self-
+    contained dark-mode HTML index with:
+
+    * Per-host cards showing status, finding counts, ATT&CK tactic coverage,
+      and a link to the host's graph.
+    * A unified cross-host graph section (if ``reports/unified/graph.html``
+      exists).
+
+    Run this after completing one or more investigations to refresh the index.
+    The index is regenerated from scratch on each call — safe to call repeatedly.
+
+    Parameters
+    ----------
+    reports_dir:
+        Directory containing per-host report subdirectories.
+        Defaults to ``./reports``.
+
+    Returns
+    -------
+    dict
+        status, index_path, investigation_count.
+    """
+    server_dir = Path(__file__).resolve().parent
+    project_root = (server_dir / "..").resolve()
+
+    resolved_reports = (
+        Path(reports_dir).resolve() if reports_dir
+        else project_root / "reports"
+    )
+
+    index_script = project_root / "scripts" / "build_index.py"
+    if not index_script.exists():
+        return {
+            "status": "error",
+            "error": (
+                f"build_index.py not found at {index_script}. "
+                "Ensure scripts/build_index.py exists in the project root."
+            ),
+        }
+
+    resolved_reports.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        sys.executable, str(index_script),
+        "--reports-dir", str(resolved_reports),
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            shell=False,
+            cwd=str(project_root),
+        )
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": "build_reports_index timed out (60 s)"}
+    except Exception as exc:
+        return {"status": "error", "error": f"Failed to run build_index.py: {exc}"}
+
+    if proc.returncode != 0:
+        return {
+            "status": "error",
+            "error": f"build_index.py exited {proc.returncode}",
+            "stderr": proc.stderr[:1000],
+        }
+
+    index_path = resolved_reports / "index.html"
+
+    # Parse investigation count from stdout
+    import re as _re
+    investigation_count = 0
+    for line in proc.stdout.splitlines():
+        m = _re.search(r"(\d+) investigation", line)
+        if m:
+            investigation_count = int(m.group(1))
+
+    return {
+        "status": "ok",
+        "index_path": str(index_path),
+        "investigation_count": investigation_count,
+        "stdout": proc.stdout.strip(),
     }
 
 
