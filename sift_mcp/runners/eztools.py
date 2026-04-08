@@ -63,7 +63,7 @@ def _sift_bin(name: str) -> Optional[str]:
 
 #: Default timeout for EZ Tools.  .NET startup adds latency; large MFT or
 #: EVTX sets can take several minutes.
-DEFAULT_TIMEOUT = 300  # seconds
+DEFAULT_TIMEOUT = 1800  # seconds — EvtxECmd on 251MB Security.evtx needs up to 20 min
 
 
 # ---------------------------------------------------------------------------
