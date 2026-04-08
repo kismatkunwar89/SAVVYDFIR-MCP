@@ -488,7 +488,9 @@ def get_amcache(
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_amcache_") as tmp_dir:
         csv_filename = "amcache.csv"
-        csv_path = os.path.join(tmp_dir, csv_filename)
+        # AmcacheParser outputs multiple CSVs with stem prefix:
+        # amcache_UnassociatedFileEntries.csv is the execution evidence file
+        csv_path = os.path.join(tmp_dir, "amcache_UnassociatedFileEntries.csv")
 
         try:
             result = _ez_runner.run_amcacheparser(
