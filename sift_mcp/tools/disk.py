@@ -134,6 +134,28 @@ def _current_iteration() -> int:
     return _audit.current_iteration
 
 
+
+def _persist_csv(tmp_csv_path: str, tool_short_name: str) -> str:
+    """Copy a tempdir CSV to a persistent artifact path and return the new path.
+
+    Pattern: $OUTPUT_BASE/<case_id>/artifacts/<tool_short_name>/<filename>
+    Allows run_analysis() to query the full dataset after the tool returns.
+    Returns the persistent path on success, original path on failure.
+    """
+    import shutil as _shutil
+    src_path = Path(tmp_csv_path)
+    if not src_path.exists():
+        return tmp_csv_path
+    cid = _case_id()
+    base = Path(os.environ.get("OUTPUT_BASE", "/cases")) / cid / "artifacts" / tool_short_name
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        dest = base / src_path.name
+        _shutil.copy2(str(src_path), str(dest))
+        return str(dest)
+    except OSError:
+        return tmp_csv_path
+
 def _read_csv(csv_path: str) -> list[dict[str, str]]:
     """Read a CSV file (with UTF-8 BOM handling) and return rows as dicts.
 
@@ -529,6 +551,7 @@ def get_amcache(
             }
 
         rows = _read_csv(csv_path)
+        persistent_csv = _persist_csv(csv_path, "amcache")
 
     records: list[AmcacheRecord] = []
     finding_ids: list[str] = []
@@ -605,6 +628,9 @@ def get_amcache(
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(records),
+        "csv_path": persistent_csv,
+        "total_rows": len(rows),
+        "note": f"Full {len(rows)} rows at {persistent_csv}. Use run_analysis(data_path=csv_path) for deep queries.",
     }, "get_amcache", hive_path)
 
 
@@ -687,6 +713,7 @@ def extract_mft_timeline(
             }
 
         rows = _read_csv(csv_path)
+        persistent_csv = _persist_csv(csv_path, "mft")
 
     records: list[MftEntry] = []
     finding_ids: list[str] = []
@@ -809,6 +836,9 @@ def extract_mft_timeline(
         "raw_command": result.command_line,
         "records_count": len(records),
         "timestomping_candidates": timestomping_candidates,
+        "csv_path": persistent_csv,
+        "total_rows": len(rows),
+        "note": f"Full MFT ({len(rows)} rows) at {persistent_csv}. Use run_analysis(data_path=csv_path) for timeline queries.",
     }, "extract_mft_timeline", mft_path, min_expected=10000)
 
 
@@ -1082,6 +1112,7 @@ def summarize_evtx(
             }
 
         rows = _read_csv(csv_path)
+        persistent_csv = _persist_csv(csv_path, "evtx")
 
     records: list[EventRecord] = []
     finding_ids: list[str] = []
@@ -1180,6 +1211,9 @@ def summarize_evtx(
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(records),
+        "csv_path": persistent_csv,
+        "total_rows": len(rows),
+        "note": f"Full event log ({len(rows)} rows) at {persistent_csv}. Use run_analysis(data_path=csv_path) for targeted queries.",
         "channel_filter": channel,
         "event_id_filter": effective_eids if effective_eids else "all",
         "date_range": {
@@ -1388,6 +1422,7 @@ def extract_registry_run_keys(
             }
 
         rows = _read_csv(csv_path)
+        persistent_csv = _persist_csv(csv_path, "registry")
 
         # Also scan user NTUSER.DAT hives for per-user persistence keys
         for user_hive_dir in user_hives_found:
