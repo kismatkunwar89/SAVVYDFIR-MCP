@@ -1637,6 +1637,57 @@ def load_memory(
 # ---- Windows constants for case-agnostic detection ----
 
 #: Processes that MUST have services.exe as parent on a healthy Windows system.
+# ---------------------------------------------------------------------------
+# Column / key normalization helpers for anomaly detectors
+# ---------------------------------------------------------------------------
+
+
+def _normalize_columns(df):
+    """Normalize DataFrame column names: strip, lowercase, replace spaces with underscores.
+    EvtxECmd and other EZ Tools produce inconsistent column names across versions."""
+    df = df.copy()
+    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('-', '_')
+    return df
+
+
+def _find_col(df, *candidates):
+    """Find first matching column name (case-insensitive, normalized)."""
+    norm_cols = {c.lower().replace(' ', '_').replace('-', '_'): c for c in df.columns}
+    for c in candidates:
+        norm = c.lower().replace(' ', '_').replace('-', '_')
+        if norm in norm_cols:
+            return norm_cols[norm]
+        # Try partial match
+        matches = [v for k, v in norm_cols.items() if norm in k]
+        if matches:
+            return matches[0]
+    return None
+
+
+def _normalize_finding(f: dict) -> dict:
+    """Normalize a finding dict's keys: strip, lowercase, replace spaces/dashes with underscores.
+    This handles inconsistent key names from different EZ Tools versions and tool outputs."""
+    return {
+        k.strip().lower().replace(' ', '_').replace('-', '_'): v
+        for k, v in f.items()
+    }
+
+
+def _find_key(f: dict, *candidates) -> Any:
+    """Find first matching key value from a dict (case-insensitive, normalized).
+    Returns None if no candidate matches."""
+    norm_keys = {k.lower().replace(' ', '_').replace('-', '_'): v for k, v in f.items()}
+    for c in candidates:
+        norm = c.lower().replace(' ', '_').replace('-', '_')
+        if norm in norm_keys:
+            return norm_keys[norm]
+        # Try partial match
+        matches = [v for k, v in norm_keys.items() if norm in k]
+        if matches:
+            return matches[0]
+    return None
+
+
 _SVCHOST_PARENT = "services.exe"
 #: Legitimate svchost path (case-insensitive comparison).
 _SVCHOST_PATH = r"c:\windows\system32\svchost.exe"
@@ -1670,32 +1721,37 @@ def _detect_process_anomalies(findings: list[dict]) -> list[ArtifactHit]:
     - Process name typosquats of system processes
     """
     hits: list[ArtifactHit] = []
-    pids = {f.get("pid") for f in findings if f.get("artifact_type") == "process"}
-    process_findings = [f for f in findings if f.get("artifact_type") == "process"]
+    findings = [_normalize_finding(f) for f in findings]
+
+    process_findings = [f for f in findings if _find_key(f, "artifact_type") == "process"]
+    pids = {_find_key(f, "pid", "processid", "process_id") for f in process_findings}
+    pids.discard(None)
 
     for pf in process_findings:
-        name = (pf.get("name") or pf.get("description", "")).lower()
-        ppid = pf.get("ppid", pf.get("parent_pid"))
-        path = (pf.get("artifact_path") or "").lower()
+        pid = _find_key(pf, "pid", "processid", "process_id")
+        name = (_find_key(pf, "name", "imagename", "image_name", "processname") or _find_key(pf, "description") or "").lower()
+        ppid = _find_key(pf, "ppid", "parent_pid", "parentprocessid", "parentpid")
+        path = (_find_key(pf, "artifact_path", "imagepath", "image_path", "path") or "").lower()
 
         # Check: svchost not spawned by services.exe
         if "svchost" in name and ppid is not None:
             parent_name = ""
             for f2 in process_findings:
-                if f2.get("pid") == ppid:
-                    parent_name = (f2.get("name") or f2.get("description", "")).lower()
+                f2_pid = _find_key(f2, "pid", "processid", "process_id")
+                if f2_pid == ppid:
+                    parent_name = (_find_key(f2, "name", "imagename", "image_name", "processname") or _find_key(f2, "description") or "").lower()
                     break
             if parent_name and _SVCHOST_PARENT not in parent_name:
                 hits.append(ArtifactHit(
                     detector="process_anomaly",
                     severity="CRITICAL",
-                    description=f"svchost.exe (PID {pf.get('pid')}) has unexpected parent {parent_name} (PID {ppid}) — expected services.exe",
+                    description=f"svchost.exe (PID {pid}) has unexpected parent {parent_name} (PID {ppid}) — expected services.exe",
                     artifact_type="process",
-                    artifact_path=pf.get("artifact_path"),
-                    raw_data={"pid": pf.get("pid"), "ppid": ppid, "parent_name": parent_name},
+                    artifact_path=_find_key(pf, "artifact_path"),
+                    raw_data={"pid": pid, "ppid": ppid, "parent_name": parent_name},
                     mitre_technique="T1036.005",
                     mitre_tactic="TA0005",
-                    pivot_suggestion=f"Call detect_injection(pid={pf.get('pid')}) and list_dlls(pid={pf.get('pid')})",
+                    pivot_suggestion=f"Call detect_injection(pid={pid}) and list_dlls(pid={pid})",
                 ))
 
         # Check: orphan process
@@ -1703,12 +1759,12 @@ def _detect_process_anomalies(findings: list[dict]) -> list[ArtifactHit]:
             hits.append(ArtifactHit(
                 detector="process_anomaly",
                 severity="HIGH",
-                description=f"Orphan process '{name}' (PID {pf.get('pid')}) — parent PID {ppid} not found in process list",
+                description=f"Orphan process '{name}' (PID {pid}) — parent PID {ppid} not found in process list",
                 artifact_type="process",
-                raw_data={"pid": pf.get("pid"), "ppid": ppid},
+                raw_data={"pid": pid, "ppid": ppid},
                 mitre_technique="T1134",
                 mitre_tactic="TA0005",
-                pivot_suggestion=f"Call scan_processes() to check if parent was DKOM-hidden",
+                pivot_suggestion="Call scan_processes() to check if parent was DKOM-hidden",
             ))
 
         # Check: system process from wrong path
@@ -1720,7 +1776,7 @@ def _detect_process_anomalies(findings: list[dict]) -> list[ArtifactHit]:
                 description=f"System process '{base_name}' running from unexpected path: {path}",
                 artifact_type="process",
                 artifact_path=path,
-                raw_data={"pid": pf.get("pid"), "name": base_name, "path": path},
+                raw_data={"pid": pid, "name": base_name, "path": path},
                 mitre_technique="T1036.005",
                 mitre_tactic="TA0005",
                 pivot_suggestion=f"Hash the binary and check VirusTotal: sha256sum {path}",
@@ -1739,14 +1795,14 @@ def _detect_network_anomalies(findings: list[dict]) -> list[ArtifactHit]:
     """
     hits: list[ArtifactHit] = []
     _COMMON_PORTS = {80, 443, 53, 445, 135, 139, 389, 636, 88, 464, 3389}
-    net_findings = [f for f in findings if f.get("artifact_type") == "network_connection"]
+    findings = [_normalize_finding(f) for f in findings]
+    net_findings = [f for f in findings if _find_key(f, "artifact_type") == "network_connection"]
 
     for nf in net_findings:
-        remote = nf.get("remote_addr", "")
-        remote_port = nf.get("remote_port")
-        local_port = nf.get("local_port")
-        owner = (nf.get("owner_process") or nf.get("description", "")).lower()
-        state = (nf.get("state") or "").upper()
+        remote = _find_key(nf, "remote_addr", "foreignaddr", "foreign_addr", "remoteaddress", "remotehost") or ""
+        remote_port = _find_key(nf, "remote_port", "foreignport", "foreign_port", "remoteport")
+        owner = (_find_key(nf, "owner_process", "owning_process", "processname", "name") or _find_key(nf, "description") or "").lower()
+        state = (_find_key(nf, "state", "status", "connection_state") or "").upper()
 
         # Skip if no remote address
         if not remote or remote in ("0.0.0.0", "::", "*", ""):
@@ -1782,7 +1838,7 @@ def _detect_network_anomalies(findings: list[dict]) -> list[ArtifactHit]:
                 raw_data={"remote": remote, "port": remote_port, "owner": owner},
                 mitre_technique="T1571",
                 mitre_tactic="TA0011",
-                pivot_suggestion=f"Check process tree of owning PID for injection indicators",
+                pivot_suggestion="Check process tree of owning PID for injection indicators",
             ))
 
     return hits
@@ -1795,11 +1851,13 @@ def _detect_mft_anomalies(findings: list[dict]) -> list[ArtifactHit]:
     the file was likely timestomped (SI is user-modifiable, FN requires kernel).
     """
     hits: list[ArtifactHit] = []
-    mft_findings = [f for f in findings if f.get("artifact_type") in ("mft", "mft_entry")]
+    findings = [_normalize_finding(f) for f in findings]
+    mft_findings = [f for f in findings if _find_key(f, "artifact_type") in ("mft", "mft_entry")]
 
     for mf in mft_findings:
-        si_created = mf.get("si_created")
-        fn_created = mf.get("fn_created")
+        si_created = _find_key(mf, "si_created", "created0x10", "sicreated", "standard_information_created")
+        fn_created = _find_key(mf, "fn_created", "created0x30", "fncreated", "file_name_created")
+        file_path_val = _find_key(mf, "file_path", "filename", "filepath", "path") or "unknown"
         if not si_created or not fn_created:
             continue
 
@@ -1818,9 +1876,9 @@ def _detect_mft_anomalies(findings: list[dict]) -> list[ArtifactHit]:
                 hits.append(ArtifactHit(
                     detector="mft_timestomp",
                     severity="HIGH",
-                    description=f"Timestomping detected: SI Created differs from FN Created by {delta/3600:.1f}h for {mf.get('file_path', 'unknown')}",
+                    description=f"Timestomping detected: SI Created differs from FN Created by {delta/3600:.1f}h for {file_path_val}",
                     artifact_type="mft",
-                    artifact_path=mf.get("file_path"),
+                    artifact_path=file_path_val if file_path_val != "unknown" else None,
                     raw_data={"si_created": str(si_created), "fn_created": str(fn_created), "delta_seconds": delta},
                     mitre_technique="T1070.006",
                     mitre_tactic="TA0005",
@@ -1835,18 +1893,28 @@ def _detect_mft_anomalies(findings: list[dict]) -> list[ArtifactHit]:
 def _detect_evtx_anomalies(findings: list[dict]) -> list[ArtifactHit]:
     """Flag high-value Windows Event IDs with ATT&CK technique auto-tagging."""
     hits: list[ArtifactHit] = []
-    evtx_findings = [f for f in findings if f.get("artifact_type") in ("evtx_event", "event_log")]
+    findings = [_normalize_finding(f) for f in findings]
+    evtx_findings = [f for f in findings if _find_key(f, "artifact_type") in ("evtx_event", "event_log")]
 
     for ef in evtx_findings:
-        event_id = ef.get("event_id")
+        event_id = _find_key(ef, "event_id", "eventid", "id")
+        # Coerce to int for lookup
+        if event_id is not None:
+            try:
+                event_id = int(event_id)
+            except (ValueError, TypeError):
+                continue
         if event_id and event_id in _HIGH_VALUE_EVTX:
             label, tactic, technique = _HIGH_VALUE_EVTX[event_id]
+            msg = _find_key(ef, "description", "message_summary", "message", "payloaddata1") or ""
+            channel = _find_key(ef, "channel", "eventchannel", "log_name") or ""
+            ts = _find_key(ef, "timestamp", "timecreated", "time_created", "date/time___utc") or ""
             hits.append(ArtifactHit(
                 detector="evtx_anomaly",
                 severity="HIGH" if event_id in (4688, 4697, 7045, 4698) else "MEDIUM",
-                description=f"High-value event {event_id} ({label}): {ef.get('description', ef.get('message_summary', ''))}",
+                description=f"High-value event {event_id} ({label}): {msg}",
                 artifact_type="evtx",
-                raw_data={"event_id": event_id, "channel": ef.get("channel"), "timestamp": str(ef.get("timestamp"))},
+                raw_data={"event_id": event_id, "channel": channel, "timestamp": str(ts)},
                 mitre_technique=technique,
                 mitre_tactic=tactic,
                 pivot_suggestion=f"Correlate event {event_id} with timeline around this timestamp",
@@ -1859,10 +1927,12 @@ def _detect_persistence_anomalies(findings: list[dict]) -> list[ArtifactHit]:
     """Detect persistence keys pointing to suspicious paths or missing binaries."""
     hits: list[ArtifactHit] = []
     _SUSPICIOUS_PATHS = ["\\temp\\", "\\tmp\\", "\\appdata\\", "\\downloads\\", "\\public\\"]
-    reg_findings = [f for f in findings if f.get("artifact_type") in ("registry_key", "persistence")]
+    findings = [_normalize_finding(f) for f in findings]
+    reg_findings = [f for f in findings if _find_key(f, "artifact_type") in ("registry_key", "persistence")]
 
     for rf in reg_findings:
-        value = (rf.get("value_data") or rf.get("artifact_path") or "").lower()
+        value = (_find_key(rf, "value_data", "valuedata", "data", "value") or _find_key(rf, "artifact_path") or "").lower()
+        key_path = _find_key(rf, "key_path", "keypath", "hivepath", "path") or ""
 
         for sp in _SUSPICIOUS_PATHS:
             if sp in value:
@@ -1871,8 +1941,8 @@ def _detect_persistence_anomalies(findings: list[dict]) -> list[ArtifactHit]:
                     severity="HIGH",
                     description=f"Persistence key references suspicious path: {value}",
                     artifact_type="persistence",
-                    artifact_path=rf.get("artifact_path"),
-                    raw_data={"key": rf.get("key_path"), "value": value},
+                    artifact_path=_find_key(rf, "artifact_path"),
+                    raw_data={"key": key_path, "value": value},
                     mitre_technique="T1547.001",
                     mitre_tactic="TA0003",
                     pivot_suggestion=f"Check if binary exists on disk: fls -r | grep '{Path(value).name}'",

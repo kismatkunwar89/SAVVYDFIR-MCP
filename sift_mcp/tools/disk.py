@@ -184,6 +184,24 @@ def _parse_dt(value: str) -> Optional[datetime]:
     return None
 
 
+def _warn_if_empty(result: dict, tool_name: str, path: str, min_expected: int = 1) -> dict:
+    """Upgrade status to 'warning' if records=0 but path exists.
+
+    Silent 0-record success is the worst failure mode — it looks like
+    a clean system when the tool silently failed. This makes it loud.
+    """
+    count = result.get("records_count", len(result.get("data", [])))
+    if count == 0 and os.path.exists(path):
+        result = dict(result)
+        result["status"] = "warning"
+        result["warning"] = (
+            f"{tool_name} found 0 records but path exists: {path}. "
+            f"Verify mount point and tool parameters. "
+            f"A clean Windows system should always have records here."
+        )
+    return result
+
+
 def _not_initialised(tool_name: str) -> dict[str, Any]:
     """Return a standardised error response for uninitialised singletons."""
     return {
@@ -390,7 +408,7 @@ def extract_prefetch(
             # Skip malformed rows without aborting the entire parse
             continue
 
-    return {
+    return _warn_if_empty({
         "tool_name": tool,
         "status": "success",
         "data": [r.model_dump(mode="json") for r in records],
@@ -398,7 +416,7 @@ def extract_prefetch(
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(records),
-    }
+    }, "extract_prefetch", prefetch_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +558,7 @@ def get_amcache(
         except Exception:
             continue
 
-    return {
+    return _warn_if_empty({
         "tool_name": tool,
         "status": "success",
         "data": [r.model_dump(mode="json") for r in records],
@@ -548,7 +566,7 @@ def get_amcache(
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(records),
-    }
+    }, "get_amcache", hive_path)
 
 
 # ---------------------------------------------------------------------------
@@ -743,7 +761,7 @@ def extract_mft_timeline(
         except Exception:
             continue
 
-    return {
+    return _warn_if_empty({
         "tool_name": tool,
         "status": "success",
         "data": [r.model_dump(mode="json") for r in records],
@@ -752,7 +770,7 @@ def extract_mft_timeline(
         "raw_command": result.command_line,
         "records_count": len(records),
         "timestomping_candidates": timestomping_candidates,
-    }
+    }, "extract_mft_timeline", mft_path, min_expected=10000)
 
 
 # ---------------------------------------------------------------------------
@@ -1093,7 +1111,7 @@ def summarize_evtx(
         fid = _state.add_finding(finding.model_dump(mode="json"))
         finding_ids.append(fid)
 
-    return {
+    return _warn_if_empty({
         "tool_name": tool,
         "status": "success",
         "data": [r.model_dump(mode="json") for r in records],
@@ -1102,7 +1120,7 @@ def summarize_evtx(
         "raw_command": result.command_line,
         "records_count": len(records),
         "channel_filter": channel,
-    }
+    }, "summarize_evtx", evtx_dir, min_expected=100)
 
 
 # ---------------------------------------------------------------------------
@@ -1296,7 +1314,7 @@ def extract_registry_run_keys(
         except Exception:
             continue
 
-    return {
+    return _warn_if_empty({
         "tool_name": tool,
         "status": "success",
         "data": [r.model_dump(mode="json") for r in records],
@@ -1305,4 +1323,4 @@ def extract_registry_run_keys(
         "raw_command": result.command_line,
         "records_count": len(records),
         "persistence_type_counts": persistence_type_counts,
-    }
+    }, "extract_registry_run_keys", hive_dir)
