@@ -406,17 +406,24 @@ def summarize_evtx(
     channel: str = "Security",
     case_id: str = "default",
     max_entries: int = 500,
+    start_date: str = "",
+    end_date: str = "",
+    event_ids: str = "",
 ) -> dict[str, Any]:
     """Parse Windows Event Log (EVTX) files from a disk image.
 
     Runs ``dotnet EvtxECmd.dll`` (EZ Tools) to extract events from the
-    specified log channel.  Returns a list of EventRecord dicts.
+    specified log channel.  By default, filters to 26 DFIR-essential Event
+    IDs to prevent context flooding.
 
-    Key event IDs:
+    Key event IDs (included by default):
     * **4624** — Successful logon (reveals lateral movement)
     * **4625** — Failed logon (brute force indicator)
     * **4688** — Process creation (requires audit policy)
     * **7045** — New service installed (persistence indicator)
+    * **4698** — Scheduled task created
+    * **4103/4104** — PowerShell logging
+    * **1/3** — Sysmon process/network (if available)
 
     Parameters
     ----------
@@ -429,14 +436,40 @@ def summarize_evtx(
         Case identifier for output file naming.
     max_entries:
         Maximum number of EventRecord entries to return.
+    start_date:
+        ISO 8601 date filter start (e.g. ``"2024-01-15"``).
+        Empty string means no start date filter.
+    end_date:
+        ISO 8601 date filter end (e.g. ``"2024-02-01"``).
+        Empty string means no end date filter.
+    event_ids:
+        Comma-separated Event IDs to include (e.g. ``"4624,4625,7045"``).
+        Empty string uses the default DFIR_ESSENTIAL_EIDS (26 IDs).
+        Use ``"all"`` to disable filtering and return all events.
 
     Returns
     -------
     dict
-        status, records (list of EventRecord dicts), count, execution_id.
+        status, records (list of EventRecord dicts), count, execution_id,
+        event_id_filter, date_range.
     """
     try:
-        return _summarize_evtx(image_path=image_path, channel=channel, case_id=case_id, max_entries=max_entries)
+        # Parse event_ids string to list[int] or None
+        parsed_eids: list[int] | None = None
+        if event_ids and event_ids.strip().lower() != "all":
+            parsed_eids = [int(x.strip()) for x in event_ids.split(",") if x.strip()]
+        elif event_ids.strip().lower() == "all":
+            parsed_eids = []  # empty list = disable filtering
+
+        return _summarize_evtx(
+            image_path=image_path,
+            channel=channel,
+            case_id=case_id,
+            max_entries=max_entries,
+            start_date=start_date or None,
+            end_date=end_date or None,
+            event_ids=parsed_eids,
+        )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "summarize_evtx"}
 
@@ -446,12 +479,21 @@ def extract_registry_run_keys(
     image_path: str,
     case_id: str = "default",
     max_entries: int = 200,
+    batch_mode: bool = True,
+    sync_batch: bool = False,
 ) -> dict[str, Any]:
     """Extract Windows registry persistence keys from a disk image.
 
     Runs ``dotnet RECmd.dll`` (EZ Tools) to extract persistence entries from
     Run/RunOnce, AppInit_DLLs, Winlogon Shell/Userinit, Services, and other
     autostart locations.
+
+    By default, uses DFIRBatch mode (``--bn DFIRBatch.reb``) which targets
+    40+ forensically significant registry artifact categories.  Falls back
+    to basic mode with a warning if the batch file is not found.
+
+    Also automatically scans user NTUSER.DAT hives for per-user persistence
+    keys (a common attacker technique).
 
     Cross-reference the ``value_data`` (binary path) against disk artefacts
     to detect persistence keys pointing to deleted or non-existent binaries
@@ -465,14 +507,27 @@ def extract_registry_run_keys(
         Case identifier for output file naming.
     max_entries:
         Maximum number of RegistryRunKey entries to return.
+    batch_mode:
+        Use DFIRBatch.reb for targeted extraction (default True).
+        Set to False to dump all registry keys.
+    sync_batch:
+        Download latest batch definitions before running (default False).
+        Requires network access.
 
     Returns
     -------
     dict
-        status, records (list of RegistryRunKey dicts), count, execution_id.
+        status, records (list of RegistryRunKey dicts), count, execution_id,
+        batch_file_used, user_hives_scanned.
     """
     try:
-        return _extract_registry_run_keys(image_path=image_path, case_id=case_id, max_entries=max_entries)
+        return _extract_registry_run_keys(
+            image_path=image_path,
+            case_id=case_id,
+            max_entries=max_entries,
+            batch_mode=batch_mode,
+            sync_batch=sync_batch,
+        )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "extract_registry_run_keys"}
 
