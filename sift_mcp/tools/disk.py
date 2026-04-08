@@ -303,128 +303,77 @@ def extract_prefetch(
             # Legacy convention: <case_dir>/evidence/mnt/C/Windows/Prefetch
             prefetch_dir = str(base / "mnt" / "C" / "Windows" / "Prefetch")
 
-    with tempfile.TemporaryDirectory(prefix="savvydfir_pecmd_") as tmp_dir:
-        csv_filename = "prefetch.csv"
-        csv_path = os.path.join(tmp_dir, csv_filename)
-
-        try:
-            result = _ez_runner.run_pecmd(
-                prefetch_dir_or_file=prefetch_dir,
-                csv_dir=tmp_dir,
-                csv_filename=csv_filename,
-            )
-        except Exception as exc:
-            return _runner_error(tool, exc)
-
-        if not result.ok and not Path(csv_path).exists():
-            # PECmd cannot decompress Prefetch on Linux (needs Windows DLLs)
-            # This is a known platform limitation, not a bug
-            if "non-windows" in result.stderr.lower() or "not supported" in result.stderr.lower():
-                return {
-                    "tool_name": tool,
-                    "status": "warning",
-                    "error_message": (
-                        "PECmd requires Windows libraries to decompress Prefetch files. "
-                        "On Linux/SIFT, use Volatility 3 windows.prefetch plugin instead: "
-                        "vol3 -f <dump.img> windows.prefetch"
-                    ),
-                    "data": [],
-                    "findings_created": [],
-                    "execution_id": result.execution_id,
-                    "raw_command": result.command_line,
-                }
-            return {
-                "tool_name": tool,
-                "status": "error",
-                "error_message": (
-                    f"PECmd exited with code {result.exit_code}. "
-                    f"stderr: {result.stderr[:300]}"
-                ),
-                "data": [],
-                "findings_created": [],
-                "execution_id": result.execution_id,
-                "raw_command": result.command_line,
-                "stderr": result.stderr,
-            }
-
-        rows = _read_csv(csv_path)
-
+    # Use pyscca (libscca) — handles Windows 10 MAM-compressed .pf files on Linux
+    # PECmd requires Windows APIs for decompression; pyscca is the Linux-native solution
     records: list[PrefetchRecord] = []
     finding_ids: list[str] = []
+    exec_id = f"E-pyscca-{os.getpid()}"
 
-    for row in rows:
+    try:
+        import pyscca
+    except ImportError:
+        return {
+            "tool_name": tool,
+            "status": "error",
+            "error_message": "pyscca not installed. Run: pip3 install libscca",
+            "data": [], "findings_created": [], "records_count": 0,
+        }
+
+    pf_files = sorted(Path(prefetch_dir).glob("*.pf"))
+    if max_entries > 0:
+        pf_files = pf_files[:max_entries]
+
+    for pf_file in pf_files:
         try:
-            # PECmd CSV columns (may vary slightly by version)
-            exec_name = (
-                row.get("ExecutableName") or row.get("SourceFileName") or ""
-            ).strip()
-            pf_path = (
-                row.get("SourceFilePath") or row.get("SourceFile") or ""
-            ).strip()
-            run_count_raw = row.get("RunCount") or row.get("PrefetchCount") or "1"
-            try:
-                run_count = int(run_count_raw)
-            except (ValueError, TypeError):
-                run_count = 1
+            pf = pyscca.open(str(pf_file))
+            exec_name = pf.executable_filename or pf_file.stem
+            run_count = pf.run_count or 1
 
-            # Parse up to 8 run times (columns LastRun, PreviousRun1..PreviousRun7)
             last_run_times: list[datetime] = []
-            for col in [
-                "LastRun",
-                "PreviousRun1", "PreviousRun2", "PreviousRun3",
-                "PreviousRun4", "PreviousRun5", "PreviousRun6", "PreviousRun7",
-            ]:
-                dt = _parse_dt(row.get(col, ""))
-                if dt is not None:
-                    last_run_times.append(dt)
+            for i in range(8):
+                try:
+                    rt = pf.get_last_run_time(i)
+                    if rt and rt.year > 1970:
+                        last_run_times.append(rt)
+                except Exception:
+                    break
 
-            # Referenced files: comma-separated in the Directories/Files column
-            referenced_raw = (
-                row.get("FilesLoaded") or row.get("Directories") or ""
-            )
-            referenced_files = [
-                f.strip() for f in referenced_raw.split("|") if f.strip()
-            ] if referenced_raw else []
+            referenced_files: list[str] = []
+            for i in range(pf.number_of_filenames):
+                try:
+                    referenced_files.append(pf.get_filename(i))
+                except Exception:
+                    pass
 
             record = PrefetchRecord(
-                executable_name=exec_name or Path(pf_path).stem,
-                prefetch_path=pf_path,
+                executable_name=exec_name,
+                prefetch_path=str(pf_file),
                 run_count=max(run_count, 1),
                 last_run_times=last_run_times[:8],
-                referenced_files=referenced_files,
-                volume_path=row.get("Volume0Name") or row.get("VolumePath"),
-                volume_serial=row.get("Volume0Serial") or row.get("VolumeSerial"),
-                source_created=_parse_dt(row.get("SourceCreated") or row.get("Created") or ""),
-                source_modified=_parse_dt(row.get("SourceModified") or row.get("Modified") or ""),
+                referenced_files=referenced_files[:50],
             )
             records.append(record)
 
-            # Create a finding for each prefetch record
             finding = Finding(
                 case_id=_case_id(),
                 finding_type="other",
                 artifact_type="disk",
-                artifact_path=pf_path or prefetch_dir,
+                artifact_path=str(pf_file),
                 tool_name=tool,
-                execution_id=result.execution_id,
+                execution_id=exec_id,
                 iteration=_current_iteration(),
                 evidence_kind=EvidenceKind.OBSERVATION,
                 finding_status=FindingStatus.ACTIVE,
                 confidence=0.95,
                 description=(
-                    f"Prefetch evidence: {exec_name} executed {run_count} time(s). "
-                    f"Last run: {last_run_times[0].isoformat() if last_run_times else 'unknown'}. "
-                    f"PF file: {pf_path}."
+                    f"Prefetch: {exec_name} ran {run_count} time(s). "
+                    f"Last run: {last_run_times[0].isoformat() if last_run_times else 'unknown'}"
                 ),
-                supporting_indicators=[pf_path, exec_name] + [
-                    t.isoformat() for t in last_run_times[:3]
-                ],
+                supporting_indicators=[str(pf_file), exec_name],
             )
             fid = _state.add_finding(finding.model_dump(mode="json"))
             finding_ids.append(fid)
-
         except Exception:
-            # Skip malformed rows without aborting the entire parse
             continue
 
     return _warn_if_empty({
@@ -432,8 +381,8 @@ def extract_prefetch(
         "status": "success",
         "data": [r.model_dump(mode="json") for r in records],
         "findings_created": finding_ids,
-        "execution_id": result.execution_id,
-        "raw_command": result.command_line,
+        "execution_id": exec_id,
+        "raw_command": f"pyscca {prefetch_dir}/*.pf",
         "records_count": len(records),
     }, "extract_prefetch", prefetch_dir)
 
