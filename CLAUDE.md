@@ -29,6 +29,7 @@ You are the investigator. All evidence is READ-ONLY. Chain of custody applies.
 6. Deep dive: `run_analysis(data_path, query)` for ad-hoc Pandas queries
 7. Record findings: `add_finding()` with evidence_kind, artifact_path, confidence
 8. Generate report: `generate_report(case_id)`
+9. Generate graph: `generate_graph(case_id)` — produces graph.json + graph.html for visualization and future chat embedding
 
 ## New Tools (v3)
 - `sigma_scan(case_id)` — universal anomaly detection (process, network, MFT, EVTX, persistence)
