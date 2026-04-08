@@ -663,10 +663,13 @@ def _inject_graph_data(html: str, graph_data: dict[str, Any]) -> str:
     ValueError
         If the placeholder is not found in the template.
     """
-    placeholder = "/*GRAPH_DATA_PLACEHOLDER*/"
+    placeholder = "/*GRAPH_DATA_PLACEHOLDER*/null"
+    if placeholder not in html:
+        # Try without null (fallback)
+        placeholder = "/*GRAPH_DATA_PLACEHOLDER*/"
     if placeholder not in html:
         raise ValueError(
-            f"Template does not contain the required marker: {placeholder!r}\n"
+            f"Template missing required marker: /*GRAPH_DATA_PLACEHOLDER*/null\n"
             "Ensure the graph.html template contains:\n"
             "  const GRAPH_DATA = /*GRAPH_DATA_PLACEHOLDER*/null;"
         )
