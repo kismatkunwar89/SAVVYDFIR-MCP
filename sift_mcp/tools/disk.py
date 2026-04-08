@@ -151,9 +151,12 @@ def _read_csv(csv_path: str) -> list[dict[str, str]]:
     p = Path(csv_path)
     if not p.exists() or p.stat().st_size == 0:
         return []
-    with p.open(encoding="utf-8-sig", newline="") as fh:
-        reader = csv.DictReader(fh)
-        return [dict(row) for row in reader]
+    # Read raw bytes and strip NUL bytes (MFTECmd emits NUL in some rows)
+    raw = p.read_bytes().replace(b'\x00', b'')
+    text = raw.decode('utf-8-sig', errors='replace')
+    import io
+    reader = csv.DictReader(io.StringIO(text))
+    return [dict(row) for row in reader]
 
 
 def _parse_dt(value: str) -> Optional[datetime]:
@@ -314,6 +317,22 @@ def extract_prefetch(
             return _runner_error(tool, exc)
 
         if not result.ok and not Path(csv_path).exists():
+            # PECmd cannot decompress Prefetch on Linux (needs Windows DLLs)
+            # This is a known platform limitation, not a bug
+            if "non-windows" in result.stderr.lower() or "not supported" in result.stderr.lower():
+                return {
+                    "tool_name": tool,
+                    "status": "warning",
+                    "error_message": (
+                        "PECmd requires Windows libraries to decompress Prefetch files. "
+                        "On Linux/SIFT, use Volatility 3 windows.prefetch plugin instead: "
+                        "vol3 -f <dump.img> windows.prefetch"
+                    ),
+                    "data": [],
+                    "findings_created": [],
+                    "execution_id": result.execution_id,
+                    "raw_command": result.command_line,
+                }
             return {
                 "tool_name": tool,
                 "status": "error",
