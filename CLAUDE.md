@@ -81,3 +81,39 @@ timeline reconstruction, and writing the forensic narrative.
 - Run Volatility memory tools together (fast): `list_processes` + `scan_processes` + `scan_network`
 - Run heavy dotnet disk tools ONE AT A TIME (slow): `summarize_evtx`, then `extract_mft_timeline`, then `extract_registry_run_keys`
 - Never run two dotnet tools in parallel — this saturates the 4 vCPU server and kills the MCP connection.
+
+## The Forensic Trinity
+Every Windows investigation anchors on three pillars — never neglect any one:
+- **Filesystem** ($MFT, $UsnJrnl, Prefetch, Amcache, ShimCache, Recycle Bin)
+- **Memory** (processes, network connections, injected code, credentials, unflushed ShimCache)
+- **Registry** (persistence ASEPs, user behavior, hardware history, credential stores)
+
+## Forensic Investigator Mindset
+
+**Navigation ≠ Access ≠ Execution** — respect artifact boundaries:
+- ShellBag = shell rendered the folder, NOT that the user read files inside
+- Amcache/ShimCache = file existed on disk, NOT that it executed
+- UserAssist = key was written, NOT that a human clicked it (background tasks populate it)
+- To prove execution: corroborate with Prefetch + EVTX EID 4688
+- To prove file access: corroborate ShellBag with LNK files + Jump Lists + RecentDocs
+
+**Negative space is evidence.** Absent artifact ≠ innocent. It means the attacker used a different mechanism:
+- No ShellBags = used command line or script instead of Explorer
+- No Prefetch = server OS, or Prefetch was wiped, or binary never ran
+- No EVTX = logs were cleared, or audit policy was disabled
+Always ask: *why is this expected artifact missing?*
+
+**Timestamps are bounding information, not precise mouse-click records.**
+Align timestamps with active logon sessions before drawing conclusions.
+Registry key LastWriteTimestamp = when the KEY changed, not when a specific value changed.
+Always standardise to UTC across all artifacts.
+
+**Targeted corroboration** — ask the next logical question, not a general pile of data:
+- Finding → What would I expect to see if this finding is real? → Look for that specific artifact.
+- Stacking threshold: 1 source = UNCONFIRMED. 2+ independent sources = CONFIRMED.
+
+**Defensible language** in findings:
+- Write: "shell state indicates the directory was rendered through Explorer"
+- Not: "the user accessed the directory"
+- Write: "Prefetch and EVTX EID 4688 corroborate execution at 03:01:58 UTC"
+- Not: "the attacker ran the binary"
