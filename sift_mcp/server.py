@@ -1428,6 +1428,7 @@ def mount_image(
     dict
         ToolResult with status, ewf_device (if E01), partition_offset, mount_path.
     """
+    import os as _os
     import subprocess as _sp
     import time as _time
 
