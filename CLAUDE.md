@@ -37,6 +37,14 @@ You are the investigator. All evidence is READ-ONLY. Chain of custody applies.
 - `sigma_hunt(evtx_path, case_id)` — run 2,278 Sigma community rules via Chainsaw on EVTX files. Produces ATT&CK-mapped findings from deterministic rule-based detection. Use after `summarize_evtx` to validate LLM interpretations against community consensus. If EID 1102 (log cleared) is found → immediately call `analyze_vss`.
 - `analyze_vss(disk_image_path, case_id)` — enumerate Volume Shadow Copies via libvshadow. Shadow copies pre-dating the incident may contain intact Security.evtx after attacker log clearing. Reports artifact presence per store. 3 stores found on wkstn-01 (Aug 27 / Sep 05 / Sep 14 2021).
 - `extract_pca(mount_point, case_id)` — parse Windows 11 22H2+ Program Compatibility Assistant execution artifacts (PcaAppLaunchDic.txt). Plain-text, pipe-delimited: {path}|{last_execution_UTC}. Corroborates Prefetch + Amcache. Not present on Windows 10 / Server.
+- `extract_shimcache(mount_point, case_id)` — parse ShimCache (AppCompatCache) from SYSTEM hive via AppCompatCacheParser + rla.exe (transaction log replay). Records every executable path Windows observed. Does NOT record run count — cross-reference with Amcache/Prefetch to confirm execution. Absence of expected entry → timestomping or post-compromise binary deletion. 72 suspicious entries found on wkstn-01.
+- `extract_srum(mount_point, case_id)` — parse SRUM (System Resource Utilization Monitor) via esedbexport. Network table: bytes_sent / bytes_recv per process per 60-day window. App resource table: CPU/disk I/O per 30-day window. SRUM records deleted applications — critical for anti-forensics detection. Use to quantify exfiltration volume and identify processes no longer on disk. 847MB outbound finding directly confirmed via SRUM.
+
+### rla.exe (Registry Transaction Log Replay)
+SYSTEM / NTUSER.DAT / Amcache.hve parsed from offline images may have uncommitted
+transaction logs (.LOG1/.LOG2). `extract_shimcache` and `extract_srum` automatically
+run `rla.exe` before parsing to replay those logs and produce clean, accurate output.
+Always ensure hives are clean before cross-referencing registry evidence.
 
 ## New Tools (v3)
 - `sigma_scan(case_id)` — universal anomaly detection (process, network, MFT, EVTX, persistence)
