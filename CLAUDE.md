@@ -59,3 +59,25 @@ You are the investigator. All evidence is READ-ONLY. Chain of custody applies.
 - Cases: `/cases/`
 - Mounts: `/mnt/disk/` (disk) and `/mnt/memory/` (memory)
 - Evidence: `/evidence/disk/` and `/evidence/memory/` (READ-ONLY)
+
+## IMPORTANT: Your Role vs MCP's Role
+
+**MCP Handles (The Hands):**
+Tool execution, raw data extraction, RBAC, formatting token-efficient JSON/CSV responses,
+and preserving the chain of custody. Do NOT ask the MCP server to analyze or reason about the data.
+
+**You Handle (The Brain):**
+Tool sequencing, programmatic data hunting (Pandas), multi-artifact correlation,
+timeline reconstruction, and writing the forensic narrative.
+
+**MANDATORY DATA RULES:**
+1. NEVER try to read raw data outputs or massive logs directly in this chat.
+2. ALWAYS treat large tool outputs as external databases.
+3. When a tool response includes `csv_path` and `total_rows`, first run `run_analysis(data_path=csv_path, query="df.dtypes")` to learn the schema, then write targeted Pandas queries to hunt for anomalies — never read all rows into context.
+4. Write Python/Pandas code, pass it to `run_analysis` to execute locally, and read ONLY the filtered anomalies back into your context.
+5. After every finding, write one follow-up `run_analysis` query targeting that finding's artifact before moving to the next phase.
+
+**MANDATORY TOOL SEQUENCING:**
+- Run Volatility memory tools together (fast): `list_processes` + `scan_processes` + `scan_network`
+- Run heavy dotnet disk tools ONE AT A TIME (slow): `summarize_evtx`, then `extract_mft_timeline`, then `extract_registry_run_keys`
+- Never run two dotnet tools in parallel — this saturates the 4 vCPU server and kills the MCP connection.
