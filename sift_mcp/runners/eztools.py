@@ -256,6 +256,9 @@ class EZToolsRunner(SafeRunner):
         csv_dir: str,
         csv_filename: str,
         maps_dir: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        event_ids: Optional[List[int]] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Parse Windows EVTX event log files with EvtxECmd.
@@ -277,6 +280,18 @@ class EZToolsRunner(SafeRunner):
             Optional path to the EvtxECmd Maps directory.  When ``None``,
             EvtxECmd uses built-in descriptions.  Pass the path to a local
             copy of the Maps repo for richer descriptions.
+        start_date:
+            Optional start date filter (ISO 8601, e.g. ``"2024-01-15"``).
+            Maps to EvtxECmd ``--sd`` flag.  Only events on or after this
+            date are included.
+        end_date:
+            Optional end date filter (ISO 8601, e.g. ``"2024-02-01"``).
+            Maps to EvtxECmd ``--ed`` flag.  Only events on or before this
+            date are included.
+        event_ids:
+            Optional list of Event IDs to include (e.g. ``[4624, 4625, 7045]``).
+            Maps to EvtxECmd ``--inc`` flag (comma-separated).  When ``None``,
+            all event IDs are returned.
 
         Returns
         -------
@@ -296,6 +311,12 @@ class EZToolsRunner(SafeRunner):
         ]
         if maps_dir is not None:
             cmd.extend(["--maps", maps_dir])
+        if start_date is not None:
+            cmd.extend(["--sd", start_date])
+        if end_date is not None:
+            cmd.extend(["--ed", end_date])
+        if event_ids:
+            cmd.extend(["--inc", ",".join(str(eid) for eid in event_ids)])
 
         return self.run(cmd, timeout=timeout)
 
@@ -308,6 +329,8 @@ class EZToolsRunner(SafeRunner):
         hive_dir: str,
         csv_dir: str,
         csv_filename: str,
+        batch_file: Optional[str] = None,
+        sync_batch: bool = False,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Parse registry hives with RECmd.
@@ -324,6 +347,16 @@ class EZToolsRunner(SafeRunner):
             Directory where the output CSV will be written.
         csv_filename:
             Name of the output CSV file (e.g. ``"registry.csv"``).
+        batch_file:
+            Optional path to a RECmd batch file (``.reb``), e.g.
+            ``DFIRBatch.reb``.  Maps to RECmd ``--bn`` flag.
+            When provided, RECmd runs only the plugins defined in the
+            batch file instead of dumping all keys.  This dramatically
+            improves signal-to-noise ratio for DFIR triage.
+        sync_batch:
+            When ``True``, tells RECmd to download the latest batch
+            definitions before running.  Maps to RECmd ``--sync`` flag.
+            Requires network access; default is ``False``.
 
         Returns
         -------
@@ -341,6 +374,10 @@ class EZToolsRunner(SafeRunner):
             "--csv", csv_dir,
             "--csvf", csv_filename,
         ]
+        if batch_file is not None:
+            cmd.extend(["--bn", batch_file])
+        if sync_batch:
+            cmd.append("--sync")
         return self.run(cmd, timeout=timeout)
 
     # ------------------------------------------------------------------

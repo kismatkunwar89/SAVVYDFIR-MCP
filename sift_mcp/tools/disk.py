@@ -233,6 +233,61 @@ def _runner_error(tool_name: str, exc: Exception, execution_id: Optional[str] = 
 
 
 # ---------------------------------------------------------------------------
+# DFIR constants — case-agnostic, universally applicable
+# ---------------------------------------------------------------------------
+
+#: 26 universal Windows Event IDs that are relevant across ALL DFIR cases.
+#: Defaulting to this set prevents context flooding from millions of
+#: informational events while capturing the core attacker lifecycle.
+DFIR_ESSENTIAL_EIDS: list[int] = [
+    # Authentication & Logon (T1078)
+    4624,   # Successful logon
+    4625,   # Failed logon
+    4634,   # Logoff
+    4648,   # Explicit credential logon (runas, RDP)
+    4672,   # Special privileges assigned (admin logon)
+    # Account Management (T1136)
+    4720,   # User account created
+    4732,   # Member added to local group
+    # Process Execution (T1059, T1204)
+    4688,   # Process creation (requires audit policy)
+    4689,   # Process exit
+    # Service & Scheduled Task Persistence (T1543, T1053)
+    7045,   # New service installed
+    4698,   # Scheduled task created
+    4702,   # Scheduled task updated
+    # Object Access & Policy Changes
+    4663,   # Attempt to access an object (file audit)
+    4670,   # Permissions on an object changed
+    4719,   # System audit policy changed
+    # Logon Session Tracking
+    4776,   # NTLM credential validation
+    4768,   # Kerberos TGT requested
+    4769,   # Kerberos service ticket requested
+    # Lateral Movement Indicators (T1021)
+    5140,   # Network share accessed
+    5145,   # Detailed file share access
+    # PowerShell (T1059.001)
+    4103,   # PowerShell module logging
+    4104,   # PowerShell script block logging
+    # Windows Defender / AV (T1562.001)
+    1116,   # Windows Defender detection
+    1117,   # Windows Defender action taken
+    # Sysmon (if available)
+    1,      # Sysmon process creation
+    3,      # Sysmon network connection
+]
+
+#: Common paths where RECmd DFIRBatch.reb may be found on SIFT Workstation.
+#: Checked in order; the first existing path is used.
+DFIR_BATCH_PATHS: list[str] = [
+    "/opt/zimmermantools/RECmd/BatchExamples/DFIRBatch.reb",
+    "/opt/zimmermantools/BatchExamples/DFIRBatch.reb",
+    "/usr/local/share/zimmermantools/BatchExamples/DFIRBatch.reb",
+]
+
+
+# ---------------------------------------------------------------------------
 # Tool: extract_prefetch
 # ---------------------------------------------------------------------------
 
@@ -919,15 +974,18 @@ def summarize_evtx(
     channel: Optional[str] = None,
     case_id: Optional[str] = None,
     max_entries: int = 0,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    event_ids: Optional[list[int]] = None,
 ) -> dict[str, Any]:
     """Parse Windows EVTX event logs using EvtxECmd (EZ Tools).
 
     Wraps ``dotnet /opt/zimmermantools/EvtxeCmd/EvtxECmd.dll`` on SIFT Workstation.
 
     Processes all ``.evtx`` files in the event log directory and emits a
-    unified CSV timeline.  Security-relevant event IDs include 4624/4625
-    (logon), 4688/4103 (process creation), 7045 (service install), and
-    4698 (scheduled task creation).
+    unified CSV timeline.  By default, filters to ``DFIR_ESSENTIAL_EIDS``
+    (26 universal security-relevant Event IDs) to prevent context flooding
+    from millions of informational events.
 
     Parameters
     ----------
@@ -942,13 +1000,25 @@ def summarize_evtx(
         Optional event log channel name to filter results (case-insensitive).
         E.g. ``"Security"``, ``"System"``, ``"Microsoft-Windows-Sysmon/Operational"``.
         When ``None``, all channels are returned.
+    start_date:
+        Optional start date filter (ISO 8601, e.g. ``"2024-01-15"``).
+        Passed to EvtxECmd ``--sd`` flag.  Only events on or after this
+        date are included.
+    end_date:
+        Optional end date filter (ISO 8601, e.g. ``"2024-02-01"``).
+        Passed to EvtxECmd ``--ed`` flag.  Only events on or before this
+        date are included.
+    event_ids:
+        List of Event IDs to include.  Passed to EvtxECmd ``--inc`` flag.
+        Defaults to ``DFIR_ESSENTIAL_EIDS`` (26 universal DFIR Event IDs).
+        Pass an empty list ``[]`` to disable filtering and return all events.
 
     Returns
     -------
     dict
         ``tool_name``, ``status``, ``data`` (list of EventRecord dicts),
         ``findings_created``, ``execution_id``, ``raw_command``,
-        ``records_count``, ``channel_filter``.
+        ``records_count``, ``channel_filter``, ``event_id_filter``.
     """
     tool = "disk.summarize_evtx"
     if _ez_runner is None or _state is None or _audit is None:
@@ -966,11 +1036,18 @@ def summarize_evtx(
         csv_filename = "evtx_timeline.csv"
         csv_path = os.path.join(tmp_dir, csv_filename)
 
+        # Default to DFIR_ESSENTIAL_EIDS to prevent context flooding.
+        # Pass event_ids=[] explicitly to disable filtering.
+        effective_eids = event_ids if event_ids is not None else DFIR_ESSENTIAL_EIDS
+
         try:
             result = _ez_runner.run_evtxecmd(
                 evtx_dir=evtx_dir,
                 csv_dir=tmp_dir,
                 csv_filename=csv_filename,
+                start_date=start_date,
+                end_date=end_date,
+                event_ids=effective_eids if effective_eids else None,
             )
         except Exception as exc:
             return _runner_error(tool, exc)
@@ -1090,6 +1167,11 @@ def summarize_evtx(
         "raw_command": result.command_line,
         "records_count": len(records),
         "channel_filter": channel,
+        "event_id_filter": effective_eids if effective_eids else "all",
+        "date_range": {
+            "start": start_date,
+            "end": end_date,
+        } if start_date or end_date else None,
     }, "summarize_evtx", evtx_dir, min_expected=100)
 
 
@@ -1133,14 +1215,20 @@ def extract_registry_run_keys(
     hive_dir: Optional[str] = None,
     case_id: Optional[str] = None,
     max_entries: int = 0,
+    batch_mode: bool = True,
+    sync_batch: bool = False,
 ) -> dict[str, Any]:
     """Extract Windows registry persistence keys using RECmd (EZ Tools).
 
     Wraps ``dotnet /opt/zimmermantools/RECmd/RECmd.dll`` on SIFT Workstation.
 
-    Parses all registry hive files in the hive directory and filters for
-    persistence-related keys: Run, RunOnce, AppInit_DLLs, WinLogon shell/
-    userinit, services, LSA packages, and related autostart locations.
+    By default, uses DFIRBatch mode (``--bn DFIRBatch.reb``) which targets
+    40+ forensically significant registry artifact categories instead of
+    dumping all keys.  Falls back to basic mode if the batch file is not found.
+
+    Also scans user NTUSER.DAT hives (from ``Users/*/NTUSER.DAT``) in
+    addition to the system hive directory, since per-user Run keys are a
+    common persistence mechanism.
 
     Parameters
     ----------
@@ -1151,13 +1239,22 @@ def extract_registry_run_keys(
         Absolute path to the directory containing registry hive files
         (e.g. ``/cases/SRL-2018/evidence/mnt/C/Windows/System32/config``).
         When ``None``, a default path is constructed from the image path.
+    batch_mode:
+        When ``True`` (default), uses DFIRBatch.reb for targeted extraction.
+        Searches ``DFIR_BATCH_PATHS`` for the batch file.  Falls back to
+        basic mode with a warning if not found.
+    sync_batch:
+        When ``True``, tells RECmd to download the latest batch definitions
+        before running (``--sync``).  Requires network access; default
+        ``False``.
 
     Returns
     -------
     dict
         ``tool_name``, ``status``, ``data`` (list of RegistryRunKey dicts),
         ``findings_created``, ``execution_id``, ``raw_command``,
-        ``records_count``, ``persistence_type_counts``.
+        ``records_count``, ``persistence_type_counts``, ``batch_file_used``,
+        ``user_hives_scanned``.
     """
     tool = "disk.extract_registry_run_keys"
     if _ez_runner is None or _state is None or _audit is None:
@@ -1171,6 +1268,40 @@ def extract_registry_run_keys(
         else:
             hive_dir = str(base / "mnt" / "C" / "Windows" / "System32" / "config")
 
+    # Resolve DFIRBatch file path
+    batch_file_used: Optional[str] = None
+    batch_warning: Optional[str] = None
+    if batch_mode:
+        for candidate in DFIR_BATCH_PATHS:
+            if os.path.isfile(candidate):
+                batch_file_used = candidate
+                break
+        if batch_file_used is None:
+            batch_warning = (
+                "DFIRBatch.reb not found at any of: "
+                + ", ".join(DFIR_BATCH_PATHS)
+                + ". Falling back to basic mode (all keys). "
+                "Install EZ Tools batch files or set batch_mode=False."
+            )
+
+    # Collect hive directories to scan (system + user NTUSER.DAT hives)
+    hive_dirs_to_scan: list[str] = [hive_dir]
+    user_hives_found: list[str] = []
+
+    # Discover user NTUSER.DAT hives
+    base = Path(image_path)
+    for users_root in [
+        base / "Users",
+        base / "mnt" / "C" / "Users",
+        base / "Documents and Settings",
+    ]:
+        if users_root.exists() and users_root.is_dir():
+            for user_dir in users_root.iterdir():
+                if user_dir.is_dir() and user_dir.name not in ("Public", "Default", "Default User", "All Users"):
+                    ntuser = user_dir / "NTUSER.DAT"
+                    if ntuser.exists():
+                        user_hives_found.append(str(user_dir))
+
     with tempfile.TemporaryDirectory(prefix="savvydfir_recmd_") as tmp_dir:
         csv_filename = "registry.csv"
         csv_path = os.path.join(tmp_dir, csv_filename)
@@ -1180,6 +1311,8 @@ def extract_registry_run_keys(
                 hive_dir=hive_dir,
                 csv_dir=tmp_dir,
                 csv_filename=csv_filename,
+                batch_file=batch_file_used,
+                sync_batch=sync_batch,
             )
         except Exception as exc:
             return _runner_error(tool, exc)
@@ -1200,6 +1333,23 @@ def extract_registry_run_keys(
             }
 
         rows = _read_csv(csv_path)
+
+        # Also scan user NTUSER.DAT hives for per-user persistence keys
+        for user_hive_dir in user_hives_found:
+            user_csv = f"registry_user_{Path(user_hive_dir).name}.csv"
+            user_csv_path = os.path.join(tmp_dir, user_csv)
+            try:
+                user_result = _ez_runner.run_recmd(
+                    hive_dir=user_hive_dir,
+                    csv_dir=tmp_dir,
+                    csv_filename=user_csv,
+                    batch_file=batch_file_used,
+                    sync_batch=False,  # only sync once
+                )
+                if Path(user_csv_path).exists():
+                    rows.extend(_read_csv(user_csv_path))
+            except Exception:
+                pass  # user hive failures are non-fatal
 
     records: list[RegistryRunKey] = []
     finding_ids: list[str] = []
@@ -1284,7 +1434,7 @@ def extract_registry_run_keys(
         except Exception:
             continue
 
-    return _warn_if_empty({
+    ret: dict[str, Any] = {
         "tool_name": tool,
         "status": "success",
         "data": [r.model_dump(mode="json") for r in records],
@@ -1293,4 +1443,9 @@ def extract_registry_run_keys(
         "raw_command": result.command_line,
         "records_count": len(records),
         "persistence_type_counts": persistence_type_counts,
-    }, "extract_registry_run_keys", hive_dir)
+        "batch_file_used": batch_file_used,
+        "user_hives_scanned": user_hives_found,
+    }
+    if batch_warning:
+        ret["batch_warning"] = batch_warning
+    return _warn_if_empty(ret, "extract_registry_run_keys", hive_dir)
