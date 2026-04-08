@@ -72,5 +72,18 @@
       "Bash(netcat:*)"
     ]
   },
-  "model": "claude-sonnet-4-5"
+  "model": "claude-sonnet-4-5",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__savvydfir__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /opt/SAVVYDFIR-MCP/scripts/agent_trigger.py"
+          }
+        ]
+      }
+    ]
+  }
 }
