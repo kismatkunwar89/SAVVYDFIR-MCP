@@ -23,7 +23,7 @@ TOOL_AGENT_MAP = {
     "mcp__savvydfir__extract_pca":                ("@prefetch-analyst",  "Analyze PCA execution artifacts: correlate with Amcache (via ProgramId), cross-reference timestamps with incident timeline, flag executables from staging directories."),
     # rla + shimcache + srum
     "mcp__savvydfir__extract_shimcache":          ("@registry-analyst",  "Analyze ShimCache entries: cross-reference with Amcache and Prefetch to confirm execution. Flag entries outside System32/Program Files. Absence of an expected entry indicates timestomping or binary deletion."),
-    "mcp__savvydfir__extract_srum":               ("@srum-analyst",      "Analyze SRUM network usage: identify top data-sending processes, flag unresolved AppIds (deleted binaries), cross-reference bytes_sent with C2 IOCs and EVTX network events. 847MB outbound is the key finding."),
+    "mcp__savvydfir__extract_srum":               ("@srum-analyst",      "Analyze SRUM network usage: identify top data-sending processes by bytes_sent, flag unresolved AppIds (processes no longer on disk — anti-forensics indicator), cross-reference outbound volumes with known C2 IOCs and EVTX network connection events. Report exfiltration volume per process."),
 }
 
 def main():
