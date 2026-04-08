@@ -258,7 +258,7 @@ _SYSTEM32_ONLY: set[str] = {
 # Known legitimate parent-child relationships
 # child → expected parent name
 _EXPECTED_PARENTS: dict[str, str] = {
-    "smss.exe": "system",
+    "smss.exe": "system|smss.exe",  # smss.exe spawns child smss.exe during session init (normal)
     "csrss.exe": "smss.exe",
     "wininit.exe": "smss.exe",
     "winlogon.exe": "smss.exe",
@@ -302,7 +302,9 @@ def _score_process_suspicion(
     # 3. Unexpected parent process
     expected_parent = _EXPECTED_PARENTS.get(name_lower)
     if expected_parent and parent_name:
-        if parent_name.lower() != expected_parent.lower():
+        # Support pipe-separated list of valid parents (e.g. "system|smss.exe")
+        valid_parents = [p.strip().lower() for p in expected_parent.split("|")]
+        if parent_name.lower() not in valid_parents:
             reasons.append(
                 f"{name} expected parent {expected_parent!r} but got {parent_name!r}"
             )
