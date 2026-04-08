@@ -43,10 +43,14 @@ Novel contributions
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -1460,6 +1464,1263 @@ def build_reports_index(
         "index_path": str(index_path),
         "investigation_count": investigation_count,
         "stdout": proc.stdout.strip(),
+    }
+
+
+
+
+@mcp.tool()
+def sigma_hunt(
+    evtx_path: str,
+    sigma_rules_path: Optional[str] = None,
+    chainsaw_mapping: Optional[str] = None,
+    max_entries: int = 50,
+    case_id: str = "default",
+) -> dict[str, Any]:
+    """Run Chainsaw with community Sigma rules against Windows Event Log (EVTX) files.
+
+    Chainsaw (WithSecureLabs) is a Rust-based EVTX analyzer that runs Sigma
+    detection rules against event log data and returns structured JSON hits.
+    This is significantly more reliable than LLM interpretation of raw EVTX
+    data because:
+
+    1. Sigma rules encode community consensus about what constitutes malicious
+       behavior — they are calibrated against millions of real events.
+    2. Each rule includes ATT&CK technique tags (e.g. ``attack.t1059.001``),
+       so ATT&CK mappings are deterministic, not inferred.
+    3. Detection is reproducible — same logs, same rules, same results across
+       different investigators and investigations.
+
+    Chainsaw covers the full attacker lifecycle across all high-value event IDs:
+    EID 4624/4625/4648 (auth), 4688 (process creation), 4698 (scheduled task),
+    7045 (service install), 4104 (PowerShell script block), 1102 (log cleared),
+    and all Sysmon channels.
+
+    Parameters
+    ----------
+    evtx_path:
+        Absolute path to a single ``.evtx`` file or a directory of EVTX files.
+        Must be readable (EVIDENCE_PATHS or OUTPUT_PATHS).
+    sigma_rules_path:
+        Optional absolute path to the Sigma rules directory.
+        Defaults to ``/opt/sigma/rules/windows`` (SIFT standard location) or
+        ``/usr/share/chainsaw/rules`` if the first path does not exist.
+        Install rules from: https://github.com/SigmaHQ/sigma/tree/master/rules/windows
+    chainsaw_mapping:
+        Optional absolute path to the Chainsaw sigma-mapping YAML file.
+        Defaults to ``/opt/chainsaw/mappings/sigma-mapping.yml`` or
+        ``/usr/share/chainsaw/mappings/sigma-mapping.yml``.
+    max_entries:
+        Maximum number of Sigma hit findings to create in CaseStateManager.
+        Individual findings are ranked by severity (critical > high > medium)
+        before truncation.  Defaults to 50.
+    case_id:
+        Case identifier for output file naming.
+
+    Returns
+    -------
+    dict
+        status, findings_created (list of F-NNN IDs), hits_total (int),
+        hits_returned (int), output_path (path to full JSON results),
+        summary (str describing the hunt), execution_id.
+
+    Notes
+    -----
+    If Chainsaw is not installed, the tool returns status ``"tool_not_found"``
+    with a detailed install hint — this is not treated as an error so the
+    investigation can continue with other tools.
+
+    ATT&CK technique extraction:
+        Sigma tags follow the pattern ``attack.tNNNN`` or ``attack.tNNNN.NNN``.
+        The tool extracts the first technique tag from each hit and includes it
+        in the finding description.
+
+    Install hint (if chainsaw missing)::
+
+        # Option 1: cargo (requires Rust toolchain)
+        cargo install chainsaw
+
+        # Option 2: pre-built binary (fastest)
+        wget https://github.com/WithSecureLabs/chainsaw/releases/latest/download/chainsaw_x86_64-unknown-linux-musl.tar.gz
+        tar xzf chainsaw_*.tar.gz -C /usr/local/bin/
+
+        # Get Sigma rules
+        git clone --depth=1 https://github.com/SigmaHQ/sigma.git /opt/sigma
+    """
+    tool_name = "sigma_hunt"
+    # audit: tool started (logged via state_manager)
+
+    # ------------------------------------------------------------------
+    # 1. Resolve Chainsaw binary
+    # ------------------------------------------------------------------
+    chainsaw_bin: Optional[str] = None
+    for candidate in [
+        "chainsaw",
+        "/usr/local/bin/chainsaw",
+        "/usr/bin/chainsaw",
+        "/opt/chainsaw/chainsaw",
+        str(Path.home() / ".cargo" / "bin" / "chainsaw"),
+    ]:
+        try:
+            result = subprocess.run(
+                [candidate, "--version"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                chainsaw_bin = candidate
+                break
+        except (FileNotFoundError, PermissionError):
+            continue
+
+    if chainsaw_bin is None:
+        msg = (
+            "chainsaw binary not found. Install it with:\n"
+            "  cargo install chainsaw\n"
+            "  OR: download from https://github.com/WithSecureLabs/chainsaw/releases\n"
+            "Then get Sigma rules:\n"
+            "  git clone --depth=1 https://github.com/SigmaHQ/sigma.git /opt/sigma"
+        )
+        # audit: tool completed
+        return {
+            "status": "tool_not_found",
+            "tool": tool_name,
+            "error": msg,
+            "hint": "Run sigma_hunt after installing Chainsaw. Investigation can continue with summarize_evtx + LLM analysis in the meantime.",
+        }
+
+    # ------------------------------------------------------------------
+    # 2. Resolve Sigma rules directory
+    # ------------------------------------------------------------------
+    sigma_dir: Optional[str] = sigma_rules_path
+    if sigma_dir is None:
+        for candidate in [
+            "/opt/sigma-rules/rules/windows",
+            "/opt/sigma/rules/windows",
+            "/usr/share/chainsaw/rules",
+            "/opt/chainsaw/rules",
+            str(Path.home() / "sigma" / "rules" / "windows"),
+        ]:
+            if Path(candidate).is_dir():
+                sigma_dir = candidate
+                break
+
+    if sigma_dir is None:
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": (
+                "Sigma rules directory not found. Clone from:\n"
+                "  git clone --depth=1 https://github.com/SigmaHQ/sigma.git /opt/sigma\n"
+                "Then pass sigma_rules_path='/opt/sigma/rules/windows'."
+            ),
+        }
+
+    # ------------------------------------------------------------------
+    # 3. Resolve Chainsaw mapping file
+    # ------------------------------------------------------------------
+    mapping_file: Optional[str] = chainsaw_mapping
+    if mapping_file is None:
+        for candidate in [
+            "/opt/chainsaw/mappings/sigma-mapping.yml",
+            "/usr/share/chainsaw/mappings/sigma-mapping.yml",
+            "/opt/chainsaw/mappings/sigma-event-logs-all.yml",
+            str(Path.home() / "chainsaw" / "mappings" / "sigma-mapping.yml"),
+        ]:
+            if Path(candidate).is_file():
+                mapping_file = candidate
+                break
+
+    # ------------------------------------------------------------------
+    # 4. Validate evtx_path
+    # ------------------------------------------------------------------
+    evtx_target = Path(evtx_path)
+    if not evtx_target.exists():
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": f"EVTX path does not exist: {evtx_path}",
+        }
+
+    # ------------------------------------------------------------------
+    # 5. Build output path for JSON results
+    # ------------------------------------------------------------------
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_dir = _ANALYSIS_DIR / case_id / "sigma_hunt"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_json = out_dir / f"chainsaw_{ts}.json"
+
+    # ------------------------------------------------------------------
+    # 6. Build Chainsaw command
+    # ------------------------------------------------------------------
+    cmd: list[str] = [
+        chainsaw_bin, "hunt",
+        str(evtx_target),
+        "-s", sigma_dir,
+        "--json",
+        "--output", str(out_json),
+        # No --level filter: chainsaw v2.10 uses "info" not "informational"; emit all hits
+        "--skip-errors",               # don't abort on malformed EVTX records
+    ]
+    if mapping_file:
+        cmd += ["--mapping", mapping_file]
+
+    # ------------------------------------------------------------------
+    # 7. Execute Chainsaw
+    # ------------------------------------------------------------------
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300,  # 5 minutes — large EVTX dirs can be slow
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": "Chainsaw timed out after 300 seconds. Try specifying a single EVTX file instead of a directory.",
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": f"Chainsaw execution failed: {exc}",
+        }
+
+    # ------------------------------------------------------------------
+    # 8. Parse JSON output
+    # ------------------------------------------------------------------
+    raw_hits: list[dict] = []
+    if out_json.exists():
+        try:
+            raw_hits = json.loads(out_json.read_text(encoding="utf-8"))
+            if not isinstance(raw_hits, list):
+                raw_hits = [raw_hits]
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass
+
+    # Chainsaw also outputs some hits to stdout when --json is used without --output
+    if not raw_hits and proc.stdout.strip():
+        try:
+            raw_hits = json.loads(proc.stdout.strip())
+            if not isinstance(raw_hits, list):
+                raw_hits = [raw_hits]
+        except json.JSONDecodeError:
+            pass
+
+    # ------------------------------------------------------------------
+    # 9. Rank hits by severity before truncation
+    # ------------------------------------------------------------------
+    SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
+
+    def _hit_severity(hit: dict) -> int:
+        level = str(hit.get("level", "informational")).lower()
+        return SEVERITY_RANK.get(level, 5)
+
+    raw_hits.sort(key=_hit_severity)
+    hits_total = len(raw_hits)
+    hits_to_process = raw_hits[:max_entries]
+
+    # ------------------------------------------------------------------
+    # 10. Extract ATT&CK techniques from Sigma tags
+    # ------------------------------------------------------------------
+    ATTACK_TAG_RE = re.compile(r"attack\.(t\d{4}(?:\.\d{3})?)", re.IGNORECASE)
+
+    def _extract_techniques(hit: dict) -> list[str]:
+        tags = hit.get("tags", [])
+        if isinstance(tags, str):
+            tags = [tags]
+        techniques: list[str] = []
+        for tag in tags:
+            m = ATTACK_TAG_RE.search(str(tag))
+            if m:
+                techniques.append(m.group(1).upper())
+        return techniques or ["—"]
+
+    # ------------------------------------------------------------------
+    # 11. Create CaseStateManager findings
+    # ------------------------------------------------------------------
+    finding_ids: list[str] = []
+    execution_id = f"E-sigma-{ts}"
+
+    for i, hit in enumerate(hits_to_process):
+        rule_name = hit.get("name", hit.get("rule", f"unknown_rule_{i}"))
+        level = hit.get("level", "informational")
+        techniques = _extract_techniques(hit)
+        system_time = hit.get("system_time", hit.get("timestamp", "unknown"))
+        event_id = hit.get("event_id", hit.get("EventID", "?"))
+        computer = hit.get("computer", hit.get("Computer", ""))
+        subject_user = hit.get("subject_user", hit.get("SubjectUserName", ""))
+
+        # Map severity to confidence score
+        confidence_map = {
+            "critical": 0.95, "high": 0.88, "medium": 0.75,
+            "low": 0.60, "informational": 0.50,
+        }
+        confidence = confidence_map.get(str(level).lower(), 0.65)
+
+        description = (
+            f"[Sigma/{level.upper()}] Rule: '{rule_name}' | "
+            f"EID {event_id} @ {system_time} | "
+            f"ATT&CK: {', '.join(techniques)} | "
+            f"Computer: {computer} | User: {subject_user}"
+        )
+
+        finding_dict = {
+            "case_id": case_id,
+            "finding_type": "threat_detection",
+            "artifact_type": "evtx",
+            "artifact_path": evtx_path,
+            "tool_name": tool_name,
+            "execution_id": execution_id,
+            "evidence_kind": "observation",
+            "finding_status": "active",
+            "confidence": confidence,
+            "description": description,
+            "supporting_indicators": [
+                rule_name,
+                f"ATT&CK: {', '.join(techniques)}",
+                f"EID: {event_id}",
+                f"Level: {level}",
+            ],
+            "tags": hit.get("tags", []),
+            "sigma_rule": rule_name,
+            "attck_techniques": techniques,
+            "event_id": str(event_id),
+            "severity": level,
+            "system_time": str(system_time),
+            "raw_hit": hit,
+        }
+
+        try:
+            fid = _state_manager.add_finding(finding_dict)
+            finding_ids.append(fid)
+        except Exception:
+            pass  # Don't abort on state write failures
+
+    # ------------------------------------------------------------------
+    # 12. Create summary finding
+    # ------------------------------------------------------------------
+    if hits_total > 0:
+        technique_set: set[str] = set()
+        for hit in raw_hits:
+            for t in _extract_techniques(hit):
+                if t != "—":
+                    technique_set.add(t)
+
+        severity_counts: dict[str, int] = {}
+        for hit in raw_hits:
+            sev = str(hit.get("level", "informational")).lower()
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+
+        summary = (
+            f"Chainsaw/Sigma hunt: {hits_total} rule hits across {evtx_path}. "
+            f"Severity breakdown: {severity_counts}. "
+            f"ATT&CK techniques detected: {', '.join(sorted(technique_set)) or 'none tagged'}. "
+            f"Full results at: {out_json}"
+        )
+
+        summary_finding = {
+            "case_id": case_id,
+            "finding_type": "threat_detection",
+            "artifact_type": "evtx",
+            "artifact_path": evtx_path,
+            "tool_name": tool_name,
+            "execution_id": execution_id,
+            "evidence_kind": "observation",
+            "finding_status": "active",
+            "confidence": 0.90,
+            "description": summary,
+            "supporting_indicators": sorted(technique_set),
+        }
+        try:
+            summary_fid = _state_manager.add_finding(summary_finding)
+            finding_ids.insert(0, summary_fid)
+        except Exception:
+            pass
+
+    # audit: tool completed
+
+    return {
+        "status": "success" if hits_total > 0 else "no_hits",
+        "tool": tool_name,
+        "evtx_path": evtx_path,
+        "sigma_rules": sigma_dir,
+        "hits_total": hits_total,
+        "hits_returned": len(hits_to_process),
+        "findings_created": finding_ids,
+        "execution_id": execution_id,
+        "output_path": str(out_json),
+        "chainsaw_stderr": proc.stderr.strip()[-2000:] if proc.stderr else "",
+        "note": (
+            f"Returning top {len(hits_to_process)} of {hits_total} hits (ranked by severity). "
+            f"Use run_analysis() on output_path for full dataset. "
+            f"Invoke sigma-analyst to interpret findings."
+        ) if hits_total > max_entries else (
+            f"All {hits_total} hits returned as findings." if hits_total > 0
+            else "No Sigma rules triggered. Consider running with a broader ruleset or check if EVTX contains events."
+        ),
+    }
+
+
+# ===========================================================================
+# NEW TOOL NAMESPACE: ANTI-FORENSICS RECOVERY (VSS)
+# ===========================================================================
+
+
+@mcp.tool()
+def analyze_vss(
+    disk_image_path: str,
+    partition_offset_sectors: Optional[int] = None,
+    check_artifacts: Optional[list[str]] = None,
+    case_id: str = "default",
+) -> dict[str, Any]:
+    """Enumerate Volume Shadow Copies (VSS) in a disk image and check for key forensic artifacts.
+
+    Volume Shadow Copy Service (VSS) snapshots are the primary recovery path
+    when an attacker has cleared Windows event logs (EID 1102 / EID 104).
+    Shadow copies may contain intact ``Security.evtx``, ``System.evtx``, and
+    ``NTUSER.DAT`` files from before the clearing event.
+
+    Uses ``vshadowinfo`` and ``vshadowmount`` from libvshadow (Joachim Metz),
+    which are pre-installed on SANS SIFT Workstation.  Does NOT mount or write
+    to the evidence image — read-only analysis only.
+
+    Workflow:
+      1. If ``partition_offset_sectors`` is not provided, runs ``mmls`` to auto-
+         detect the Windows partition offset (largest NTFS partition).
+      2. Runs ``vshadowinfo`` to list all shadow copies with creation timestamps.
+      3. For each shadow copy, mounts it temporarily (read-only) via
+         ``vshadowmount`` and checks for the presence of key forensic artifacts.
+      4. Unmounts immediately after checking — no persistent mount points.
+      5. Returns a structured inventory of shadow copies and which artifacts are
+         recoverable from each.
+
+    Parameters
+    ----------
+    disk_image_path:
+        Absolute path to the disk image (``.E01``, ``.dd``, ``.raw``, or
+        mounted raw device).  Must be in an allowed read path.
+    partition_offset_sectors:
+        Optional byte offset in sectors (512 bytes each) of the Windows NTFS
+        partition.  If not provided, ``mmls`` auto-detection is attempted.
+        Use ``mmls <image>`` to find the correct offset manually.
+    check_artifacts:
+        Optional list of relative paths (relative to volume root) to check for
+        existence in each shadow copy.  Defaults to:
+        ``["Windows/System32/winevt/Logs/Security.evtx",
+           "Windows/System32/winevt/Logs/System.evtx",
+           "Windows/System32/winevt/Logs/Application.evtx",
+           "Users", "NTUSER.DAT"]``
+    case_id:
+        Case identifier for output file naming.
+
+    Returns
+    -------
+    dict
+        status, shadow_copies (list of VSS inventory dicts), total_shadows (int),
+        artifacts_recoverable (dict mapping artifact name to list of shadow IDs
+        where it exists), findings_created (list of F-NNN IDs), execution_id.
+
+    Notes
+    -----
+    ``vshadowinfo`` is part of libvshadow and is pre-installed on SIFT.
+    If not available, install with: ``sudo apt-get install libvshadow-utils``
+
+    If the disk image is an E01, you must first mount it:
+        ``ewfmount /evidence/disk.E01 /mnt/ewf``
+    Then pass ``disk_image_path="/mnt/ewf/ewf1"``.
+
+    **Recovery workflow when EID 1102 found:**
+        1. Run ``analyze_vss`` to find shadow copies predating the clearing event.
+        2. For a shadow copy containing Security.evtx, mount it manually:
+           ``vshadowmount -o <offset> <image> /mnt/vss``
+           ``sudo mount -o ro /mnt/vss/vss<N> /mnt/shadow_<N>``
+        3. Copy Security.evtx to a writable path:
+           ``cp /mnt/shadow_<N>/Windows/System32/winevt/Logs/Security.evtx /cases/<case_id>/``
+        4. Run ``summarize_evtx`` on the recovered file, then ``sigma_hunt``.
+    """
+    tool_name = "analyze_vss"
+    # audit: tool started (logged via state_manager)
+
+    # Default artifacts to check
+    if check_artifacts is None:
+        check_artifacts = [
+            "Windows/System32/winevt/Logs/Security.evtx",
+            "Windows/System32/winevt/Logs/System.evtx",
+            "Windows/System32/winevt/Logs/Application.evtx",
+            "Windows/System32/winevt/Logs/Microsoft-Windows-Sysmon%4Operational.evtx",
+            "Windows/System32/config/SAM",
+            "Windows/System32/config/SECURITY",
+            "Windows/System32/config/SYSTEM",
+            "Windows/System32/config/SOFTWARE",
+        ]
+
+    image_path = Path(disk_image_path)
+    if not image_path.exists():
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": f"Disk image not found: {disk_image_path}",
+        }
+
+    # ------------------------------------------------------------------
+    # 1. Check vshadowinfo availability
+    # ------------------------------------------------------------------
+    vshadowinfo_bin: Optional[str] = None
+    for candidate in ["vshadowinfo", "/usr/bin/vshadowinfo", "/usr/local/bin/vshadowinfo"]:
+        try:
+            r = subprocess.run([candidate, "--version"], capture_output=True, timeout=5)
+            if r.returncode in (0, 1):  # version returns 1 on some builds
+                vshadowinfo_bin = candidate
+                break
+        except FileNotFoundError:
+            continue
+
+    if vshadowinfo_bin is None:
+        return {
+            "status": "tool_not_found",
+            "tool": tool_name,
+            "error": "vshadowinfo not found. Install with: sudo apt-get install libvshadow-utils",
+            "hint": "On SIFT: vshadowinfo should be pre-installed. Check: which vshadowinfo",
+        }
+
+    # ------------------------------------------------------------------
+    # 2. Auto-detect partition offset if not provided
+    # ------------------------------------------------------------------
+    offset_sectors: Optional[int] = partition_offset_sectors
+    if offset_sectors is None:
+        try:
+            mmls = subprocess.run(
+                ["mmls", str(image_path)],
+                capture_output=True, text=True, timeout=30
+            )
+            if mmls.returncode == 0:
+                # Parse mmls output — find the largest NTFS partition
+                ntfs_partitions: list[tuple[int, int, int]] = []  # (offset, size, index)
+                for line in mmls.stdout.splitlines():
+                    # Format: 000:  Meta  0000000000  0000000000  0000000001  ...
+                    # NTFS lines contain "NTFS" or have large sizes
+                    parts = line.strip().split()
+                    if len(parts) >= 4:
+                        try:
+                            idx = int(parts[0].rstrip(":"))
+                            start = int(parts[2])
+                            size = int(parts[3])
+                            if start > 0 and size > 100000:  # Skip tiny partitions
+                                ntfs_partitions.append((start, size, idx))
+                        except (ValueError, IndexError):
+                            continue
+                if ntfs_partitions:
+                    # Pick the largest partition (most likely to be Windows C:)
+                    ntfs_partitions.sort(key=lambda x: x[1], reverse=True)
+                    offset_sectors = ntfs_partitions[0][0]
+        except FileNotFoundError:
+            pass  # mmls not available — try without offset
+
+    # ------------------------------------------------------------------
+    # 3. Run vshadowinfo to list shadow copies
+    # ------------------------------------------------------------------
+    # For E01 images: ewfmount first to expose a raw device, then run vshadowinfo on it.
+    # For already-mounted images (loop devices), find the device from /proc/mounts.
+    ewf_mount_point: Optional[Path] = None
+    target_path = image_path
+
+    img_suffix = image_path.suffix.upper()
+    if img_suffix in (".E01", ".E02", ".EWF"):
+        # Try to find an already-mounted ewf device for this image
+        try:
+            proc_mounts = Path("/proc/mounts").read_text()
+            for mline in proc_mounts.splitlines():
+                parts = mline.split()
+                # Loop through to find the raw ewf device mounted from this image
+                if len(parts) >= 2 and "ewf" in parts[1].lower():
+                    raw_dev = parts[0]
+                    if Path(raw_dev).exists():
+                        target_path = Path(raw_dev)
+                        break
+            # Also check common mount points
+            if target_path == image_path:
+                for mline in Path("/proc/mounts").read_text().splitlines():
+                    parts = mline.split()
+                    if len(parts) >= 2 and parts[1] in ("/mnt/disk-ewf", "/mnt/ewf"):
+                        ewf_dir = Path(parts[1])
+                        for ewf_file in ewf_dir.glob("ewf*"):
+                            target_path = ewf_file
+                            break
+        except Exception:
+            pass
+
+        # If still pointing to E01, try ewfmounting to a temp dir
+        if target_path == image_path:
+            ewf_mount_point = Path(tempfile.mkdtemp(prefix="savvy_ewf_"))
+            ewf_proc = subprocess.run(
+                ["ewfmount", str(image_path), str(ewf_mount_point)],
+                capture_output=True, text=True, timeout=60,
+            )
+            if ewf_proc.returncode == 0:
+                # Find the ewf raw device
+                for f in ewf_mount_point.glob("ewf*"):
+                    target_path = f
+                    break
+            else:
+                # Fall back: look for /dev/loopX already backing the E01
+                lsblk_out = subprocess.run(
+                    ["losetup", "-j", str(image_path)],
+                    capture_output=True, text=True, timeout=10,
+                )
+                m = re.search(r"(/dev/loop\d+)", lsblk_out.stdout)
+                if m:
+                    target_path = Path(m.group(1))
+                    if ewf_mount_point and ewf_mount_point.exists():
+                        import shutil; shutil.rmtree(str(ewf_mount_point), ignore_errors=True)
+                        ewf_mount_point = None
+
+    vshadow_cmd = [vshadowinfo_bin]
+    if offset_sectors is not None:
+        vshadow_cmd += ["-o", str(offset_sectors * 512)]  # vshadowinfo takes byte offset
+    vshadow_cmd.append(str(target_path))
+
+    try:
+        vsi_result = subprocess.run(
+            vshadow_cmd,
+            capture_output=True, text=True, timeout=120
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": "vshadowinfo timed out. Try providing partition_offset_sectors explicitly.",
+        }
+    except Exception as exc:
+        return {"status": "error", "tool": tool_name, "error": str(exc)}
+
+    # ------------------------------------------------------------------
+    # 3b. Cleanup ewf temp mount if we created one
+    # ------------------------------------------------------------------
+    if ewf_mount_point is not None and ewf_mount_point.exists():
+        try:
+            subprocess.run(["fusermount", "-u", str(ewf_mount_point)],
+                           capture_output=True, timeout=10)
+            import shutil as _shutil; _shutil.rmtree(str(ewf_mount_point), ignore_errors=True)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # 4. Parse vshadowinfo output
+    # ------------------------------------------------------------------
+    shadow_copies: list[dict[str, Any]] = []
+    current_shadow: Optional[dict[str, Any]] = None
+
+    VSS_ID_RE = re.compile(r"Store:\s*(\d+)", re.IGNORECASE)
+    GUID_RE = re.compile(r"Identifier[\s\t]*:[\s\t]*([0-9a-f\-]{30,})", re.IGNORECASE)
+    CREATED_RE = re.compile(r"Creation time\s*:\s*(.+)", re.IGNORECASE)
+    VOLUME_RE = re.compile(r"Volume name\s*:\s*(.+)", re.IGNORECASE)
+    DEVICE_RE = re.compile(r"Device path\s*:\s*(.+)", re.IGNORECASE)
+
+    for line in vsi_result.stdout.splitlines():
+        m_id = VSS_ID_RE.search(line)
+        if m_id:
+            if current_shadow:
+                shadow_copies.append(current_shadow)
+            current_shadow = {
+                "shadow_index": int(m_id.group(1)),
+                "guid": "",
+                "creation_time": "",
+                "volume": "",
+                "device_path": "",
+                "artifacts_found": {},
+                "artifacts_missing": [],
+            }
+            continue
+        if current_shadow is None:
+            continue
+        m = GUID_RE.search(line)
+        if m:
+            current_shadow["guid"] = m.group(1).strip()
+            continue
+        m = CREATED_RE.search(line)
+        if m:
+            current_shadow["creation_time"] = m.group(1).strip()
+            continue
+        m = VOLUME_RE.search(line)
+        if m:
+            current_shadow["volume"] = m.group(1).strip()
+            continue
+        m = DEVICE_RE.search(line)
+        if m:
+            current_shadow["device_path"] = m.group(1).strip()
+
+    if current_shadow:
+        shadow_copies.append(current_shadow)
+
+    total_shadows = len(shadow_copies)
+
+    # ------------------------------------------------------------------
+    # 5. For each shadow copy, check artifact presence via vshadowmount
+    # ------------------------------------------------------------------
+    vshadowmount_bin: Optional[str] = None
+    for candidate in ["vshadowmount", "/usr/bin/vshadowmount", "/usr/local/bin/vshadowmount"]:
+        try:
+            r = subprocess.run([candidate, "--version"], capture_output=True, timeout=5)
+            if r.returncode in (0, 1):
+                vshadowmount_bin = candidate
+                break
+        except FileNotFoundError:
+            continue
+
+    artifacts_recoverable: dict[str, list[int]] = {a: [] for a in check_artifacts}
+
+    if vshadowmount_bin and shadow_copies:
+        mount_base = Path(tempfile.mkdtemp(prefix="savvy_vss_"))
+        try:
+            mount_point = mount_base / "vss_mount"
+            mount_point.mkdir(parents=True, exist_ok=True)
+
+            # Mount all VSS via vshadowmount
+            mount_cmd = [vshadowmount_bin]
+            if offset_sectors is not None:
+                mount_cmd += ["-o", str(offset_sectors * 512)]
+            mount_cmd += [str(image_path), str(mount_point)]
+
+            mount_proc = subprocess.run(
+                mount_cmd,
+                capture_output=True, text=True, timeout=60
+            )
+
+            if mount_proc.returncode == 0:
+                # Check each shadow copy directory
+                for shadow in shadow_copies:
+                    idx = shadow["shadow_index"]
+                    # vshadowmount creates vss0, vss1, ... directories
+                    vss_dir = mount_point / f"vss{idx}"
+                    if not vss_dir.exists():
+                        # Try vss{idx-1} (0-indexed)
+                        vss_dir = mount_point / f"vss{idx - 1}"
+
+                    if vss_dir.exists():
+                        found: dict[str, str] = {}
+                        missing: list[str] = []
+                        for artifact in check_artifacts:
+                            artifact_path = vss_dir / artifact
+                            if artifact_path.exists():
+                                found[artifact] = str(artifact_path)
+                                artifacts_recoverable[artifact].append(idx)
+                            else:
+                                missing.append(artifact)
+                        shadow["artifacts_found"] = found
+                        shadow["artifacts_missing"] = missing
+                    else:
+                        shadow["artifacts_found"] = {}
+                        shadow["artifacts_missing"] = check_artifacts
+                        shadow["note"] = f"vss{idx} directory not accessible at {mount_point}"
+
+                # Unmount
+                subprocess.run(
+                    ["fusermount", "-u", str(mount_point)],
+                    capture_output=True, timeout=15
+                )
+        except Exception as exc:
+            for shadow in shadow_copies:
+                if "artifacts_found" not in shadow:
+                    shadow["artifacts_found"] = {}
+                    shadow["artifacts_missing"] = check_artifacts
+                    shadow["mount_error"] = str(exc)
+        finally:
+            try:
+                import shutil
+                shutil.rmtree(str(mount_base), ignore_errors=True)
+            except Exception:
+                pass
+    else:
+        # Can't mount — still report shadow copies without artifact check
+        for shadow in shadow_copies:
+            shadow["artifacts_found"] = {}
+            shadow["artifacts_missing"] = check_artifacts
+            shadow["note"] = "vshadowmount not available — install libvshadow-utils to check artifacts"
+
+    # ------------------------------------------------------------------
+    # 6. Create CaseStateManager findings
+    # ------------------------------------------------------------------
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    execution_id = f"E-vss-{ts}"
+    finding_ids: list[str] = []
+
+    # Summary finding: shadow copy inventory
+    if total_shadows > 0:
+        recoverable_evtx = [
+            idx for idx in artifacts_recoverable.get(
+                "Windows/System32/winevt/Logs/Security.evtx", []
+            )
+        ]
+        summary_desc = (
+            f"VSS analysis of {disk_image_path}: found {total_shadows} shadow copies. "
+        )
+        if recoverable_evtx:
+            summary_desc += (
+                f"Security.evtx recoverable from shadow copies: {recoverable_evtx}. "
+                f"CRITICAL if EID 1102 found — pre-clearing logs may be available. "
+            )
+        creation_times = [s["creation_time"] for s in shadow_copies if s.get("creation_time")]
+        if creation_times:
+            summary_desc += f"Shadow copy dates: {creation_times[0]} to {creation_times[-1]}."
+
+        summary_finding = {
+            "case_id": case_id,
+            "finding_type": "anti_forensics_recovery",
+            "artifact_type": "vss",
+            "artifact_path": disk_image_path,
+            "tool_name": tool_name,
+            "execution_id": execution_id,
+            "evidence_kind": "observation",
+            "finding_status": "active",
+            "confidence": 0.95,
+            "description": summary_desc,
+            "supporting_indicators": [
+                f"Shadow copies found: {total_shadows}",
+                f"Security.evtx recoverable from: {recoverable_evtx}",
+            ],
+            "shadow_copies": shadow_copies,
+            "artifacts_recoverable": {k: v for k, v in artifacts_recoverable.items() if v},
+        }
+        try:
+            fid = _state_manager.add_finding(summary_finding)
+            finding_ids.append(fid)
+        except Exception:
+            pass
+
+        # Per-shadow findings for shadows with high forensic value
+        for shadow in shadow_copies:
+            n_artifacts = len(shadow.get("artifacts_found", {}))
+            if n_artifacts == 0:
+                continue
+            shadow_desc = (
+                f"VSS shadow #{shadow['shadow_index']} (created: {shadow.get('creation_time', 'unknown')}): "
+                f"Contains {n_artifacts} recoverable forensic artifacts including: "
+                f"{', '.join(list(shadow.get('artifacts_found', {}).keys())[:5])}."
+            )
+            shadow_finding = {
+                "case_id": case_id,
+                "finding_type": "anti_forensics_recovery",
+                "artifact_type": "vss",
+                "artifact_path": disk_image_path,
+                "tool_name": tool_name,
+                "execution_id": execution_id,
+                "evidence_kind": "observation",
+                "finding_status": "active",
+                "confidence": 0.90,
+                "description": shadow_desc,
+                "supporting_indicators": list(shadow.get("artifacts_found", {}).keys()),
+                "shadow_index": shadow["shadow_index"],
+                "creation_time": shadow.get("creation_time", ""),
+            }
+            try:
+                fid = _state_manager.add_finding(shadow_finding)
+                finding_ids.append(fid)
+            except Exception:
+                pass
+    else:
+        # No shadow copies found
+        noshadow_finding = {
+            "case_id": case_id,
+            "finding_type": "observation",
+            "artifact_type": "vss",
+            "artifact_path": disk_image_path,
+            "tool_name": tool_name,
+            "execution_id": execution_id,
+            "evidence_kind": "observation",
+            "finding_status": "active",
+            "confidence": 0.80,
+            "description": (
+                f"VSS analysis of {disk_image_path}: no shadow copies found. "
+                "This may indicate VSS was disabled (T1490: Inhibit System Recovery) or "
+                "shadow copies were deleted by ransomware (vssadmin delete shadows /all). "
+                "Check for 'vssadmin' or 'wmic shadowcopy delete' in EVTX EID 4688."
+            ),
+            "supporting_indicators": ["No VSS shadows found"],
+        }
+        try:
+            fid = _state_manager.add_finding(noshadow_finding)
+            finding_ids.append(fid)
+        except Exception:
+            pass
+
+    # audit: tool completed
+
+    return {
+        "status": "success",
+        "tool": tool_name,
+        "disk_image_path": disk_image_path,
+        "partition_offset_sectors": offset_sectors,
+        "total_shadows": total_shadows,
+        "shadow_copies": shadow_copies,
+        "artifacts_recoverable": {k: v for k, v in artifacts_recoverable.items() if v},
+        "findings_created": finding_ids,
+        "execution_id": execution_id,
+        "vshadowinfo_output": vsi_result.stdout[-3000:] if hasattr(vsi_result, 'stdout') else "",
+        "note": (
+            "If Security.evtx is recoverable and EID 1102 was found in the live EVTX, "
+            "mount the shadow copy manually and run summarize_evtx + sigma_hunt on the recovered file. "
+            "See tool docstring for mount commands."
+        ) if total_shadows > 0 else (
+            "No shadow copies found. If attacker used vssadmin/wmic to delete shadows, "
+            "check EID 4688 process creation logs for those commands."
+        ),
+    }
+
+
+# ===========================================================================
+# NEW TOOL NAMESPACE: PCA EXECUTION ARTIFACTS (Windows 11 22H2+)
+# ===========================================================================
+
+
+@mcp.tool()
+def extract_pca(
+    mount_point: str,
+    max_entries: int = 200,
+    flag_suspicious_paths: bool = True,
+    case_id: str = "default",
+) -> dict[str, Any]:
+    """Extract Windows 11 Program Compatibility Assistant (PCA) execution artifacts.
+
+    Windows 11 22H2+ introduced the Program Compatibility Assistant artifact —
+    a plain-text record of GUI-launched executables stored in:
+    ``C:\\Windows\\appcompat\\pca\\``
+
+    Key files:
+    * **PcaAppLaunchDic.txt** — pipe-delimited, one entry per unique executable:
+      ``{FullExecutablePath}|{UTC_Termination_Timestamp}``
+      Timestamp = when the process *terminated*, not when it started.
+    * **PcaGeneralDb0.txt** and **PcaGeneralDb1.txt** — detailed exit records,
+      UTF-16LE encoded, alternating active/inactive.
+
+    Forensic significance:
+    * Records ALL GUI-launched executables, even if Prefetch is disabled
+    * Timestamp represents **termination** — useful for runtime duration when
+      correlated with Prefetch last-run time (duration = PCA_terminate - PF_start)
+    * Often survives attacker cleanup — most attackers don't know this artifact exists
+    * Cross-references with Amcache via ProgramId field for post-deletion hash lookup
+    * Files in Temp/AppData/Downloads not present in standard Windows directories
+      are automatically flagged as suspicious
+
+    On SIFT with a mounted disk image the path is:
+    ``/mnt/{hostname}/Windows/appcompat/pca/PcaAppLaunchDic.txt``
+
+    Parameters
+    ----------
+    mount_point:
+        Absolute path to the root of the mounted Windows volume, e.g.
+        ``/mnt/wkstn01`` or ``/mnt/ewf_mount/``.
+        The tool will construct the full artifact path from this root.
+    max_entries:
+        Maximum number of PcaAppLaunchDic entries to return.  All entries are
+        parsed; suspicious ones are prioritised before truncation.  Default 200.
+    flag_suspicious_paths:
+        If True (default), flags executables in non-standard paths:
+        Temp, AppData, Downloads, ProgramData, Users\\Public, Windows\\Tasks,
+        Recycle.
+    case_id:
+        Case identifier for output file naming.
+
+    Returns
+    -------
+    dict
+        status, records (list of PCA entry dicts), suspicious_records (list),
+        total_entries (int), findings_created (list of F-NNN IDs),
+        pca_dir (path checked), windows_version_note (str), execution_id.
+
+    Notes
+    -----
+    **Windows version check:** If ``PcaAppLaunchDic.txt`` does not exist at
+    the expected path, this tool returns ``status="pca_not_present"`` with
+    a clear explanation.  This is normal for Windows 10 and Windows Server
+    systems, which do not have this artifact.
+
+    **Encoding:** PCA files use UTF-16LE with BOM.  Do NOT use standard ASCII
+    tools (e.g. ``cat``, ``grep``) to read these files — they will silently
+    corrupt or miss data.  This tool handles the encoding explicitly.
+
+    **Timestamp interpretation:** The timestamp is when the process *terminated*,
+    not when it started.  A process that ran for 2 hours will show a
+    termination time 2 hours after it actually began.  To estimate start time:
+    subtract execution duration inferred from Prefetch or PcaGeneralDb records.
+
+    **Correlation with Amcache:** PcaGeneralDb contains a ``ProgramId`` field
+    that is the same identifier used in Amcache.  Cross-referencing allows hash
+    lookup even if the binary was deleted before Amcache was parsed.
+    """
+    tool_name = "extract_pca"
+    # audit: tool started (logged via state_manager)
+
+    # ------------------------------------------------------------------
+    # 1. Construct artifact paths
+    # ------------------------------------------------------------------
+    mount_path = Path(mount_point)
+    # Handle both Windows-style and Unix-style path separators
+    pca_dir = mount_path / "Windows" / "appcompat" / "pca"
+    pca_launch_dic = pca_dir / "PcaAppLaunchDic.txt"
+    pca_general_db0 = pca_dir / "PcaGeneralDb0.txt"
+    pca_general_db1 = pca_dir / "PcaGeneralDb1.txt"
+
+    # Check for alternate capitalization (case-sensitive Linux filesystem)
+    if not pca_dir.exists():
+        # Try lowercase
+        for alt in [
+            mount_path / "windows" / "appcompat" / "pca",
+            mount_path / "Windows" / "AppCompat" / "pca",
+            mount_path / "Windows" / "AppCompat" / "PCA",
+        ]:
+            if alt.exists():
+                pca_dir = alt
+                pca_launch_dic = pca_dir / "PcaAppLaunchDic.txt"
+                pca_general_db0 = pca_dir / "PcaGeneralDb0.txt"
+                pca_general_db1 = pca_dir / "PcaGeneralDb1.txt"
+                break
+
+    # ------------------------------------------------------------------
+    # 2. Check presence — Windows version gate
+    # ------------------------------------------------------------------
+    if not pca_launch_dic.exists():
+        version_note = (
+            "PcaAppLaunchDic.txt not found. This artifact requires Windows 11 22H2 or later. "
+            "Windows 10 and Windows Server do not have this artifact by design. "
+            "Verify the mounted image is from a Windows 11 22H2+ system before investigating further. "
+            f"Checked path: {pca_launch_dic}"
+        )
+        # audit: tool completed
+        return {
+            "status": "pca_not_present",
+            "tool": tool_name,
+            "pca_dir": str(pca_dir),
+            "note": version_note,
+            "alternative": (
+                "For execution evidence on Windows 10 systems, use: "
+                "extract_prefetch() + get_amcache() + extract_registry_run_keys()"
+            ),
+        }
+
+    # ------------------------------------------------------------------
+    # 3. Suspicious path indicators
+    # ------------------------------------------------------------------
+    SUSPICIOUS_PATH_INDICATORS = [
+        r"\\temp\\", r"\\tmp\\", r"\\appdata\\", r"\\downloads\\",
+        r"\\programdata\\", r"\\users\\public\\", r"\\windows\\tasks\\",
+        r"\\recycle", r"\\desktop\\", r"\\startup\\",
+        # Network paths
+        r"\\\\",
+        # Suspicious extensions in weird locations
+        r"\.ps1", r"\.bat", r"\.vbs", r"\.js", r"\.hta", r"\.cmd",
+    ]
+
+    SAFE_PATH_PREFIXES = [
+        r"c:\\program files\\",
+        r"c:\\program files (x86)\\",
+        r"c:\\windows\\system32\\",
+        r"c:\\windows\\syswow64\\",
+        r"c:\\windows\\winsxs\\",
+    ]
+
+    def _is_suspicious(path_str: str) -> bool:
+        if not flag_suspicious_paths:
+            return False
+        lower = path_str.lower().replace("/", "\\")
+        # Explicitly safe paths are not suspicious
+        for safe in SAFE_PATH_PREFIXES:
+            if lower.startswith(safe):
+                return False
+        # Check suspicious indicators
+        return any(re.search(ind, lower) for ind in SUSPICIOUS_PATH_INDICATORS)
+
+    # ------------------------------------------------------------------
+    # 4. Parse PcaAppLaunchDic.txt (UTF-16LE)
+    # ------------------------------------------------------------------
+    pca_entries: list[dict[str, Any]] = []
+    parse_errors: list[str] = []
+
+    for encoding in ["utf-16-le", "utf-16", "utf-8-sig", "utf-8", "latin-1"]:
+        try:
+            content = pca_launch_dic.read_bytes()
+            # Strip BOM if present
+            if content.startswith(b"\xff\xfe"):
+                content = content[2:]
+            decoded = content.decode(encoding, errors="replace")
+            break
+        except (UnicodeDecodeError, LookupError):
+            decoded = None
+            continue
+
+    if decoded is None:
+        decoded = pca_launch_dic.read_bytes().decode("latin-1", errors="replace")
+
+    for line_num, line in enumerate(decoded.splitlines(), start=1):
+        line = line.strip()
+        # Remove null bytes that appear in UTF-16 decoded as UTF-8
+        line = line.replace("\x00", "")
+        if not line or "|" not in line:
+            continue
+        try:
+            # Format: {path}|{timestamp} (may have extra fields in newer versions)
+            parts = line.split("|")
+            exe_path = parts[0].strip()
+            timestamp_raw = parts[1].strip() if len(parts) > 1 else ""
+            extra = parts[2:] if len(parts) > 2 else []
+
+            entry = {
+                "executable_path": exe_path,
+                "termination_timestamp_utc": timestamp_raw,
+                "is_suspicious": _is_suspicious(exe_path),
+                "source_file": str(pca_launch_dic),
+                "line_number": line_num,
+                "extra_fields": extra,
+            }
+            pca_entries.append(entry)
+        except Exception as e:
+            parse_errors.append(f"Line {line_num}: {e}")
+
+    # ------------------------------------------------------------------
+    # 5. Parse PcaGeneralDb files (supplementary data)
+    # ------------------------------------------------------------------
+    general_db_entries: list[dict[str, Any]] = []
+
+    for db_file in [pca_general_db0, pca_general_db1]:
+        if not db_file.exists():
+            continue
+        try:
+            raw = db_file.read_bytes()
+            if raw.startswith(b"\xff\xfe"):
+                raw = raw[2:]
+            db_content = raw.decode("utf-16-le", errors="replace").replace("\x00", "")
+            for line in db_content.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                # PcaGeneralDb format varies — best effort parsing
+                entry = {
+                    "raw_line": line,
+                    "source_file": str(db_file),
+                    "is_suspicious": _is_suspicious(line),
+                }
+                # Try to extract program ID and path
+                if "|" in line:
+                    parts = line.split("|")
+                    if len(parts) >= 2:
+                        entry["program_path"] = parts[0].strip()
+                        entry["program_id"] = parts[1].strip() if len(parts) > 1 else ""
+                        entry["details"] = parts[2:] if len(parts) > 2 else []
+                general_db_entries.append(entry)
+        except Exception as e:
+            parse_errors.append(f"PcaGeneralDb ({db_file.name}): {e}")
+
+    # ------------------------------------------------------------------
+    # 6. Sort: suspicious first, then by timestamp descending
+    # ------------------------------------------------------------------
+    suspicious_entries = [e for e in pca_entries if e["is_suspicious"]]
+    clean_entries = [e for e in pca_entries if not e["is_suspicious"]]
+
+    # Sort each group by timestamp (descending — most recent first)
+    def _sort_key(entry: dict) -> str:
+        return entry.get("termination_timestamp_utc", "") or ""
+
+    suspicious_entries.sort(key=_sort_key, reverse=True)
+    clean_entries.sort(key=_sort_key, reverse=True)
+
+    # Suspicious entries first
+    prioritized_entries = suspicious_entries + clean_entries
+    total_entries = len(pca_entries)
+    returned_entries = prioritized_entries[:max_entries]
+
+    # ------------------------------------------------------------------
+    # 7. Create CaseStateManager findings
+    # ------------------------------------------------------------------
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    execution_id = f"E-pca-{ts}"
+    finding_ids: list[str] = []
+
+    # Summary finding
+    summary_desc = (
+        f"PCA artifact (Windows 11 22H2+): {total_entries} total execution records in "
+        f"{pca_launch_dic}. "
+        f"{len(suspicious_entries)} entries in suspicious paths (Temp/AppData/Downloads/ProgramData). "
+        "Timestamps represent process TERMINATION time (UTC). "
+        "Use run_analysis() to correlate with Prefetch/Amcache findings."
+    )
+
+    summary_finding = {
+        "case_id": case_id,
+        "finding_type": "execution_artifact",
+        "artifact_type": "pca",
+        "artifact_path": str(pca_launch_dic),
+        "tool_name": tool_name,
+        "execution_id": execution_id,
+        "evidence_kind": "observation",
+        "finding_status": "active",
+        "confidence": 0.90,
+        "description": summary_desc,
+        "supporting_indicators": [
+            f"Total PCA entries: {total_entries}",
+            f"Suspicious path entries: {len(suspicious_entries)}",
+        ] + [e["executable_path"] for e in suspicious_entries[:10]],
+    }
+    try:
+        fid = _state_manager.add_finding(summary_finding)
+        finding_ids.append(fid)
+    except Exception:
+        pass
+
+    # Individual findings for suspicious entries (top 10 highest-priority)
+    for entry in suspicious_entries[:10]:
+        exe_path = entry["executable_path"]
+        ts_str = entry["termination_timestamp_utc"]
+        ind_desc = (
+            f"[PCA] Suspicious GUI execution: '{exe_path}' "
+            f"terminated at {ts_str} UTC. "
+            "Path is in a non-standard location — potential attacker tool or dropper. "
+            "Cross-reference with Amcache (ProgramId) for SHA-1 hash even if binary is deleted."
+        )
+        ind_finding = {
+            "case_id": case_id,
+            "finding_type": "execution_artifact",
+            "artifact_type": "pca",
+            "artifact_path": str(pca_launch_dic),
+            "tool_name": tool_name,
+            "execution_id": execution_id,
+            "evidence_kind": "observation",
+            "finding_status": "active",
+            "confidence": 0.82,
+            "description": ind_desc,
+            "supporting_indicators": [exe_path, ts_str],
+            "attck_techniques": ["T1204.002"],  # User Execution: Malicious File
+            "executable_path": exe_path,
+            "termination_timestamp_utc": ts_str,
+        }
+        try:
+            fid = _state_manager.add_finding(ind_finding)
+            finding_ids.append(fid)
+        except Exception:
+            pass
+
+    # audit: tool completed
+
+    return {
+        "status": "success",
+        "tool": tool_name,
+        "pca_dir": str(pca_dir),
+        "total_entries": total_entries,
+        "suspicious_count": len(suspicious_entries),
+        "records": [e for e in returned_entries],
+        "suspicious_records": suspicious_entries,
+        "general_db_entries": general_db_entries[:50],  # First 50 GeneralDb entries
+        "findings_created": finding_ids,
+        "execution_id": execution_id,
+        "parse_errors": parse_errors[:10] if parse_errors else [],
+        "windows_version_note": "PCA artifact present — confirms Windows 11 22H2 or later.",
+        "note": (
+            f"Returning {len(returned_entries)} of {total_entries} entries "
+            f"(suspicious-first ordering). "
+            "Termination timestamps — subtract Prefetch last-run time for execution duration. "
+            f"PcaGeneralDb returned {len(general_db_entries[:50])} of {len(general_db_entries)} entries. "
+            "Cross-reference executable paths with Amcache SHA-1 hashes."
+        ),
     }
 
 

@@ -33,6 +33,11 @@ You are the investigator. All evidence is READ-ONLY. Chain of custody applies.
 10. After all hosts complete: `merge_host_graphs()` — unified cross-host graph (lateral movement edges from shared IOCs across hosts)
 11. Refresh dashboard: `build_reports_index()` — regenerates reports/index.html with per-host investigation cards
 
+## Additional Detection Tools (invoke as needed)
+- `sigma_hunt(evtx_path, case_id)` — run 2,278 Sigma community rules via Chainsaw on EVTX files. Produces ATT&CK-mapped findings from deterministic rule-based detection. Use after `summarize_evtx` to validate LLM interpretations against community consensus. If EID 1102 (log cleared) is found → immediately call `analyze_vss`.
+- `analyze_vss(disk_image_path, case_id)` — enumerate Volume Shadow Copies via libvshadow. Shadow copies pre-dating the incident may contain intact Security.evtx after attacker log clearing. Reports artifact presence per store. 3 stores found on wkstn-01 (Aug 27 / Sep 05 / Sep 14 2021).
+- `extract_pca(mount_point, case_id)` — parse Windows 11 22H2+ Program Compatibility Assistant execution artifacts (PcaAppLaunchDic.txt). Plain-text, pipe-delimited: {path}|{last_execution_UTC}. Corroborates Prefetch + Amcache. Not present on Windows 10 / Server.
+
 ## New Tools (v3)
 - `sigma_scan(case_id)` — universal anomaly detection (process, network, MFT, EVTX, persistence)
 - `run_analysis(data_path, query)` — safe Pandas interpreter for CSV/JSON forensic output
