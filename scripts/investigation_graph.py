@@ -46,6 +46,25 @@ from pathlib import Path
 from typing import Any, Optional
 
 # ---------------------------------------------------------------------------
+# MITRE ATT&CK tactic display names (Enterprise, ordered by kill chain)
+# ---------------------------------------------------------------------------
+
+ATTACK_TACTICS: dict[str, str] = {
+    "TA0001": "Initial Access",
+    "TA0002": "Execution",
+    "TA0003": "Persistence",
+    "TA0004": "Privilege Escalation",
+    "TA0005": "Defense Evasion",
+    "TA0006": "Credential Access",
+    "TA0007": "Discovery",
+    "TA0008": "Lateral Movement",
+    "TA0009": "Collection",
+    "TA0010": "Exfiltration",
+    "TA0011": "Command & Control",
+    "TA0040": "Impact",
+}
+
+# ---------------------------------------------------------------------------
 # Colour palette — matches CLAUDE.md Protocol SIFT PDF style
 # ---------------------------------------------------------------------------
 
@@ -338,7 +357,19 @@ class GraphBuilder:
         )
 
         # ---- 2. Evidence source nodes ---------------------------------
-        for img in manifest.get("disk_images", []):
+        # Use manifest if present; otherwise infer from findings artifact_type
+        disk_images = manifest.get("disk_images", [])
+        memory_dumps = manifest.get("memory_dumps", [])
+
+        if not disk_images and not memory_dumps:
+            # Infer from findings — create one generic node per artifact_type found
+            art_types_seen = set(f.get("artifact_type", "") for f in findings)
+            if "disk" in art_types_seen:
+                disk_images = [{"host": case_id, "path": "(evidence disk)", "image_type": "inferred"}]
+            if "memory" in art_types_seen:
+                memory_dumps = [{"host": case_id, "path": "(evidence memory)", "profile": "inferred"}]
+
+        for img in disk_images:
             src_id = f"disk:{img.get('host', 'unknown')}"
             self._add_node(
                 node_id=src_id,
@@ -355,7 +386,7 @@ class GraphBuilder:
             )
             self._add_edge(case_id, src_id, "contains", "contains")
 
-        for dump in manifest.get("memory_dumps", []):
+        for dump in memory_dumps:
             src_id = f"mem:{dump.get('host', 'unknown')}"
             self._add_node(
                 node_id=src_id,
@@ -393,6 +424,26 @@ class GraphBuilder:
                 "exit_code":       exec_rec.get("exit_code", ""),
             }
 
+            description = finding.get("description", "")
+            mitre_tactic = finding.get("mitre_tactic", "")
+            mitre_technique = finding.get("mitre_technique", "")
+            confidence = finding.get("confidence", 0.0)
+            indicators = finding.get("supporting_indicators", [])
+
+            # embedding_text: dense, self-contained text for Graph RAG / vector embedding
+            # Structured so an LLM can answer questions like "what persisted?" or "which IOCs?"
+            embedding_text = (
+                f"Finding {fid} [{kind}] {ftype}. "
+                f"{description} "
+                f"Tool: {tool}. Artifact: {finding.get('artifact_path', '')}. "
+                + (f"ATT&CK: {mitre_tactic}/{mitre_technique}. " if mitre_technique else "")
+                + f"Confidence: {round(confidence * 100)}%. "
+                + (f"Indicators: {', '.join(str(i) for i in indicators[:5])}. " if indicators else "")
+            ).strip()
+
+            # Node size scaled by confidence (min 14, max 26)
+            node_size = int(14 + confidence * 12)
+
             self._add_node(
                 node_id=fid,
                 label=f"{fid}: {ftype}",
@@ -406,34 +457,33 @@ class GraphBuilder:
                     "artifact_offset":     finding.get("artifact_offset", ""),
                     "evidence_kind":       kind,
                     "finding_status":      finding.get("finding_status", ""),
-                    "confidence":          finding.get("confidence", 0.0),
-                    "description":         finding.get("description", ""),
+                    "confidence":          confidence,
+                    "description":         description,
                     "tool_name":           tool,
-                    "mitre_tactic":        finding.get("mitre_tactic", ""),
-                    "mitre_technique":     finding.get("mitre_technique", ""),
-                    "supporting_indicators": finding.get("supporting_indicators", []),
+                    "mitre_tactic":        mitre_tactic,
+                    "mitre_technique":     mitre_technique,
+                    "supporting_indicators": indicators,
                     "contradicted_by":     finding.get("contradicted_by", []),
                     "corroborated_by":     finding.get("corroborated_by", []),
                     "related_finding_ids": finding.get("related_finding_ids", []),
                     "iteration":           finding.get("iteration", 1),
                     "created_at":          finding.get("created_at", ""),
                     "provenance":          provenance,
+                    "embedding_text":      embedding_text,
                 },
-                size=20,
+                size=node_size,
             )
 
             # produced edge: evidence_source → finding
-            # Determine which evidence source produced this finding
+            # Use disk_images / memory_dumps (already inferred if manifest absent)
             if art_type == "disk":
-                # Match to the disk image whose path contains the same host
-                # or fall back to the first disk image
-                for img in manifest.get("disk_images", []):
+                for img in disk_images:
                     src_id = f"disk:{img.get('host', 'unknown')}"
                     if src_id in self._node_ids:
                         self._add_edge(src_id, fid, "produced", "produced")
                         break
             elif art_type == "memory":
-                for dump in manifest.get("memory_dumps", []):
+                for dump in memory_dumps:
                     src_id = f"mem:{dump.get('host', 'unknown')}"
                     if src_id in self._node_ids:
                         self._add_edge(src_id, fid, "produced", "produced")
@@ -524,6 +574,20 @@ class GraphBuilder:
             k = (f.get("evidence_kind") or "unknown").upper()
             kind_counts[k] = kind_counts.get(k, 0) + 1
 
+        # ATT&CK tactic breakdown — for Kill Chain view
+        tactic_counts: dict[str, int] = {}
+        for f in findings:
+            tac = f.get("mitre_tactic", "")
+            if tac:
+                tactic_counts[tac] = tactic_counts.get(tac, 0) + 1
+
+        # IOC extraction — IPs, hashes, file paths from supporting_indicators
+        ioc_set: set[str] = set()
+        for f in findings:
+            for ind in f.get("supporting_indicators", []):
+                ioc_set.add(str(ind))
+        iocs = sorted(ioc_set)
+
         meta: dict[str, Any] = {
             "case_id":           case_id,
             "investigation_goal": manifest.get("investigation_goal", ""),
@@ -531,6 +595,9 @@ class GraphBuilder:
             "current_iteration": current_iter,
             "total_findings":    len(findings),
             "findings_by_kind":  kind_counts,
+            "findings_by_tactic": tactic_counts,
+            "attack_tactics":    ATTACK_TACTICS,
+            "iocs":              iocs,
             "correction_count":  correction_counter,
             "total_executions":  len(execution_index),
             "generated_at":      datetime.now(tz=timezone.utc).isoformat(),
