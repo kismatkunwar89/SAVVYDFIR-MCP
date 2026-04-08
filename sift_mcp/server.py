@@ -2724,6 +2724,441 @@ def extract_pca(
     }
 
 
+
+
+# ===========================================================================
+# REGISTRY HELPER — rla.exe dirty hive cleanup
+# ===========================================================================
+
+def _clean_hive_with_rla(hive_path: Path, label: str) -> tuple:
+    """Copy hive + transaction logs to temp dir, replay via rla.exe.
+
+    Returns (cleaned_hive_path, tmp_in, tmp_out).
+    Caller MUST clean up tmp_in and tmp_out in a finally block.
+    rla outputs the file with a path-flattened name; we glob for it.
+    If rla produces no output (hive was clean), falls back to original copy.
+    """
+    tmp_in  = Path(tempfile.mkdtemp(prefix=f"savvy_rla_in_{label}_"))
+    tmp_out = Path(tempfile.mkdtemp(prefix=f"savvy_rla_out_{label}_"))
+
+    # Copy hive (read-only evidence → writable temp)
+    shutil.copy2(str(hive_path), str(tmp_in / hive_path.name))
+    for suffix in (".LOG1", ".LOG2"):
+        log = hive_path.parent / (hive_path.name + suffix)
+        if log.exists():
+            shutil.copy2(str(log), str(tmp_in / log.name))
+
+    rla_bin = Path("/opt/zimmermantools/rla.dll")
+    subprocess.run(
+        ["/usr/bin/dotnet", str(rla_bin),
+         "-d", str(tmp_in), "--out", str(tmp_out)],
+        capture_output=True, timeout=60,
+    )
+
+    # rla outputs with path-flattened filename — find whatever is in tmp_out
+    cleaned_files = [f for f in tmp_out.iterdir() if f.is_file()]
+    if cleaned_files:
+        cleaned_hive = cleaned_files[0]
+    else:
+        # Hive was already clean — use the original copy
+        cleaned_hive = tmp_in / hive_path.name
+
+    return cleaned_hive, tmp_in, tmp_out
+
+
+# ===========================================================================
+# DISK NAMESPACE — extract_shimcache
+# ===========================================================================
+
+@mcp.tool()
+def extract_shimcache(
+    mount_point: str,
+    case_id: str,
+    max_entries: int = 200,
+) -> dict[str, Any]:
+    """Parse ShimCache (AppCompatCache) from the SYSTEM registry hive.
+
+    ShimCache records every executable path observed by Windows, along with
+    the file's last-modified timestamp.  It does NOT record run count or
+    execution time — only *presence*.  An entry proves the binary existed on
+    disk at some point.  Absence of an entry (via cross-reference with
+    Amcache or Prefetch) is equally significant: it may indicate timestomping
+    or anti-forensic file replacement.
+
+    The SYSTEM hive is cleaned with rla.exe before parsing to replay any
+    uncommitted transaction logs from the offline image.
+
+    Parameters
+    ----------
+    mount_point : str
+        Root of the mounted disk image, e.g. ``/mnt/disk``.
+    case_id : str
+        Investigation case identifier.  Must match the active case in state.
+    max_entries : int
+        Maximum shimcache entries to include in findings.  Default 200.
+        Entries are ordered by cache position (0 = most recently added).
+
+    Returns
+    -------
+    dict
+        status, entries_total, suspicious_count, findings_created, csv_path.
+    """
+    mp = Path(mount_point)
+    system_hive = mp / "Windows" / "System32" / "config" / "SYSTEM"
+    if not system_hive.exists():
+        return {
+            "status": "error",
+            "error": f"SYSTEM hive not found at {system_hive}. Check mount_point.",
+        }
+
+    output_dir = Path(f"/cases/shimcache/{case_id}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    tmp_in = tmp_out = None
+    try:
+        cleaned_hive, tmp_in, tmp_out = _clean_hive_with_rla(
+            system_hive, re.sub(r"[^a-zA-Z0-9]", "_", case_id)[:20]
+        )
+
+        cmd = [
+            "/usr/bin/dotnet",
+            "/opt/zimmermantools/AppCompatCacheParser.dll",
+            "-f", str(cleaned_hive),
+            "--csv", str(output_dir),
+        ]
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=120,
+        )
+
+        if proc.returncode != 0:
+            return {
+                "status": "error",
+                "error": f"AppCompatCacheParser exited {proc.returncode}",
+                "stderr": proc.stderr[:500],
+            }
+
+        # Find the CSV — named {timestamp}_..._AppCompatCache.csv
+        csv_files = sorted(output_dir.glob("*AppCompatCache.csv"))
+        if not csv_files:
+            return {"status": "error", "error": "No CSV output produced."}
+        csv_path = csv_files[-1]
+
+        # Parse CSV
+        import csv as _csv
+        SYSTEM_DIRS = {
+            "\\windows\\system32\\",
+            "\\windows\\syswow64\\",
+            "\\program files\\",
+            "\\program files (x86)\\",
+            "\\windows\\winsxs\\",
+            "\\windows\\systemapps\\",
+        }
+
+        entries = []
+        suspicious = []
+        with open(csv_path, encoding="utf-8-sig", errors="replace") as fh:
+            reader = _csv.DictReader(fh)
+            for i, row in enumerate(reader):
+                if i >= max_entries:
+                    break
+                path_lc = row.get("Path", "").lower().replace("/", "\\")
+                is_suspicious = not any(d in path_lc for d in SYSTEM_DIRS)
+                entry = {
+                    "position":  row.get("CacheEntryPosition", ""),
+                    "path":      row.get("Path", ""),
+                    "last_mod":  row.get("LastModifiedTimeUTC", ""),
+                    "executed":  row.get("Executed", ""),
+                    "suspicious": is_suspicious,
+                }
+                entries.append(entry)
+                if is_suspicious:
+                    suspicious.append(entry)
+
+        # Build findings
+        finding_ids = []
+        if entries:
+            # Summary finding
+            fid = _state_manager.add_finding({
+                "finding_type":   "shimcache_execution_history",
+                "artifact_type":  "disk",
+                "artifact_path":  str(system_hive),
+                "evidence_kind":  "OBSERVATION",
+                "finding_status": "CONFIRMED",
+                "confidence":     0.90,
+                "description": (
+                    f"ShimCache (AppCompatCache) parsed from SYSTEM hive via rla.exe + "
+                    f"AppCompatCacheParser. {len(entries)} entries loaded "
+                    f"(max_entries={max_entries}). {len(suspicious)} entries from "
+                    f"non-standard paths (outside System32/Program Files/WinSxS). "
+                    f"ShimCache proves binary presence; absence cross-referenced with "
+                    f"Amcache/Prefetch indicates timestomping or post-compromise cleanup."
+                ),
+                "tool_name":          "disk.extract_shimcache",
+                "mitre_tactic":       "TA0005",
+                "mitre_technique":    "T1070.006",
+                "supporting_indicators": [e["path"] for e in suspicious[:10]],
+                "corroborated_by":    [],
+                "contradicted_by":    [],
+                "related_finding_ids": [],
+            })
+            finding_ids.append(fid)
+
+            # Individual findings for suspicious entries
+            for entry in suspicious[:10]:
+                sfid = _state_manager.add_finding({
+                    "finding_type":   "shimcache_suspicious_entry",
+                    "artifact_type":  "disk",
+                    "artifact_path":  str(system_hive),
+                    "evidence_kind":  "OBSERVATION",
+                    "finding_status": "HYPOTHESIS",
+                    "confidence":     0.75,
+                    "description": (
+                        "ShimCache entry at position " + str(entry["position"]) + ": "
+                        + str(entry["path"]) + " | LastModified: " + str(entry["last_mod"]) + " | "
+                        + "Executed: " + str(entry["executed"]) + ". "
+                        f"Path is outside standard system directories — investigate "
+                        f"whether this binary has been cleaned from disk."
+                    ),
+                    "tool_name":          "disk.extract_shimcache",
+                    "mitre_tactic":       "TA0002",
+                    "mitre_technique":    "T1059",
+                    "supporting_indicators": [entry["path"], entry["last_mod"]],
+                    "corroborated_by":    [],
+                    "contradicted_by":    [],
+                    "related_finding_ids": [fid],
+                })
+                finding_ids.append(sfid)
+
+        return {
+            "status":          "success",
+            "entries_total":   len(entries),
+            "suspicious_count": len(suspicious),
+            "findings_created": finding_ids,
+            "csv_path":        str(csv_path),
+            "top_suspicious":  suspicious[:5],
+        }
+
+    finally:
+        for d in (tmp_in, tmp_out):
+            if d and Path(d).exists():
+                shutil.rmtree(str(d), ignore_errors=True)
+
+
+# ===========================================================================
+# DISK NAMESPACE — extract_srum
+# ===========================================================================
+
+@mcp.tool()
+def extract_srum(
+    mount_point: str,
+    case_id: str,
+    max_entries: int = 50,
+    bytes_sent_threshold_mb: float = 1.0,
+) -> dict[str, Any]:
+    """Parse the SRUM (System Resource Utilization Monitor) database.
+
+    SRUM records per-process network usage (bytes sent/received) and resource
+    consumption.  Data is retained for approximately 30 days (application) and
+    60 days (network).  SRUM can surface evidence of applications that no
+    longer exist on disk — making it a critical anti-forensics detection tool.
+
+    Uses esedbexport (native Linux libEseDb) to export the ESE database
+    tables, then parses the network data and application resource tables.
+    App IDs are resolved to executable paths via the SruDbIdMapTable.
+
+    Parameters
+    ----------
+    mount_point : str
+        Root of the mounted disk image, e.g. ``/mnt/disk``.
+    case_id : str
+        Investigation case identifier.
+    max_entries : int
+        Maximum SRUM rows to process per table.  Default 50.
+    bytes_sent_threshold_mb : float
+        Flag processes sending more than this many MB.  Default 1.0 MB.
+
+    Returns
+    -------
+    dict
+        status, network_entries, flagged_processes, findings_created.
+    """
+    mp = Path(mount_point)
+    srudb = mp / "Windows" / "System32" / "sru" / "SRUDB.dat"
+    if not srudb.exists():
+        return {
+            "status": "error",
+            "error": f"SRUDB.dat not found at {srudb}.",
+        }
+
+    safe_case = re.sub(r"[^a-zA-Z0-9]", "_", case_id)[:20]
+    export_base = Path(f"/cases/srum/{safe_case}")
+    export_base.parent.mkdir(parents=True, exist_ok=True)
+
+    # esedbexport creates {export_base}.export/
+    export_dir = Path(str(export_base) + ".export")
+    if not export_dir.exists():
+        cmd = [
+            "esedbexport", "-m", "all",
+            "-t", str(export_base),
+            str(srudb),
+        ]
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=120,
+        )
+        if not export_dir.exists():
+            return {
+                "status": "error",
+                "error": "esedbexport produced no output.",
+                "stderr": proc.stderr[:500],
+            }
+
+    # ---- Parse IdMapTable to resolve AppId → executable path ---------------
+    import csv as _csv
+
+    def _decode_id_blob(hex_str: str) -> str:
+        """Decode a hex UTF-16LE IdBlob to a string."""
+        try:
+            raw = bytes.fromhex(hex_str.strip())
+            return raw.decode("utf-16-le").rstrip("\x00").rstrip("\0")
+        except Exception:
+            return hex_str[:64]
+
+    id_map: dict[str, str] = {}  # IdIndex → decoded path/name
+    idmap_file = export_dir / "SruDbIdMapTable.4"
+    if idmap_file.exists():
+        with open(idmap_file, encoding="utf-8", errors="replace") as fh:
+            reader = _csv.DictReader(fh, delimiter="\t")
+            for row in reader:
+                idx   = row.get("IdIndex", "").strip()
+                itype = row.get("IdType", "").strip()
+                blob  = row.get("IdBlob", "").strip()
+                if idx and blob and itype == "0":
+                    decoded = _decode_id_blob(blob)
+                    if decoded:
+                        # Keep only the filename portion for readability
+                        id_map[idx] = decoded.split("\\")[-1] or decoded
+
+    # ---- Find and parse the network data table ------------------------------
+    # Table has columns: AutoIncId, TimeStamp, AppId, UserId, ..., BytesSent, BytesRecvd
+    network_entries: list[dict] = []
+    for tbl_file in sorted(export_dir.iterdir()):
+        if not tbl_file.is_file() or tbl_file.stat().st_size < 10:
+            continue
+        with open(tbl_file, encoding="utf-8", errors="replace") as fh:
+            header = fh.readline()
+        if "BytesSent" in header and "BytesRecvd" in header:
+            with open(tbl_file, encoding="utf-8", errors="replace") as fh:
+                reader = _csv.DictReader(fh, delimiter="\t")
+                for i, row in enumerate(reader):
+                    if i >= max_entries:
+                        break
+                    app_id = row.get("AppId", "").strip()
+                    sent   = int(row.get("BytesSent", 0) or 0)
+                    recv   = int(row.get("BytesRecvd", 0) or 0)
+                    ts     = row.get("TimeStamp", "").strip()
+                    app_name = id_map.get(app_id, f"AppId:{app_id}")
+                    network_entries.append({
+                        "app_name":   app_name,
+                        "app_id":     app_id,
+                        "timestamp":  ts,
+                        "bytes_sent": sent,
+                        "bytes_recv": recv,
+                        "mb_sent":    round(sent / 1_048_576, 2),
+                        "mb_recv":    round(recv / 1_048_576, 2),
+                    })
+            break  # Only one network table
+
+    if not network_entries:
+        return {
+            "status":  "no_data",
+            "message": "No network usage data found in SRUM export.",
+            "export_dir": str(export_dir),
+        }
+
+    # Sort by bytes_sent descending
+    network_entries.sort(key=lambda x: x["bytes_sent"], reverse=True)
+
+    # Flag above threshold
+    threshold_bytes = int(bytes_sent_threshold_mb * 1_048_576)
+    flagged = [e for e in network_entries if e["bytes_sent"] >= threshold_bytes]
+
+    # ---- Build findings -------------------------------------------------------
+    finding_ids = []
+
+    # Summary finding
+    total_sent_mb = sum(e["mb_sent"] for e in network_entries)
+    fid = _state_manager.add_finding({
+        "finding_type":   "srum_network_usage_summary",
+        "artifact_type":  "disk",
+        "artifact_path":  str(srudb),
+        "evidence_kind":  "OBSERVATION",
+        "finding_status": "CONFIRMED",
+        "confidence":     0.92,
+        "description": (
+            f"SRUM network usage table parsed via esedbexport. "
+            f"{len(network_entries)} application entries analysed "
+            f"(capped at max_entries={max_entries}). "
+            f"Total outbound across all apps: {total_sent_mb:.1f} MB. "
+            f"{len(flagged)} processes exceed the {bytes_sent_threshold_mb} MB "
+            f"outbound threshold. SRUM retains ~60 days of network data — "
+            f"entries for deleted applications indicate potential anti-forensics."
+        ),
+        "tool_name":          "disk.extract_srum",
+        "mitre_tactic":       "TA0010",
+        "mitre_technique":    "T1041",
+        "supporting_indicators": [
+            f"{e['app_name']} sent {e['mb_sent']} MB" for e in flagged[:5]
+        ],
+        "corroborated_by":    [],
+        "contradicted_by":    [],
+        "related_finding_ids": [],
+    })
+    finding_ids.append(fid)
+
+    # Per-process finding for high-volume senders
+    for entry in flagged[:10]:
+        sfid = _state_manager.add_finding({
+            "finding_type":   "srum_high_outbound_process",
+            "artifact_type":  "disk",
+            "artifact_path":  str(srudb),
+            "evidence_kind":  "OBSERVATION",
+            "finding_status": "HYPOTHESIS",
+            "confidence":     0.85,
+            "description": (
+                f"SRUM: {entry['app_name']} sent {entry['mb_sent']:.1f} MB "
+                f"/ received {entry['mb_recv']:.1f} MB "
+                f"(last record: {entry['timestamp']}). "
+                f"Outbound volume exceeds {bytes_sent_threshold_mb} MB threshold. "
+                f"Cross-reference with Prefetch, Amcache, and MFT to confirm "
+                f"binary existence and execution timeline."
+            ),
+            "tool_name":          "disk.extract_srum",
+            "mitre_tactic":       "TA0010",
+            "mitre_technique":    "T1041",
+            "supporting_indicators": [
+                entry["app_name"],
+                f"{entry['mb_sent']} MB sent",
+                entry["timestamp"],
+            ],
+            "corroborated_by":    [],
+            "contradicted_by":    [],
+            "related_finding_ids": [fid],
+        })
+        finding_ids.append(sfid)
+
+    return {
+        "status":            "success",
+        "network_entries":   len(network_entries),
+        "flagged_processes": len(flagged),
+        "findings_created":  finding_ids,
+        "top_senders":       network_entries[:10],
+        "export_dir":        str(export_dir),
+    }
+
+
+
 # ===========================================================================
 # INVESTIGATION LIFECYCLE NAMESPACE (3 tools)
 # ===========================================================================

@@ -10,7 +10,7 @@
 
 ## What It Does
 
-SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into an autonomous DFIR investigator on SANS SIFT Workstation. It exposes 29 typed forensic tools over stdio transport, runs cross-artifact correlation between disk and memory evidence, and produces fully traceable findings with evidence-triggered self-correction.
+SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into an autonomous DFIR investigator on SANS SIFT Workstation. It exposes 31 typed forensic tools over stdio transport, runs cross-artifact correlation between disk and memory evidence, and produces fully traceable findings with evidence-triggered self-correction.
 
 ---
 
@@ -200,7 +200,7 @@ Evidence directories are READ-ONLY. All output goes to `/cases/`.
 | lifecycle | `start_investigation`, `add_finding`, `generate_report` | Investigation lifecycle |
 | mounting | `mount_image`, `load_memory` | Evidence preparation |
 | graph | `generate_graph`, `serve_graph`, `merge_host_graphs`, `build_reports_index` | D3 investigation graph + multi-host unified view + reports dashboard |
-| detection | `sigma_hunt`, `analyze_vss`, `extract_pca` | Chainsaw + 2,278 Sigma rules over EVTX; Volume Shadow Copy recovery; Windows 11 PCA execution artifacts |
+| detection | `sigma_hunt`, `analyze_vss`, `extract_pca`, `extract_shimcache`, `extract_srum` | Chainsaw/Sigma EVTX detection; VSS shadow copy recovery; PCA execution artifacts; ShimCache (AppCompatCacheParser + rla.exe); SRUM network/resource usage (esedbexport) |
 
 ---
 

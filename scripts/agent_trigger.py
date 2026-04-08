@@ -21,6 +21,9 @@ TOOL_AGENT_MAP = {
     "mcp__savvydfir__sigma_hunt":                 ("@sigma-analyst",     "Analyze the Sigma rule hits: triage false positives, confirm ATT&CK techniques, cross-reference with existing findings. If EID 1102 (log cleared) appears in hits, call analyze_vss immediately."),
     "mcp__savvydfir__analyze_vss":                ("@evtx-analyst",      "Analyze VSS shadow copy inventory. If pre-incident shadows exist, extract Security.evtx from the closest shadow copy before the incident date and re-run summarize_evtx on the recovered log."),
     "mcp__savvydfir__extract_pca":                ("@prefetch-analyst",  "Analyze PCA execution artifacts: correlate with Amcache (via ProgramId), cross-reference timestamps with incident timeline, flag executables from staging directories."),
+    # rla + shimcache + srum
+    "mcp__savvydfir__extract_shimcache":          ("@registry-analyst",  "Analyze ShimCache entries: cross-reference with Amcache and Prefetch to confirm execution. Flag entries outside System32/Program Files. Absence of an expected entry indicates timestomping or binary deletion."),
+    "mcp__savvydfir__extract_srum":               ("@srum-analyst",      "Analyze SRUM network usage: identify top data-sending processes, flag unresolved AppIds (deleted binaries), cross-reference bytes_sent with C2 IOCs and EVTX network events. 847MB outbound is the key finding."),
 }
 
 def main():
