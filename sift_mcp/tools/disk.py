@@ -1504,41 +1504,43 @@ def extract_registry_run_keys(
             records.append(record)
             persistence_type_counts[ptype] = persistence_type_counts.get(ptype, 0) + 1
 
-            # Create individual finding for each persistence entry
-            finding = Finding(
-                case_id=_case_id(),
-                finding_type="persistence",
-                artifact_type="disk",
-                artifact_path=key_path,
-                tool_name=tool,
-                execution_id=result.execution_id,
-                iteration=_current_iteration(),
-                evidence_kind=EvidenceKind.OBSERVATION,
-                finding_status=FindingStatus.ACTIVE,
-                confidence=0.85,
-                description=(
-                    f"Registry persistence entry found: {key_path}\\{value_name} = {value_data[:200]}. "
-                    f"Persistence type: {ptype}. "
-                    f"This entry executes '{value_data[:100]}' on the configured trigger."
-                ),
-                supporting_indicators=[
-                    key_path,
-                    f"value_name={value_name}",
-                    f"value_data={value_data[:200]}",
-                ],
-                mitre_tactic="TA0003",
-                mitre_technique=(
-                    "T1547.001" if ptype in ("run", "runonce") else
-                    "T1546.010" if ptype == "appinit_dlls" else
-                    "T1547.004" if ptype in ("winlogon_shell", "winlogon_userinit") else
-                    "T1543.003" if ptype == "services" else
-                    "T1547.005" if ptype == "lsa_package" else
-                    "T1547.012" if ptype == "credential_provider" else
-                    "T1547"
-                ),
-            )
-            fid = _state.add_finding(finding.model_dump(mode="json"))
-            finding_ids.append(fid)
+            # Only create individual findings for HIGH-VALUE persistence categories
+            # Low-value/metadata categories get a summary finding at the end
+            HIGH_VALUE = {"run", "runonce", "runservices", "services", "winlogon_shell",
+                          "winlogon_userinit", "appinit_dlls", "lsa_package",
+                          "credential_provider", "ifeo_debugger", "print_monitor",
+                          "active_setup", "bootexecute"}
+            if str(ptype).lower() in HIGH_VALUE or (
+                hasattr(ptype, "value") and ptype.value.lower() in HIGH_VALUE
+            ):
+                finding = Finding(
+                    case_id=_case_id(),
+                    finding_type="persistence",
+                    artifact_type="disk",
+                    artifact_path=key_path,
+                    tool_name=tool,
+                    execution_id=result.execution_id,
+                    iteration=_current_iteration(),
+                    evidence_kind=EvidenceKind.OBSERVATION,
+                    finding_status=FindingStatus.ACTIVE,
+                    confidence=0.85,
+                    description=(
+                        f"Registry persistence: {key_path}\\{value_name} = {value_data[:200]}. "
+                        f"Type: {ptype}."
+                    ),
+                    supporting_indicators=[key_path, f"value={value_data[:200]}"],
+                    mitre_tactic="TA0003",
+                    mitre_technique=(
+                        "T1547.001" if str(ptype).lower() in ("run", "runonce") else
+                        "T1546.010" if str(ptype).lower() == "appinit_dlls" else
+                        "T1547.004" if str(ptype).lower() in ("winlogon_shell", "winlogon_userinit") else
+                        "T1543.003" if str(ptype).lower() == "services" else
+                        "T1547.005" if str(ptype).lower() == "lsa_package" else
+                        "T1547"
+                    ),
+                )
+                fid = _state.add_finding(finding.model_dump(mode="json"))
+                finding_ids.append(fid)
 
         except Exception:
             continue
