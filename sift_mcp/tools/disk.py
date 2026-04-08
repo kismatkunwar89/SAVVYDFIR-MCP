@@ -384,7 +384,7 @@ def extract_prefetch(
     # PECmd requires Windows APIs for decompression; pyscca is the Linux-native solution
     records: list[PrefetchRecord] = []
     finding_ids: list[str] = []
-    exec_id = f"E-pyscca-{os.getpid()}"
+    exec_id = f"E-{os.getpid():05d}"  # must match ^E-\d{{3,}}$ pattern
 
     try:
         import pyscca
