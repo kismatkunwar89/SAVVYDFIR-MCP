@@ -1181,23 +1181,64 @@ def summarize_evtx(
 
 # Persistence key path fragments to match (lower-case)
 _PERSISTENCE_FRAGMENTS: list[tuple[str, str]] = [
-    ("\\software\\microsoft\\windows\\currentversion\\run\\", "run"),
-    ("\\software\\microsoft\\windows\\currentversion\\runonce\\", "runonce"),
-    ("\\software\\microsoft\\windows\\currentversion\\runservices\\", "run"),
-    ("\\software\\wow6432node\\microsoft\\windows\\currentversion\\run\\", "run"),
+    # Run keys — absolute path (NTUSER.DAT or full SOFTWARE path)
+    # NOTE: runonce/runservices MUST come before run (run is a substring of them)
+    ("\\software\\microsoft\\windows\\currentversion\\runonce", "runonce"),
+    ("\\software\\microsoft\\windows\\currentversion\\runservices", "run"),
+    ("\\software\\microsoft\\windows\\currentversion\\run", "run"),
+    ("\\software\\wow6432node\\microsoft\\windows\\currentversion\\runonce", "runonce"),
+    ("\\software\\wow6432node\\microsoft\\windows\\currentversion\\runservices", "run"),
+    ("\\software\\wow6432node\\microsoft\\windows\\currentversion\\run", "run"),
+    # Run keys — hive-relative (RECmd with -d strips the hive name prefix)
+    # NOTE: runonce/runservices MUST come before run (run is a substring of them)
+    ("\\currentversion\\runonce", "runonce"),
+    ("\\currentversion\\runservices", "run"),
+    ("\\currentversion\\run", "run"),
+    ("wow6432node\\microsoft\\windows\\currentversion\\runonce", "runonce"),
+    ("wow6432node\\microsoft\\windows\\currentversion\\runservices", "run"),
+    ("wow6432node\\microsoft\\windows\\currentversion\\run", "run"),
+    # AppInit DLLs (T1546.010)
     ("appinit_dlls", "appinit_dlls"),
+    # Winlogon (T1547.004)
     ("\\winlogon", "winlogon_shell"),
     ("userinit", "winlogon_userinit"),
-    ("\\system\\currentcontrolset\\services\\", "services"),
+    # Services — both absolute and hive-relative (T1543.003)
+    ("\\currentcontrolset\\services\\", "services"),
+    ("controlset001\\services\\", "services"),
+    # LSA packages (T1547.005)
     ("lsaprotection", "lsa_package"),
     ("security packages", "lsa_package"),
     ("authentication packages", "lsa_package"),
+    # Session Manager (T1547.012)
     ("session manager", "session_manager"),
     ("bootexecute", "session_manager"),
+    # Browser Helper Objects (T1176)
     ("browser helper objects", "browser_helper"),
+    # Credential Providers (T1547.002)
     ("credential providers", "credential_provider"),
+    # Shell Extensions (T1546.015)
     ("shelliconoverlayidentifiers", "shell_extension"),
     ("shellserviceobjectdelayload", "shell_extension"),
+    # Image File Execution Options — debugger hijacking (T1546.012)
+    ("image file execution options", "ifeo"),
+    # Scheduled Tasks (T1053.005)
+    ("\\tasks\\", "scheduled_task"),
+    # Active Setup / COM Server (T1547.014)
+    ("active setup", "active_setup"),
+    ("\\inprocserver32", "com_hijack"),
+    ("\\localserver32", "com_hijack"),
+    # SilentProcessExit (T1546.012)
+    ("silentprocessexit", "silentprocessexit"),
+    # Startup folder keys
+    ("\\user shell folders", "startup_folder"),
+    ("\\shell folders", "startup_folder"),
+    ("startupfolder", "startup_folder"),
+    # Netsh helper DLL (T1546.007)
+    ("netsh\\helper", "netsh_helper"),
+    # Time Provider / Print Monitor (T1547.003)
+    ("time providers", "time_provider"),
+    ("print processors", "print_monitor"),
+    ("monitors", "print_monitor"),
 ]
 
 
@@ -1357,16 +1398,25 @@ def extract_registry_run_keys(
 
     for row in rows:
         try:
+            # Use KeyPath (registry key path) not HivePath (filesystem path to hive)
             key_path = (
-                row.get("HivePath") or row.get("KeyPath") or row.get("Path") or ""
+                row.get("KeyPath") or row.get("Path") or ""
             ).strip()
             if not key_path:
                 continue
 
-            # Filter for persistence-related keys only
+            # Classify persistence type from key path
             ptype = _classify_persistence(key_path)
+
+            # Batch mode: DFIRBatch.reb already pre-selects forensic categories,
+            # include all records and use the batch Category as persistence_type fallback.
+            # Non-batch mode: skip entries that are not persistence-related.
             if ptype is None:
-                continue
+                if batch_file_used:
+                    batch_cat = (row.get("Category") or "").strip()
+                    ptype = batch_cat.lower().replace(" ", "_") if batch_cat else "other"
+                else:
+                    continue  # non-batch: skip non-persistence entries
 
             value_name = (
                 row.get("ValueName") or row.get("Name") or ""
