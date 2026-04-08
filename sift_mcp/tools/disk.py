@@ -620,6 +620,8 @@ def get_amcache(
         fid = _state.add_finding(finding.model_dump(mode="json"))
         finding_ids.append(fid)
 
+    if max_entries and max_entries > 0:
+        records = records[:max_entries]
     return _warn_if_empty({
         "tool_name": tool,
         "status": "success",
@@ -628,9 +630,9 @@ def get_amcache(
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(records),
+        "total_records": len(rows),
         "csv_path": persistent_csv,
-        "total_rows": len(rows),
-        "note": f"Full {len(rows)} rows at {persistent_csv}. Use run_analysis(data_path=csv_path) for deep queries.",
+        "note": f"Returning {len(records[:max_entries]) if max_entries and max_entries > 0 else len(records)} of {len(rows)} total rows. Full CSV at {persistent_csv}.",
     }, "get_amcache", hive_path)
 
 
@@ -827,6 +829,8 @@ def extract_mft_timeline(
         except Exception:
             continue
 
+    if max_entries and max_entries > 0:
+        records = records[:max_entries]
     return _warn_if_empty({
         "tool_name": tool,
         "status": "success",
@@ -835,10 +839,10 @@ def extract_mft_timeline(
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(records),
+        "total_records": len(rows),
         "timestomping_candidates": timestomping_candidates,
         "csv_path": persistent_csv,
-        "total_rows": len(rows),
-        "note": f"Full MFT ({len(rows)} rows) at {persistent_csv}. Use run_analysis(data_path=csv_path) for timeline queries.",
+        "note": f"Returning {len(records)} of {len(rows)} MFT rows. Full CSV at {persistent_csv}.",
     }, "extract_mft_timeline", mft_path, min_expected=10000)
 
 
