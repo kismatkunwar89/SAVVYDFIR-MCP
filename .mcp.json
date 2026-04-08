@@ -10,7 +10,8 @@
         "EVIDENCE_BASE": "/evidence",
         "MOUNT_BASE": "/mnt",
         "OUTPUT_BASE": "/cases",
-        "PYTHONPATH": "/opt/SAVVYDFIR-MCP"
+        "PYTHONPATH": "/opt/SAVVYDFIR-MCP",
+        "MCP_TOOL_TIMEOUT": "1800000"
       }
     }
   }
