@@ -1503,45 +1503,51 @@ def mount_image(
         else:
             device = str(image)
 
-        # Step 2: Get partition offset via mmls
+        # Step 2: Detect partition offset
+        # Strategy: mmls (MBR/GPT) → parted loop-detection (raw FS) → GPT default
         proc = _sp.run(
             ["/usr/bin/mmls", device],
             capture_output=True, text=True, timeout=60
         )
-        if proc.returncode != 0:
-            return ToolResult(
-                status="error", tool="mount_image",
-                error=f"mmls failed: {proc.stderr}",
-                data={"hint": "Try mounting with a known offset manually"},
-            ).model_dump()
-
-        # Parse mmls output to find the largest NTFS partition
         offset = None
         max_length = 0
-        for line in proc.stdout.splitlines():
-            match = re.match(r"\d+:\s+\d+:\s+\d+\s+(\d+)\s+(\d+)\s+(\d+)\s+(.*)", line)
-            if match:
-                start = int(match.group(1))
-                length = int(match.group(3))
-                desc = match.group(4).strip()
-                if length > max_length and "NTFS" in desc:
-                    max_length = length
-                    offset = start
-            # Also try simpler mmls format
-            parts = line.split()
-            if len(parts) >= 5:
-                try:
-                    start_val = int(parts[2])
-                    len_val = int(parts[4])
-                    if len_val > max_length:
-                        max_length = len_val
-                        offset = start_val
-                except (ValueError, IndexError):
-                    pass
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                match = re.match(r"\d+:\s+\d+:\s+\d+\s+(\d+)\s+(\d+)\s+(\d+)\s+(.*)", line)
+                if match:
+                    start = int(match.group(1))
+                    length = int(match.group(3))
+                    desc = match.group(4).strip()
+                    if length > max_length and "NTFS" in desc:
+                        max_length = length
+                        offset = start
+                # Also try simpler mmls format
+                parts = line.split()
+                if len(parts) >= 5:
+                    try:
+                        start_val = int(parts[2])
+                        len_val = int(parts[4])
+                        if len_val > max_length:
+                            max_length = len_val
+                            offset = start_val
+                    except (ValueError, IndexError):
+                        pass
 
         if offset is None:
-            offset = 2048  # Common default for GPT
-            data["offset_source"] = "default (GPT assumed)"
+            # mmls failed or found no partitions — check for raw/loop filesystem
+            # (common for E01 images acquired from a single partition, not a whole disk)
+            parted_proc = _sp.run(
+                ["/usr/sbin/parted", "-s", device, "print"],
+                capture_output=True, text=True, timeout=30
+            )
+            if "loop" in parted_proc.stdout.lower():
+                # Raw filesystem with no partition table — mount at offset 0
+                offset = 0
+                data["offset_source"] = "parted (raw filesystem, no partition table)"
+            else:
+                # Last resort: GPT default
+                offset = 2048
+                data["offset_source"] = "default (GPT assumed)"
         else:
             data["offset_source"] = "mmls"
 
@@ -1550,16 +1556,18 @@ def mount_image(
 
         # Step 3: Mount partition read-only
         Path(disk_mount).mkdir(parents=True, exist_ok=True)
-        byte_offset = str(offset * 512)
-        proc = _sp.run(
-            ["/usr/bin/mount", "-o", f"ro,loop,offset={byte_offset}", device, disk_mount],
-            capture_output=True, text=True, timeout=60
-        )
+        if offset == 0:
+            # Raw filesystem — mount directly, no loop offset needed
+            mount_cmd = ["/usr/bin/mount", "-o", "ro", device, disk_mount]
+        else:
+            mount_cmd = ["/usr/bin/mount", "-o", f"ro,loop,offset={offset * 512}", device, disk_mount]
+
+        proc = _sp.run(mount_cmd, capture_output=True, text=True, timeout=60)
         if proc.returncode != 0:
             return ToolResult(
                 status="error", tool="mount_image",
                 error=f"mount failed: {proc.stderr}",
-                data={"hint": f"Run manually: mount -o ro,loop,offset={byte_offset} {device} {disk_mount}"},
+                data={"hint": f"Run manually: {' '.join(mount_cmd)}"},
             ).model_dump()
 
         data["mount_path"] = disk_mount
