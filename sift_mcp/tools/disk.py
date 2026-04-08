@@ -408,28 +408,36 @@ def extract_prefetch(
                 referenced_files=referenced_files[:50],
             )
             records.append(record)
-
-            finding = Finding(
-                case_id=_case_id(),
-                finding_type="other",
-                artifact_type="disk",
-                artifact_path=str(pf_file),
-                tool_name=tool,
-                execution_id=exec_id,
-                iteration=_current_iteration(),
-                evidence_kind=EvidenceKind.OBSERVATION,
-                finding_status=FindingStatus.ACTIVE,
-                confidence=0.95,
-                description=(
-                    f"Prefetch: {exec_name} ran {run_count} time(s). "
-                    f"Last run: {last_run_times[0].isoformat() if last_run_times else 'unknown'}"
-                ),
-                supporting_indicators=[str(pf_file), exec_name],
-            )
-            fid = _state.add_finding(finding.model_dump(mode="json"))
-            finding_ids.append(fid)
         except Exception:
             continue
+
+    # One summary finding for the whole batch — not one per .pf file
+    if records:
+        first_runs = sorted(
+            [r for r in records if r.last_run_times],
+            key=lambda r: r.last_run_times[0]
+        )
+        finding = Finding(
+            case_id=_case_id(),
+            finding_type="other",
+            artifact_type="disk",
+            artifact_path=prefetch_dir,
+            tool_name=tool,
+            execution_id=exec_id,
+            iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION,
+            finding_status=FindingStatus.ACTIVE,
+            confidence=0.95,
+            description=(
+                f"Prefetch: parsed {len(records)} .pf files from {prefetch_dir}. "
+                f"Binaries executed range: {first_runs[0].executable_name if first_runs else 'unknown'} "
+                f"to {first_runs[-1].executable_name if first_runs else 'unknown'}. "
+                "Use run_analysis() to identify suspicious execution patterns."
+            ),
+            supporting_indicators=[r.executable_name for r in records[:20]],
+        )
+        fid = _state.add_finding(finding.model_dump(mode="json"))
+        finding_ids.append(fid)
 
     return _warn_if_empty({
         "tool_name": tool,
@@ -556,32 +564,38 @@ def get_amcache(
             )
             records.append(record)
 
-            finding = Finding(
-                case_id=_case_id(),
-                finding_type="other",
-                artifact_type="disk",
-                artifact_path=hive_path,
-                tool_name=tool,
-                execution_id=result.execution_id,
-                iteration=_current_iteration(),
-                evidence_kind=EvidenceKind.OBSERVATION,
-                finding_status=FindingStatus.ACTIVE,
-                confidence=0.9,
-                description=(
-                    f"Amcache record: {file_path_val} executed. "
-                    f"SHA-1: {sha1 or 'N/A'}. "
-                    f"Publisher: {record.publisher or 'unknown'}."
-                ),
-                supporting_indicators=[
-                    file_path_val,
-                    f"sha1={sha1}" if sha1 else "",
-                ],
-            )
-            fid = _state.add_finding(finding.model_dump(mode="json"))
-            finding_ids.append(fid)
-
         except Exception:
             continue
+
+    # One summary finding for the whole batch — not one per Amcache entry
+    if records:
+        suspicious = [
+            r for r in records
+            if r.file_path and any(
+                p in r.file_path.lower()
+                for p in ("\\temp\\", "\\tmp\\", "\\appdata\\", "\\downloads\\", "\\public\\")
+            )
+        ]
+        finding = Finding(
+            case_id=_case_id(),
+            finding_type="other",
+            artifact_type="disk",
+            artifact_path=hive_path,
+            tool_name=tool,
+            execution_id=result.execution_id,
+            iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION,
+            finding_status=FindingStatus.ACTIVE,
+            confidence=0.9,
+            description=(
+                f"Amcache: parsed {len(records)} execution records from {hive_path}. "
+                + (f"{len(suspicious)} entries in suspicious paths (Temp/AppData/Downloads). " if suspicious else "")
+                + "Use run_analysis() to pivot on SHA-1 hashes or filter by path."
+            ),
+            supporting_indicators=[r.file_path for r in suspicious[:10]] or [hive_path],
+        )
+        fid = _state.add_finding(finding.model_dump(mode="json"))
+        finding_ids.append(fid)
 
     return _warn_if_empty({
         "tool_name": tool,
