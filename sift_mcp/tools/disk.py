@@ -843,6 +843,8 @@ def extract_mft_timeline(
         "timestomping_candidates": timestomping_candidates,
         "csv_path": persistent_csv,
         "note": f"Returning {len(records)} of {len(rows)} MFT rows. Full CSV at {persistent_csv}.",
+        "requires_agent": "@mft-analyst",
+        "agent_instruction": f"Analyze {persistent_csv} for timestomping, attacker file drops, staging. {len(rows)} total rows.",
     }, "extract_mft_timeline", mft_path, min_expected=10000)
 
 
@@ -1207,6 +1209,8 @@ def summarize_evtx(
         fid = _state.add_finding(finding.model_dump(mode="json"))
         finding_ids.append(fid)
 
+    if max_entries and max_entries > 0:
+        records = records[:max_entries]
     return _warn_if_empty({
         "tool_name": tool,
         "status": "success",
@@ -1215,9 +1219,11 @@ def summarize_evtx(
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(records),
+        "total_records": len(rows),
         "csv_path": persistent_csv,
-        "total_rows": len(rows),
-        "note": f"Full event log ({len(rows)} rows) at {persistent_csv}. Use run_analysis(data_path=csv_path) for targeted queries.",
+        "requires_agent": "@evtx-analyst",
+        "agent_instruction": f"Analyze {persistent_csv} for attacker lifecycle — auth anomalies, lateral movement, persistence. {len(rows)} total rows.",
+        "note": f"Returning {len(records)} of {len(rows)} rows. Full CSV at {persistent_csv}.",
         "channel_filter": channel,
         "event_id_filter": effective_eids if effective_eids else "all",
         "date_range": {
@@ -1545,6 +1551,9 @@ def extract_registry_run_keys(
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(records),
+        "total_records": len(rows),
+        "requires_agent": "@registry-analyst",
+        "agent_instruction": f"Analyze {persistent_csv} for persistence mechanisms, fileless malware, credential theft. {len(rows)} total rows.",
         "persistence_type_counts": persistence_type_counts,
         "batch_file_used": batch_file_used,
         "user_hives_scanned": user_hives_found,
