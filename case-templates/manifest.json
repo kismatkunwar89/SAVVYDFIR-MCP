@@ -1,5 +1,5 @@
 {
-  "case_id": "CASE-001",
+  "case_id": "HACKATHON-2026-WKSTN01",
   "mode": "blind",
   "investigation_goal": "Identify initial access vector, persistence mechanisms, lateral movement paths, credential theft, and data exfiltration. Document all findings with evidence artifacts.",
   "disk_images": [
@@ -11,7 +11,7 @@
   ],
   "memory_dumps": [
     {
-      "path": "/evidence/memory/base-wkstn-01-mem.zip",
+      "path": "/evidence/memory/base-wkstn-01-mem.img",
       "host": "wkstn-01"
     }
   ],
