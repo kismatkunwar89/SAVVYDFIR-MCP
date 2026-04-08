@@ -17,6 +17,10 @@ TOOL_AGENT_MAP = {
     "mcp__savvydfir__extract_prefetch":           ("@prefetch-analyst",  "Analyze prefetch records for multi-path execution, SysWOW64 LOLBins, and orphaned .pf files."),
     "mcp__savvydfir__detect_injection":           ("@memory-analyst",    "Analyze memory injection findings for confirmed code injection, DKOM hidden processes, and C2 indicators."),
     "mcp__savvydfir__list_dlls":                  ("@memory-analyst",    "Analyze loaded DLLs for unsigned modules, DLLs from staging paths, and unexpected network capability."),
+    # New detection tools
+    "mcp__savvydfir__sigma_hunt":                 ("@sigma-analyst",     "Analyze the Sigma rule hits: triage false positives, confirm ATT&CK techniques, cross-reference with existing findings. If EID 1102 (log cleared) appears in hits, call analyze_vss immediately."),
+    "mcp__savvydfir__analyze_vss":                ("@evtx-analyst",      "Analyze VSS shadow copy inventory. If pre-incident shadows exist, extract Security.evtx from the closest shadow copy before the incident date and re-run summarize_evtx on the recovered log."),
+    "mcp__savvydfir__extract_pca":                ("@prefetch-analyst",  "Analyze PCA execution artifacts: correlate with Amcache (via ProgramId), cross-reference timestamps with incident timeline, flag executables from staging directories."),
 }
 
 def main():
