@@ -10,7 +10,7 @@
 
 ## What It Does
 
-SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into an autonomous DFIR investigator on SANS SIFT Workstation. It exposes 24+ typed forensic tools over stdio transport, runs cross-artifact correlation between disk and memory evidence, and produces fully traceable findings with evidence-triggered self-correction.
+SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into an autonomous DFIR investigator on SANS SIFT Workstation. It exposes 26 typed forensic tools over stdio transport, runs cross-artifact correlation between disk and memory evidence, and produces fully traceable findings with evidence-triggered self-correction.
 
 ---
 
@@ -93,27 +93,37 @@ export ANTHROPIC_API_KEY='sk-ant-...'
 
 ## Usage
 
-### Mode 1: Blind Investigation (no IOCs provided)
+### Single Host
 
 ```bash
-# Set up case manifest with mode: "blind"
-cd /cases/CASE-001/
-claude   # Agent investigates without IOC bias
+cd /opt/SAVVYDFIR-MCP
+claude --allowedTools "mcp__savvydfir__*" \
+  -p "Read case-templates/manifest.json and start the investigation."
 ```
 
-### Mode 2: Seeded Validation (IOCs provided)
+Claude calls MCP tools → accumulates findings → calls `generate_graph(case_id)` in Phase 5.
+Output: `reports/{case_id}/graph.html` — interactive D3 investigation graph.
+
+### Multi-host Enterprise Investigation
+
+Run each host as a separate Claude session with its own analysis directory:
 
 ```bash
-# Edit manifest.json: set mode: "seeded" and populate known_iocs
-cd /cases/CASE-002/
-claude   # Agent uses IOCs to prioritize analysis
+# Per host — set SAVVYDFIR_ANALYSIS_DIR to isolate state
+SAVVYDFIR_ANALYSIS_DIR=/opt/SAVVYDFIR-MCP/investigations/SRL-2018-DC \
+  claude --allowedTools "mcp__savvydfir__*" \
+  -p "Read case-templates/manifest.json and investigate."
+
+# After all hosts — merge into unified cross-host graph
+claude --allowedTools "mcp__savvydfir__*" \
+  -p "Call merge_host_graphs() then build_reports_index()."
 ```
 
-### Mode 3: Single-Host Triage
+Serve all reports:
 
 ```bash
-# Quick triage on one workstation
-claude "Read /opt/SAVVYDFIR-MCP/case-templates/manifest.json and run a full investigation"
+cd /opt/SAVVYDFIR-MCP/reports && python3 -m http.server 8080
+# Open: http://<server>:8080/index.html
 ```
 
 ---
@@ -176,7 +186,7 @@ Evidence directories are READ-ONLY. All output goes to `/cases/`.
 
 ---
 
-## MCP Tools (24+)
+## MCP Tools (26)
 
 | Namespace | Tools | Description |
 |---|---|---|
@@ -189,6 +199,7 @@ Evidence directories are READ-ONLY. All output goes to `/cases/`.
 | state | `read_state`, `export_trace` | Case state management |
 | lifecycle | `start_investigation`, `add_finding`, `generate_report` | Investigation lifecycle |
 | mounting | `mount_image`, `load_memory` | Evidence preparation |
+| graph | `generate_graph`, `serve_graph`, `merge_host_graphs`, `build_reports_index` | D3 investigation graph + multi-host unified view + reports dashboard |
 
 ---
 
@@ -250,7 +261,19 @@ SAVVYDFIR-MCP/
 │   ├── models/                        # Pydantic data models
 │   ├── tools/                         # MCP tool implementations
 │   └── runners/                       # SafeRunner subprocess wrappers
-├── scripts/                           # Utility scripts
+├── scripts/
+│   ├── investigation_graph.py         # Per-case D3 graph builder (called by generate_graph)
+│   ├── merge_graphs.py               # Cross-host IOC graph merger (called by merge_host_graphs)
+│   └── build_index.py                # Reports index generator (called by build_reports_index)
+├── investigations/                    # Per-host working state (gitignored)
+│   └── {SCENARIO}-{HOST}/
+│       ├── manifest.json
+│       ├── state.json
+│       └── audit.jsonl
+├── reports/                           # Investigation outputs (gitignored)
+│   ├── index.html                     # Dashboard (build_reports_index)
+│   ├── {case_id}/graph.html           # Per-host graph (generate_graph)
+│   └── unified/graph.html             # Cross-host graph (merge_host_graphs)
 └── docs/                              # Architecture and methodology docs
 ```
 
