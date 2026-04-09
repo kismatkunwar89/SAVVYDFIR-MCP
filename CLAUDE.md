@@ -11,20 +11,17 @@ You are the investigator. All evidence is READ-ONLY. Chain of custody applies.
 4. **Load skills on-demand** — do not preload all skills at once
 5. **Case-agnostic**: no hardcoded IPs, usernames, or filenames — universal patterns only
 
-## Available Skills
-| Skill | When to load |
-|-------|-------------|
-| `/investigation-workflow` | Starting investigation or unsure what phase is next |
-| `/artifact-routing` | Deciding which tool to use for a specific Windows artifact |
-| `/tools-reference` | Need exact command syntax for SIFT tools |
-| `/sigma-detection` | Running sigma_scan(), interpreting anomaly results, ATT&CK mapping |
-| `/pivot-methodology` | Have a finding, need to determine what to investigate next |
+## Forensic Knowledge in Tool Responses
+Every tool response now carries forensic_caveat, corroborate_with, and discipline_reminder
+injected from Valhuntir forensic-knowledge YAMLs at the point of interpretation.
+**Read these fields** — they tell you what this artifact does NOT prove and what to run next.
+CLAUDE.md is for investigation structure. Tool responses carry the artifact-specific rules.
 
 ## Investigation Entry Point
 1. Read manifest: `start_investigation(manifest_path)`
 2. Mount evidence: `mount_image()` and `load_memory()`
 3. Collect artifacts: all disk + memory tools
-4. Run anomaly detection: `sigma_scan(case_id)` — 5 universal detectors
+4. Run anomaly detection: `sigma_hunt(evtx_path, case_id)` — 2,278 Sigma rules via Chainsaw
 5. Cross-correlate: `compare_disk_and_memory(case_id)` — 6 forensic checks
 6. Deep dive: `run_analysis(data_path, query)` for ad-hoc Pandas queries
 7. Record findings: `add_finding()` with evidence_kind, artifact_path, confidence
@@ -46,11 +43,6 @@ transaction logs (.LOG1/.LOG2). `extract_shimcache` and `extract_srum` automatic
 run `rla.exe` before parsing to replay those logs and produce clean, accurate output.
 Always ensure hives are clean before cross-referencing registry evidence.
 
-## New Tools (v3)
-- `sigma_scan(case_id)` — universal anomaly detection (process, network, MFT, EVTX, persistence)
-- `run_analysis(data_path, query)` — safe Pandas interpreter for CSV/JSON forensic output
-- `mount_image()` / `load_memory()` — now return ToolResult with RBAC validation
-
 ## RBAC Path Model
 - **Read-only**: `/evidence/`, `/mnt/` — evidence and mount points
 - **Read-write**: `/cases/`, `/tmp/` — analysis output
@@ -58,18 +50,16 @@ Always ensure hives are clean before cross-referencing registry evidence.
 
 ## Tool Paths (SIFT Workstation)
 ```
-/usr/bin/fls  /usr/bin/mmls  /usr/bin/icat  /usr/bin/ewfmount
-/usr/local/bin/vol3  /usr/bin/yara  /usr/bin/log2timeline.py
-/usr/local/bin/MFTECmd  /usr/local/bin/EvtxECmd
-/usr/local/bin/AppCompatCacheParser  /usr/local/bin/LECmd
-/usr/bin/regripper  /usr/bin/7z
+EZ Tools:    dotnet /opt/zimmermantools/{Tool}.dll
+Volatility:  python3 /opt/volatility3-*/vol.py
+Chainsaw:    /usr/local/bin/chainsaw
+fls/mmls:    /usr/bin/fls  /usr/bin/mmls  /usr/bin/icat
+ewfmount:    /usr/bin/ewfmount
+vshadow:     /usr/bin/vshadowinfo  /usr/bin/vshadowmount
+esedbexport: /usr/bin/esedbexport
+yara:        /usr/bin/yara
+Plaso:       /usr/bin/log2timeline.py
 ```
-
-## Pydantic Models (v3)
-- `ArtifactHit` — single anomaly from sigma_scan() with ATT&CK + pivot suggestion
-- `ToolResult` — universal wrapper returned by mount_image/load_memory
-- `SigmaScanResult` — sigma_scan() output with hits, counts, markdown summary
-- `AnalysisResult` — run_analysis() output with table, insights, columns
 
 ## Output Locations
 - Cases: `/cases/`
