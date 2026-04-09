@@ -260,6 +260,14 @@ def _init_fk() -> None:
     except Exception:
         pass
 
+    # Load Hunt Evil process baseline (SANS FOR508)
+    try:
+        hunt_evil_path = Path(__file__).parent.parent / "data" / "hunt-evil-baseline.json"
+        if hunt_evil_path.exists():
+            _FK["__process_baseline__"] = json.loads(hunt_evil_path.read_text())["processes"]
+    except Exception:
+        pass
+
 _init_fk()  # runs at import time
 
 # Per-session call counter — resets when Claude session restarts (correct behaviour)
@@ -309,6 +317,17 @@ def _forensic_envelope(tool_name: str) -> dict:
             "discipline_reminder": reminder or None,
             "data_provenance":     "tool_output_may_contain_untrusted_evidence",
         }
+    # For process scanning tools — include Hunt Evil baseline reference
+    if tool_name in ("memory.scan_processes",) and count < 2:
+        baseline = _FK.get("__process_baseline__")
+        if baseline and "corroborate_with" not in envelope:
+            envelope["process_baseline_reference"] = (
+                "Hunt Evil (SANS FOR508): Check each process against expected "
+                "parent, instance count, and account. Key flags: svchost.exe parent≠services.exe, "
+                "lsass.exe count>1, explorer.exe account=System. "
+                f"Full baseline at /opt/SAVVYDFIR-MCP/data/hunt-evil-baseline.json"
+            )
+
     # Strip None values — don't pollute responses when FK data is absent
     return {k: v for k, v in envelope.items() if v is not None}
 
