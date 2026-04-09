@@ -1,0 +1,163 @@
+{
+  "version": "SANS DFIR Hunt Evil Poster v4.7",
+  "note": "Any deviation from expected parent, instances, or account is a hunting signal",
+  "processes": [
+    {
+      "name": "System",
+      "image_path": "N/A (kernel)",
+      "expected_parent": "None",
+      "expected_instances": "1",
+      "expected_account": "Local System",
+      "start_time": "At boot",
+      "red_flags": [
+        "More than 1 instance",
+        "Any parent process shown",
+        "Running from non-kernel path"
+      ]
+    },
+    {
+      "name": "smss.exe",
+      "image_path": "%SystemRoot%\\System32\\smss.exe",
+      "expected_parent": "System",
+      "expected_instances": "1 master + 1 child per session (children exit after init)",
+      "expected_account": "Local System",
+      "start_time": "Seconds after boot",
+      "red_flags": [
+        "More than 2 long-running instances",
+        "Parent not System",
+        "Unexpected image path"
+      ]
+    },
+    {
+      "name": "csrss.exe",
+      "image_path": "%SystemRoot%\\System32\\csrss.exe",
+      "expected_parent": "smss.exe (exits \u2014 parent may not show)",
+      "expected_instances": "2 or more (one per session)",
+      "expected_account": "Local System",
+      "start_time": "Seconds after boot",
+      "red_flags": [
+        "Only 1 instance",
+        "Parent shown as anything other than smss.exe",
+        "Unexpected path"
+      ]
+    },
+    {
+      "name": "wininit.exe",
+      "image_path": "%SystemRoot%\\System32\\wininit.exe",
+      "expected_parent": "smss.exe (exits \u2014 parent may not show)",
+      "expected_instances": "1",
+      "expected_account": "Local System",
+      "start_time": "Seconds after boot",
+      "red_flags": [
+        "More than 1 instance",
+        "Any parent shown",
+        "Running from temp/user directories"
+      ]
+    },
+    {
+      "name": "services.exe",
+      "image_path": "%SystemRoot%\\System32\\services.exe",
+      "expected_parent": "wininit.exe",
+      "expected_instances": "1",
+      "expected_account": "Local System",
+      "start_time": "Seconds after boot",
+      "red_flags": [
+        "More than 1 instance",
+        "Parent not wininit.exe",
+        "Unexpected path"
+      ]
+    },
+    {
+      "name": "lsass.exe",
+      "image_path": "%SystemRoot%\\System32\\lsass.exe",
+      "expected_parent": "wininit.exe",
+      "expected_instances": "1",
+      "expected_account": "Local System",
+      "start_time": "Seconds after boot",
+      "red_flags": [
+        "More than 1 instance",
+        "Parent not wininit.exe",
+        "Misspellings: lsas.exe, lsasss.exe",
+        "Running from temp path"
+      ]
+    },
+    {
+      "name": "lsaiso.exe",
+      "image_path": "%SystemRoot%\\System32\\lsaiso.exe",
+      "expected_parent": "wininit.exe",
+      "expected_instances": "0 or 1 (only with Credential Guard enabled)",
+      "expected_account": "Local System",
+      "start_time": "Seconds after boot",
+      "red_flags": [
+        "Present without Credential Guard",
+        "More than 1 instance",
+        "Unexpected parent"
+      ]
+    },
+    {
+      "name": "svchost.exe",
+      "image_path": "%SystemRoot%\\System32\\svchost.exe",
+      "expected_parent": "services.exe",
+      "expected_instances": "Many (10+ on low-RAM; 50+ on >3.5GB RAM Win10)",
+      "expected_account": "Local System, Network Service, or Local Service",
+      "start_time": "Seconds after boot; additional instances at logon or service start",
+      "red_flags": [
+        "Parent not services.exe",
+        "No -k parameter in command line",
+        "Misspellings: scvhost, svchost32, svch0st",
+        "Running from temp/user directories",
+        "Unusual account (e.g. logged-on user running svchost)"
+      ]
+    },
+    {
+      "name": "winlogon.exe",
+      "image_path": "%SystemRoot%\\System32\\winlogon.exe",
+      "expected_parent": "smss.exe (exits \u2014 parent may not show)",
+      "expected_instances": "1 per interactive session",
+      "expected_account": "Local System",
+      "start_time": "Seconds after boot for session 1",
+      "red_flags": [
+        "Parent shown (smss.exe should have exited)",
+        "Unexpected path"
+      ]
+    },
+    {
+      "name": "explorer.exe",
+      "image_path": "%SystemRoot%\\explorer.exe",
+      "expected_parent": "userinit.exe (exits \u2014 parent may not show)",
+      "expected_instances": "1 per logged-on user (interactive sessions)",
+      "expected_account": "Logged-on user",
+      "start_time": "At user logon",
+      "red_flags": [
+        "Parent shown (userinit.exe should have exited)",
+        "Running as Local System or Network Service",
+        "Multiple instances under same user",
+        "Running from non-Windows path"
+      ]
+    },
+    {
+      "name": "RuntimeBroker.exe",
+      "image_path": "%SystemRoot%\\System32\\RuntimeBroker.exe",
+      "expected_parent": "svchost.exe",
+      "expected_instances": "1 per UWP app",
+      "expected_account": "Logged-on user",
+      "start_time": "Variable",
+      "red_flags": [
+        "Parent not svchost.exe",
+        "Running as System"
+      ]
+    },
+    {
+      "name": "taskhost.exe / taskhostw.exe",
+      "image_path": "%SystemRoot%\\System32\\taskhostw.exe",
+      "expected_parent": "svchost.exe",
+      "expected_instances": "1 or more",
+      "expected_account": "Varies",
+      "start_time": "Variable",
+      "red_flags": [
+        "Parent not svchost.exe",
+        "Unexpected path"
+      ]
+    }
+  ]
+}
