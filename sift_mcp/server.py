@@ -268,6 +268,23 @@ def _init_fk() -> None:
     except Exception:
         pass
 
+    # Extend MFT caveat with complete $SI/$FN timestamp matrix (SANS DFIR Windows FA poster)
+    # These rules are NOT fully covered in Valhuntir's mft.yaml
+    _mft_extra = [
+        "Cross-volume file copy — $SI and $FN timestamps are INHERITED from the original: "
+        "malware copied from USB shows original USB timestamps, indistinguishable from timestomping",
+        "Local file move or rename — NO timestamps change at all: "
+        "moves/renames are completely invisible to timestamp-only analysis",
+        "NTFS volumes >128 GB — Last Access time is NOT updated by default "
+        "(NtfsDisableLastAccessUpdate): treat Access timestamps as unreliable on large volumes",
+        "Volume-to-volume move via CLI — $FN timestamps are inherited from original, "
+        "$SI timestamps also inherited: cross-drive moves preserve ALL original timestamps",
+    ]
+    if "disk.extract_mft_timeline" in _FK:
+        _FK["disk.extract_mft_timeline"].setdefault("does_not_prove", []).extend(_mft_extra)
+    else:
+        _FK["disk.extract_mft_timeline"] = {"does_not_prove": _mft_extra}
+
 _init_fk()  # runs at import time
 
 # Per-session call counter — resets when Claude session restarts (correct behaviour)
@@ -318,6 +335,15 @@ def _forensic_envelope(tool_name: str) -> dict:
             "data_provenance":     "tool_output_may_contain_untrusted_evidence",
         }
     # For process scanning tools — include Hunt Evil baseline reference
+    # analyze_vss: add EZ Tools --vss documentation note
+    if tool_name == "disk.analyze_vss" and count < 2:
+        envelope["vss_recovery_note"] = (
+            "SIFT/offline: use analyze_vss() + vshadowmount to expose shadow volumes, "
+            "then re-run disk tools on the mounted shadow path. "
+            "EZ Tools --vss flag works on LIVE Windows endpoints only "
+            "(EvtxECmd, MFTECmd, PECmd, RECmd all support it for live systems)."
+        )
+
     if tool_name in ("memory.scan_processes",) and count < 2:
         baseline = _FK.get("__process_baseline__")
         if baseline and "corroborate_with" not in envelope:
