@@ -14,3 +14,19 @@ exports/
 .nova-protector/
 local_zep_state.json
 investigations/
+
+# IDE and editor config files
+.cursor/
+.cursorrules
+.opencode.json
+.windsurfrules
+
+# Auto-generated Claude Code skills
+.claude/skills/debug-issue.md
+.claude/skills/explore-codebase.md
+.claude/skills/refactor-safely.md
+.claude/skills/review-changes.md
+
+# Auto-generated docs
+AGENTS.md
+GEMINI.md

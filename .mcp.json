@@ -13,6 +13,14 @@
         "PYTHONPATH": "/opt/SAVVYDFIR-MCP",
         "MCP_TOOL_TIMEOUT": "1800000"
       }
+    },
+    "code-review-graph": {
+      "command": "uvx",
+      "args": [
+        "code-review-graph",
+        "serve"
+      ],
+      "type": "stdio"
     }
   }
 }
