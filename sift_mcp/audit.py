@@ -175,6 +175,10 @@ class AuditLogger:
         outputs_summary: str,
         finding_ids: list[str],
         correction_event: Optional[dict[str, Any]] = None,
+        tool_name: Optional[str] = None,
+        command_line: Optional[str] = None,
+        parameters: Optional[dict[str, Any]] = None,
+        agent_turn: Optional[int] = None,
     ) -> None:
         """Write a ``completed`` entry to ``audit.jsonl``.
 
@@ -196,15 +200,23 @@ class AuditLogger:
             If this execution produced a self-correction, a dict describing
             the correction (``prior_claim``, ``contradiction_source``,
             ``revised_claim``, ``confidence_delta``).  ``None`` otherwise.
+        tool_name:
+            Logical MCP tool name written redundantly onto the completed entry.
+        command_line:
+            Reconstructed subprocess command line for this execution.
+        parameters:
+            Structured high-level parameters associated with this execution.
+        agent_turn:
+            Claude agent turn number associated with this execution.
         """
         entry: AuditEntry = {
             "timestamp": _utcnow_iso(),
             "execution_id": execution_id,
             "event_type": "completed",
-            "tool": None,  # Already recorded in the started entry
-            "parameters": None,
-            "command_line": None,
-            "agent_turn": None,
+            "tool": tool_name,
+            "parameters": parameters,
+            "command_line": command_line,
+            "agent_turn": agent_turn,
             "iteration": self._current_iteration,
             "exit_code": exit_code,
             "duration_seconds": round(duration, 4),
@@ -234,6 +246,10 @@ class AuditLogger:
             outputs_summary=f"TIMED OUT after {timeout_seconds}s",
             finding_ids=[],
             correction_event=None,
+            tool_name=None,
+            command_line=None,
+            parameters=None,
+            agent_turn=None,
         )
 
     # ------------------------------------------------------------------

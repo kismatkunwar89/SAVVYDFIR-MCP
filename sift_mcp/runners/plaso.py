@@ -111,6 +111,7 @@ class PlasoRunner(SafeRunner):
         parsers: str = DEFAULT_PARSERS,
         hashers: str = DEFAULT_HASHERS,
         timezone: str = DEFAULT_TIMEZONE,
+        tool_name: Optional[str] = None,
         timeout: int = LOG2TIMELINE_TIMEOUT,
     ) -> RunResult:
         """Build a Plaso super timeline from *source_path*.
@@ -159,7 +160,7 @@ class PlasoRunner(SafeRunner):
             "--timezone", timezone,
             source_path,
         ]
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # psort
@@ -174,6 +175,7 @@ class PlasoRunner(SafeRunner):
         time_slice_end: Optional[str] = None,
         filter_expression: Optional[str] = None,
         timezone: str = DEFAULT_TIMEZONE,
+        tool_name: Optional[str] = None,
         timeout: int = PSORT_TIMEOUT,
     ) -> RunResult:
         """Extract and filter events from a Plaso storage file with psort.
@@ -246,7 +248,7 @@ class PlasoRunner(SafeRunner):
 
         cmd.append(storage_file)
 
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # pinfo
@@ -255,6 +257,7 @@ class PlasoRunner(SafeRunner):
     def pinfo(
         self,
         storage_file: str,
+        tool_name: Optional[str] = None,
         timeout: int = PSORT_TIMEOUT,
     ) -> RunResult:
         """Display metadata about a Plaso storage file (``pinfo.py``).
@@ -276,7 +279,7 @@ class PlasoRunner(SafeRunner):
             file contents and processing metadata.
         """
         cmd: List[str] = ["pinfo.py", storage_file]
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # Error classification

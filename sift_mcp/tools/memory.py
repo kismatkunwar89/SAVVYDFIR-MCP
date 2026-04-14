@@ -97,7 +97,10 @@ def init_tools(
         _runner = runner
     else:
         from sift_mcp.runners.volatility import VolatilityRunner
-        _runner = VolatilityRunner(audit_logger=audit_logger)
+        _runner = VolatilityRunner(
+            audit_logger=audit_logger,
+            state_manager=state_manager,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +111,7 @@ def _case_id() -> str:
     if _state is None:
         return "unknown"
     try:
-        return _state._state.get("case_id", "unknown")
+        return _state.case_id
     except Exception:
         return "unknown"
 
@@ -258,7 +261,8 @@ _SYSTEM32_ONLY: set[str] = {
 # Known legitimate parent-child relationships
 # child → expected parent name
 _EXPECTED_PARENTS: dict[str, str] = {
-    "smss.exe": "system|smss.exe",  # smss.exe spawns child smss.exe during session init (normal)
+    # smss.exe spawns child smss.exe during session init (normal)
+    "smss.exe": "system|smss.exe",
     "csrss.exe": "smss.exe",
     "wininit.exe": "smss.exe",
     "winlogon.exe": "smss.exe",
@@ -361,7 +365,7 @@ def detect_profile(dump_path: str) -> dict[str, Any]:
         return _not_initialised(tool)
 
     try:
-        result = _runner.windows_info(dump_path=dump_path)
+        result = _runner.windows_info(dump_path=dump_path, tool_name=tool)
     except Exception as exc:
         return _runner_error(tool, exc)
 
@@ -434,7 +438,8 @@ def detect_profile(dump_path: str) -> dict[str, Any]:
             os_version=os_version,
             architecture=architecture,  # type: ignore[arg-type]
             build_number=build_num or None,
-            kernel_base=str(info.get("DTB") or info.get("KernelBase") or "") or None,
+            kernel_base=str(info.get("DTB") or info.get(
+                "KernelBase") or "") or None,
         )
     except Exception as exc:
         return {
@@ -507,24 +512,33 @@ def _parse_process_rows(
     for row in rows:
         try:
             pid = int(row.get("PID") or row.get("Pid") or row.get("pid") or 0)
-            ppid = int(row.get("PPID") or row.get("PPid") or row.get("ppid") or 0)
-            name = str(row.get("ImageFileName") or row.get("Name") or row.get("name") or "")
-            path = row.get("ImageFilePath") or row.get("Path") or row.get("path") or None
-            cmd = row.get("CmdLine") or row.get("CommandLine") or row.get("Cmdline") or None
-            threads_raw = row.get("Threads") or row.get("ActiveThreads") or None
+            ppid = int(row.get("PPID") or row.get(
+                "PPid") or row.get("ppid") or 0)
+            name = str(row.get("ImageFileName") or row.get(
+                "Name") or row.get("name") or "")
+            path = row.get("ImageFilePath") or row.get(
+                "Path") or row.get("path") or None
+            cmd = row.get("CmdLine") or row.get(
+                "CommandLine") or row.get("Cmdline") or None
+            threads_raw = row.get("Threads") or row.get(
+                "ActiveThreads") or None
             try:
-                num_threads = int(threads_raw) if threads_raw is not None else None
+                num_threads = int(
+                    threads_raw) if threads_raw is not None else None
             except (TypeError, ValueError):
                 num_threads = None
             session_raw = row.get("SessionId") or row.get("SessionID") or None
             try:
-                session_id = int(session_raw) if session_raw is not None else None
+                session_id = int(
+                    session_raw) if session_raw is not None else None
             except (TypeError, ValueError):
                 session_id = None
-            wow64_raw = row.get("Wow64") or row.get("IsWow64") or row.get("wow64") or False
+            wow64_raw = row.get("Wow64") or row.get(
+                "IsWow64") or row.get("wow64") or False
             is_wow64 = str(wow64_raw).lower() in ("true", "1", "yes")
             offset = (
-                str(row.get("Offset(V)") or row.get("Offset") or row.get("offset") or "0x0")
+                str(row.get("Offset(V)") or row.get(
+                    "Offset") or row.get("offset") or "0x0")
             )
             if not offset.startswith("0x"):
                 try:
@@ -598,7 +612,7 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
         return _not_initialised(tool)
 
     try:
-        result = _runner.pslist(dump_path=dump_path)
+        result = _runner.pslist(dump_path=dump_path, tool_name=tool)
     except Exception as exc:
         return _runner_error(tool, exc)
 
@@ -721,7 +735,7 @@ def scan_processes(dump_path: str) -> dict[str, Any]:
         return _not_initialised(tool)
 
     try:
-        result = _runner.psscan(dump_path=dump_path)
+        result = _runner.psscan(dump_path=dump_path, tool_name=tool)
     except Exception as exc:
         return _runner_error(tool, exc)
 
@@ -815,7 +829,7 @@ def scan_network(dump_path: str, case_id: Optional[str] = None, max_results: int
         return _not_initialised(tool)
 
     try:
-        result = _runner.netscan(dump_path=dump_path)
+        result = _runner.netscan(dump_path=dump_path, tool_name=tool)
     except Exception as exc:
         return _runner_error(tool, exc)
 
@@ -842,11 +856,13 @@ def scan_network(dump_path: str, case_id: Optional[str] = None, max_results: int
 
     for row in rows:
         try:
-            proto_raw = str(row.get("Proto") or row.get("Protocol") or row.get("proto") or "TCP")
+            proto_raw = str(row.get("Proto") or row.get(
+                "Protocol") or row.get("proto") or "TCP")
             proto = "TCP" if "tcp" in proto_raw.lower() else "UDP"
 
             local_addr = str(
-                row.get("LocalAddr") or row.get("local_addr") or row.get("LocalIp") or "0.0.0.0"
+                row.get("LocalAddr") or row.get(
+                    "local_addr") or row.get("LocalIp") or "0.0.0.0"
             )
             local_port_raw = row.get("LocalPort") or row.get("local_port") or 0
             try:
@@ -868,12 +884,14 @@ def scan_network(dump_path: str, case_id: Optional[str] = None, max_results: int
                 or row.get("remote_port") or None
             )
             try:
-                foreign_port = int(foreign_port_raw) if foreign_port_raw not in (None, "*", "") else None
+                foreign_port = int(foreign_port_raw) if foreign_port_raw not in (
+                    None, "*", "") else None
             except (ValueError, TypeError):
                 foreign_port = None
 
             state = str(
-                row.get("State") or row.get("state") or row.get("ConnectionState") or ""
+                row.get("State") or row.get(
+                    "state") or row.get("ConnectionState") or ""
             ).strip() or None
 
             pid_raw = row.get("PID") or row.get("Pid") or row.get("pid") or 0
@@ -883,11 +901,13 @@ def scan_network(dump_path: str, case_id: Optional[str] = None, max_results: int
                 pid = 0
 
             owner = (
-                row.get("Owner") or row.get("Process") or row.get("ImageFileName") or None
+                row.get("Owner") or row.get(
+                    "Process") or row.get("ImageFileName") or None
             )
 
             offset_raw = (
-                row.get("Offset(P)") or row.get("Offset") or row.get("offset") or "0x0"
+                row.get("Offset(P)") or row.get(
+                    "Offset") or row.get("offset") or "0x0"
             )
             offset = str(offset_raw)
             if not offset.startswith("0x"):
@@ -1009,7 +1029,7 @@ def detect_injection(
         return _not_initialised(tool)
 
     try:
-        result = _runner.malfind(dump_path=dump_path, pid=pid)
+        result = _runner.malfind(dump_path=dump_path, pid=pid, tool_name=tool)
     except Exception as exc:
         return _runner_error(tool, exc)
 
@@ -1036,15 +1056,19 @@ def detect_injection(
 
     for row in rows:
         try:
-            row_pid = int(row.get("PID") or row.get("Pid") or row.get("pid") or 0)
+            row_pid = int(row.get("PID") or row.get(
+                "Pid") or row.get("pid") or 0)
             proc_name = str(
-                row.get("Process") or row.get("ImageFileName") or row.get("process") or "unknown"
+                row.get("Process") or row.get(
+                    "ImageFileName") or row.get("process") or "unknown"
             )
             vad_start = str(
-                row.get("Start VPN") or row.get("VadStart") or row.get("StartVPN") or "0x0"
+                row.get("Start VPN") or row.get(
+                    "VadStart") or row.get("StartVPN") or "0x0"
             )
             vad_end = str(
-                row.get("End VPN") or row.get("VadEnd") or row.get("EndVPN") or "0x0"
+                row.get("End VPN") or row.get(
+                    "VadEnd") or row.get("EndVPN") or "0x0"
             )
             # Normalise hex addresses
             for addr in (vad_start, vad_end):
@@ -1055,22 +1079,26 @@ def detect_injection(
                         pass
 
             protection = str(
-                row.get("Protection") or row.get("Tag") or row.get("protection") or "UNKNOWN"
+                row.get("Protection") or row.get(
+                    "Tag") or row.get("protection") or "UNKNOWN"
             )
 
             # Check for MZ header in the hex dump field
             hex_dump = str(
-                row.get("Hexdump") or row.get("HexDump") or row.get("hexdump") or ""
+                row.get("Hexdump") or row.get(
+                    "HexDump") or row.get("hexdump") or ""
             ).lower()
             disasm = str(
-                row.get("Disassembly") or row.get("disasm") or row.get("Dis") or ""
+                row.get("Disassembly") or row.get(
+                    "disasm") or row.get("Dis") or ""
             )
             # MZ magic: 4d 5a at offset 0
             has_mz = (
                 hex_dump.startswith("4d 5a") or
                 hex_dump.startswith("4d5a") or
                 "4d 5a" in hex_dump[:8] or
-                str(row.get("MZHeader") or row.get("HasMzHeader") or "").lower() == "true"
+                str(row.get("MZHeader") or row.get(
+                    "HasMzHeader") or "").lower() == "true"
             )
             if has_mz:
                 mz_header_count += 1
@@ -1197,7 +1225,7 @@ def list_dlls(dump_path: str, pid: int) -> dict[str, Any]:
         }
 
     try:
-        result = _runner.dlllist(dump_path=dump_path, pid=pid)
+        result = _runner.dlllist(dump_path=dump_path, pid=pid, tool_name=tool)
     except Exception as exc:
         return _runner_error(tool, exc)
 
@@ -1223,21 +1251,26 @@ def list_dlls(dump_path: str, pid: int) -> dict[str, Any]:
 
     for row in rows:
         try:
-            row_pid = int(row.get("PID") or row.get("Pid") or row.get("pid") or pid)
+            row_pid = int(row.get("PID") or row.get(
+                "Pid") or row.get("pid") or pid)
             proc_name = str(
-                row.get("Process") or row.get("ImageFileName") or row.get("Name") or "unknown"
+                row.get("Process") or row.get(
+                    "ImageFileName") or row.get("Name") or "unknown"
             )
             dll_path_raw = str(
-                row.get("FullDllName") or row.get("Path") or row.get("FullPath") or ""
+                row.get("FullDllName") or row.get(
+                    "Path") or row.get("FullPath") or ""
             ).strip()
             dll_name_raw = str(
-                row.get("BaseDllName") or row.get("DllName") or row.get("Name") or ""
+                row.get("BaseDllName") or row.get(
+                    "DllName") or row.get("Name") or ""
             ).strip()
             if not dll_name_raw and dll_path_raw:
                 dll_name_raw = Path(dll_path_raw).name
 
             base_raw = (
-                row.get("Base") or row.get("LoadedDllBase") or row.get("BaseAddress") or "0x0"
+                row.get("Base") or row.get(
+                    "LoadedDllBase") or row.get("BaseAddress") or "0x0"
             )
             base_addr = str(base_raw)
             if not base_addr.startswith("0x"):

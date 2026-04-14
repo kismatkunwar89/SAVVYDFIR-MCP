@@ -45,7 +45,7 @@ Typical usage
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from sift_mcp.runners.base import RunResult, SafeRunner
 
@@ -112,6 +112,7 @@ class YaraRunner(SafeRunner):
         rules_path: str,
         target_path: str,
         recursive: bool = False,
+        tool_name: Optional[str] = None,
         timeout: int = FILE_SCAN_TIMEOUT,
     ) -> RunResult:
         """Scan a file or directory for YARA rule matches.
@@ -156,7 +157,7 @@ class YaraRunner(SafeRunner):
 
         cmd.extend([rules_path, target_path])
 
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # Memory dump scanning
@@ -166,6 +167,7 @@ class YaraRunner(SafeRunner):
         self,
         rules_path: str,
         dump_path: str,
+        tool_name: Optional[str] = None,
         timeout: int = MEMORY_SCAN_TIMEOUT,
     ) -> RunResult:
         """Scan a raw memory dump for YARA rule matches.
@@ -212,7 +214,7 @@ class YaraRunner(SafeRunner):
             dump_path,
         ]
 
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # Error classification

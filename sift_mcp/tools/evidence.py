@@ -82,7 +82,10 @@ def init_tools(
         _runner = runner
     else:
         from sift_mcp.runners.sleuthkit import SleuthKitRunner
-        _runner = SleuthKitRunner(audit_logger=audit_logger)
+        _runner = SleuthKitRunner(
+            audit_logger=audit_logger,
+            state_manager=state_manager,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -249,9 +252,10 @@ def verify_integrity(image_path: str) -> dict[str, Any]:
         ``error_message``   — Present only when ``status == "error"``.
         ``stderr``          — Present only when ``status == "error"``.
     """
+    tool = "evidence.verify_integrity"
     if _runner is None or _state is None or _audit is None:
         return {
-            "tool_name": "evidence.verify_integrity",
+            "tool_name": tool,
             "status": "error",
             "error_message": "Tools not initialised. Call init_tools() first.",
             "data": [],
@@ -262,7 +266,7 @@ def verify_integrity(image_path: str) -> dict[str, Any]:
 
     if not image_path or not image_path.strip():
         return {
-            "tool_name": "evidence.verify_integrity",
+            "tool_name": tool,
             "status": "error",
             "error_message": "image_path must be a non-empty string.",
             "data": [],
@@ -272,10 +276,10 @@ def verify_integrity(image_path: str) -> dict[str, Any]:
         }
 
     try:
-        result = _runner.ewfverify(image_path=image_path)
+        result = _runner.ewfverify(image_path=image_path, tool_name=tool)
     except Exception as exc:
         return {
-            "tool_name": "evidence.verify_integrity",
+            "tool_name": tool,
             "status": "error",
             "error_message": f"Runner error: {exc}",
             "data": [],
@@ -294,7 +298,8 @@ def verify_integrity(image_path: str) -> dict[str, Any]:
     # Determine finding type and description
     # Fix: CTF/training images often have no stored acquisition hash.
     # In that case return a neutral UNVERIFIABLE result, not a false COMPROMISED finding.
-    no_stored_hash = not integrity.stored_hash or integrity.stored_hash in ("N/A", "<unparseable>", "none", "")
+    no_stored_hash = not integrity.stored_hash or integrity.stored_hash in (
+        "N/A", "<unparseable>", "none", "")
 
     if integrity.verified:
         finding_type = "other"
@@ -327,11 +332,11 @@ def verify_integrity(image_path: str) -> dict[str, Any]:
 
     # Build and store finding
     finding = Finding(
-        case_id=_state._state.get("case_id", "unknown"),
+        case_id=_state.case_id,
         finding_type=finding_type,
         artifact_type="disk",
         artifact_path=image_path,
-        tool_name="evidence.verify_integrity",
+        tool_name=tool,
         execution_id=result.execution_id,
         iteration=_audit.current_iteration,
         evidence_kind=EvidenceKind.OBSERVATION,

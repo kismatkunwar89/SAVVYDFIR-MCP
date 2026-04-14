@@ -31,6 +31,8 @@ import csv
 import io
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +47,12 @@ from sift_mcp.models.artifacts import (
     RegistryRunKey,
 )
 from sift_mcp.models.finding import EvidenceKind, Finding, FindingStatus
+from sift_mcp.semantics import adaptive_eids_from_findings, promote_corroborated_findings
+from sift_mcp.tools._cache import (
+    build_cache_key,
+    get_valid_cached_artifact,
+    record_cache_hit,
+)
 
 if TYPE_CHECKING:
     from sift_mcp.audit import AuditLogger
@@ -105,12 +113,18 @@ def init_tools(
         _ez_runner = ez_runner
     else:
         from sift_mcp.runners.eztools import EZToolsRunner
-        _ez_runner = EZToolsRunner(audit_logger=audit_logger)
+        _ez_runner = EZToolsRunner(
+            audit_logger=audit_logger,
+            state_manager=state_manager,
+        )
     if sk_runner is not None:
         _sk_runner = sk_runner
     else:
         from sift_mcp.runners.sleuthkit import SleuthKitRunner
-        _sk_runner = SleuthKitRunner(audit_logger=audit_logger)
+        _sk_runner = SleuthKitRunner(
+            audit_logger=audit_logger,
+            state_manager=state_manager,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +136,7 @@ def _case_id() -> str:
     if _state is None:
         return "unknown"
     try:
-        return _state._state.get("case_id", "unknown")
+        return _state.case_id
     except Exception:
         return "unknown"
 
@@ -132,7 +146,6 @@ def _current_iteration() -> int:
     if _audit is None:
         return 1
     return _audit.current_iteration
-
 
 
 def _persist_csv(tmp_csv_path: str, tool_short_name: str) -> str:
@@ -147,7 +160,8 @@ def _persist_csv(tmp_csv_path: str, tool_short_name: str) -> str:
     if not src_path.exists():
         return tmp_csv_path
     cid = _case_id()
-    base = Path(os.environ.get("OUTPUT_BASE", "/cases")) / cid / "artifacts" / tool_short_name
+    base = Path(os.environ.get("OUTPUT_BASE", "/cases")) / \
+        cid / "artifacts" / tool_short_name
     try:
         base.mkdir(parents=True, exist_ok=True)
         dest = base / src_path.name
@@ -155,6 +169,7 @@ def _persist_csv(tmp_csv_path: str, tool_short_name: str) -> str:
         return str(dest)
     except OSError:
         return tmp_csv_path
+
 
 def _read_csv(csv_path: str) -> list[dict[str, str]]:
     """Read a CSV file (with UTF-8 BOM handling) and return rows as dicts.
@@ -179,6 +194,30 @@ def _read_csv(csv_path: str) -> list[dict[str, str]]:
     import io
     reader = csv.DictReader(io.StringIO(text))
     return [dict(row) for row in reader]
+
+
+def _write_csv_rows(rows: list[dict[str, str]], csv_path: str) -> None:
+    """Write dict rows to CSV while preserving first-seen field order."""
+    path = Path(csv_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+
+    fieldnames: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                fieldnames.append(key)
+
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
 def _parse_dt(value: str) -> Optional[datetime]:
@@ -227,6 +266,83 @@ def _warn_if_empty(result: dict, tool_name: str, path: str, min_expected: int = 
     return result
 
 
+def _normalize_response_format(response_format: str) -> Optional[str]:
+    """Validate and normalize the heavy-tool response format selector."""
+    normalized = (response_format or "summary").strip().lower()
+    if normalized in {"summary", "detailed"}:
+        return normalized
+    return None
+
+
+def _apply_response_format(
+    result: dict[str, Any],
+    *,
+    response_format: str,
+    records: list[Any],
+    total_records: int,
+) -> dict[str, Any]:
+    """Return a summary-first or detailed response payload."""
+    payload = dict(result)
+    normalized = _normalize_response_format(response_format)
+    if normalized == "summary":
+        payload.pop("data", None)
+        payload["records_count"] = len(records)
+        payload["total_records"] = total_records
+        note = payload.get("note")
+        if isinstance(note, str) and note:
+            payload["note"] = (
+                f"{note} Raw records omitted by default; pass "
+                'response_format="detailed" for the full array.'
+            )
+        else:
+            payload["note"] = (
+                'Raw records omitted by default; pass response_format="detailed" '
+                "for the full array."
+            )
+        return payload
+
+    if normalized == "detailed":
+        payload["data"] = [record.model_dump(mode="json") for record in records]
+        payload["records_count"] = len(records)
+        payload["total_records"] = total_records
+    return payload
+
+
+def _resolved_path_str(path: str) -> str:
+    """Return a resolved absolute path string when possible."""
+    try:
+        return str(Path(path).resolve())
+    except OSError:
+        return path
+
+
+def _replay_hive_with_rla(hive_path: Path, label: str) -> tuple[Path, Path, Path]:
+    """Copy one hive plus transaction logs to temp dirs and replay via rla."""
+    tmp_in = Path(tempfile.mkdtemp(prefix=f"savvydfir_rla_in_{label}_"))
+    tmp_out = Path(tempfile.mkdtemp(prefix=f"savvydfir_rla_out_{label}_"))
+
+    shutil.copy2(str(hive_path), str(tmp_in / hive_path.name))
+    for suffix in (".LOG1", ".LOG2"):
+        log = hive_path.parent / f"{hive_path.name}{suffix}"
+        if log.exists():
+            shutil.copy2(str(log), str(tmp_in / log.name))
+
+    rla_bin = Path("/opt/zimmermantools/rla.dll")
+    subprocess.run(
+        ["/usr/bin/dotnet", str(rla_bin), "-d", str(tmp_in), "--out", str(tmp_out)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+
+    cleaned_files = [candidate for candidate in tmp_out.iterdir() if candidate.is_file()]
+    cleaned_hive = cleaned_files[0] if cleaned_files else (tmp_in / hive_path.name)
+    return cleaned_hive, tmp_in, tmp_out
+
+
 def _not_initialised(tool_name: str) -> dict[str, Any]:
     """Return a standardised error response for uninitialised singletons."""
     return {
@@ -252,6 +368,370 @@ def _runner_error(tool_name: str, exc: Exception, execution_id: Optional[str] = 
         "raw_command": str(exc),
         "stderr": "",
     }
+
+
+def _build_mft_records(
+    rows: list[dict[str, str]],
+    *,
+    mft_path: str,
+    tool: str,
+    execution_id: str,
+    create_findings: bool,
+) -> tuple[list[MftEntry], list[str], int]:
+    """Parse MFTECmd rows into records and optional findings."""
+    records: list[MftEntry] = []
+    finding_ids: list[str] = []
+    timestomping_candidates = 0
+
+    for row in rows:
+        try:
+            entry_num_raw = row.get("EntryNumber") or row.get("MFTEntry") or "0"
+            try:
+                entry_num = int(entry_num_raw)
+            except (ValueError, TypeError):
+                entry_num = 0
+
+            seq_raw = row.get("SequenceNumber") or row.get("Sequence") or ""
+            try:
+                sequence = int(seq_raw) if seq_raw.strip() else None
+            except (ValueError, TypeError):
+                sequence = None
+
+            file_path_val = (
+                row.get("FileName") or row.get("FilePath") or row.get("ParentPath") or ""
+            ).strip()
+
+            si_created = _parse_dt(row.get("Created0x10") or row.get("SICreated") or "")
+            si_modified = _parse_dt(row.get("LastModified0x10") or row.get("SIModified") or "")
+            si_accessed = _parse_dt(row.get("LastAccess0x10") or row.get("SIAccessed") or "")
+            si_entry_mod = _parse_dt(
+                row.get("MFTRecordChange0x10") or row.get("SIEntryModified") or ""
+            )
+
+            fn_created = _parse_dt(row.get("Created0x30") or row.get("FNCreated") or "")
+            fn_modified = _parse_dt(row.get("LastModified0x30") or row.get("FNModified") or "")
+            fn_accessed = _parse_dt(row.get("LastAccess0x30") or row.get("FNAccessed") or "")
+            fn_entry_mod = _parse_dt(
+                row.get("MFTRecordChange0x30") or row.get("FNEntryModified") or ""
+            )
+
+            is_deleted = (row.get("InUse") or row.get("IsDeleted") or "").strip().lower() in (
+                "false",
+                "0",
+                "no",
+                "deleted",
+            )
+            is_dir = (row.get("IsDirectory") or row.get("IsDir") or "").strip().lower() in (
+                "true",
+                "1",
+                "yes",
+            )
+
+            size_raw = row.get("FileSize") or row.get("LogicalSize") or ""
+            try:
+                file_size = int(size_raw) if size_raw.strip() else None
+            except (ValueError, TypeError):
+                file_size = None
+
+            parent_raw = row.get("ParentEntryNumber") or row.get("ParentMFTEntry") or ""
+            try:
+                parent_entry = int(parent_raw) if parent_raw.strip() else None
+            except (ValueError, TypeError):
+                parent_entry = None
+
+            record = MftEntry(
+                entry_number=entry_num,
+                sequence=sequence,
+                file_path=file_path_val or None,
+                si_created=si_created,
+                si_modified=si_modified,
+                si_accessed=si_accessed,
+                si_entry_modified=si_entry_mod,
+                fn_created=fn_created,
+                fn_modified=fn_modified,
+                fn_accessed=fn_accessed,
+                fn_entry_modified=fn_entry_mod,
+                is_deleted=is_deleted,
+                is_directory=is_dir,
+                file_size=file_size,
+                parent_entry=parent_entry,
+            )
+            records.append(record)
+
+            if si_created is not None and fn_created is not None and si_created < fn_created:
+                timestomping_candidates += 1
+                if create_findings and _state is not None:
+                    ts_finding = Finding(
+                        case_id=_case_id(),
+                        finding_type="timestomping",
+                        artifact_type="disk",
+                        artifact_path=mft_path,
+                        artifact_offset=str(entry_num),
+                        tool_name=tool,
+                        execution_id=execution_id,
+                        iteration=_current_iteration(),
+                        evidence_kind=EvidenceKind.OBSERVATION,
+                        finding_status=FindingStatus.ACTIVE,
+                        confidence=0.8,
+                        description=(
+                            f"Possible timestomping detected for MFT entry {entry_num} "
+                            f"({file_path_val or 'unknown path'}). "
+                            f"$SI Created ({si_created.isoformat()}) precedes "
+                            f"$FN Created ({fn_created.isoformat()}), which is physically "
+                            "impossible on a normal write — SI timestamps may have been "
+                            "retroactively modified to evade timeline analysis."
+                        ),
+                        supporting_indicators=[
+                            f"si_created={si_created.isoformat()}",
+                            f"fn_created={fn_created.isoformat()}",
+                            f"mft_entry={entry_num}",
+                            file_path_val or "",
+                        ],
+                        mitre_tactic="TA0005",
+                        mitre_technique="T1070.006",
+                    )
+                    finding_ids.append(_state.add_finding(ts_finding.model_dump(mode="json")))
+        except Exception:
+            continue
+
+    return records, finding_ids, timestomping_candidates
+
+
+def _build_evtx_records(
+    rows: list[dict[str, str]],
+    *,
+    evtx_dir: str,
+    channel: Optional[str],
+    tool: str,
+    execution_id: str,
+    create_findings: bool,
+) -> tuple[list[EventRecord], list[str]]:
+    """Parse EvtxECmd rows into records and optional summary finding."""
+    records: list[EventRecord] = []
+
+    for row in rows:
+        try:
+            ch = (row.get("Channel") or row.get("EventChannel") or "").strip()
+            if channel and ch.lower() != channel.lower():
+                continue
+
+            event_id_raw = row.get("EventId") or row.get("EventID") or row.get("Id") or "0"
+            try:
+                event_id = int(event_id_raw)
+            except (ValueError, TypeError):
+                event_id = 0
+
+            ts = _parse_dt(
+                row.get("TimeCreated") or row.get("Timestamp") or row.get("Date/Time - UTC") or ""
+            )
+            if ts is None:
+                ts = datetime.now(tz=timezone.utc)
+
+            message = (
+                row.get("PayloadData1")
+                or row.get("MapDescription")
+                or row.get("UserData")
+                or row.get("Message")
+                or f"Event ID {event_id}"
+            ).strip()[:500]
+
+            skip_cols = {
+                "EventId",
+                "EventID",
+                "Id",
+                "Channel",
+                "EventChannel",
+                "TimeCreated",
+                "Timestamp",
+                "Date/Time - UTC",
+                "PayloadData1",
+                "MapDescription",
+                "UserData",
+                "Message",
+                "Computer",
+                "UserSID",
+                "UserId",
+                "Level",
+                "Provider",
+                "ProviderName",
+                "SourceName",
+            }
+            extra: dict[str, Any] = {
+                k: v for k, v in row.items() if k not in skip_cols and v and v.strip()
+            }
+
+            records.append(
+                EventRecord(
+                    event_id=event_id,
+                    channel=ch or "Unknown",
+                    provider=(
+                        row.get("Provider") or row.get("ProviderName") or row.get("SourceName") or None
+                    ),
+                    timestamp=ts,
+                    level=row.get("Level") or row.get("LevelDisplayName") or None,
+                    computer=row.get("Computer") or None,
+                    user_sid=(row.get("UserSID") or row.get("UserId") or None),
+                    message_summary=message or f"Event {event_id}",
+                    raw_xml_ref=None,
+                    extra_fields=extra,
+                )
+            )
+        except Exception:
+            continue
+
+    finding_ids: list[str] = []
+    if records and create_findings and _state is not None:
+        finding = Finding(
+            case_id=_case_id(),
+            finding_type="other",
+            artifact_type="disk",
+            artifact_path=evtx_dir,
+            tool_name=tool,
+            execution_id=execution_id,
+            iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION,
+            finding_status=FindingStatus.ACTIVE,
+            confidence=0.9,
+            description=(
+                f"Parsed {len(records)} event log entries from {evtx_dir}"
+                + (f" (channel filter: {channel})" if channel else "")
+                + ". Events may reveal logon activity, process creation, service "
+                "installation, and other attacker behaviours."
+            ),
+            supporting_indicators=[evtx_dir],
+        )
+        finding_ids.append(_state.add_finding(finding.model_dump(mode="json")))
+
+    return records, finding_ids
+
+
+def _extract_evtx_process_paths(records: list[EventRecord]) -> list[str]:
+    """Extract candidate process paths from 4688 / Sysmon-1 style events."""
+    candidates: list[str] = []
+    interesting_keys = (
+        "newprocessname",
+        "processname",
+        "imagename",
+        "image",
+        "application",
+        "commandline",
+        "processpath",
+    )
+    path_re = re.compile(r"[A-Za-z]:\\[^\"'\r\n]+\.(?:exe|dll|cmd|bat|ps1|vbs)", re.IGNORECASE)
+
+    for record in records:
+        if record.event_id not in {1, 4688}:
+            continue
+
+        for key, value in record.extra_fields.items():
+            key_norm = key.lower().replace(" ", "").replace("_", "")
+            text = str(value or "").strip()
+            if not text:
+                continue
+
+            if any(name in key_norm for name in interesting_keys):
+                match = path_re.search(text)
+                candidates.append(match.group(0) if match else text)
+
+        if not record.extra_fields:
+            candidates.extend(path_re.findall(record.message_summary))
+
+    return [candidate for candidate in candidates if candidate]
+
+
+def _build_registry_records(
+    rows: list[dict[str, str]],
+    *,
+    tool: str,
+    execution_id: str,
+    batch_file_used: Optional[str],
+    create_findings: bool,
+) -> tuple[list[RegistryRunKey], list[str], dict[str, int]]:
+    """Parse RECmd rows into records and optional high-value persistence findings."""
+    records: list[RegistryRunKey] = []
+    finding_ids: list[str] = []
+    persistence_type_counts: dict[str, int] = {}
+    high_value = {
+        "run",
+        "runonce",
+        "runservices",
+        "services",
+        "winlogon_shell",
+        "winlogon_userinit",
+        "appinit_dlls",
+        "lsa_package",
+        "credential_provider",
+        "ifeo_debugger",
+        "print_monitor",
+        "active_setup",
+        "bootexecute",
+    }
+
+    for row in rows:
+        try:
+            key_path = (row.get("KeyPath") or row.get("Path") or "").strip()
+            if not key_path:
+                continue
+
+            ptype = _classify_persistence(key_path)
+            if ptype is None:
+                if batch_file_used:
+                    batch_cat = (row.get("Category") or "").strip()
+                    ptype = batch_cat.lower().replace(" ", "_") if batch_cat else "other"
+                else:
+                    continue
+
+            value_name = (row.get("ValueName") or row.get("Name") or "").strip()
+            value_data = (row.get("ValueData") or row.get("Data") or row.get("Value") or "").strip()
+            if not value_data:
+                continue
+
+            hive_name = (row.get("HiveType") or row.get("Hive") or Path(key_path).name).strip()
+            record = RegistryRunKey(
+                hive=hive_name,
+                key_path=key_path,
+                value_name=value_name or "(Default)",
+                value_data=value_data,
+                last_write_time=_parse_dt(
+                    row.get("LastWriteTimestamp") or row.get("LastWriteTime") or ""
+                ),
+                persistence_type=ptype,  # type: ignore[arg-type]
+            )
+            records.append(record)
+            persistence_type_counts[ptype] = persistence_type_counts.get(ptype, 0) + 1
+
+            if create_findings and _state is not None and str(ptype).lower() in high_value:
+                finding = Finding(
+                    case_id=_case_id(),
+                    finding_type="persistence",
+                    artifact_type="disk",
+                    artifact_path=key_path,
+                    tool_name=tool,
+                    execution_id=execution_id,
+                    iteration=_current_iteration(),
+                    evidence_kind=EvidenceKind.OBSERVATION,
+                    finding_status=FindingStatus.ACTIVE,
+                    confidence=0.85,
+                    description=(
+                        f"Registry persistence: {key_path}\\{value_name} = {value_data[:200]}. "
+                        f"Type: {ptype}."
+                    ),
+                    supporting_indicators=[key_path, f"value={value_data[:200]}"],
+                    mitre_tactic="TA0003",
+                    mitre_technique=(
+                        "T1547.001" if str(ptype).lower() in ("run", "runonce") else
+                        "T1546.010" if str(ptype).lower() == "appinit_dlls" else
+                        "T1547.004" if str(ptype).lower() in ("winlogon_shell", "winlogon_userinit") else
+                        "T1543.003" if str(ptype).lower() == "services" else
+                        "T1547.005" if str(ptype).lower() == "lsa_package" else
+                        "T1547"
+                    ),
+                )
+                finding_ids.append(_state.add_finding(finding.model_dump(mode="json")))
+        except Exception:
+            continue
+
+    return records, finding_ids, persistence_type_counts
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +940,11 @@ def extract_prefetch(
         )
         fid = _state.add_finding(finding.model_dump(mode="json"))
         finding_ids.append(fid)
+        promote_corroborated_findings(
+            _state,
+            "prefetch",
+            [record.executable_name for record in records if record.executable_name],
+        )
 
     return _warn_if_empty({
         "tool_name": tool,
@@ -518,7 +1003,8 @@ def get_amcache(
         if _amcache.exists():
             hive_path = str(_amcache)
         else:
-            hive_path = str(base / "mnt" / "C" / "Windows" / "appcompat" / "Programs" / "Amcache.hve")
+            hive_path = str(base / "mnt" / "C" / "Windows" /
+                            "appcompat" / "Programs" / "Amcache.hve")
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_amcache_") as tmp_dir:
         csv_filename = "amcache.csv"
@@ -531,6 +1017,7 @@ def get_amcache(
                 hive_path=hive_path,
                 csv_dir=tmp_dir,
                 csv_filename=csv_filename,
+                tool_name=tool,
             )
         except Exception as exc:
             return _runner_error(tool, exc)
@@ -559,12 +1046,14 @@ def get_amcache(
     for row in rows:
         try:
             file_path_val = (
-                row.get("FullPath") or row.get("FilePath") or row.get("Path") or ""
+                row.get("FullPath") or row.get(
+                    "FilePath") or row.get("Path") or ""
             ).strip()
             if not file_path_val:
                 continue
 
-            sha1 = (row.get("SHA1") or row.get("Sha1") or row.get("Hash") or "").strip()
+            sha1 = (row.get("SHA1") or row.get("Sha1")
+                    or row.get("Hash") or "").strip()
             if sha1.startswith("0000") and len(sha1) == 40:
                 # Some AmcacheParser versions prefix SHA-1 with leading zeros from the key
                 sha1 = sha1.lstrip("0") or sha1
@@ -579,11 +1068,16 @@ def get_amcache(
                 file_path=file_path_val,
                 sha1_hash=sha1 or None,
                 file_size=file_size,
-                publisher=row.get("Publisher") or row.get("CompanyName") or None,
-                product_name=row.get("ProductName") or row.get("Product") or None,
-                compile_time=_parse_dt(row.get("CompileTime") or row.get("PEHeaderCompileTime") or ""),
-                install_time=_parse_dt(row.get("InstallDate") or row.get("CreatedOn") or ""),
-                last_modified=_parse_dt(row.get("LastModifiedDate") or row.get("KeyLastWriteTimestamp") or ""),
+                publisher=row.get("Publisher") or row.get(
+                    "CompanyName") or None,
+                product_name=row.get("ProductName") or row.get(
+                    "Product") or None,
+                compile_time=_parse_dt(row.get("CompileTime") or row.get(
+                    "PEHeaderCompileTime") or ""),
+                install_time=_parse_dt(
+                    row.get("InstallDate") or row.get("CreatedOn") or ""),
+                last_modified=_parse_dt(row.get("LastModifiedDate") or row.get(
+                    "KeyLastWriteTimestamp") or ""),
             )
             records.append(record)
 
@@ -615,10 +1109,16 @@ def get_amcache(
                 + (f"{len(suspicious)} entries in suspicious paths (Temp/AppData/Downloads). " if suspicious else "")
                 + "Use run_analysis() to pivot on SHA-1 hashes or filter by path."
             ),
-            supporting_indicators=[r.file_path for r in suspicious[:10]] or [hive_path],
+            supporting_indicators=[
+                r.file_path for r in suspicious[:10]] or [hive_path],
         )
         fid = _state.add_finding(finding.model_dump(mode="json"))
         finding_ids.append(fid)
+        promote_corroborated_findings(
+            _state,
+            "amcache",
+            [record.file_path for record in records if record.file_path],
+        )
 
     if max_entries and max_entries > 0:
         records = records[:max_entries]
@@ -646,6 +1146,7 @@ def extract_mft_timeline(
     mft_path: Optional[str] = None,
     case_id: Optional[str] = None,
     max_entries: int = 0,
+    response_format: str = "summary",
 ) -> dict[str, Any]:
     """Parse the NTFS Master File Table into a timestomping-aware timeline.
 
@@ -677,6 +1178,17 @@ def extract_mft_timeline(
     tool = "disk.extract_mft_timeline"
     if _ez_runner is None or _state is None or _audit is None:
         return _not_initialised(tool)
+    normalized_format = _normalize_response_format(response_format)
+    if normalized_format is None:
+        return {
+            "tool_name": tool,
+            "status": "error",
+            "error_message": "Invalid response_format. Use 'summary' or 'detailed'.",
+            "data": [],
+            "findings_created": [],
+            "execution_id": None,
+            "raw_command": None,
+        }
 
     if mft_path is None:
         base = Path(image_path)
@@ -685,6 +1197,63 @@ def extract_mft_timeline(
             mft_path = str(_mft)
         else:
             mft_path = str(base / "mnt" / "C" / "$MFT")
+
+    resolved_mft_path = _resolved_path_str(mft_path)
+    cache_key = build_cache_key(tool, {"mft_path": resolved_mft_path})
+    cached = get_valid_cached_artifact(
+        _state,
+        cache_key,
+        path_key="csv_path",
+        required_keys=("csv_path", "source_execution_id", "timestomping_candidates"),
+    )
+    if cached is not None:
+        rows = _read_csv(str(cached["csv_path"]))
+        cache_meta = record_cache_hit(
+            _audit,
+            _state,
+            tool_name=tool,
+            parameters={"mft_path": resolved_mft_path},
+            cache_key=cache_key,
+            artifact_path=str(cached["csv_path"]),
+            cache_source_execution_id=str(cached.get("source_execution_id") or ""),
+        )
+        records, _, timestomping_candidates = _build_mft_records(
+            rows,
+            mft_path=mft_path,
+            tool=tool,
+            execution_id=cache_meta["execution_id"],
+            create_findings=False,
+        )
+        full_records = list(records)
+        detailed_records = list(full_records)
+        if max_entries and max_entries > 0:
+            detailed_records = detailed_records[:max_entries]
+        response = {
+            "tool_name": tool,
+            "status": "success",
+            "findings_created": list(cached.get("findings_created", [])),
+            "execution_id": cache_meta["execution_id"],
+            "raw_command": cache_meta["raw_command"],
+            "records_count": len(detailed_records),
+            "total_records": len(rows),
+            "timestomping_candidates": timestomping_candidates,
+            "csv_path": str(cached["csv_path"]),
+            "note": f"Returning {len(detailed_records)} of {len(rows)} MFT rows. Full CSV at {cached['csv_path']}.",
+            "requires_agent": cached.get("requires_agent", "@mft-analyst"),
+            "agent_instruction": cached.get(
+                "agent_instruction",
+                f"Analyze {cached['csv_path']} for timestomping, attacker file drops, staging. {len(rows)} total rows.",
+            ),
+            "cache_hit": True,
+            "cache_source_execution_id": cached.get("source_execution_id"),
+        }
+        formatted = _apply_response_format(
+            response,
+            response_format=normalized_format,
+            records=detailed_records if normalized_format == "detailed" else full_records,
+            total_records=len(rows),
+        )
+        return _warn_if_empty(formatted, "extract_mft_timeline", mft_path, min_expected=10000)
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_mftecmd_") as tmp_dir:
         csv_filename = "mft_timeline.csv"
@@ -695,6 +1264,7 @@ def extract_mft_timeline(
                 mft_path=mft_path,
                 csv_dir=tmp_dir,
                 csv_filename=csv_filename,
+                tool_name=tool,
             )
         except Exception as exc:
             return _runner_error(tool, exc)
@@ -717,135 +1287,53 @@ def extract_mft_timeline(
         rows = _read_csv(csv_path)
         persistent_csv = _persist_csv(csv_path, "mft")
 
-    records: list[MftEntry] = []
-    finding_ids: list[str] = []
-    timestomping_candidates = 0
-
-    for row in rows:
-        try:
-            entry_num_raw = row.get("EntryNumber") or row.get("MFTEntry") or "0"
-            try:
-                entry_num = int(entry_num_raw)
-            except (ValueError, TypeError):
-                entry_num = 0
-
-            seq_raw = row.get("SequenceNumber") or row.get("Sequence") or ""
-            try:
-                sequence = int(seq_raw) if seq_raw.strip() else None
-            except (ValueError, TypeError):
-                sequence = None
-
-            file_path_val = (
-                row.get("FileName") or row.get("FilePath") or row.get("ParentPath") or ""
-            ).strip()
-
-            si_created = _parse_dt(row.get("Created0x10") or row.get("SICreated") or "")
-            si_modified = _parse_dt(row.get("LastModified0x10") or row.get("SIModified") or "")
-            si_accessed = _parse_dt(row.get("LastAccess0x10") or row.get("SIAccessed") or "")
-            si_entry_mod = _parse_dt(row.get("MFTRecordChange0x10") or row.get("SIEntryModified") or "")
-
-            fn_created = _parse_dt(row.get("Created0x30") or row.get("FNCreated") or "")
-            fn_modified = _parse_dt(row.get("LastModified0x30") or row.get("FNModified") or "")
-            fn_accessed = _parse_dt(row.get("LastAccess0x30") or row.get("FNAccessed") or "")
-            fn_entry_mod = _parse_dt(row.get("MFTRecordChange0x30") or row.get("FNEntryModified") or "")
-
-            is_deleted = (row.get("InUse") or row.get("IsDeleted") or "").strip().lower() in (
-                "false", "0", "no", "deleted"
-            )
-            is_dir = (row.get("IsDirectory") or row.get("IsDir") or "").strip().lower() in (
-                "true", "1", "yes"
-            )
-
-            size_raw = row.get("FileSize") or row.get("LogicalSize") or ""
-            try:
-                file_size = int(size_raw) if size_raw.strip() else None
-            except (ValueError, TypeError):
-                file_size = None
-
-            parent_raw = row.get("ParentEntryNumber") or row.get("ParentMFTEntry") or ""
-            try:
-                parent_entry = int(parent_raw) if parent_raw.strip() else None
-            except (ValueError, TypeError):
-                parent_entry = None
-
-            record = MftEntry(
-                entry_number=entry_num,
-                sequence=sequence,
-                file_path=file_path_val or None,
-                si_created=si_created,
-                si_modified=si_modified,
-                si_accessed=si_accessed,
-                si_entry_modified=si_entry_mod,
-                fn_created=fn_created,
-                fn_modified=fn_modified,
-                fn_accessed=fn_accessed,
-                fn_entry_modified=fn_entry_mod,
-                is_deleted=is_deleted,
-                is_directory=is_dir,
-                file_size=file_size,
-                parent_entry=parent_entry,
-            )
-            records.append(record)
-
-            # Detect timestomping: SI Created < FN Created
-            if (
-                si_created is not None
-                and fn_created is not None
-                and si_created < fn_created
-            ):
-                timestomping_candidates += 1
-                ts_finding = Finding(
-                    case_id=_case_id(),
-                    finding_type="timestomping",
-                    artifact_type="disk",
-                    artifact_path=mft_path,
-                    artifact_offset=str(entry_num),
-                    tool_name=tool,
-                    execution_id=result.execution_id,
-                    iteration=_current_iteration(),
-                    evidence_kind=EvidenceKind.OBSERVATION,
-                    finding_status=FindingStatus.ACTIVE,
-                    confidence=0.8,
-                    description=(
-                        f"Possible timestomping detected for MFT entry {entry_num} "
-                        f"({file_path_val or 'unknown path'}). "
-                        f"$SI Created ({si_created.isoformat()}) precedes "
-                        f"$FN Created ({fn_created.isoformat()}), which is physically "
-                        "impossible on a normal write — SI timestamps may have been "
-                        "retroactively modified to evade timeline analysis."
-                    ),
-                    supporting_indicators=[
-                        f"si_created={si_created.isoformat()}",
-                        f"fn_created={fn_created.isoformat()}",
-                        f"mft_entry={entry_num}",
-                        file_path_val or "",
-                    ],
-                    mitre_tactic="TA0005",
-                    mitre_technique="T1070.006",
-                )
-                fid = _state.add_finding(ts_finding.model_dump(mode="json"))
-                finding_ids.append(fid)
-
-        except Exception:
-            continue
-
+    records, finding_ids, timestomping_candidates = _build_mft_records(
+        rows,
+        mft_path=mft_path,
+        tool=tool,
+        execution_id=result.execution_id,
+        create_findings=True,
+    )
+    full_records = list(records)
+    detailed_records = list(full_records)
     if max_entries and max_entries > 0:
-        records = records[:max_entries]
-    return _warn_if_empty({
+        detailed_records = detailed_records[:max_entries]
+    response = {
         "tool_name": tool,
         "status": "success",
-        "data": [r.model_dump(mode="json") for r in records],
         "findings_created": finding_ids,
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
-        "records_count": len(records),
+        "records_count": len(detailed_records),
         "total_records": len(rows),
         "timestomping_candidates": timestomping_candidates,
         "csv_path": persistent_csv,
-        "note": f"Returning {len(records)} of {len(rows)} MFT rows. Full CSV at {persistent_csv}.",
+        "note": f"Returning {len(detailed_records)} of {len(rows)} MFT rows. Full CSV at {persistent_csv}.",
         "requires_agent": "@mft-analyst",
         "agent_instruction": f"Analyze {persistent_csv} for timestomping, attacker file drops, staging. {len(rows)} total rows.",
-    }, "extract_mft_timeline", mft_path, min_expected=10000)
+        "cache_hit": False,
+        "cache_source_execution_id": None,
+    }
+    response = _apply_response_format(
+        response,
+        response_format=normalized_format,
+        records=detailed_records if normalized_format == "detailed" else full_records,
+        total_records=len(rows),
+    )
+    response = _warn_if_empty(response, "extract_mft_timeline", mft_path, min_expected=10000)
+    _state.cache_artifact(
+        cache_key,
+        {
+            "source_execution_id": result.execution_id,
+            "csv_path": persistent_csv,
+            "findings_created": finding_ids,
+            "requires_agent": response.get("requires_agent"),
+            "agent_instruction": response.get("agent_instruction"),
+            "timestomping_candidates": timestomping_candidates,
+            "total_records": len(rows),
+        },
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -859,7 +1347,6 @@ def extract_mft_timeline(
 _FLS_LINE_RE = re.compile(
     r"^([drlu])/([\drlu-])\s+\*?\s*(\S+):\s+(.*)$"
 )
-
 
 
 def list_deleted_files(
@@ -906,6 +1393,7 @@ def list_deleted_files(
             recursive=True,
             deleted_only=True,
             offset=offset,
+            tool_name=tool,
         )
     except Exception as exc:
         return _runner_error(tool, exc)
@@ -1027,6 +1515,7 @@ def summarize_evtx(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     event_ids: Optional[list[int]] = None,
+    response_format: str = "summary",
 ) -> dict[str, Any]:
     """Parse Windows EVTX event logs using EvtxECmd (EZ Tools).
 
@@ -1073,6 +1562,17 @@ def summarize_evtx(
     tool = "disk.summarize_evtx"
     if _ez_runner is None or _state is None or _audit is None:
         return _not_initialised(tool)
+    normalized_format = _normalize_response_format(response_format)
+    if normalized_format is None:
+        return {
+            "tool_name": tool,
+            "status": "error",
+            "error_message": "Invalid response_format. Use 'summary' or 'detailed'.",
+            "data": [],
+            "findings_created": [],
+            "execution_id": None,
+            "raw_command": None,
+        }
 
     if evtx_dir is None:
         base = Path(image_path)
@@ -1080,7 +1580,129 @@ def summarize_evtx(
         if _evtx.exists():
             evtx_dir = str(_evtx)
         else:
-            evtx_dir = str(base / "mnt" / "C" / "Windows" / "System32" / "winevt" / "Logs")
+            evtx_dir = str(base / "mnt" / "C" / "Windows" /
+                           "System32" / "winevt" / "Logs")
+
+    event_id_strategy = "explicit"
+    if event_ids is not None:
+        effective_eids = event_ids
+    else:
+        try:
+            existing_findings = _state.get_findings()
+        except Exception:
+            existing_findings = []
+
+        if existing_findings:
+            effective_eids = adaptive_eids_from_findings(existing_findings)
+            event_id_strategy = "adaptive"
+        else:
+            effective_eids = DFIR_ESSENTIAL_EIDS
+            event_id_strategy = "default"
+
+    cache_params = {
+        "evtx_dir": _resolved_path_str(evtx_dir),
+        "channel": channel or "",
+        "start_date": start_date or "",
+        "end_date": end_date or "",
+        "event_ids": sorted(effective_eids) if effective_eids else [],
+        "event_id_strategy": event_id_strategy,
+    }
+    cache_key = build_cache_key(tool, cache_params)
+    cached = get_valid_cached_artifact(
+        _state,
+        cache_key,
+        path_key="csv_path",
+        required_keys=("csv_path", "source_execution_id"),
+    )
+    if cached is None and event_ids is None and event_id_strategy == "adaptive":
+        # Preserve Batch 2 idempotency semantics: if the first no-arg EVTX run
+        # produced a valid default cache entry, reuse it before rerunning the
+        # expensive parser with an adaptive EID set.
+        fallback_cache_key = build_cache_key(
+            tool,
+            {
+                **cache_params,
+                "event_ids": sorted(DFIR_ESSENTIAL_EIDS),
+                "event_id_strategy": "default",
+            },
+        )
+        cached = get_valid_cached_artifact(
+            _state,
+            fallback_cache_key,
+            path_key="csv_path",
+            required_keys=("csv_path", "source_execution_id"),
+        )
+        if cached is not None:
+            cache_key = fallback_cache_key
+    if cached is not None:
+        rows = _read_csv(str(cached["csv_path"]))
+        cache_meta = record_cache_hit(
+            _audit,
+            _state,
+            tool_name=tool,
+            parameters={
+                "evtx_dir": _resolved_path_str(evtx_dir),
+                "channel": channel,
+                "start_date": start_date,
+                "end_date": end_date,
+                "event_ids": list(effective_eids) if effective_eids else [],
+            },
+            cache_key=cache_key,
+            artifact_path=str(cached["csv_path"]),
+            cache_source_execution_id=str(cached.get("source_execution_id") or ""),
+        )
+        records, _ = _build_evtx_records(
+            rows,
+            evtx_dir=evtx_dir,
+            channel=channel,
+            tool=tool,
+            execution_id=cache_meta["execution_id"],
+            create_findings=False,
+        )
+        promote_corroborated_findings(
+            _state,
+            "evtx_process_creation",
+            _extract_evtx_process_paths(records),
+        )
+        full_records = list(records)
+        detailed_records = list(full_records)
+        if max_entries and max_entries > 0:
+            detailed_records = detailed_records[:max_entries]
+        response = {
+            "tool_name": tool,
+            "status": "success",
+            "findings_created": list(cached.get("findings_created", [])),
+            "execution_id": cache_meta["execution_id"],
+            "raw_command": cache_meta["raw_command"],
+            "records_count": len(detailed_records),
+            "total_records": len(rows),
+            "csv_path": str(cached["csv_path"]),
+            "requires_agent": cached.get("requires_agent", "@evtx-analyst"),
+            "agent_instruction": cached.get(
+                "agent_instruction",
+                f"Analyze {cached['csv_path']} for attacker lifecycle — auth anomalies, lateral movement, persistence. {len(rows)} total rows.",
+            ),
+            "note": f"Returning {len(records)} of {len(rows)} rows. Full CSV at {cached['csv_path']}.",
+            "channel_filter": channel,
+            "event_id_filter": cached.get(
+                "event_id_filter",
+                effective_eids if effective_eids else "all",
+            ),
+            "event_id_strategy": cached.get("event_id_strategy", event_id_strategy),
+            "date_range": {
+                "start": start_date,
+                "end": end_date,
+            } if start_date or end_date else None,
+            "cache_hit": True,
+            "cache_source_execution_id": cached.get("source_execution_id"),
+        }
+        formatted = _apply_response_format(
+            response,
+            response_format=normalized_format,
+            records=detailed_records if normalized_format == "detailed" else full_records,
+            total_records=len(rows),
+        )
+        return _warn_if_empty(formatted, "summarize_evtx", evtx_dir, min_expected=100)
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_evtx_") as tmp_dir:
         csv_filename = "evtx_timeline.csv"
@@ -1088,8 +1710,6 @@ def summarize_evtx(
 
         # Default to DFIR_ESSENTIAL_EIDS to prevent context flooding.
         # Pass event_ids=[] explicitly to disable filtering.
-        effective_eids = event_ids if event_ids is not None else DFIR_ESSENTIAL_EIDS
-
         try:
             result = _ez_runner.run_evtxecmd(
                 evtx_dir=evtx_dir,
@@ -1098,6 +1718,7 @@ def summarize_evtx(
                 start_date=start_date,
                 end_date=end_date,
                 event_ids=effective_eids if effective_eids else None,
+                tool_name=tool,
             )
         except Exception as exc:
             return _runner_error(tool, exc)
@@ -1120,117 +1741,68 @@ def summarize_evtx(
         rows = _read_csv(csv_path)
         persistent_csv = _persist_csv(csv_path, "evtx")
 
-    records: list[EventRecord] = []
-    finding_ids: list[str] = []
-
-    for row in rows:
-        try:
-            ch = (row.get("Channel") or row.get("EventChannel") or "").strip()
-
-            # Apply channel filter
-            if channel and ch.lower() != channel.lower():
-                continue
-
-            event_id_raw = row.get("EventId") or row.get("EventID") or row.get("Id") or "0"
-            try:
-                event_id = int(event_id_raw)
-            except (ValueError, TypeError):
-                event_id = 0
-
-            ts = _parse_dt(
-                row.get("TimeCreated") or row.get("Timestamp") or row.get("Date/Time - UTC") or ""
-            )
-            if ts is None:
-                ts = datetime.now(tz=timezone.utc)
-
-            message = (
-                row.get("PayloadData1")
-                or row.get("MapDescription")
-                or row.get("UserData")
-                or row.get("Message")
-                or f"Event ID {event_id}"
-            ).strip()[:500]
-
-            # Build extra_fields from all remaining columns
-            skip_cols = {
-                "EventId", "EventID", "Id", "Channel", "EventChannel",
-                "TimeCreated", "Timestamp", "Date/Time - UTC",
-                "PayloadData1", "MapDescription", "UserData", "Message",
-                "Computer", "UserSID", "UserId", "Level", "Provider",
-                "ProviderName", "SourceName",
-            }
-            extra: dict[str, Any] = {
-                k: v for k, v in row.items()
-                if k not in skip_cols and v and v.strip()
-            }
-
-            record = EventRecord(
-                event_id=event_id,
-                channel=ch or "Unknown",
-                provider=(
-                    row.get("Provider") or row.get("ProviderName") or row.get("SourceName") or None
-                ),
-                timestamp=ts,
-                level=row.get("Level") or row.get("LevelDisplayName") or None,
-                computer=row.get("Computer") or None,
-                user_sid=(
-                    row.get("UserSID") or row.get("UserId") or None
-                ),
-                message_summary=message or f"Event {event_id}",
-                raw_xml_ref=None,
-                extra_fields=extra,
-            )
-            records.append(record)
-
-        except Exception:
-            continue
-
-    # Create a summary finding if we have records
-    if records:
-        finding = Finding(
-            case_id=_case_id(),
-            finding_type="other",
-            artifact_type="disk",
-            artifact_path=evtx_dir,
-            tool_name=tool,
-            execution_id=result.execution_id,
-            iteration=_current_iteration(),
-            evidence_kind=EvidenceKind.OBSERVATION,
-            finding_status=FindingStatus.ACTIVE,
-            confidence=0.9,
-            description=(
-                f"Parsed {len(records)} event log entries from {evtx_dir}"
-                + (f" (channel filter: {channel})" if channel else "") + ". "
-                "Events may reveal logon activity, process creation, service "
-                "installation, and other attacker behaviours."
-            ),
-            supporting_indicators=[evtx_dir],
-        )
-        fid = _state.add_finding(finding.model_dump(mode="json"))
-        finding_ids.append(fid)
-
+    records, finding_ids = _build_evtx_records(
+        rows,
+        evtx_dir=evtx_dir,
+        channel=channel,
+        tool=tool,
+        execution_id=result.execution_id,
+        create_findings=True,
+    )
+    full_records = list(records)
+    detailed_records = list(full_records)
     if max_entries and max_entries > 0:
-        records = records[:max_entries]
-    return _warn_if_empty({
+        detailed_records = detailed_records[:max_entries]
+    response = {
         "tool_name": tool,
         "status": "success",
-        "data": [r.model_dump(mode="json") for r in records],
         "findings_created": finding_ids,
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
-        "records_count": len(records),
+        "records_count": len(detailed_records),
         "total_records": len(rows),
         "csv_path": persistent_csv,
         "requires_agent": "@evtx-analyst",
         "agent_instruction": f"Analyze {persistent_csv} for attacker lifecycle — auth anomalies, lateral movement, persistence. {len(rows)} total rows.",
-        "note": f"Returning {len(records)} of {len(rows)} rows. Full CSV at {persistent_csv}.",
+        "note": f"Returning {len(detailed_records)} of {len(rows)} rows. Full CSV at {persistent_csv}.",
         "channel_filter": channel,
         "event_id_filter": effective_eids if effective_eids else "all",
+        "event_id_strategy": event_id_strategy,
         "date_range": {
             "start": start_date,
             "end": end_date,
         } if start_date or end_date else None,
-    }, "summarize_evtx", evtx_dir, min_expected=100)
+        "cache_hit": False,
+        "cache_source_execution_id": None,
+    }
+    response = _apply_response_format(
+        response,
+        response_format=normalized_format,
+        records=detailed_records if normalized_format == "detailed" else full_records,
+        total_records=len(rows),
+    )
+    response = _warn_if_empty(response, "summarize_evtx", evtx_dir, min_expected=100)
+    _state.cache_artifact(
+        cache_key,
+        {
+            "source_execution_id": result.execution_id,
+            "csv_path": persistent_csv,
+            "findings_created": finding_ids,
+            "requires_agent": response.get("requires_agent"),
+            "agent_instruction": response.get("agent_instruction"),
+            "total_records": len(rows),
+            "channel_filter": channel,
+            "event_id_filter": effective_eids if effective_eids else "all",
+            "event_id_strategy": event_id_strategy,
+            "date_range": response.get("date_range"),
+        },
+    )
+    promote_corroborated_findings(
+        _state,
+        "evtx_process_creation",
+        _extract_evtx_process_paths(records),
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -1316,6 +1888,7 @@ def extract_registry_run_keys(
     max_entries: int = 0,
     batch_mode: bool = True,
     sync_batch: bool = False,
+    response_format: str = "summary",
 ) -> dict[str, Any]:
     """Extract Windows registry persistence keys using RECmd (EZ Tools).
 
@@ -1358,6 +1931,17 @@ def extract_registry_run_keys(
     tool = "disk.extract_registry_run_keys"
     if _ez_runner is None or _state is None or _audit is None:
         return _not_initialised(tool)
+    normalized_format = _normalize_response_format(response_format)
+    if normalized_format is None:
+        return {
+            "tool_name": tool,
+            "status": "error",
+            "error_message": "Invalid response_format. Use 'summary' or 'detailed'.",
+            "data": [],
+            "findings_created": [],
+            "execution_id": None,
+            "raw_command": None,
+        }
 
     if hive_dir is None:
         base = Path(image_path)
@@ -1365,7 +1949,9 @@ def extract_registry_run_keys(
         if _config.exists():
             hive_dir = str(_config)
         else:
-            hive_dir = str(base / "mnt" / "C" / "Windows" / "System32" / "config")
+            hive_dir = str(base / "mnt" / "C" / "Windows" /
+                           "System32" / "config")
+    resolved_hive_dir = _resolved_path_str(hive_dir)
 
     # Resolve DFIRBatch file path
     batch_file_used: Optional[str] = None
@@ -1383,8 +1969,6 @@ def extract_registry_run_keys(
                 "Install EZ Tools batch files or set batch_mode=False."
             )
 
-    # Collect hive directories to scan (system + user NTUSER.DAT hives)
-    hive_dirs_to_scan: list[str] = [hive_dir]
     user_hives_found: list[str] = []
 
     # Discover user NTUSER.DAT hives
@@ -1399,7 +1983,85 @@ def extract_registry_run_keys(
                 if user_dir.is_dir() and user_dir.name not in ("Public", "Default", "Default User", "All Users"):
                     ntuser = user_dir / "NTUSER.DAT"
                     if ntuser.exists():
-                        user_hives_found.append(str(user_dir))
+                        user_hives_found.append(str(ntuser))
+
+    cache_key = build_cache_key(
+        tool,
+        {
+            "hive_dir": resolved_hive_dir,
+            "batch_mode": batch_mode,
+            "batch_file": batch_file_used or "",
+            "user_hives": sorted(_resolved_path_str(path) for path in user_hives_found),
+            "sync_batch": bool(sync_batch),
+        },
+    )
+    cached = None
+    if not sync_batch:
+        cached = get_valid_cached_artifact(
+            _state,
+            cache_key,
+            path_key="csv_path",
+            required_keys=("csv_path", "source_execution_id"),
+        )
+    if cached is not None:
+        rows = _read_csv(str(cached["csv_path"]))
+        cache_meta = record_cache_hit(
+            _audit,
+            _state,
+            tool_name=tool,
+            parameters={
+                "hive_dir": resolved_hive_dir,
+                "batch_mode": batch_mode,
+                "batch_file": batch_file_used,
+                "sync_batch": sync_batch,
+                "user_hives": user_hives_found,
+            },
+            cache_key=cache_key,
+            artifact_path=str(cached["csv_path"]),
+            cache_source_execution_id=str(cached.get("source_execution_id") or ""),
+        )
+        records, _, persistence_type_counts = _build_registry_records(
+            rows,
+            tool=tool,
+            execution_id=cache_meta["execution_id"],
+            batch_file_used=batch_file_used,
+            create_findings=False,
+        )
+        full_records = list(records)
+        detailed_records = list(full_records)
+        if max_entries and max_entries > 0:
+            detailed_records = detailed_records[:max_entries]
+
+        cached_response: dict[str, Any] = {
+            "tool_name": tool,
+            "status": "success",
+            "findings_created": list(cached.get("findings_created", [])),
+            "execution_id": cache_meta["execution_id"],
+            "raw_command": cache_meta["raw_command"],
+            "records_count": len(detailed_records),
+            "total_records": len(rows),
+            "csv_path": str(cached["csv_path"]),
+            "note": f"Returning {len(detailed_records)} of {len(rows)} rows. Full CSV at {cached['csv_path']}.",
+            "requires_agent": cached.get("requires_agent", "@registry-analyst"),
+            "agent_instruction": cached.get(
+                "agent_instruction",
+                f"Analyze {cached['csv_path']} for persistence mechanisms, fileless malware, credential theft. {len(rows)} total rows.",
+            ),
+            "persistence_type_counts": persistence_type_counts,
+            "batch_file_used": batch_file_used,
+            "user_hives_scanned": user_hives_found,
+            "cache_hit": True,
+            "cache_source_execution_id": cached.get("source_execution_id"),
+        }
+        if batch_warning:
+            cached_response["batch_warning"] = batch_warning
+        formatted = _apply_response_format(
+            cached_response,
+            response_format=normalized_format,
+            records=detailed_records if normalized_format == "detailed" else full_records,
+            total_records=len(rows),
+        )
+        return _warn_if_empty(formatted, "extract_registry_run_keys", hive_dir)
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_recmd_") as tmp_dir:
         csv_filename = "registry.csv"
@@ -1412,6 +2074,7 @@ def extract_registry_run_keys(
                 csv_filename=csv_filename,
                 batch_file=batch_file_used,
                 sync_batch=sync_batch,
+                tool_name=tool,
             )
         except Exception as exc:
             return _runner_error(tool, exc)
@@ -1432,134 +2095,95 @@ def extract_registry_run_keys(
             }
 
         rows = _read_csv(csv_path)
-        persistent_csv = _persist_csv(csv_path, "registry")
 
         # Also scan user NTUSER.DAT hives for per-user persistence keys
-        for user_hive_dir in user_hives_found:
-            user_csv = f"registry_user_{Path(user_hive_dir).name}.csv"
+        for idx, user_hive_path in enumerate(user_hives_found, start=1):
+            tmp_in: Optional[Path] = None
+            tmp_out: Optional[Path] = None
+            user_csv = f"registry_user_{idx}.csv"
             user_csv_path = os.path.join(tmp_dir, user_csv)
             try:
+                cleaned_hive, tmp_in, tmp_out = _replay_hive_with_rla(
+                    Path(user_hive_path),
+                    f"{Path(user_hive_path).parent.name}_{idx}",
+                )
                 user_result = _ez_runner.run_recmd(
-                    hive_dir=user_hive_dir,
+                    hive_dir=str(cleaned_hive.parent),
                     csv_dir=tmp_dir,
                     csv_filename=user_csv,
                     batch_file=batch_file_used,
                     sync_batch=False,  # only sync once
+                    tool_name=tool,
                 )
-                if Path(user_csv_path).exists():
+                if user_result.ok and Path(user_csv_path).exists():
                     rows.extend(_read_csv(user_csv_path))
             except Exception:
                 pass  # user hive failures are non-fatal
+            finally:
+                if tmp_in is not None:
+                    shutil.rmtree(tmp_in, ignore_errors=True)
+                if tmp_out is not None:
+                    shutil.rmtree(tmp_out, ignore_errors=True)
 
-    records: list[RegistryRunKey] = []
-    finding_ids: list[str] = []
-    persistence_type_counts: dict[str, int] = {}
+        combined_csv_path = os.path.join(tmp_dir, "registry_combined.csv")
+        if rows:
+            _write_csv_rows(rows, combined_csv_path)
+            persistent_csv = _persist_csv(combined_csv_path, "registry")
+        else:
+            persistent_csv = _persist_csv(csv_path, "registry")
 
-    for row in rows:
-        try:
-            # Use KeyPath (registry key path) not HivePath (filesystem path to hive)
-            key_path = (
-                row.get("KeyPath") or row.get("Path") or ""
-            ).strip()
-            if not key_path:
-                continue
+    records, finding_ids, persistence_type_counts = _build_registry_records(
+        rows,
+        tool=tool,
+        execution_id=result.execution_id,
+        batch_file_used=batch_file_used,
+        create_findings=True,
+    )
+    full_records = list(records)
+    detailed_records = list(full_records)
+    if max_entries and max_entries > 0:
+        detailed_records = detailed_records[:max_entries]
 
-            # Classify persistence type from key path
-            ptype = _classify_persistence(key_path)
-
-            # Batch mode: DFIRBatch.reb already pre-selects forensic categories,
-            # include all records and use the batch Category as persistence_type fallback.
-            # Non-batch mode: skip entries that are not persistence-related.
-            if ptype is None:
-                if batch_file_used:
-                    batch_cat = (row.get("Category") or "").strip()
-                    ptype = batch_cat.lower().replace(" ", "_") if batch_cat else "other"
-                else:
-                    continue  # non-batch: skip non-persistence entries
-
-            value_name = (
-                row.get("ValueName") or row.get("Name") or ""
-            ).strip()
-            value_data = (
-                row.get("ValueData") or row.get("Data") or row.get("Value") or ""
-            ).strip()
-
-            if not value_data:
-                continue
-
-            hive_name = (
-                row.get("HiveType") or row.get("Hive") or Path(key_path).name
-            ).strip()
-
-            record = RegistryRunKey(
-                hive=hive_name,
-                key_path=key_path,
-                value_name=value_name or "(Default)",
-                value_data=value_data,
-                last_write_time=_parse_dt(
-                    row.get("LastWriteTimestamp") or row.get("LastWriteTime") or ""
-                ),
-                persistence_type=ptype,  # type: ignore[arg-type]
-            )
-            records.append(record)
-            persistence_type_counts[ptype] = persistence_type_counts.get(ptype, 0) + 1
-
-            # Only create individual findings for HIGH-VALUE persistence categories
-            # Low-value/metadata categories get a summary finding at the end
-            HIGH_VALUE = {"run", "runonce", "runservices", "services", "winlogon_shell",
-                          "winlogon_userinit", "appinit_dlls", "lsa_package",
-                          "credential_provider", "ifeo_debugger", "print_monitor",
-                          "active_setup", "bootexecute"}
-            if str(ptype).lower() in HIGH_VALUE or (
-                hasattr(ptype, "value") and ptype.value.lower() in HIGH_VALUE
-            ):
-                finding = Finding(
-                    case_id=_case_id(),
-                    finding_type="persistence",
-                    artifact_type="disk",
-                    artifact_path=key_path,
-                    tool_name=tool,
-                    execution_id=result.execution_id,
-                    iteration=_current_iteration(),
-                    evidence_kind=EvidenceKind.OBSERVATION,
-                    finding_status=FindingStatus.ACTIVE,
-                    confidence=0.85,
-                    description=(
-                        f"Registry persistence: {key_path}\\{value_name} = {value_data[:200]}. "
-                        f"Type: {ptype}."
-                    ),
-                    supporting_indicators=[key_path, f"value={value_data[:200]}"],
-                    mitre_tactic="TA0003",
-                    mitre_technique=(
-                        "T1547.001" if str(ptype).lower() in ("run", "runonce") else
-                        "T1546.010" if str(ptype).lower() == "appinit_dlls" else
-                        "T1547.004" if str(ptype).lower() in ("winlogon_shell", "winlogon_userinit") else
-                        "T1543.003" if str(ptype).lower() == "services" else
-                        "T1547.005" if str(ptype).lower() == "lsa_package" else
-                        "T1547"
-                    ),
-                )
-                fid = _state.add_finding(finding.model_dump(mode="json"))
-                finding_ids.append(fid)
-
-        except Exception:
-            continue
-
-    ret: dict[str, Any] = {
+    response: dict[str, Any] = {
         "tool_name": tool,
         "status": "success",
-        "data": [r.model_dump(mode="json") for r in records],
         "findings_created": finding_ids,
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
-        "records_count": len(records),
+        "records_count": len(detailed_records),
         "total_records": len(rows),
+        "csv_path": persistent_csv,
+        "note": f"Returning {len(detailed_records)} of {len(rows)} rows. Full CSV at {persistent_csv}.",
         "requires_agent": "@registry-analyst",
         "agent_instruction": f"Analyze {persistent_csv} for persistence mechanisms, fileless malware, credential theft. {len(rows)} total rows.",
         "persistence_type_counts": persistence_type_counts,
         "batch_file_used": batch_file_used,
         "user_hives_scanned": user_hives_found,
+        "cache_hit": False,
+        "cache_source_execution_id": None,
     }
     if batch_warning:
-        ret["batch_warning"] = batch_warning
-    return _warn_if_empty(ret, "extract_registry_run_keys", hive_dir)
+        response["batch_warning"] = batch_warning
+    response = _apply_response_format(
+        response,
+        response_format=normalized_format,
+        records=detailed_records if normalized_format == "detailed" else full_records,
+        total_records=len(rows),
+    )
+
+    _state.cache_artifact(
+        cache_key,
+        {
+            "source_execution_id": result.execution_id,
+            "csv_path": persistent_csv,
+            "findings_created": finding_ids,
+            "requires_agent": response.get("requires_agent"),
+            "agent_instruction": response.get("agent_instruction"),
+            "total_records": len(rows),
+            "persistence_type_counts": persistence_type_counts,
+            "batch_file_used": batch_file_used,
+            "user_hives_scanned": user_hives_found,
+            "batch_warning": batch_warning,
+        },
+    )
+    return _warn_if_empty(response, "extract_registry_run_keys", hive_dir)

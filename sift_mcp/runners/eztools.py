@@ -133,6 +133,7 @@ class EZToolsRunner(SafeRunner):
         mft_path: str,
         csv_dir: str,
         csv_filename: str,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Parse the NTFS Master File Table with MFTECmd.
@@ -161,7 +162,7 @@ class EZToolsRunner(SafeRunner):
         cmd: List[str] = (
             [_bin] if _bin else ["dotnet", _dll("MFTECmd.dll")]
         ) + ["-f", mft_path, "--csv", csv_dir, "--csvf", csv_filename]
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # PECmd — Prefetch parser
@@ -172,6 +173,7 @@ class EZToolsRunner(SafeRunner):
         prefetch_dir_or_file: str,
         csv_dir: str,
         csv_filename: str,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Parse Windows Prefetch files with PECmd.
@@ -202,7 +204,7 @@ class EZToolsRunner(SafeRunner):
             "--csv", csv_dir,
             "--csvf", csv_filename,
         ]
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # AmcacheParser — Amcache.hve parser
@@ -213,6 +215,7 @@ class EZToolsRunner(SafeRunner):
         hive_path: str,
         csv_dir: str,
         csv_filename: str,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Parse the Amcache.hve registry hive with AmcacheParser.
@@ -244,7 +247,7 @@ class EZToolsRunner(SafeRunner):
             "--csv", csv_dir,
             "--csvf", csv_filename,
         ]
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # EvtxECmd — Windows Event Log parser
@@ -259,6 +262,7 @@ class EZToolsRunner(SafeRunner):
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         event_ids: Optional[List[int]] = None,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Parse Windows EVTX event log files with EvtxECmd.
@@ -318,7 +322,7 @@ class EZToolsRunner(SafeRunner):
         if event_ids:
             cmd.extend(["--inc", ",".join(str(eid) for eid in event_ids)])
 
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # RECmd — Registry hive parser
@@ -331,6 +335,7 @@ class EZToolsRunner(SafeRunner):
         csv_filename: str,
         batch_file: Optional[str] = None,
         sync_batch: bool = False,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Parse registry hives with RECmd.
@@ -378,7 +383,7 @@ class EZToolsRunner(SafeRunner):
             cmd.extend(["--bn", batch_file])
         if sync_batch:
             cmd.append("--sync")
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # AppCompatCacheParser — Shimcache / AppCompatCache parser
@@ -389,6 +394,7 @@ class EZToolsRunner(SafeRunner):
         system_hive: str,
         csv_dir: str,
         csv_filename: str,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Parse the Shimcache (AppCompatCache) from the SYSTEM hive.
@@ -422,7 +428,7 @@ class EZToolsRunner(SafeRunner):
             "--csv", csv_dir,
             "--csvf", csv_filename,
         ]
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # Error classification

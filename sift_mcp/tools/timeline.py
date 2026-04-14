@@ -35,6 +35,11 @@ from typing import Any, Optional
 from sift_mcp.audit import AuditLogger
 from sift_mcp.runners.plaso import PlasoRunner
 from sift_mcp.state import CaseStateManager
+from sift_mcp.tools._cache import (
+    build_cache_key,
+    get_valid_cached_artifact,
+    record_cache_hit,
+)
 
 __all__ = [
     "build_timeline",
@@ -71,6 +76,7 @@ def init_tools(
     _state_mgr = state_manager
     _runner = PlasoRunner(
         audit_logger=audit_logger,
+        state_manager=state_manager,
         case_id="",          # Updated per-call via runner's case_id property
         tool_name="timeline",
     )
@@ -139,6 +145,7 @@ def build_timeline(
               "execution_id": "E-001"
             }
     """
+    tool = "timeline.build_timeline"
     if _runner is None:
         return {"status": "error", "error": "Tool module not initialised — call init_tools() first."}
 
@@ -152,12 +159,48 @@ def build_timeline(
     # Sanitise case_id for use in a filename (replace non-alnum with '_')
     safe_case = re.sub(r"[^A-Za-z0-9_.-]", "_", case_id)
     storage_path = str((analysis_dir / f"{safe_case}.plaso").resolve())
+    cache_key = build_cache_key(
+        tool,
+        {
+            "source_path": str(Path(source_path).resolve()),
+            "parsers": parsers,
+        },
+    )
+    cached = get_valid_cached_artifact(
+        _state_mgr,
+        cache_key,
+        path_key="storage_path",
+        required_keys=("storage_path", "source_execution_id"),
+    )
+    if cached is not None:
+        cache_meta = record_cache_hit(
+            _audit,
+            _state_mgr,
+            tool_name=tool,
+            parameters={"source_path": source_path, "case_id": case_id, "parsers": parsers},
+            cache_key=cache_key,
+            artifact_path=str(cached["storage_path"]),
+            cache_source_execution_id=str(cached.get("source_execution_id") or ""),
+        )
+        return {
+            "status": "ok",
+            "storage_path": str(cached["storage_path"]),
+            "parser_preset": cached.get("parser_preset", parsers),
+            "source_path": cached.get("source_path", source_path),
+            "case_id": case_id,
+            "estimated_event_count": cached.get("estimated_event_count", "unknown"),
+            "duration_seconds": 0.0,
+            "execution_id": cache_meta["execution_id"],
+            "cache_hit": True,
+            "cache_source_execution_id": cached.get("source_execution_id"),
+        }
 
     try:
         result = _runner.log2timeline(
             source_path=source_path,
             storage_file=storage_path,
             parsers=parsers,
+            tool_name=tool,
         )
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
@@ -189,7 +232,7 @@ def build_timeline(
             event_count = m.group(1).replace(",", "")
             break
 
-    return {
+    response = {
         "status": "ok",
         "storage_path": storage_path,
         "parser_preset": parsers,
@@ -198,7 +241,21 @@ def build_timeline(
         "estimated_event_count": event_count,
         "duration_seconds": round(result.duration_seconds, 2),
         "execution_id": result.execution_id,
+        "cache_hit": False,
+        "cache_source_execution_id": None,
     }
+    _state_mgr.cache_artifact(
+        cache_key,
+        {
+            "source_execution_id": result.execution_id,
+            "storage_path": storage_path,
+            "parser_preset": parsers,
+            "source_path": source_path,
+            "case_id": case_id,
+            "estimated_event_count": event_count,
+        },
+    )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +329,7 @@ def query_timeline(
               "execution_id": "E-002"
             }
     """
+    tool = "timeline.query_timeline"
     if _runner is None:
         return {"status": "error", "error": "Tool module not initialised — call init_tools() first."}
 
@@ -293,6 +351,7 @@ def query_timeline(
             time_slice_start=start,
             time_slice_end=end,
             filter_expression=filter_expr,
+            tool_name=tool,
         )
     except Exception as exc:
         return {"status": "error", "error": str(exc)}

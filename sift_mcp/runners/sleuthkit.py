@@ -79,6 +79,7 @@ class SleuthKitRunner(SafeRunner):
     def ewfverify(
         self,
         image_path: str,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Verify the integrity of an EnCase / EWF image (``ewfverify``).
@@ -100,11 +101,12 @@ class SleuthKitRunner(SafeRunner):
             may have been modified or corrupted during transport).
         """
         cmd: List[str] = ["ewfverify", image_path]
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     def ewfinfo(
         self,
         image_path: str,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Display metadata from an EnCase / EWF image header (``ewfinfo``).
@@ -123,7 +125,7 @@ class SleuthKitRunner(SafeRunner):
             ``stdout`` contains key-value metadata from the EWF header.
         """
         cmd: List[str] = ["ewfinfo", image_path]
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # Partition tools
@@ -132,6 +134,7 @@ class SleuthKitRunner(SafeRunner):
     def mmls(
         self,
         device_path: str,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Display the partition table of a disk image (``mmls``).
@@ -160,7 +163,7 @@ class SleuthKitRunner(SafeRunner):
             002:  000     0000002048   0000206847   0000204800   NTFS (0x07)
         """
         cmd: List[str] = ["mmls", device_path]
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # File system tools
@@ -173,6 +176,7 @@ class SleuthKitRunner(SafeRunner):
         recursive: bool = False,
         deleted_only: bool = False,
         offset: Optional[int] = None,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """List file and directory names in a disk image (``fls``).
@@ -219,7 +223,7 @@ class SleuthKitRunner(SafeRunner):
         if inode is not None:
             cmd.append(str(inode))
 
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     def icat(
         self,
@@ -227,6 +231,7 @@ class SleuthKitRunner(SafeRunner):
         inode: Union[str, int],
         offset: Optional[int] = None,
         output_path: Optional[str] = None,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Extract the contents of a file by inode number (``icat``).
@@ -277,19 +282,20 @@ class SleuthKitRunner(SafeRunner):
 
         if output_path:
             # Run icat, capture stdout, then write to output_path
-            result = self.run(cmd, timeout=timeout)
+            result = self.run(cmd, timeout=timeout, tool_name=tool_name)
             if result.ok and result.stdout:
                 Path_obj = __import__("pathlib").Path
                 Path_obj(output_path).write_text(result.stdout, encoding="utf-8")
             return result
 
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     def istat(
         self,
         device_path: str,
         inode: Union[str, int],
         offset: Optional[int] = None,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Display metadata for a specific inode (``istat``).
@@ -319,7 +325,7 @@ class SleuthKitRunner(SafeRunner):
         cmd.append(device_path)
         cmd.append(str(inode))
 
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # Error classification

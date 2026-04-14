@@ -33,7 +33,7 @@ Usage pattern
         "evidence_kind": "MEMORY_ARTIFACT",
         "description": "...",
         "confidence": 0.9,
-        "status": "CONFIRMED",
+        "finding_status": "CONFIRMED",
         ...
     })
 
@@ -48,6 +48,8 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+from sift_mcp.semantics import compute_content_key, normalize_finding_for_storage
 
 __all__ = ["CaseStateManager", "CaseStateError"]
 
@@ -136,6 +138,7 @@ class CaseStateManager:
                     )
 
                 self._state = loaded
+                self._migrate_loaded_state_locked()
             else:
                 # Create a new, empty state.
                 self._state = _new_state(case_id)
@@ -194,15 +197,31 @@ class CaseStateManager:
         """
         with self._lock:
             self._assert_loaded()
-            if "finding_id" not in finding:
-                finding = dict(finding)
-                finding["finding_id"] = self.generate_finding_id()
+            finding = normalize_finding_for_storage(dict(finding))
             finding.setdefault("created_at", _utcnow_iso())
+            finding.setdefault("updated_at", finding["created_at"])
+
+            dirty_existing = False
+            for existing in self._state["findings"]:
+                if not isinstance(existing, dict):
+                    continue
+                existing_key = existing.get("content_key")
+                if not existing_key:
+                    existing_key = compute_content_key(existing)
+                    existing["content_key"] = existing_key
+                    dirty_existing = True
+                if existing_key == finding["content_key"]:
+                    if dirty_existing:
+                        self._save_locked()
+                    return str(existing.get("finding_id", ""))
+
+            if "finding_id" not in finding:
+                finding["finding_id"] = self.generate_finding_id()
+
             self._state["findings"].append(finding)
-            # Bump findings_count
             self._state["findings_count"] = len(self._state["findings"])
             self._save_locked()
-            return finding["finding_id"]
+            return str(finding["finding_id"])
 
     def update_finding(self, finding_id: str, **kwargs: Any) -> dict[str, Any]:
         """Update one or more fields of an existing finding and persist.
@@ -284,6 +303,9 @@ class CaseStateManager:
         self,
         artifact_type: Optional[str] = None,
         evidence_kind: Optional[str] = None,
+        finding_status: Optional[str] = None,
+        mitre_tactic: Optional[str] = None,
+        min_confidence: Optional[float] = None,
         status: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """Return a filtered list of findings.
@@ -298,9 +320,16 @@ class CaseStateManager:
         evidence_kind:
             Filter by ``finding["evidence_kind"]`` (case-insensitive).
             Example: ``"MEMORY_ARTIFACT"``, ``"DISK_ARTIFACT"``.
-        status:
-            Filter by ``finding["status"]`` (case-insensitive).
+        finding_status:
+            Filter by ``finding["finding_status"]`` (case-insensitive).
             Example: ``"CONFIRMED"``, ``"HYPOTHESIS"``, ``"REJECTED"``.
+        mitre_tactic:
+            Filter by ``finding["mitre_tactic"]`` (case-insensitive).
+            Example: ``"TA0003"``.
+        min_confidence:
+            Minimum confidence threshold inclusive.
+        status:
+            Backward-compatible alias for *finding_status*.
 
         Returns
         -------
@@ -314,6 +343,7 @@ class CaseStateManager:
         """
         with self._lock:
             self._assert_loaded()
+            effective_status = finding_status or status
             results = []
             for f in self._state["findings"]:
                 if artifact_type is not None:
@@ -322,8 +352,18 @@ class CaseStateManager:
                 if evidence_kind is not None:
                     if (f.get("evidence_kind") or "").lower() != evidence_kind.lower():
                         continue
-                if status is not None:
-                    if (f.get("status") or "").lower() != status.lower():
+                if effective_status is not None:
+                    if (f.get("finding_status") or "").lower() != effective_status.lower():
+                        continue
+                if mitre_tactic is not None:
+                    if (f.get("mitre_tactic") or "").lower() != mitre_tactic.lower():
+                        continue
+                if min_confidence is not None:
+                    try:
+                        confidence = float(f.get("confidence", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        confidence = 0.0
+                    if confidence < float(min_confidence):
                         continue
                 results.append(dict(f))
             return results
@@ -357,7 +397,7 @@ class CaseStateManager:
         """Return findings with unresolved contradictions.
 
         A finding is "unresolved" when its ``contradicted_by`` list is
-        non-empty **and** its ``status`` is not ``"REJECTED"``.  These
+        non-empty **and** its ``finding_status`` is not ``"REJECTED"``.  These
         findings represent open investigative threads that the agent must
         resolve before it can complete the case.
 
@@ -376,7 +416,7 @@ class CaseStateManager:
             results = []
             for f in self._state["findings"]:
                 contradicted_by: list = f.get("contradicted_by") or []
-                status: str = (f.get("status") or "").upper()
+                status: str = (f.get("finding_status") or "").upper()
                 if contradicted_by and status != "REJECTED":
                     results.append(dict(f))
             return results
@@ -482,14 +522,14 @@ class CaseStateManager:
             findings: list[dict] = self._state.get("findings", [])
             status_counts: dict[str, int] = {}
             for f in findings:
-                s = (f.get("status") or "UNKNOWN").upper()
+                s = (f.get("finding_status") or "UNKNOWN").upper()
                 status_counts[s] = status_counts.get(s, 0) + 1
 
             unresolved = sum(
                 1
                 for f in findings
                 if (f.get("contradicted_by") or [])
-                and (f.get("status") or "").upper() != "REJECTED"
+                and (f.get("finding_status") or "").upper() != "REJECTED"
             )
 
             return {
@@ -508,6 +548,31 @@ class CaseStateManager:
                 "created_at": self._state.get("created_at"),
                 "updated_at": self._state.get("updated_at"),
             }
+
+    @property
+    def case_id(self) -> str:
+        """Return the case identifier for the currently loaded state."""
+        return self._state.get("case_id", "unknown") if self._loaded else "unknown"
+
+    def cache_artifact(
+        self, cache_key: str, result_summary: dict[str, Any]
+    ) -> None:
+        """Persist a cached artifact summary for idempotent tool reuse."""
+        with self._lock:
+            self._assert_loaded()
+            self._state.setdefault("cached_artifacts", {})
+            self._state["cached_artifacts"][cache_key] = {
+                "timestamp": _utcnow_iso(),
+                **dict(result_summary),
+            }
+            self._save_locked()
+
+    def get_artifact_cache(self, cache_key: str) -> Optional[dict[str, Any]]:
+        """Return a cached artifact summary by key, or ``None``."""
+        with self._lock:
+            self._assert_loaded()
+            cached = self._state.get("cached_artifacts", {}).get(cache_key)
+            return dict(cached) if isinstance(cached, dict) else None
 
     # ------------------------------------------------------------------
     # Additional state helpers
@@ -582,7 +647,8 @@ class CaseStateManager:
         tmp = target.with_suffix(".json.tmp")
 
         target.parent.mkdir(parents=True, exist_ok=True)
-        serialised = json.dumps(self._state, ensure_ascii=False, indent=2, default=str) + "\n"
+        serialised = json.dumps(
+            self._state, ensure_ascii=False, indent=2, default=str) + "\n"
 
         try:
             tmp.write_text(serialised, encoding="utf-8")
@@ -598,6 +664,27 @@ class CaseStateManager:
                     tmp.unlink()
             except OSError:
                 pass
+
+    def _migrate_loaded_state_locked(self) -> None:
+        """Backfill missing keys and normalize finding lifecycle fields."""
+        dirty = False
+
+        if "cached_artifacts" not in self._state:
+            self._state["cached_artifacts"] = {}
+            dirty = True
+
+        findings = self._state.get("findings", [])
+        if isinstance(findings, list):
+            for index, finding in enumerate(findings):
+                if not isinstance(finding, dict):
+                    continue
+                normalized = normalize_finding_for_storage(finding)
+                if normalized != finding:
+                    findings[index] = normalized
+                    dirty = True
+
+        if dirty:
+            self._save_locked()
 
 
 # ---------------------------------------------------------------------------
@@ -637,6 +724,7 @@ def _new_state(case_id: str) -> dict[str, Any]:
         "findings": [],
         "executions": [],
         "open_questions": [],
+        "cached_artifacts": {},
         # Derived counts (denormalised for quick summary)
         "findings_count": 0,
         "executions_count": 0,
