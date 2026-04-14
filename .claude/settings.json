@@ -86,9 +86,7 @@
         ]
       },
       {
-        "matcher": {
-          "tool_name": "mcp__savvydfir__*"
-        },
+        "matcher": "",
         "hooks": [
           {
             "type": "command",
