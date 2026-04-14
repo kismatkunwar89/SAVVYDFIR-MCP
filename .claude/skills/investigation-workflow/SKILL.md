@@ -23,9 +23,9 @@ allowed-tools:
 **Group B — run ONE AT A TIME (dotnet, heavy):**
 2. `detect_injection(dump_path)` — memory hog, run solo
 3. `get_amcache(image_path)` + `extract_prefetch(image_path)` + `list_deleted_files(image_path)` — fast disk tools, can run together
-4. `extract_mft_timeline(image_path)` — large output, run solo → delegate to @mft-analyst immediately after
-5. `summarize_evtx(image_path, channel="Security")` — heaviest, run solo → delegate to @evtx-analyst immediately after
-6. `extract_registry_run_keys(image_path)` — RECmd DFIRBatch, run solo → delegate to @registry-analyst immediately after
+4. `extract_mft_timeline(image_path)` — summary-first by default; request `response_format="detailed"` only for raw row drill-down → delegate to @mft-analyst immediately after
+5. `summarize_evtx(image_path, channel="Security")` — summary-first by default; request `response_format="detailed"` only for raw row drill-down → delegate to @evtx-analyst immediately after
+6. `extract_registry_run_keys(image_path)` — summary-first by default; request `response_format="detailed"` only for raw row drill-down → delegate to @registry-analyst immediately after
 
 **Gate:** All tools complete and subagents have reported findings before Phase 3
 
@@ -45,9 +45,10 @@ allowed-tools:
 6. **Gate:** All discrepancies resolved or documented as open questions
 
 ## Phase 5: Report Generation
-1. `read_state(case_id)` → verify all findings have status != HYPOTHESIS
-2. `generate_report(case_id)` → produce final summary
-3. `generate_graph(case_id)` → create investigation visualization
+1. `read_state(case_id)` → verify case status, counts, and open questions
+2. `get_findings(case_id, finding_status="ACTIVE")` → review the full finding corpus when you need all prior findings, not just the latest summary window
+3. `generate_report(case_id)` → produce final summary
+4. `generate_graph(case_id)` → create investigation visualization
 4. **Gate:** Report generated
 
 ## Decision Points
