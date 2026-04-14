@@ -16,7 +16,7 @@ Architecture
 * **FastMCP** — synchronous MCP server over stdio; all tool functions are sync
   because ``SafeRunner`` uses ``subprocess.run()``.
 
-Tool namespaces (24 tools)
+Tool namespaces (26 tools)
 --------------------------
 Evidence (2):   verify_integrity, get_provenance
 Disk (6):       extract_prefetch, get_amcache, extract_mft_timeline,
@@ -26,7 +26,7 @@ Memory (6):     detect_profile, list_processes, scan_processes,
 Timeline (2):   build_timeline, query_timeline
 YARA (2):       scan_files, scan_memory
 Correlation (2): compare_disk_and_memory, flag_discrepancy
-State (2):      read_state, export_trace
+State (4):      read_state, get_finding, get_findings, export_trace
 Graph (2):      generate_graph, serve_graph
 
 Novel contributions
@@ -63,6 +63,9 @@ from sift_mcp.models.sigma import (
     SigmaScanResult,
     ToolResult,
 )
+from sift_mcp.reporting import generate_report_payload
+from sift_mcp.safe_analysis import SafeAnalysisError, run_safe_analysis
+from sift_mcp.semantics import compute_coverage_from_findings
 
 # ---------------------------------------------------------------------------
 # Server instance
@@ -505,6 +508,7 @@ def extract_mft_timeline(
     image_path: str,
     case_id: str = "default",
     max_entries: int = 1000,
+    response_format: str = "summary",
 ) -> dict[str, Any]:
     """Parse the NTFS $MFT to build a file system timeline.
 
@@ -524,6 +528,9 @@ def extract_mft_timeline(
         Case identifier for output file naming.
     max_entries:
         Maximum number of MftEntry records to return.
+    response_format:
+        ``"summary"`` (default) omits raw records and returns metadata only.
+        Use ``"detailed"`` to include the ``data`` array.
 
     Returns
     -------
@@ -531,7 +538,12 @@ def extract_mft_timeline(
         status, records (list of MftEntry dicts), count, execution_id.
     """
     try:
-        _r = _extract_mft_timeline(image_path=image_path, case_id=case_id, max_entries=max_entries)
+        _r = _extract_mft_timeline(
+            image_path=image_path,
+            case_id=case_id,
+            max_entries=max_entries,
+            response_format=response_format,
+        )
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.extract_mft_timeline"))
         return _r
@@ -583,6 +595,7 @@ def summarize_evtx(
     start_date: str = "",
     end_date: str = "",
     event_ids: str = "",
+    response_format: str = "summary",
 ) -> dict[str, Any]:
     """Parse Windows Event Log (EVTX) files from a disk image.
 
@@ -620,6 +633,9 @@ def summarize_evtx(
         Comma-separated Event IDs to include (e.g. ``"4624,4625,7045"``).
         Empty string uses the default DFIR_ESSENTIAL_EIDS (26 IDs).
         Use ``"all"`` to disable filtering and return all events.
+    response_format:
+        ``"summary"`` (default) omits raw records and returns metadata only.
+        Use ``"detailed"`` to include the ``data`` array.
 
     Returns
     -------
@@ -643,6 +659,7 @@ def summarize_evtx(
             start_date=start_date or None,
             end_date=end_date or None,
             event_ids=parsed_eids,
+            response_format=response_format,
         )
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.summarize_evtx"))
@@ -658,6 +675,7 @@ def extract_registry_run_keys(
     max_entries: int = 200,
     batch_mode: bool = True,
     sync_batch: bool = False,
+    response_format: str = "summary",
 ) -> dict[str, Any]:
     """Extract Windows registry persistence keys from a disk image.
 
@@ -690,6 +708,9 @@ def extract_registry_run_keys(
     sync_batch:
         Download latest batch definitions before running (default False).
         Requires network access.
+    response_format:
+        ``"summary"`` (default) omits raw records and returns metadata only.
+        Use ``"detailed"`` to include the ``data`` array.
 
     Returns
     -------
@@ -704,6 +725,7 @@ def extract_registry_run_keys(
             max_entries=max_entries,
             batch_mode=batch_mode,
             sync_batch=sync_batch,
+            response_format=response_format,
         )
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.extract_registry_run_keys"))
@@ -1164,7 +1186,7 @@ def flag_discrepancy(
 
 
 # ===========================================================================
-# STATE NAMESPACE (2 tools)
+# STATE NAMESPACE (4 tools)
 # ===========================================================================
 
 
@@ -1196,6 +1218,81 @@ def read_state(case_id: str) -> dict[str, Any]:
         return _read_state(case_id=case_id)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "read_state"}
+
+
+@mcp.tool()
+def get_finding(case_id: str, finding_id: str) -> dict[str, Any]:
+    """Return one finding by F-NNN identifier."""
+    try:
+        _state_manager.load(case_id)
+        finding = _state_manager.get_finding(finding_id)
+        if finding is None:
+            return {
+                "status": "error",
+                "tool": "get_finding",
+                "case_id": case_id,
+                "finding": None,
+                "found": False,
+                "error": f"Finding {finding_id!r} not found in case {case_id!r}.",
+            }
+        return {
+            "status": "ok",
+            "case_id": case_id,
+            "finding": finding,
+            "found": True,
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "get_finding"}
+
+
+@mcp.tool()
+def get_findings(
+    case_id: str,
+    artifact_type: str = "",
+    evidence_kind: str = "",
+    finding_status: str = "",
+    mitre_tactic: str = "",
+    min_confidence: float = 0.0,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Return filtered findings with server-side pagination."""
+    try:
+        if limit < 1:
+            return {
+                "status": "error",
+                "tool": "get_findings",
+                "error": "limit must be >= 1.",
+            }
+        if offset < 0:
+            return {
+                "status": "error",
+                "tool": "get_findings",
+                "error": "offset must be >= 0.",
+            }
+
+        effective_limit = min(limit, 200)
+        _state_manager.load(case_id)
+        findings = _state_manager.get_findings(
+            artifact_type=artifact_type or None,
+            evidence_kind=evidence_kind or None,
+            finding_status=finding_status or None,
+            mitre_tactic=mitre_tactic or None,
+            min_confidence=min_confidence if min_confidence > 0 else None,
+        )
+        total_findings = len(findings)
+        paged = findings[offset: offset + effective_limit]
+        return {
+            "status": "ok",
+            "case_id": case_id,
+            "total_findings": total_findings,
+            "limit": effective_limit,
+            "offset": offset,
+            "returned_count": len(paged),
+            "findings": paged,
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "get_findings"}
 
 
 @mcp.tool()
@@ -3420,14 +3517,14 @@ def add_finding(
     evidence_kind: str,
     description: str,
     confidence: float = 0.5,
-    status: str = "HYPOTHESIS",
+    status: str = "ACTIVE",
     artifact_path: str = "",
     command: str = "",
 ) -> dict[str, Any]:
     """Record a forensic finding in the authoritative case state.
 
-    Every finding must cite the source artifact and the command that
-    produced it for chain-of-custody compliance.
+    This MCP helper writes the lifecycle field as ``finding_status`` into the
+    authoritative case state to avoid schema drift.
 
     Parameters
     ----------
@@ -3443,7 +3540,8 @@ def add_finding(
     confidence:
         Confidence score 0.0-1.0.
     status:
-        One of "OBSERVATION", "INFERENCE", "HYPOTHESIS", "REJECTED".
+        Lifecycle status alias stored as ``finding_status``. Recommended
+        values: ``ACTIVE``, ``CONFIRMED``, ``REJECTED``.
     artifact_path:
         Path to the source evidence file.
     command:
@@ -3456,12 +3554,16 @@ def add_finding(
     """
     try:
         finding = {
+            "case_id": case_id,
+            "finding_type": "other",
             "artifact_type": artifact_type,
             "evidence_kind": evidence_kind,
             "description": description,
             "confidence": confidence,
-            "status": status,
+            "finding_status": status,
             "artifact_path": artifact_path,
+            "tool_name": "state.add_finding",
+            "iteration": 1,
             "command": command,
             "contradicted_by": [],
         }
@@ -3469,10 +3571,22 @@ def add_finding(
         return {
             "status": "ok",
             "finding_id": finding_id,
-            "finding": finding,
+            "finding": _state_manager.get_finding(finding_id) or finding,
         }
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "add_finding"}
+
+
+@mcp.tool()
+def coverage_report(case_id: str) -> dict[str, Any]:
+    """Compute ATT&CK tactic coverage and suggested next tools for a case."""
+    try:
+        _state_manager.load(case_id)
+        return compute_coverage_from_findings(_state_manager.get_findings())
+    except Exception as exc:
+        return ToolResult(
+            status="error", tool="coverage_report", error=str(exc)
+        ).model_dump()
 
 
 @mcp.tool()
@@ -3495,16 +3609,12 @@ def generate_report(case_id: str) -> dict[str, Any]:
         unresolved_count, open_questions.
     """
     try:
-        summary = _state_manager.to_summary()
-        _state_manager.set_status("COMPLETE")
-        return {
-            "status": "ok",
-            "case_id": case_id,
-            "summary": summary,
-            "findings_count": summary.get("findings_count", 0),
-            "unresolved_count": summary.get("unresolved_discrepancies", 0),
-            "open_questions": summary.get("open_questions", []),
-        }
+        return generate_report_payload(
+            case_id=case_id,
+            state_manager=_state_manager,
+            sigma_scan_fn=sigma_scan,
+            coverage_fn=coverage_report,
+        )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "generate_report"}
 
@@ -4170,8 +4280,8 @@ def sigma_scan(case_id: str) -> dict[str, Any]:
         SigmaScanResult with hits, counts, and markdown summary.
     """
     try:
-        state = _state_manager.load(case_id)
-        all_findings = state.get("findings", [])
+        _state_manager.load(case_id)
+        all_findings = _state_manager.get_findings()
 
         all_hits: list[ArtifactHit] = []
         detectors_run: list[str] = []
@@ -4257,67 +4367,11 @@ def run_analysis(
                 error=f"File not found: {data_path}",
             ).model_dump()
 
-        # Block dangerous operations in query
-        _BLOCKED_PATTERNS = [
-            "import ", "exec(", "eval(", "__", "open(", "os.", "sys.",
-            "subprocess", "shutil", "pathlib", "glob",
-        ]
-        for pattern in _BLOCKED_PATTERNS:
-            if pattern in query:
-                return ToolResult(
-                    status="error", tool="run_analysis",
-                    error=f"Query contains blocked pattern: {pattern}",
-                ).model_dump()
-
-        import pandas as pd
-
-        # Load data
-        if path.suffix.lower() == ".json":
-            df = pd.read_json(path)
-        else:
-            df = pd.read_csv(path, low_memory=False)
-
-        # Execute query in restricted namespace
-        namespace = {"df": df, "pd": pd}
-        result_obj = eval(query, {"__builtins__": {}}, namespace)  # noqa: S307
-
-        # Format output
-        if isinstance(result_obj, pd.DataFrame):
-            result_df = result_obj
-        elif isinstance(result_obj, pd.Series):
-            result_df = result_obj.to_frame()
-        else:
-            result_df = pd.DataFrame({"result": [result_obj]})
-
-        # Limit to 500 rows
-        if len(result_df) > 500:
-            result_df = result_df.head(500)
-
-        try:
-            from tabulate import tabulate
-            table_str = tabulate(result_df, headers="keys", tablefmt="pipe", showindex=False)
-        except ImportError:
-            table_str = result_df.to_string()
-
-        # Generate insights
-        insights: list[str] = []
-        if len(result_df) > 0:
-            insights.append(f"Query returned {len(result_df)} rows")
-            for col in result_df.columns:
-                if result_df[col].dtype in ("int64", "float64"):
-                    insights.append(f"{col}: min={result_df[col].min()}, max={result_df[col].max()}, mean={result_df[col].mean():.2f}")
-
-        analysis = AnalysisResult(
-            query=query,
-            result_table=table_str,
-            row_count=len(result_df),
-            columns=list(result_df.columns),
-            insights=insights,
-            data_source=str(path),
-        )
-
-        return analysis.model_dump()
-
+        return run_safe_analysis(str(path), query, output_format)
+    except SafeAnalysisError as exc:
+        return ToolResult(
+            status="error", tool="run_analysis", error=str(exc)
+        ).model_dump()
     except Exception as exc:
         return ToolResult(
             status="error", tool="run_analysis", error=str(exc),

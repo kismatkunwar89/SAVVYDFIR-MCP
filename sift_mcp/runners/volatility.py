@@ -95,6 +95,7 @@ class VolatilityRunner(SafeRunner):
         plugin: str,
         extra_args: Optional[List[str]] = None,
         output_format: str = "json",
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Run any Volatility 3 plugin against *dump_path*.
@@ -134,13 +135,18 @@ class VolatilityRunner(SafeRunner):
         if extra_args:
             cmd.extend(extra_args)
 
-        return self.run(cmd, timeout=timeout)
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
     # Convenience wrappers — one per commonly used plugin
     # ------------------------------------------------------------------
 
-    def pslist(self, dump_path: str, timeout: int = DEFAULT_TIMEOUT) -> RunResult:
+    def pslist(
+        self,
+        dump_path: str,
+        tool_name: Optional[str] = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> RunResult:
         """List running processes (``windows.pslist``).
 
         Emits the PEB process list.  Compare against ``psscan()`` to detect
@@ -155,10 +161,16 @@ class VolatilityRunner(SafeRunner):
             dump_path=dump_path,
             plugin="windows.pslist",
             output_format="json",
+            tool_name=tool_name,
             timeout=timeout,
         )
 
-    def psscan(self, dump_path: str, timeout: int = DEFAULT_TIMEOUT) -> RunResult:
+    def psscan(
+        self,
+        dump_path: str,
+        tool_name: Optional[str] = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> RunResult:
         """Scan physical memory for EPROCESS structures (``windows.psscan``).
 
         Unlike ``pslist()``, this scans the raw memory pages rather than
@@ -174,10 +186,16 @@ class VolatilityRunner(SafeRunner):
             dump_path=dump_path,
             plugin="windows.psscan",
             output_format="json",
+            tool_name=tool_name,
             timeout=timeout,
         )
 
-    def netscan(self, dump_path: str, timeout: int = DEFAULT_TIMEOUT) -> RunResult:
+    def netscan(
+        self,
+        dump_path: str,
+        tool_name: Optional[str] = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> RunResult:
         """Scan for network artifacts (``windows.netscan``).
 
         Finds TCP/UDP endpoints and connections in the memory image,
@@ -194,6 +212,7 @@ class VolatilityRunner(SafeRunner):
             dump_path=dump_path,
             plugin="windows.netscan",
             output_format="json",
+            tool_name=tool_name,
             timeout=timeout,
         )
 
@@ -201,6 +220,7 @@ class VolatilityRunner(SafeRunner):
         self,
         dump_path: str,
         pid: Optional[int] = None,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Detect injected code in process VAD regions (``windows.malfind``).
@@ -232,6 +252,7 @@ class VolatilityRunner(SafeRunner):
             plugin="windows.malfind",
             extra_args=extra or None,
             output_format="json",
+            tool_name=tool_name,
             timeout=timeout,
         )
 
@@ -239,6 +260,7 @@ class VolatilityRunner(SafeRunner):
         self,
         dump_path: str,
         pid: int,
+        tool_name: Optional[str] = None,
         timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """List DLLs loaded into a specific process (``windows.dlllist``).
@@ -261,10 +283,16 @@ class VolatilityRunner(SafeRunner):
             plugin="windows.dlllist",
             extra_args=["--pid", str(pid)],
             output_format="json",
+            tool_name=tool_name,
             timeout=timeout,
         )
 
-    def cmdline(self, dump_path: str, timeout: int = DEFAULT_TIMEOUT) -> RunResult:
+    def cmdline(
+        self,
+        dump_path: str,
+        tool_name: Optional[str] = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> RunResult:
         """Extract command-line arguments for all processes (``windows.cmdline``).
 
         Reads the ``PEB.ProcessParameters.CommandLine`` field from each
@@ -280,11 +308,15 @@ class VolatilityRunner(SafeRunner):
             dump_path=dump_path,
             plugin="windows.cmdline",
             output_format="json",
+            tool_name=tool_name,
             timeout=timeout,
         )
 
     def windows_info(
-        self, dump_path: str, timeout: int = DEFAULT_TIMEOUT
+        self,
+        dump_path: str,
+        tool_name: Optional[str] = None,
+        timeout: int = DEFAULT_TIMEOUT,
     ) -> RunResult:
         """Detect the Windows version / ISF profile (``windows.info``).
 
@@ -301,6 +333,7 @@ class VolatilityRunner(SafeRunner):
             dump_path=dump_path,
             plugin="windows.info",
             output_format="json",
+            tool_name=tool_name,
             timeout=timeout,
         )
 

@@ -67,6 +67,7 @@ def init_tools(
     _state_mgr = state_manager
     _runner = YaraRunner(
         audit_logger=audit_logger,
+        state_manager=state_manager,
         case_id="",
         tool_name="yara",
     )
@@ -132,6 +133,7 @@ def scan_files(
               "execution_id": "E-003"
             }
     """
+    tool = "yara.scan_files"
     if _runner is None:
         return {"status": "error", "error": "Tool module not initialised — call init_tools() first."}
 
@@ -140,6 +142,7 @@ def scan_files(
             rules_path=rules_path,
             target_path=target_path,
             recursive=recursive,
+            tool_name=tool,
         )
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
@@ -237,6 +240,7 @@ def scan_memory(
               "execution_id": "E-004"
             }
     """
+    tool = "yara.scan_memory"
     if _runner is None:
         return {"status": "error", "error": "Tool module not initialised — call init_tools() first."}
 
@@ -244,6 +248,7 @@ def scan_memory(
         result = _runner.scan_memory(
             rules_path=rules_path,
             dump_path=dump_path,
+            tool_name=tool,
         )
     except Exception as exc:
         return {"status": "error", "error": str(exc)}

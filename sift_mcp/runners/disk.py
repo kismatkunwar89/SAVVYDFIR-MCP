@@ -122,7 +122,7 @@ def _case_id() -> str:
     if _state is None:
         return "unknown"
     try:
-        return _state._state.get("case_id", "unknown")
+        return _state.case_id
     except Exception:
         return "unknown"
 
@@ -318,7 +318,8 @@ def extract_prefetch(
             pf_path = (
                 row.get("SourceFilePath") or row.get("SourceFile") or ""
             ).strip()
-            run_count_raw = row.get("RunCount") or row.get("PrefetchCount") or "1"
+            run_count_raw = row.get("RunCount") or row.get(
+                "PrefetchCount") or "1"
             try:
                 run_count = int(run_count_raw)
             except (ValueError, TypeError):
@@ -350,9 +351,12 @@ def extract_prefetch(
                 last_run_times=last_run_times[:8],
                 referenced_files=referenced_files,
                 volume_path=row.get("Volume0Name") or row.get("VolumePath"),
-                volume_serial=row.get("Volume0Serial") or row.get("VolumeSerial"),
-                source_created=_parse_dt(row.get("SourceCreated") or row.get("Created") or ""),
-                source_modified=_parse_dt(row.get("SourceModified") or row.get("Modified") or ""),
+                volume_serial=row.get(
+                    "Volume0Serial") or row.get("VolumeSerial"),
+                source_created=_parse_dt(
+                    row.get("SourceCreated") or row.get("Created") or ""),
+                source_modified=_parse_dt(
+                    row.get("SourceModified") or row.get("Modified") or ""),
             )
             records.append(record)
 
@@ -477,12 +481,14 @@ def get_amcache(
     for row in rows:
         try:
             file_path_val = (
-                row.get("FullPath") or row.get("FilePath") or row.get("Path") or ""
+                row.get("FullPath") or row.get(
+                    "FilePath") or row.get("Path") or ""
             ).strip()
             if not file_path_val:
                 continue
 
-            sha1 = (row.get("SHA1") or row.get("Sha1") or row.get("Hash") or "").strip()
+            sha1 = (row.get("SHA1") or row.get("Sha1")
+                    or row.get("Hash") or "").strip()
             if sha1.startswith("0000") and len(sha1) == 40:
                 # Some AmcacheParser versions prefix SHA-1 with leading zeros from the key
                 sha1 = sha1.lstrip("0") or sha1
@@ -497,11 +503,16 @@ def get_amcache(
                 file_path=file_path_val,
                 sha1_hash=sha1 or None,
                 file_size=file_size,
-                publisher=row.get("Publisher") or row.get("CompanyName") or None,
-                product_name=row.get("ProductName") or row.get("Product") or None,
-                compile_time=_parse_dt(row.get("CompileTime") or row.get("PEHeaderCompileTime") or ""),
-                install_time=_parse_dt(row.get("InstallDate") or row.get("CreatedOn") or ""),
-                last_modified=_parse_dt(row.get("LastModifiedDate") or row.get("KeyLastWriteTimestamp") or ""),
+                publisher=row.get("Publisher") or row.get(
+                    "CompanyName") or None,
+                product_name=row.get("ProductName") or row.get(
+                    "Product") or None,
+                compile_time=_parse_dt(row.get("CompileTime") or row.get(
+                    "PEHeaderCompileTime") or ""),
+                install_time=_parse_dt(
+                    row.get("InstallDate") or row.get("CreatedOn") or ""),
+                last_modified=_parse_dt(row.get("LastModifiedDate") or row.get(
+                    "KeyLastWriteTimestamp") or ""),
             )
             records.append(record)
 
@@ -625,7 +636,8 @@ def extract_mft_timeline(
 
     for row in rows:
         try:
-            entry_num_raw = row.get("EntryNumber") or row.get("MFTEntry") or "0"
+            entry_num_raw = row.get(
+                "EntryNumber") or row.get("MFTEntry") or "0"
             try:
                 entry_num = int(entry_num_raw)
             except (ValueError, TypeError):
@@ -638,18 +650,27 @@ def extract_mft_timeline(
                 sequence = None
 
             file_path_val = (
-                row.get("FileName") or row.get("FilePath") or row.get("ParentPath") or ""
+                row.get("FileName") or row.get(
+                    "FilePath") or row.get("ParentPath") or ""
             ).strip()
 
-            si_created = _parse_dt(row.get("Created0x10") or row.get("SICreated") or "")
-            si_modified = _parse_dt(row.get("LastModified0x10") or row.get("SIModified") or "")
-            si_accessed = _parse_dt(row.get("LastAccess0x10") or row.get("SIAccessed") or "")
-            si_entry_mod = _parse_dt(row.get("MFTRecordChange0x10") or row.get("SIEntryModified") or "")
+            si_created = _parse_dt(row.get("Created0x10")
+                                   or row.get("SICreated") or "")
+            si_modified = _parse_dt(
+                row.get("LastModified0x10") or row.get("SIModified") or "")
+            si_accessed = _parse_dt(
+                row.get("LastAccess0x10") or row.get("SIAccessed") or "")
+            si_entry_mod = _parse_dt(
+                row.get("MFTRecordChange0x10") or row.get("SIEntryModified") or "")
 
-            fn_created = _parse_dt(row.get("Created0x30") or row.get("FNCreated") or "")
-            fn_modified = _parse_dt(row.get("LastModified0x30") or row.get("FNModified") or "")
-            fn_accessed = _parse_dt(row.get("LastAccess0x30") or row.get("FNAccessed") or "")
-            fn_entry_mod = _parse_dt(row.get("MFTRecordChange0x30") or row.get("FNEntryModified") or "")
+            fn_created = _parse_dt(row.get("Created0x30")
+                                   or row.get("FNCreated") or "")
+            fn_modified = _parse_dt(
+                row.get("LastModified0x30") or row.get("FNModified") or "")
+            fn_accessed = _parse_dt(
+                row.get("LastAccess0x30") or row.get("FNAccessed") or "")
+            fn_entry_mod = _parse_dt(
+                row.get("MFTRecordChange0x30") or row.get("FNEntryModified") or "")
 
             is_deleted = (row.get("InUse") or row.get("IsDeleted") or "").strip().lower() in (
                 "false", "0", "no", "deleted"
@@ -664,7 +685,8 @@ def extract_mft_timeline(
             except (ValueError, TypeError):
                 file_size = None
 
-            parent_raw = row.get("ParentEntryNumber") or row.get("ParentMFTEntry") or ""
+            parent_raw = row.get("ParentEntryNumber") or row.get(
+                "ParentMFTEntry") or ""
             try:
                 parent_entry = int(parent_raw) if parent_raw.strip() else None
             except (ValueError, TypeError):
@@ -754,7 +776,6 @@ def extract_mft_timeline(
 _FLS_LINE_RE = re.compile(
     r"^([drlu])/([\drlu-])\s+\*?\s*(\S+):\s+(.*)$"
 )
-
 
 
 def list_deleted_files(
@@ -1001,14 +1022,16 @@ def summarize_evtx(
             if channel and ch.lower() != channel.lower():
                 continue
 
-            event_id_raw = row.get("EventId") or row.get("EventID") or row.get("Id") or "0"
+            event_id_raw = row.get("EventId") or row.get(
+                "EventID") or row.get("Id") or "0"
             try:
                 event_id = int(event_id_raw)
             except (ValueError, TypeError):
                 event_id = 0
 
             ts = _parse_dt(
-                row.get("TimeCreated") or row.get("Timestamp") or row.get("Date/Time - UTC") or ""
+                row.get("TimeCreated") or row.get(
+                    "Timestamp") or row.get("Date/Time - UTC") or ""
             )
             if ts is None:
                 ts = datetime.now(tz=timezone.utc)
@@ -1038,7 +1061,8 @@ def summarize_evtx(
                 event_id=event_id,
                 channel=ch or "Unknown",
                 provider=(
-                    row.get("Provider") or row.get("ProviderName") or row.get("SourceName") or None
+                    row.get("Provider") or row.get(
+                        "ProviderName") or row.get("SourceName") or None
                 ),
                 timestamp=ts,
                 level=row.get("Level") or row.get("LevelDisplayName") or None,
@@ -1163,7 +1187,8 @@ def extract_registry_run_keys(
 
     if hive_dir is None:
         base = Path(image_path)
-        hive_dir = str(base.parent / "mnt" / "C" / "Windows" / "System32" / "config")
+        hive_dir = str(base.parent / "mnt" / "C" /
+                       "Windows" / "System32" / "config")
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_recmd_") as tmp_dir:
         csv_filename = "registry.csv"
@@ -1202,7 +1227,8 @@ def extract_registry_run_keys(
     for row in rows:
         try:
             key_path = (
-                row.get("HivePath") or row.get("KeyPath") or row.get("Path") or ""
+                row.get("HivePath") or row.get(
+                    "KeyPath") or row.get("Path") or ""
             ).strip()
             if not key_path:
                 continue
@@ -1216,7 +1242,8 @@ def extract_registry_run_keys(
                 row.get("ValueName") or row.get("Name") or ""
             ).strip()
             value_data = (
-                row.get("ValueData") or row.get("Data") or row.get("Value") or ""
+                row.get("ValueData") or row.get(
+                    "Data") or row.get("Value") or ""
             ).strip()
 
             if not value_data:
@@ -1232,12 +1259,14 @@ def extract_registry_run_keys(
                 value_name=value_name or "(Default)",
                 value_data=value_data,
                 last_write_time=_parse_dt(
-                    row.get("LastWriteTimestamp") or row.get("LastWriteTime") or ""
+                    row.get("LastWriteTimestamp") or row.get(
+                        "LastWriteTime") or ""
                 ),
                 persistence_type=ptype,  # type: ignore[arg-type]
             )
             records.append(record)
-            persistence_type_counts[ptype] = persistence_type_counts.get(ptype, 0) + 1
+            persistence_type_counts[ptype] = persistence_type_counts.get(
+                ptype, 0) + 1
 
             # Create individual finding for each persistence entry
             finding = Finding(

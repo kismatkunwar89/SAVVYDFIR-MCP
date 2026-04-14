@@ -26,8 +26,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from sift_mcp.state import CaseStateError
+
 if TYPE_CHECKING:
     from sift_mcp.audit import AuditLogger
+    from sift_mcp.state import CaseStateManager
 
 __all__ = ["RunResult", "SafeRunner", "PathDeniedError", "CommandDeniedError"]
 
@@ -217,6 +220,7 @@ class SafeRunner:
         audit_logger: "AuditLogger | None" = None,
         case_id: str = "unknown",
         tool_name: str = "unknown",
+        state_manager: "CaseStateManager | None" = None,
     ) -> None:
         """Initialise the runner.
 
@@ -233,10 +237,14 @@ class SafeRunner:
         tool_name:
             MCP tool name written to audit entries. Subclasses typically
             override this at their own ``__init__``.
+        state_manager:
+            Optional :class:`~sift_mcp.state.CaseStateManager` used to mirror
+            execution metadata into ``state.json`` after each run.
         """
         self._audit = audit_logger if audit_logger is not None else _NoOpAuditLogger()
         self._case_id = case_id
         self._tool_name = tool_name
+        self._state_manager = state_manager
 
     # ------------------------------------------------------------------
     # Public properties
@@ -321,6 +329,7 @@ class SafeRunner:
         cwd: Optional[str] = None,
         parameters: Optional[dict] = None,
         agent_turn: int = 0,
+        tool_name: Optional[str] = None,
     ) -> RunResult:
         """Execute a subprocess with full safety checks and audit logging.
 
@@ -350,6 +359,9 @@ class SafeRunner:
             Structured parameters dict written into the audit record.
         agent_turn:
             The current Claude agent turn number, stored in the audit record.
+        tool_name:
+            Optional per-call MCP tool name override.  Use this when a single
+            runner instance services multiple logical tools.
 
         Returns
         -------
@@ -401,11 +413,12 @@ class SafeRunner:
         # ------------------------------------------------------------------
         execution_id = self._audit.next_execution_id()
         command_line = " ".join(cmd_parts)
+        effective_tool = tool_name or self._tool_name
 
         # Fail-closed: if this write raises, we do NOT run the command.
         self._audit.log_execution(
             execution_id=execution_id,
-            tool_name=self._tool_name,
+            tool_name=effective_tool,
             parameters=parameters,
             command_line=command_line,
             agent_turn=agent_turn,
@@ -459,7 +472,30 @@ class SafeRunner:
             outputs_summary=outputs_summary,
             finding_ids=[],  # Populated later by the tool layer
             correction_event=None,
+            tool_name=effective_tool,
+            command_line=command_line,
+            parameters=parameters,
+            agent_turn=agent_turn,
         )
+
+        if self._state_manager is not None:
+            try:
+                self._state_manager.add_execution(
+                    {
+                        "execution_id": execution_id,
+                        "tool_name": effective_tool,
+                        "command_line": command_line,
+                        "parameters": parameters,
+                        "agent_turn": agent_turn,
+                        "duration_seconds": round(duration, 4),
+                        "exit_code": exit_code,
+                        "outputs_summary": outputs_summary,
+                    }
+                )
+            except CaseStateError:
+                # Some standalone/test contexts execute runners before a case
+                # is loaded; skip state parity in that narrow scenario.
+                pass
 
         # ------------------------------------------------------------------
         # 6. Return structured result

@@ -56,7 +56,8 @@
       "Bash(dotnet:*)",
       "Bash(python3 scripts/run_investigation.py *)",
       "Bash(python3 scripts/merge_graphs.py *)",
-      "Bash(python3 scripts/build_index.py *)"
+      "Bash(python3 scripts/build_index.py *)",
+      "Bash(sshpass -p 'SiftR00t2026!' ssh -o StrictHostKeyChecking=no root@5.78.204.232 \"cat /root/analysis/audit.jsonl | jq -r 'select\\(.command_line!=null\\) | .command_line' | grep -E 'analyst|agent' || echo 'No agent invocations found'\")"
     ],
     "deny": [
       "Bash(rm:*)",
@@ -81,6 +82,27 @@
           {
             "type": "command",
             "command": "code-review-graph update --skip-flows"
+          }
+        ]
+      },
+      {
+        "matcher": {
+          "tool_name": "mcp__savvydfir__*"
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 scripts/agent_trigger.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/stop.py"
           }
         ]
       }
