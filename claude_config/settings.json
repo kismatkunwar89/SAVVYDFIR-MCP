@@ -82,7 +82,7 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": {"tool_name": "mcp__savvydfir-mcp__*"},
+        "matcher": "",
         "action": "classify_error",
         "description": "After every MCP tool call, check exit_code and classify any errors. Non-zero exit codes trigger retry logic documented in skills/self-correction/SKILL.md."
       }
