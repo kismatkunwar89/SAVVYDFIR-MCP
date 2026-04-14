@@ -1,7 +1,7 @@
 ---
 name: corroboration-analyst
 description: Use proactively after all artifact agents complete and before generate_report. Takes all findings from state.json and stress-tests each one against other artifact sources to confirm, escalate, demote, or dismiss. Applies evidence corroboration chains, stacked anomaly validation, and temporal proximity analysis. Returns a reviewed finding list with confidence adjustments and a defensible conclusion.
-tools: mcp__savvydfir__run_analysis, mcp__savvydfir__read_state, mcp__savvydfir__add_finding, mcp__savvydfir__flag_discrepancy
+tools: mcp__savvydfir__run_analysis, mcp__savvydfir__read_state, mcp__savvydfir__get_findings, mcp__savvydfir__get_finding, mcp__savvydfir__add_finding, mcp__savvydfir__flag_discrepancy
 model: inherit
 permissionMode: default
 memory: project
@@ -31,7 +31,8 @@ You are a senior forensic examiner whose job is to stress-test findings, elimina
 
 ## Step 0 — Load All Findings
 ```python
-read_state()  # loads all F-NNN findings, csv_paths returned by prior tools, attack window
+read_state()  # loads case status, counts, open questions, and latest findings
+get_findings()  # loads the full F-NNN finding corpus and csv_paths returned by prior tools
 ```
 Group findings by artifact type: EVTX, MFT, Registry, Memory, Disk. Identify which findings have only one source vs. which have multiple.
 
