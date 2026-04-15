@@ -62,8 +62,8 @@ SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns 
 | Requirement | Detail |
 |---|---|
 | **SIFT Workstation** | Ubuntu 22.04 x86-64 with Volatility 3, EZ Tools, Sleuth Kit, Plaso, YARA pre-installed |
-| **Claude Code** | `npm install -g @anthropic-ai/claude-code` |
-| **Anthropic API key** | `export ANTHROPIC_API_KEY='sk-ant-...'` |
+| **Claude Code** | Install via `curl -fsSL https://claude.ai/install.sh | bash` |
+| **Claude authentication** | Run `claude` and complete browser login; `ANTHROPIC_API_KEY` is mainly for automation |
 | **Python 3.10+** | Included with SIFT Workstation |
 | **.NET Runtime** | Required for EZ Tools (MFTECmd, EvtxECmd, etc.) |
 
@@ -134,6 +134,27 @@ Serve all reports:
 cd /opt/SAVVYDFIR-MCP/reports && python3 -m http.server 8080
 # Open: http://<server>:8080/index.html
 ```
+
+---
+
+## Validation Status
+
+Validated in a live remote SIFT-host run:
+
+- Single-host investigation flow on `HACKATHON-2026-WKSTN01`
+- Audit-backed completion for `compare_disk_and_memory`, `sigma_scan`, and `generate_report`
+- Summary-first MCP responses for heavy disk tools
+- Report and graph generation to `reports/{case_id}/`
+- EVTX cache/idempotency fix under repeated workflow use
+
+Still pending broader end-to-end validation:
+
+- Multi-host merge flow: `merge_host_graphs()` and `build_reports_index()`
+- MCP-hosted graph serving via `serve_graph()` as the primary operator path
+- Deferred optimization work from the original plan: parallel RECmd execution and wider timeout tuning
+- Full live coverage of less-used artifact tools such as `analyze_vss`, `extract_pca`, `extract_shimcache`, `extract_srum`, `coverage_report`, and YARA/timeline workflows
+
+So the current repo is ready for single-host investigations and Batch 1-4 validation, but a few adjacent workflows are still marked as pending live validation rather than fully signed off.
 
 ---
 
