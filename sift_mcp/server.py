@@ -1,6 +1,6 @@
 """SAVVYDFIR-MCP Server — Purpose-built forensic MCP backend for Protocol SIFT.
 
-This server exposes 26 typed forensic tools through the Model Context
+This server exposes 41 typed forensic tools through the Model Context
 Protocol (MCP) using stdio transport. It is designed to be used with Claude Code
 as the primary agentic execution engine on SANS SIFT Workstation.
 
@@ -16,7 +16,7 @@ Architecture
 * **FastMCP** — synchronous MCP server over stdio; all tool functions are sync
   because ``SafeRunner`` uses ``subprocess.run()``.
 
-Tool namespaces (26 tools)
+Tool namespaces (41 tools)
 --------------------------
 Evidence (2):   verify_integrity, get_provenance
 Disk (6):       extract_prefetch, get_amcache, extract_mft_timeline,
@@ -27,7 +27,14 @@ Timeline (2):   build_timeline, query_timeline
 YARA (2):       scan_files, scan_memory
 Correlation (2): compare_disk_and_memory, flag_discrepancy
 State (4):      read_state, get_finding, get_findings, export_trace
-Graph (2):      generate_graph, serve_graph
+Graph (4):      generate_graph, serve_graph, merge_host_graphs,
+                build_reports_index
+Detection (6):  sigma_hunt, sigma_scan, analyze_vss, extract_pca,
+                extract_shimcache, extract_srum
+Lifecycle (4):  start_investigation, add_finding, coverage_report,
+                generate_report
+Mounting (2):   mount_image, load_memory
+Analysis (1):   run_analysis
 
 Novel contributions
 -------------------
@@ -93,7 +100,7 @@ mcp = FastMCP(
     name="savvydfir-mcp",
     instructions=(
         "Autonomous DFIR triage agent with cross-artifact correlation and "
-        "self-correction. Exposes 26 typed forensic tools over stdio MCP transport "
+        "self-correction. Exposes 41 typed forensic tools over stdio MCP transport "
         "for use with Claude Code on SANS SIFT Workstation."
     ),
 )

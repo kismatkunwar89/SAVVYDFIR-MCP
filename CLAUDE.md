@@ -6,7 +6,7 @@ You are the investigator. All evidence is READ-ONLY. Chain of custody applies.
 
 ## Critical Rules
 1. **NEVER write to `/evidence/` or `/mnt/`** — read-only evidence and mount paths
-2. **Write output ONLY to `/cases/` or `/tmp/`** — RBAC-enforced in server.py
+2. **Write output ONLY to `analysis/`, `reports/`, `/cases/`, or `/tmp/`** — RBAC-enforced in server.py
 3. **Every finding must cite**: artifact path + exact command + timestamp
 4. **Load skills on-demand** — do not preload all skills at once
 5. **Case-agnostic**: no hardcoded IPs, usernames, or filenames — universal patterns only
@@ -25,8 +25,8 @@ CLAUDE.md is for investigation structure. Tool responses carry the artifact-spec
 5. Cross-correlate: `compare_disk_and_memory(case_id)` — 6 forensic checks
 6. Deep dive: `run_analysis(data_path, query)` for ad-hoc Pandas queries
 7. Record findings: `add_finding()` with evidence_kind, artifact_path, confidence
-8. Generate report: `generate_report(case_id)`
-9. Generate graph: `generate_graph(case_id)` — produces reports/{case_id}/graph.html + graph.json for visualization and Graph RAG embedding
+8. Generate report: `generate_report(case_id)` — marks the case COMPLETE and writes `reports/{case_id}/report.html`
+9. Generate graph: `generate_graph(case_id)` — produces `reports/{case_id}/graph.html` + `graph.json` for visualization and Graph RAG embedding
 10. After all hosts complete: `merge_host_graphs()` — unified cross-host graph (lateral movement edges from shared IOCs across hosts)
 11. Refresh dashboard: `build_reports_index()` — regenerates reports/index.html with per-host investigation cards
 
@@ -36,6 +36,10 @@ CLAUDE.md is for investigation structure. Tool responses carry the artifact-spec
 - `extract_pca(mount_point, case_id)` — parse Windows 11 22H2+ Program Compatibility Assistant execution artifacts (PcaAppLaunchDic.txt). Plain-text, pipe-delimited: {path}|{last_execution_UTC}. Corroborates Prefetch + Amcache. Not present on Windows 10 / Server.
 - `extract_shimcache(mount_point, case_id)` — parse ShimCache (AppCompatCache) from SYSTEM hive via AppCompatCacheParser + rla.exe (transaction log replay). Records every executable path Windows observed. Does NOT record run count — cross-reference with Amcache/Prefetch to confirm execution. Absence of an expected entry → binary was timestomped or deleted post-compromise. Entries outside System32/Program Files/WinSxS are flagged as suspicious for analyst review.
 - `extract_srum(mount_point, case_id)` — parse SRUM (System Resource Utilization Monitor) via esedbexport. Network table: bytes_sent / bytes_recv per process per 60-day window. App resource table: CPU/disk I/O per 30-day window. SRUM records deleted applications — critical for anti-forensics detection. Use to quantify exfiltration volume per process and identify processes no longer on disk (AppIds with no matching binary — key anti-forensics indicator). Cross-reference with EVTX network events and memory scan_network findings.
+- `read_state(case_id)` is summary-only. Use it to resume, inspect counts, and get the latest finding window.
+- `get_findings(case_id, ...)` is the full finding retrieval surface. Use filters plus `limit`/`offset` when you need the full corpus.
+- `get_finding(case_id, finding_id)` drills into a single `F-NNN` finding.
+- `extract_mft_timeline`, `summarize_evtx`, and `extract_registry_run_keys` are summary-first by default. Request `response_format="detailed"` only for raw-record drill-down.
 
 ### rla.exe (Registry Transaction Log Replay)
 SYSTEM / NTUSER.DAT / Amcache.hve parsed from offline images may have uncommitted
@@ -45,7 +49,7 @@ Always ensure hives are clean before cross-referencing registry evidence.
 
 ## RBAC Path Model
 - **Read-only**: `/evidence/`, `/mnt/` — evidence and mount points
-- **Read-write**: `/cases/`, `/tmp/` — analysis output
+- **Read-write**: repo `analysis/`, `reports/`, `/cases/`, and `/tmp/` — analysis output
 - **Blocked commands**: rm, dd, mkfs, shred, wget, curl, ssh, scp, fdisk, parted, nc
 
 ## Tool Paths (SIFT Workstation)
@@ -62,7 +66,9 @@ Plaso:       /usr/bin/log2timeline.py
 ```
 
 ## Output Locations
-- Cases: `/cases/`
+- Case state: `analysis/state.json` and `analysis/audit.jsonl` by default
+- Reports: `reports/{case_id}/`
+- Large ad hoc exports: `/cases/` when a tool explicitly writes there
 - Mounts: `/mnt/disk/` (disk) and `/mnt/memory/` (memory)
 - Evidence: `/evidence/disk/` and `/evidence/memory/` (READ-ONLY)
 
