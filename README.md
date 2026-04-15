@@ -82,12 +82,21 @@ pip3 install -r requirements.txt
 # 3. Install to /opt (production deployment)
 sudo cp -r . /opt/SAVVYDFIR-MCP/
 
-# 4. Install Claude Code CLI
-npm install -g @anthropic-ai/claude-code
+# 4. Install Claude Code (recommended native installer)
+curl -fsSL https://claude.ai/install.sh | bash
 
-# 5. Authenticate
-export ANTHROPIC_API_KEY='sk-ant-...'
+# 5. Verify the install
+claude --version
+
+# 6. Authenticate
+claude
 ```
+
+Notes:
+
+- Anthropic now recommends the native Claude Code installer on macOS, Linux, and WSL. It auto-updates in the background.
+- `npm install -g @anthropic-ai/claude-code` still exists, but Anthropic documents it as deprecated in favor of the native installer.
+- For interactive use, the normal authentication flow is to run `claude` and complete the browser login. `ANTHROPIC_API_KEY` is still useful for API-key-based automation, but it is no longer the best default onboarding step for humans.
 
 ---
 
