@@ -41,6 +41,24 @@ Novel contributions
 """
 
 from __future__ import annotations
+from sift_mcp.tools.state_tools import export_trace as _export_trace
+from sift_mcp.tools.state_tools import read_state as _read_state
+from sift_mcp.tools.correlation import flag_discrepancy as _flag_discrepancy
+from sift_mcp.tools.correlation import compare_disk_and_memory as _compare_disk_and_memory
+from sift_mcp.tools.yara import scan_memory as _scan_memory
+from sift_mcp.tools.yara import scan_files as _scan_files
+from sift_mcp.tools.timeline import query_timeline as _query_timeline
+from sift_mcp.tools.timeline import build_timeline as _build_timeline
+from sift_mcp.tools.disk import extract_registry_run_keys as _extract_registry_run_keys
+from sift_mcp.tools.disk import summarize_evtx as _summarize_evtx
+from sift_mcp.tools.disk import list_deleted_files as _list_deleted_files
+from sift_mcp.tools.disk import extract_mft_timeline as _extract_mft_timeline
+from sift_mcp.tools.disk import get_amcache as _get_amcache
+from sift_mcp.tools.disk import extract_prefetch as _extract_prefetch
+from sift_mcp.tools.evidence import get_provenance as _get_provenance
+from sift_mcp.tools.evidence import verify_integrity as _verify_integrity
+from sift_mcp.state import CaseStateManager
+from sift_mcp.audit import AuditLogger
 
 import ipaddress
 import json
@@ -87,11 +105,10 @@ mcp = FastMCP(
 # Ensure the default analysis directory exists so audit + state files can be written.
 # SAVVYDFIR_ANALYSIS_DIR env var allows per-host isolation: each host investigation
 # sets this to investigations/{case_id}/ before launching Claude.
-_ANALYSIS_DIR = Path(os.environ.get("SAVVYDFIR_ANALYSIS_DIR", "./analysis")).resolve()
+_ANALYSIS_DIR = Path(os.environ.get(
+    "SAVVYDFIR_ANALYSIS_DIR", "./analysis")).resolve()
 _ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
 
-from sift_mcp.audit import AuditLogger
-from sift_mcp.state import CaseStateManager
 
 _audit_logger = AuditLogger(output_path=str(_ANALYSIS_DIR / "audit.jsonl"))
 _state_manager = CaseStateManager(state_path=str(_ANALYSIS_DIR / "state.json"))
@@ -155,36 +172,21 @@ init_all_tools(
 # Import all tool functions
 # ---------------------------------------------------------------------------
 
-from sift_mcp.tools.evidence import verify_integrity as _verify_integrity
-from sift_mcp.tools.evidence import get_provenance as _get_provenance
-
-from sift_mcp.tools.disk import extract_prefetch as _extract_prefetch
-from sift_mcp.tools.disk import get_amcache as _get_amcache
-from sift_mcp.tools.disk import extract_mft_timeline as _extract_mft_timeline
-from sift_mcp.tools.disk import list_deleted_files as _list_deleted_files
-from sift_mcp.tools.disk import summarize_evtx as _summarize_evtx
-from sift_mcp.tools.disk import extract_registry_run_keys as _extract_registry_run_keys
-
-from sift_mcp.tools.timeline import build_timeline as _build_timeline
-from sift_mcp.tools.timeline import query_timeline as _query_timeline
-
-from sift_mcp.tools.yara import scan_files as _scan_files
-from sift_mcp.tools.yara import scan_memory as _scan_memory
-
-from sift_mcp.tools.correlation import compare_disk_and_memory as _compare_disk_and_memory
-from sift_mcp.tools.correlation import flag_discrepancy as _flag_discrepancy
-
-from sift_mcp.tools.state_tools import read_state as _read_state
-from sift_mcp.tools.state_tools import export_trace as _export_trace
 
 # Memory tools — optional (module may not be built yet)
 try:
-    from sift_mcp.tools.memory import detect_profile as _detect_profile  # type: ignore[import]
-    from sift_mcp.tools.memory import list_processes as _list_processes  # type: ignore[import]
-    from sift_mcp.tools.memory import scan_processes as _scan_processes  # type: ignore[import]
-    from sift_mcp.tools.memory import scan_network as _scan_network  # type: ignore[import]
-    from sift_mcp.tools.memory import detect_injection as _detect_injection  # type: ignore[import]
-    from sift_mcp.tools.memory import list_dlls as _list_dlls  # type: ignore[import]
+    # type: ignore[import]
+    from sift_mcp.tools.memory import detect_profile as _detect_profile
+    # type: ignore[import]
+    from sift_mcp.tools.memory import list_processes as _list_processes
+    # type: ignore[import]
+    from sift_mcp.tools.memory import scan_processes as _scan_processes
+    # type: ignore[import]
+    from sift_mcp.tools.memory import scan_network as _scan_network
+    # type: ignore[import]
+    from sift_mcp.tools.memory import detect_injection as _detect_injection
+    # type: ignore[import]
+    from sift_mcp.tools.memory import list_dlls as _list_dlls
     _MEMORY_AVAILABLE = True
 except ImportError:
     _MEMORY_AVAILABLE = False
@@ -202,15 +204,14 @@ def _memory_unavailable(tool_name: str) -> dict[str, Any]:
     }
 
 
-
 # ===========================================================================
 # FORENSIC KNOWLEDGE SYSTEM — Valhuntir forensic-knowledge YAMLs (MIT)
 # Injects artifact-specific caveats into every tool response so forensic
 # discipline is reinforced at the point of interpretation, not just at
 # session start via CLAUDE.md (which Claude drifts from after 50+ calls).
 # ===========================================================================
-
 _FK_BASE = Path("/opt/valhuntir-knowledge/packages/forensic-knowledge/data")
+
 
 def _load_fk(artifact: str) -> dict:
     """Load forensic knowledge YAML for an artifact. Returns {} if not found."""
@@ -220,6 +221,7 @@ def _load_fk(artifact: str) -> dict:
             import yaml as _yaml
             return _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     return {}
+
 
 # Artifact YAML → our MCP tool name mapping (loaded once at startup)
 _FK: dict[str, dict] = {}
@@ -241,6 +243,7 @@ _FK_MAP = {
     "memory.list_dlls":               "volatility_memory",
     "detection.sigma_hunt":           "hayabusa_alerts",
 }
+
 
 def _init_fk() -> None:
     """Load all forensic knowledge YAMLs at server startup."""
@@ -265,9 +268,11 @@ def _init_fk() -> None:
 
     # Load Hunt Evil process baseline (SANS FOR508)
     try:
-        hunt_evil_path = Path(__file__).parent.parent / "data" / "hunt-evil-baseline.json"
+        hunt_evil_path = Path(__file__).parent.parent / \
+            "data" / "hunt-evil-baseline.json"
         if hunt_evil_path.exists():
-            _FK["__process_baseline__"] = json.loads(hunt_evil_path.read_text())["processes"]
+            _FK["__process_baseline__"] = json.loads(
+                hunt_evil_path.read_text())["processes"]
     except Exception:
         pass
 
@@ -284,9 +289,11 @@ def _init_fk() -> None:
         "$SI timestamps also inherited: cross-drive moves preserve ALL original timestamps",
     ]
     if "disk.extract_mft_timeline" in _FK:
-        _FK["disk.extract_mft_timeline"].setdefault("does_not_prove", []).extend(_mft_extra)
+        _FK["disk.extract_mft_timeline"].setdefault(
+            "does_not_prove", []).extend(_mft_extra)
     else:
         _FK["disk.extract_mft_timeline"] = {"does_not_prove": _mft_extra}
+
 
 _init_fk()  # runs at import time
 
@@ -322,7 +329,7 @@ def _forensic_envelope(tool_name: str) -> dict:
     reminder = reminders[total_calls % len(reminders)] if reminders else ""
 
     does_not_prove = fk.get("does_not_prove", [])
-    corroborate    = fk.get("corroborate_with", {})
+    corroborate = fk.get("corroborate_with", {})
 
     if count < 3:
         envelope = {
@@ -457,7 +464,8 @@ def extract_prefetch(
         status, records (list of PrefetchRecord dicts), count, execution_id.
     """
     try:
-        _r = _extract_prefetch(image_path=image_path, case_id=case_id, max_entries=max_entries)
+        _r = _extract_prefetch(image_path=image_path,
+                               case_id=case_id, max_entries=max_entries)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.extract_prefetch"))
         return _r
@@ -495,7 +503,8 @@ def get_amcache(
         status, records (list of AmcacheRecord dicts), count, execution_id.
     """
     try:
-        _r = _get_amcache(image_path=image_path, case_id=case_id, max_entries=max_entries)
+        _r = _get_amcache(image_path=image_path,
+                          case_id=case_id, max_entries=max_entries)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.get_amcache"))
         return _r
@@ -647,7 +656,8 @@ def summarize_evtx(
         # Parse event_ids string to list[int] or None
         parsed_eids: list[int] | None = None
         if event_ids and event_ids.strip().lower() != "all":
-            parsed_eids = [int(x.strip()) for x in event_ids.split(",") if x.strip()]
+            parsed_eids = [int(x.strip())
+                           for x in event_ids.split(",") if x.strip()]
         elif event_ids.strip().lower() == "all":
             parsed_eids = []  # empty list = disable filtering
 
@@ -1138,9 +1148,40 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
         discrepancy_count, disk_findings_count, memory_findings_count,
         confirmed_consistencies, checked_at, summary.
     """
+    import time as _time
+    _tool = "correlation.compare_disk_and_memory"
+    _eid = _audit_logger.next_execution_id()
+    _audit_logger.log_execution(
+        execution_id=_eid,
+        tool_name=_tool,
+        parameters={"case_id": case_id},
+        command_line=f"compare_disk_and_memory({case_id!r})",
+    )
+    _t0 = _time.monotonic()
     try:
-        return _compare_disk_and_memory(case_id=case_id)
+        result = _compare_disk_and_memory(case_id=case_id)
+        _audit_logger.log_result(
+            execution_id=_eid,
+            exit_code=0,
+            duration=_time.monotonic() - _t0,
+            outputs_summary=f"{result.get('discrepancy_count', 0)} discrepancies found",
+            finding_ids=[],
+            tool_name=_tool,
+            command_line=f"compare_disk_and_memory({case_id!r})",
+            parameters={"case_id": case_id},
+        )
+        return result
     except Exception as exc:
+        _audit_logger.log_result(
+            execution_id=_eid,
+            exit_code=1,
+            duration=_time.monotonic() - _t0,
+            outputs_summary=f"error: {exc}",
+            finding_ids=[],
+            tool_name=_tool,
+            command_line=f"compare_disk_and_memory({case_id!r})",
+            parameters={"case_id": case_id},
+        )
         return {"status": "error", "error": str(exc), "tool": "compare_disk_and_memory"}
 
 
@@ -1375,8 +1416,10 @@ def generate_graph(
     analysis_dir = _ANALYSIS_DIR
     reports_dir = Path("./reports").resolve()
 
-    resolved_state = Path(state_path).resolve() if state_path else analysis_dir / "state.json"
-    resolved_audit = Path(audit_path).resolve() if audit_path else analysis_dir / "audit.jsonl"
+    resolved_state = Path(state_path).resolve(
+    ) if state_path else analysis_dir / "state.json"
+    resolved_audit = Path(audit_path).resolve(
+    ) if audit_path else analysis_dir / "audit.jsonl"
 
     safe_case = case_id.replace("/", "_").replace("\\", "_")
     resolved_output = (
@@ -1386,7 +1429,8 @@ def generate_graph(
 
     # Locate investigation_graph.py relative to this file
     server_dir = Path(__file__).resolve().parent
-    graph_script = (server_dir / ".." / "scripts" / "investigation_graph.py").resolve()
+    graph_script = (server_dir / ".." / "scripts" /
+                    "investigation_graph.py").resolve()
 
     if not graph_script.exists():
         # Try relative to workspace
@@ -1526,8 +1570,6 @@ def serve_graph(
             f"  {serve_command}"
         ),
     }
-
-
 
 
 @mcp.tool()
@@ -1748,8 +1790,6 @@ def build_reports_index(
         "investigation_count": investigation_count,
         "stdout": proc.stdout.strip(),
     }
-
-
 
 
 @mcp.tool()
@@ -1994,7 +2034,8 @@ def sigma_hunt(
     # ------------------------------------------------------------------
     # 9. Rank hits by severity before truncation
     # ------------------------------------------------------------------
-    SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
+    SEVERITY_RANK = {"critical": 0, "high": 1,
+                     "medium": 2, "low": 3, "informational": 4}
 
     def _hit_severity(hit: dict) -> int:
         level = str(hit.get("level", "informational")).lower()
@@ -2143,7 +2184,7 @@ def sigma_hunt(
             f"All {hits_total} hits returned as findings." if hits_total > 0
             else "No Sigma rules triggered. Consider running with a broader ruleset or check if EVTX contains events."
         ),
-    
+
         **_forensic_envelope("detection.sigma_hunt"),
     }
 
@@ -2255,7 +2296,8 @@ def analyze_vss(
     vshadowinfo_bin: Optional[str] = None
     for candidate in ["vshadowinfo", "/usr/bin/vshadowinfo", "/usr/local/bin/vshadowinfo"]:
         try:
-            r = subprocess.run([candidate, "--version"], capture_output=True, timeout=5)
+            r = subprocess.run([candidate, "--version"],
+                               capture_output=True, timeout=5)
             if r.returncode in (0, 1):  # version returns 1 on some builds
                 vshadowinfo_bin = candidate
                 break
@@ -2282,7 +2324,8 @@ def analyze_vss(
             )
             if mmls.returncode == 0:
                 # Parse mmls output — find the largest NTFS partition
-                ntfs_partitions: list[tuple[int, int, int]] = []  # (offset, size, index)
+                # (offset, size, index)
+                ntfs_partitions: list[tuple[int, int, int]] = []
                 for line in mmls.stdout.splitlines():
                     # Format: 000:  Meta  0000000000  0000000000  0000000001  ...
                     # NTFS lines contain "NTFS" or have large sizes
@@ -2358,12 +2401,14 @@ def analyze_vss(
                 if m:
                     target_path = Path(m.group(1))
                     if ewf_mount_point and ewf_mount_point.exists():
-                        import shutil; shutil.rmtree(str(ewf_mount_point), ignore_errors=True)
+                        import shutil
+                        shutil.rmtree(str(ewf_mount_point), ignore_errors=True)
                         ewf_mount_point = None
 
     vshadow_cmd = [vshadowinfo_bin]
     if offset_sectors is not None:
-        vshadow_cmd += ["-o", str(offset_sectors * 512)]  # vshadowinfo takes byte offset
+        # vshadowinfo takes byte offset
+        vshadow_cmd += ["-o", str(offset_sectors * 512)]
     vshadow_cmd.append(str(target_path))
 
     try:
@@ -2387,7 +2432,8 @@ def analyze_vss(
         try:
             subprocess.run(["fusermount", "-u", str(ewf_mount_point)],
                            capture_output=True, timeout=10)
-            import shutil as _shutil; _shutil.rmtree(str(ewf_mount_point), ignore_errors=True)
+            import shutil as _shutil
+            _shutil.rmtree(str(ewf_mount_point), ignore_errors=True)
         except Exception:
             pass
 
@@ -2398,7 +2444,8 @@ def analyze_vss(
     current_shadow: Optional[dict[str, Any]] = None
 
     VSS_ID_RE = re.compile(r"Store:\s*(\d+)", re.IGNORECASE)
-    GUID_RE = re.compile(r"Identifier[\s\t]*:[\s\t]*([0-9a-f\-]{30,})", re.IGNORECASE)
+    GUID_RE = re.compile(
+        r"Identifier[\s\t]*:[\s\t]*([0-9a-f\-]{30,})", re.IGNORECASE)
     CREATED_RE = re.compile(r"Creation time\s*:\s*(.+)", re.IGNORECASE)
     VOLUME_RE = re.compile(r"Volume name\s*:\s*(.+)", re.IGNORECASE)
     DEVICE_RE = re.compile(r"Device path\s*:\s*(.+)", re.IGNORECASE)
@@ -2447,14 +2494,16 @@ def analyze_vss(
     vshadowmount_bin: Optional[str] = None
     for candidate in ["vshadowmount", "/usr/bin/vshadowmount", "/usr/local/bin/vshadowmount"]:
         try:
-            r = subprocess.run([candidate, "--version"], capture_output=True, timeout=5)
+            r = subprocess.run([candidate, "--version"],
+                               capture_output=True, timeout=5)
             if r.returncode in (0, 1):
                 vshadowmount_bin = candidate
                 break
         except FileNotFoundError:
             continue
 
-    artifacts_recoverable: dict[str, list[int]] = {a: [] for a in check_artifacts}
+    artifacts_recoverable: dict[str, list[int]] = {
+        a: [] for a in check_artifacts}
 
     if vshadowmount_bin and shadow_copies:
         mount_base = Path(tempfile.mkdtemp(prefix="savvy_vss_"))
@@ -2546,7 +2595,8 @@ def analyze_vss(
                 f"Security.evtx recoverable from shadow copies: {recoverable_evtx}. "
                 f"CRITICAL if EID 1102 found — pre-clearing logs may be available. "
             )
-        creation_times = [s["creation_time"] for s in shadow_copies if s.get("creation_time")]
+        creation_times = [s["creation_time"]
+                          for s in shadow_copies if s.get("creation_time")]
         if creation_times:
             summary_desc += f"Shadow copy dates: {creation_times[0]} to {creation_times[-1]}."
 
@@ -2651,7 +2701,7 @@ def analyze_vss(
             "No shadow copies found. If attacker used vssadmin/wmic to delete shadows, "
             "check EID 4688 process creation logs for those commands."
         ),
-    
+
         **_forensic_envelope("disk.analyze_vss"),
     }
 
@@ -2876,7 +2926,8 @@ def extract_pca(
             raw = db_file.read_bytes()
             if raw.startswith(b"\xff\xfe"):
                 raw = raw[2:]
-            db_content = raw.decode("utf-16-le", errors="replace").replace("\x00", "")
+            db_content = raw.decode(
+                "utf-16-le", errors="replace").replace("\x00", "")
             for line in db_content.splitlines():
                 line = line.strip()
                 if not line:
@@ -2892,7 +2943,8 @@ def extract_pca(
                     parts = line.split("|")
                     if len(parts) >= 2:
                         entry["program_path"] = parts[0].strip()
-                        entry["program_id"] = parts[1].strip() if len(parts) > 1 else ""
+                        entry["program_id"] = parts[1].strip() if len(
+                            parts) > 1 else ""
                         entry["details"] = parts[2:] if len(parts) > 2 else []
                 general_db_entries.append(entry)
         except Exception as e:
@@ -2976,7 +3028,8 @@ def extract_pca(
             "confidence": 0.82,
             "description": ind_desc,
             "supporting_indicators": [exe_path, ts_str],
-            "attck_techniques": ["T1204.002"],  # User Execution: Malicious File
+            # User Execution: Malicious File
+            "attck_techniques": ["T1204.002"],
             "executable_path": exe_path,
             "termination_timestamp_utc": ts_str,
         }
@@ -2996,7 +3049,8 @@ def extract_pca(
         "suspicious_count": len(suspicious_entries),
         "records": [e for e in returned_entries],
         "suspicious_records": suspicious_entries,
-        "general_db_entries": general_db_entries[:50],  # First 50 GeneralDb entries
+        # First 50 GeneralDb entries
+        "general_db_entries": general_db_entries[:50],
         "findings_created": finding_ids,
         "execution_id": execution_id,
         "parse_errors": parse_errors[:10] if parse_errors else [],
@@ -3011,8 +3065,6 @@ def extract_pca(
     }
 
 
-
-
 # ===========================================================================
 # REGISTRY HELPER — rla.exe dirty hive cleanup
 # ===========================================================================
@@ -3025,7 +3077,7 @@ def _clean_hive_with_rla(hive_path: Path, label: str) -> tuple:
     rla outputs the file with a path-flattened name; we glob for it.
     If rla produces no output (hive was clean), falls back to original copy.
     """
-    tmp_in  = Path(tempfile.mkdtemp(prefix=f"savvy_rla_in_{label}_"))
+    tmp_in = Path(tempfile.mkdtemp(prefix=f"savvy_rla_in_{label}_"))
     tmp_out = Path(tempfile.mkdtemp(prefix=f"savvy_rla_out_{label}_"))
 
     # Copy hive (read-only evidence → writable temp)
@@ -3201,8 +3253,10 @@ def extract_shimcache(
                     "finding_status": "HYPOTHESIS",
                     "confidence":     0.75,
                     "description": (
-                        "ShimCache entry at position " + str(entry["position"]) + ": "
-                        + str(entry["path"]) + " | LastModified: " + str(entry["last_mod"]) + " | "
+                        "ShimCache entry at position " +
+                        str(entry["position"]) + ": "
+                        + str(entry["path"]) + " | LastModified: " +
+                        str(entry["last_mod"]) + " | "
                         + "Executed: " + str(entry["executed"]) + ". "
                         f"Path is outside standard system directories — investigate "
                         f"whether this binary has been cleaned from disk."
@@ -3224,7 +3278,7 @@ def extract_shimcache(
             "findings_created": finding_ids,
             "csv_path":        str(csv_path),
             "top_suspicious":  suspicious[:5],
-        **_forensic_envelope("disk.extract_shimcache"),
+            **_forensic_envelope("disk.extract_shimcache"),
         }
 
     finally:
@@ -3319,9 +3373,9 @@ def extract_srum(
         with open(idmap_file, encoding="utf-8", errors="replace") as fh:
             reader = _csv.DictReader(fh, delimiter="\t")
             for row in reader:
-                idx   = row.get("IdIndex", "").strip()
+                idx = row.get("IdIndex", "").strip()
                 itype = row.get("IdType", "").strip()
-                blob  = row.get("IdBlob", "").strip()
+                blob = row.get("IdBlob", "").strip()
                 if idx and blob and itype == "0":
                     decoded = _decode_id_blob(blob)
                     if decoded:
@@ -3343,9 +3397,9 @@ def extract_srum(
                     if i >= max_entries:
                         break
                     app_id = row.get("AppId", "").strip()
-                    sent   = int(row.get("BytesSent", 0) or 0)
-                    recv   = int(row.get("BytesRecvd", 0) or 0)
-                    ts     = row.get("TimeStamp", "").strip()
+                    sent = int(row.get("BytesSent", 0) or 0)
+                    recv = int(row.get("BytesRecvd", 0) or 0)
+                    ts = row.get("TimeStamp", "").strip()
                     app_name = id_map.get(app_id, f"AppId:{app_id}")
                     network_entries.append({
                         "app_name":   app_name,
@@ -3443,9 +3497,8 @@ def extract_srum(
         "findings_created":  finding_ids,
         "top_senders":       network_entries[:10],
         "export_dir":        str(export_dir),
-    **_forensic_envelope("disk.extract_srum"),
+        **_forensic_envelope("disk.extract_srum"),
     }
-
 
 
 # ===========================================================================
@@ -3608,14 +3661,45 @@ def generate_report(case_id: str) -> dict[str, Any]:
         status, summary (CaseState summary), findings_count,
         unresolved_count, open_questions.
     """
+    import time as _time
+    _tool = "reporting.generate_report"
+    _eid = _audit_logger.next_execution_id()
+    _audit_logger.log_execution(
+        execution_id=_eid,
+        tool_name=_tool,
+        parameters={"case_id": case_id},
+        command_line=f"generate_report({case_id!r})",
+    )
+    _t0 = _time.monotonic()
     try:
-        return generate_report_payload(
+        result = generate_report_payload(
             case_id=case_id,
             state_manager=_state_manager,
             sigma_scan_fn=sigma_scan,
             coverage_fn=coverage_report,
         )
+        _audit_logger.log_result(
+            execution_id=_eid,
+            exit_code=0 if result.get("status") == "ok" else 1,
+            duration=_time.monotonic() - _t0,
+            outputs_summary=f"report generated: {result.get('report_path', 'unknown')}",
+            finding_ids=[],
+            tool_name=_tool,
+            command_line=f"generate_report({case_id!r})",
+            parameters={"case_id": case_id},
+        )
+        return result
     except Exception as exc:
+        _audit_logger.log_result(
+            execution_id=_eid,
+            exit_code=1,
+            duration=_time.monotonic() - _t0,
+            outputs_summary=f"error: {exc}",
+            finding_ids=[],
+            tool_name=_tool,
+            command_line=f"generate_report({case_id!r})",
+            parameters={"case_id": case_id},
+        )
         return {"status": "error", "error": str(exc), "tool": "generate_report"}
 
 
@@ -3707,14 +3791,16 @@ def mount_image(
                     # Try with nonempty flag if directory has stale FUSE mount
                     if "not empty" in proc.stderr or "nonempty" in proc.stderr:
                         proc = _sp.run(
-                            ["/usr/bin/ewfmount", "-X", "nonempty", str(image), mount_point],
+                            ["/usr/bin/ewfmount", "-X", "nonempty",
+                                str(image), mount_point],
                             capture_output=True, text=True, timeout=120
                         )
                     if proc.returncode != 0:
                         return ToolResult(
                             status="error", tool="mount_image",
                             error=f"ewfmount failed: {proc.stderr}",
-                            data={"hint": f"Try: umount {mount_point} then retry, or use -X nonempty flag"},
+                            data={
+                                "hint": f"Try: umount {mount_point} then retry, or use -X nonempty flag"},
                         ).model_dump()
 
         # Set device path based on ewf or raw
@@ -3736,7 +3822,8 @@ def mount_image(
         max_length = 0
         if proc.returncode == 0:
             for line in proc.stdout.splitlines():
-                match = re.match(r"\d+:\s+\d+:\s+\d+\s+(\d+)\s+(\d+)\s+(\d+)\s+(.*)", line)
+                match = re.match(
+                    r"\d+:\s+\d+:\s+\d+\s+(\d+)\s+(\d+)\s+(\d+)\s+(.*)", line)
                 if match:
                     start = int(match.group(1))
                     length = int(match.group(3))
@@ -3783,7 +3870,8 @@ def mount_image(
             # Raw filesystem — mount directly, no loop offset needed
             mount_cmd = ["/usr/bin/mount", "-o", "ro", device, disk_mount]
         else:
-            mount_cmd = ["/usr/bin/mount", "-o", f"ro,loop,offset={offset * 512}", device, disk_mount]
+            mount_cmd = ["/usr/bin/mount", "-o",
+                         f"ro,loop,offset={offset * 512}", device, disk_mount]
 
         proc = _sp.run(mount_cmd, capture_output=True, text=True, timeout=60)
         if proc.returncode != 0:
@@ -3893,7 +3981,8 @@ def load_memory(
                 return ToolResult(
                     status="error", tool="load_memory",
                     error="No memory dump found after extraction",
-                    data={"extracted_files": [str(f) for f in Path(output_dir).iterdir()]},
+                    data={"extracted_files": [
+                        str(f) for f in Path(output_dir).iterdir()]},
                 ).model_dump()
 
             data["raw_dump_path"] = str(raw_path)
@@ -3932,13 +4021,15 @@ def _normalize_columns(df):
     """Normalize DataFrame column names: strip, lowercase, replace spaces with underscores.
     EvtxECmd and other EZ Tools produce inconsistent column names across versions."""
     df = df.copy()
-    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('-', '_')
+    df.columns = df.columns.str.strip().str.lower(
+    ).str.replace(' ', '_').str.replace('-', '_')
     return df
 
 
 def _find_col(df, *candidates):
     """Find first matching column name (case-insensitive, normalized)."""
-    norm_cols = {c.lower().replace(' ', '_').replace('-', '_'): c for c in df.columns}
+    norm_cols = {c.lower().replace(' ', '_').replace(
+        '-', '_'): c for c in df.columns}
     for c in candidates:
         norm = c.lower().replace(' ', '_').replace('-', '_')
         if norm in norm_cols:
@@ -3962,7 +4053,8 @@ def _normalize_finding(f: dict) -> dict:
 def _find_key(f: dict, *candidates) -> Any:
     """Find first matching key value from a dict (case-insensitive, normalized).
     Returns None if no candidate matches."""
-    norm_keys = {k.lower().replace(' ', '_').replace('-', '_'): v for k, v in f.items()}
+    norm_keys = {k.lower().replace(' ', '_').replace(
+        '-', '_'): v for k, v in f.items()}
     for c in candidates:
         norm = c.lower().replace(' ', '_').replace('-', '_')
         if norm in norm_keys:
@@ -4009,15 +4101,20 @@ def _detect_process_anomalies(findings: list[dict]) -> list[ArtifactHit]:
     hits: list[ArtifactHit] = []
     findings = [_normalize_finding(f) for f in findings]
 
-    process_findings = [f for f in findings if _find_key(f, "artifact_type") == "process"]
-    pids = {_find_key(f, "pid", "processid", "process_id") for f in process_findings}
+    process_findings = [f for f in findings if _find_key(
+        f, "artifact_type") == "process"]
+    pids = {_find_key(f, "pid", "processid", "process_id")
+            for f in process_findings}
     pids.discard(None)
 
     for pf in process_findings:
         pid = _find_key(pf, "pid", "processid", "process_id")
-        name = (_find_key(pf, "name", "imagename", "image_name", "processname") or _find_key(pf, "description") or "").lower()
-        ppid = _find_key(pf, "ppid", "parent_pid", "parentprocessid", "parentpid")
-        path = (_find_key(pf, "artifact_path", "imagepath", "image_path", "path") or "").lower()
+        name = (_find_key(pf, "name", "imagename", "image_name",
+                "processname") or _find_key(pf, "description") or "").lower()
+        ppid = _find_key(pf, "ppid", "parent_pid",
+                         "parentprocessid", "parentpid")
+        path = (_find_key(pf, "artifact_path", "imagepath",
+                "image_path", "path") or "").lower()
 
         # Check: svchost not spawned by services.exe
         if "svchost" in name and ppid is not None:
@@ -4025,7 +4122,8 @@ def _detect_process_anomalies(findings: list[dict]) -> list[ArtifactHit]:
             for f2 in process_findings:
                 f2_pid = _find_key(f2, "pid", "processid", "process_id")
                 if f2_pid == ppid:
-                    parent_name = (_find_key(f2, "name", "imagename", "image_name", "processname") or _find_key(f2, "description") or "").lower()
+                    parent_name = (_find_key(f2, "name", "imagename", "image_name", "processname") or _find_key(
+                        f2, "description") or "").lower()
                     break
             if parent_name and _SVCHOST_PARENT not in parent_name:
                 hits.append(ArtifactHit(
@@ -4034,7 +4132,8 @@ def _detect_process_anomalies(findings: list[dict]) -> list[ArtifactHit]:
                     description=f"svchost.exe (PID {pid}) has unexpected parent {parent_name} (PID {ppid}) — expected services.exe",
                     artifact_type="process",
                     artifact_path=_find_key(pf, "artifact_path"),
-                    raw_data={"pid": pid, "ppid": ppid, "parent_name": parent_name},
+                    raw_data={"pid": pid, "ppid": ppid,
+                              "parent_name": parent_name},
                     mitre_technique="T1036.005",
                     mitre_tactic="TA0005",
                     pivot_suggestion=f"Call detect_injection(pid={pid}) and list_dlls(pid={pid})",
@@ -4082,13 +4181,18 @@ def _detect_network_anomalies(findings: list[dict]) -> list[ArtifactHit]:
     hits: list[ArtifactHit] = []
     _COMMON_PORTS = {80, 443, 53, 445, 135, 139, 389, 636, 88, 464, 3389}
     findings = [_normalize_finding(f) for f in findings]
-    net_findings = [f for f in findings if _find_key(f, "artifact_type") == "network_connection"]
+    net_findings = [f for f in findings if _find_key(
+        f, "artifact_type") == "network_connection"]
 
     for nf in net_findings:
-        remote = _find_key(nf, "remote_addr", "foreignaddr", "foreign_addr", "remoteaddress", "remotehost") or ""
-        remote_port = _find_key(nf, "remote_port", "foreignport", "foreign_port", "remoteport")
-        owner = (_find_key(nf, "owner_process", "owning_process", "processname", "name") or _find_key(nf, "description") or "").lower()
-        state = (_find_key(nf, "state", "status", "connection_state") or "").upper()
+        remote = _find_key(nf, "remote_addr", "foreignaddr",
+                           "foreign_addr", "remoteaddress", "remotehost") or ""
+        remote_port = _find_key(
+            nf, "remote_port", "foreignport", "foreign_port", "remoteport")
+        owner = (_find_key(nf, "owner_process", "owning_process",
+                 "processname", "name") or _find_key(nf, "description") or "").lower()
+        state = (_find_key(nf, "state", "status",
+                 "connection_state") or "").upper()
 
         # Skip if no remote address
         if not remote or remote in ("0.0.0.0", "::", "*", ""):
@@ -4108,7 +4212,8 @@ def _detect_network_anomalies(findings: list[dict]) -> list[ArtifactHit]:
                 severity="HIGH",
                 description=f"System process '{owner}' has external connection to {remote}:{remote_port}",
                 artifact_type="network",
-                raw_data={"remote": remote, "port": remote_port, "owner": owner, "state": state},
+                raw_data={"remote": remote, "port": remote_port,
+                          "owner": owner, "state": state},
                 mitre_technique="T1071",
                 mitre_tactic="TA0011",
                 pivot_suggestion=f"Check if {remote} is a known C2: scan memory for related YARA rules",
@@ -4121,7 +4226,8 @@ def _detect_network_anomalies(findings: list[dict]) -> list[ArtifactHit]:
                 severity="MEDIUM",
                 description=f"Outbound connection to {remote}:{remote_port} on unusual port from '{owner}'",
                 artifact_type="network",
-                raw_data={"remote": remote, "port": remote_port, "owner": owner},
+                raw_data={"remote": remote,
+                          "port": remote_port, "owner": owner},
                 mitre_technique="T1571",
                 mitre_tactic="TA0011",
                 pivot_suggestion="Check process tree of owning PID for injection indicators",
@@ -4138,22 +4244,28 @@ def _detect_mft_anomalies(findings: list[dict]) -> list[ArtifactHit]:
     """
     hits: list[ArtifactHit] = []
     findings = [_normalize_finding(f) for f in findings]
-    mft_findings = [f for f in findings if _find_key(f, "artifact_type") in ("mft", "mft_entry")]
+    mft_findings = [f for f in findings if _find_key(
+        f, "artifact_type") in ("mft", "mft_entry")]
 
     for mf in mft_findings:
-        si_created = _find_key(mf, "si_created", "created0x10", "sicreated", "standard_information_created")
-        fn_created = _find_key(mf, "fn_created", "created0x30", "fncreated", "file_name_created")
-        file_path_val = _find_key(mf, "file_path", "filename", "filepath", "path") or "unknown"
+        si_created = _find_key(
+            mf, "si_created", "created0x10", "sicreated", "standard_information_created")
+        fn_created = _find_key(
+            mf, "fn_created", "created0x30", "fncreated", "file_name_created")
+        file_path_val = _find_key(
+            mf, "file_path", "filename", "filepath", "path") or "unknown"
         if not si_created or not fn_created:
             continue
 
         try:
             if isinstance(si_created, str):
-                si_dt = datetime.fromisoformat(si_created.replace("Z", "+00:00"))
+                si_dt = datetime.fromisoformat(
+                    si_created.replace("Z", "+00:00"))
             else:
                 si_dt = si_created
             if isinstance(fn_created, str):
-                fn_dt = datetime.fromisoformat(fn_created.replace("Z", "+00:00"))
+                fn_dt = datetime.fromisoformat(
+                    fn_created.replace("Z", "+00:00"))
             else:
                 fn_dt = fn_created
 
@@ -4165,7 +4277,8 @@ def _detect_mft_anomalies(findings: list[dict]) -> list[ArtifactHit]:
                     description=f"Timestomping detected: SI Created differs from FN Created by {delta/3600:.1f}h for {file_path_val}",
                     artifact_type="mft",
                     artifact_path=file_path_val if file_path_val != "unknown" else None,
-                    raw_data={"si_created": str(si_created), "fn_created": str(fn_created), "delta_seconds": delta},
+                    raw_data={"si_created": str(si_created), "fn_created": str(
+                        fn_created), "delta_seconds": delta},
                     mitre_technique="T1070.006",
                     mitre_tactic="TA0005",
                     pivot_suggestion="Check prefetch/amcache for true first execution time of this binary",
@@ -4180,7 +4293,8 @@ def _detect_evtx_anomalies(findings: list[dict]) -> list[ArtifactHit]:
     """Flag high-value Windows Event IDs with ATT&CK technique auto-tagging."""
     hits: list[ArtifactHit] = []
     findings = [_normalize_finding(f) for f in findings]
-    evtx_findings = [f for f in findings if _find_key(f, "artifact_type") in ("evtx_event", "event_log")]
+    evtx_findings = [f for f in findings if _find_key(
+        f, "artifact_type") in ("evtx_event", "event_log")]
 
     for ef in evtx_findings:
         event_id = _find_key(ef, "event_id", "eventid", "id")
@@ -4192,15 +4306,20 @@ def _detect_evtx_anomalies(findings: list[dict]) -> list[ArtifactHit]:
                 continue
         if event_id and event_id in _HIGH_VALUE_EVTX:
             label, tactic, technique = _HIGH_VALUE_EVTX[event_id]
-            msg = _find_key(ef, "description", "message_summary", "message", "payloaddata1") or ""
-            channel = _find_key(ef, "channel", "eventchannel", "log_name") or ""
-            ts = _find_key(ef, "timestamp", "timecreated", "time_created", "date/time___utc") or ""
+            msg = _find_key(ef, "description", "message_summary",
+                            "message", "payloaddata1") or ""
+            channel = _find_key(
+                ef, "channel", "eventchannel", "log_name") or ""
+            ts = _find_key(ef, "timestamp", "timecreated",
+                           "time_created", "date/time___utc") or ""
             hits.append(ArtifactHit(
                 detector="evtx_anomaly",
-                severity="HIGH" if event_id in (4688, 4697, 7045, 4698) else "MEDIUM",
+                severity="HIGH" if event_id in (
+                    4688, 4697, 7045, 4698) else "MEDIUM",
                 description=f"High-value event {event_id} ({label}): {msg}",
                 artifact_type="evtx",
-                raw_data={"event_id": event_id, "channel": channel, "timestamp": str(ts)},
+                raw_data={"event_id": event_id,
+                          "channel": channel, "timestamp": str(ts)},
                 mitre_technique=technique,
                 mitre_tactic=tactic,
                 pivot_suggestion=f"Correlate event {event_id} with timeline around this timestamp",
@@ -4212,13 +4331,17 @@ def _detect_evtx_anomalies(findings: list[dict]) -> list[ArtifactHit]:
 def _detect_persistence_anomalies(findings: list[dict]) -> list[ArtifactHit]:
     """Detect persistence keys pointing to suspicious paths or missing binaries."""
     hits: list[ArtifactHit] = []
-    _SUSPICIOUS_PATHS = ["\\temp\\", "\\tmp\\", "\\appdata\\", "\\downloads\\", "\\public\\"]
+    _SUSPICIOUS_PATHS = ["\\temp\\", "\\tmp\\",
+                         "\\appdata\\", "\\downloads\\", "\\public\\"]
     findings = [_normalize_finding(f) for f in findings]
-    reg_findings = [f for f in findings if _find_key(f, "artifact_type") in ("registry_key", "persistence")]
+    reg_findings = [f for f in findings if _find_key(
+        f, "artifact_type") in ("registry_key", "persistence")]
 
     for rf in reg_findings:
-        value = (_find_key(rf, "value_data", "valuedata", "data", "value") or _find_key(rf, "artifact_path") or "").lower()
-        key_path = _find_key(rf, "key_path", "keypath", "hivepath", "path") or ""
+        value = (_find_key(rf, "value_data", "valuedata", "data", "value")
+                 or _find_key(rf, "artifact_path") or "").lower()
+        key_path = _find_key(rf, "key_path", "keypath",
+                             "hivepath", "path") or ""
 
         for sp in _SUSPICIOUS_PATHS:
             if sp in value:
@@ -4247,8 +4370,10 @@ def _hits_to_markdown(hits: list[ArtifactHit]) -> str:
              "|---|----------|----------|-------------|--------|"]
     for i, h in enumerate(hits, 1):
         technique = h.mitre_technique or "-"
-        desc = h.description[:80] + "..." if len(h.description) > 80 else h.description
-        lines.append(f"| {i} | {h.severity} | {h.detector} | {desc} | {technique} |")
+        desc = h.description[:80] + \
+            "..." if len(h.description) > 80 else h.description
+        lines.append(
+            f"| {i} | {h.severity} | {h.detector} | {desc} | {technique} |")
 
     return "\n".join(lines)
 
@@ -4279,6 +4404,16 @@ def sigma_scan(case_id: str) -> dict[str, Any]:
     dict
         SigmaScanResult with hits, counts, and markdown summary.
     """
+    import time as _time
+    _tool = "detection.sigma_scan"
+    _eid = _audit_logger.next_execution_id()
+    _audit_logger.log_execution(
+        execution_id=_eid,
+        tool_name=_tool,
+        parameters={"case_id": case_id},
+        command_line=f"sigma_scan({case_id!r})",
+    )
+    _t0 = _time.monotonic()
     try:
         _state_manager.load(case_id)
         all_findings = _state_manager.get_findings()
@@ -4311,9 +4446,30 @@ def sigma_scan(case_id: str) -> dict[str, Any]:
             summary_markdown=_hits_to_markdown(all_hits),
         )
 
-        return result.model_dump()
+        payload = result.model_dump()
+        _audit_logger.log_result(
+            execution_id=_eid,
+            exit_code=0,
+            duration=_time.monotonic() - _t0,
+            outputs_summary=f"{len(all_hits)} hits ({critical} critical, {high} high) across {len(detectors_run)} detectors",
+            finding_ids=[],
+            tool_name=_tool,
+            command_line=f"sigma_scan({case_id!r})",
+            parameters={"case_id": case_id},
+        )
+        return payload
 
     except Exception as exc:
+        _audit_logger.log_result(
+            execution_id=_eid,
+            exit_code=1,
+            duration=_time.monotonic() - _t0,
+            outputs_summary=f"error: {exc}",
+            finding_ids=[],
+            tool_name=_tool,
+            command_line=f"sigma_scan({case_id!r})",
+            parameters={"case_id": case_id},
+        )
         return ToolResult(
             status="error", tool="sigma_scan", error=str(exc),
         ).model_dump()

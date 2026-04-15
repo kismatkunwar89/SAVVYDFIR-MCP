@@ -302,7 +302,8 @@ def _apply_response_format(
         return payload
 
     if normalized == "detailed":
-        payload["data"] = [record.model_dump(mode="json") for record in records]
+        payload["data"] = [record.model_dump(
+            mode="json") for record in records]
         payload["records_count"] = len(records)
         payload["total_records"] = total_records
     return payload
@@ -329,7 +330,8 @@ def _replay_hive_with_rla(hive_path: Path, label: str) -> tuple[Path, Path, Path
 
     rla_bin = Path("/opt/zimmermantools/rla.dll")
     subprocess.run(
-        ["/usr/bin/dotnet", str(rla_bin), "-d", str(tmp_in), "--out", str(tmp_out)],
+        ["/usr/bin/dotnet", str(rla_bin), "-d",
+         str(tmp_in), "--out", str(tmp_out)],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -338,8 +340,10 @@ def _replay_hive_with_rla(hive_path: Path, label: str) -> tuple[Path, Path, Path
         check=False,
     )
 
-    cleaned_files = [candidate for candidate in tmp_out.iterdir() if candidate.is_file()]
-    cleaned_hive = cleaned_files[0] if cleaned_files else (tmp_in / hive_path.name)
+    cleaned_files = [candidate for candidate in tmp_out.iterdir()
+                     if candidate.is_file()]
+    cleaned_hive = cleaned_files[0] if cleaned_files else (
+        tmp_in / hive_path.name)
     return cleaned_hive, tmp_in, tmp_out
 
 
@@ -385,7 +389,8 @@ def _build_mft_records(
 
     for row in rows:
         try:
-            entry_num_raw = row.get("EntryNumber") or row.get("MFTEntry") or "0"
+            entry_num_raw = row.get(
+                "EntryNumber") or row.get("MFTEntry") or "0"
             try:
                 entry_num = int(entry_num_raw)
             except (ValueError, TypeError):
@@ -398,21 +403,30 @@ def _build_mft_records(
                 sequence = None
 
             file_path_val = (
-                row.get("FileName") or row.get("FilePath") or row.get("ParentPath") or ""
+                row.get("FileName") or row.get(
+                    "FilePath") or row.get("ParentPath") or ""
             ).strip()
 
-            si_created = _parse_dt(row.get("Created0x10") or row.get("SICreated") or "")
-            si_modified = _parse_dt(row.get("LastModified0x10") or row.get("SIModified") or "")
-            si_accessed = _parse_dt(row.get("LastAccess0x10") or row.get("SIAccessed") or "")
+            si_created = _parse_dt(row.get("Created0x10")
+                                   or row.get("SICreated") or "")
+            si_modified = _parse_dt(
+                row.get("LastModified0x10") or row.get("SIModified") or "")
+            si_accessed = _parse_dt(
+                row.get("LastAccess0x10") or row.get("SIAccessed") or "")
             si_entry_mod = _parse_dt(
-                row.get("MFTRecordChange0x10") or row.get("SIEntryModified") or ""
+                row.get("MFTRecordChange0x10") or row.get(
+                    "SIEntryModified") or ""
             )
 
-            fn_created = _parse_dt(row.get("Created0x30") or row.get("FNCreated") or "")
-            fn_modified = _parse_dt(row.get("LastModified0x30") or row.get("FNModified") or "")
-            fn_accessed = _parse_dt(row.get("LastAccess0x30") or row.get("FNAccessed") or "")
+            fn_created = _parse_dt(row.get("Created0x30")
+                                   or row.get("FNCreated") or "")
+            fn_modified = _parse_dt(
+                row.get("LastModified0x30") or row.get("FNModified") or "")
+            fn_accessed = _parse_dt(
+                row.get("LastAccess0x30") or row.get("FNAccessed") or "")
             fn_entry_mod = _parse_dt(
-                row.get("MFTRecordChange0x30") or row.get("FNEntryModified") or ""
+                row.get("MFTRecordChange0x30") or row.get(
+                    "FNEntryModified") or ""
             )
 
             is_deleted = (row.get("InUse") or row.get("IsDeleted") or "").strip().lower() in (
@@ -433,7 +447,8 @@ def _build_mft_records(
             except (ValueError, TypeError):
                 file_size = None
 
-            parent_raw = row.get("ParentEntryNumber") or row.get("ParentMFTEntry") or ""
+            parent_raw = row.get("ParentEntryNumber") or row.get(
+                "ParentMFTEntry") or ""
             try:
                 parent_entry = int(parent_raw) if parent_raw.strip() else None
             except (ValueError, TypeError):
@@ -490,7 +505,8 @@ def _build_mft_records(
                         mitre_tactic="TA0005",
                         mitre_technique="T1070.006",
                     )
-                    finding_ids.append(_state.add_finding(ts_finding.model_dump(mode="json")))
+                    finding_ids.append(_state.add_finding(
+                        ts_finding.model_dump(mode="json")))
         except Exception:
             continue
 
@@ -515,14 +531,16 @@ def _build_evtx_records(
             if channel and ch.lower() != channel.lower():
                 continue
 
-            event_id_raw = row.get("EventId") or row.get("EventID") or row.get("Id") or "0"
+            event_id_raw = row.get("EventId") or row.get(
+                "EventID") or row.get("Id") or "0"
             try:
                 event_id = int(event_id_raw)
             except (ValueError, TypeError):
                 event_id = 0
 
             ts = _parse_dt(
-                row.get("TimeCreated") or row.get("Timestamp") or row.get("Date/Time - UTC") or ""
+                row.get("TimeCreated") or row.get(
+                    "Timestamp") or row.get("Date/Time - UTC") or ""
             )
             if ts is None:
                 ts = datetime.now(tz=timezone.utc)
@@ -565,10 +583,12 @@ def _build_evtx_records(
                     event_id=event_id,
                     channel=ch or "Unknown",
                     provider=(
-                        row.get("Provider") or row.get("ProviderName") or row.get("SourceName") or None
+                        row.get("Provider") or row.get(
+                            "ProviderName") or row.get("SourceName") or None
                     ),
                     timestamp=ts,
-                    level=row.get("Level") or row.get("LevelDisplayName") or None,
+                    level=row.get("Level") or row.get(
+                        "LevelDisplayName") or None,
                     computer=row.get("Computer") or None,
                     user_sid=(row.get("UserSID") or row.get("UserId") or None),
                     message_summary=message or f"Event {event_id}",
@@ -617,7 +637,8 @@ def _extract_evtx_process_paths(records: list[EventRecord]) -> list[str]:
         "commandline",
         "processpath",
     )
-    path_re = re.compile(r"[A-Za-z]:\\[^\"'\r\n]+\.(?:exe|dll|cmd|bat|ps1|vbs)", re.IGNORECASE)
+    path_re = re.compile(
+        r"[A-Za-z]:\\[^\"'\r\n]+\.(?:exe|dll|cmd|bat|ps1|vbs)", re.IGNORECASE)
 
     for record in records:
         if record.event_id not in {1, 4688}:
@@ -681,24 +702,29 @@ def _build_registry_records(
                 else:
                     continue
 
-            value_name = (row.get("ValueName") or row.get("Name") or "").strip()
-            value_data = (row.get("ValueData") or row.get("Data") or row.get("Value") or "").strip()
+            value_name = (row.get("ValueName")
+                          or row.get("Name") or "").strip()
+            value_data = (row.get("ValueData") or row.get(
+                "Data") or row.get("Value") or "").strip()
             if not value_data:
                 continue
 
-            hive_name = (row.get("HiveType") or row.get("Hive") or Path(key_path).name).strip()
+            hive_name = (row.get("HiveType") or row.get(
+                "Hive") or Path(key_path).name).strip()
             record = RegistryRunKey(
                 hive=hive_name,
                 key_path=key_path,
                 value_name=value_name or "(Default)",
                 value_data=value_data,
                 last_write_time=_parse_dt(
-                    row.get("LastWriteTimestamp") or row.get("LastWriteTime") or ""
+                    row.get("LastWriteTimestamp") or row.get(
+                        "LastWriteTime") or ""
                 ),
                 persistence_type=ptype,  # type: ignore[arg-type]
             )
             records.append(record)
-            persistence_type_counts[ptype] = persistence_type_counts.get(ptype, 0) + 1
+            persistence_type_counts[ptype] = persistence_type_counts.get(
+                ptype, 0) + 1
 
             if create_findings and _state is not None and str(ptype).lower() in high_value:
                 finding = Finding(
@@ -716,7 +742,8 @@ def _build_registry_records(
                         f"Registry persistence: {key_path}\\{value_name} = {value_data[:200]}. "
                         f"Type: {ptype}."
                     ),
-                    supporting_indicators=[key_path, f"value={value_data[:200]}"],
+                    supporting_indicators=[
+                        key_path, f"value={value_data[:200]}"],
                     mitre_tactic="TA0003",
                     mitre_technique=(
                         "T1547.001" if str(ptype).lower() in ("run", "runonce") else
@@ -727,7 +754,8 @@ def _build_registry_records(
                         "T1547"
                     ),
                 )
-                finding_ids.append(_state.add_finding(finding.model_dump(mode="json")))
+                finding_ids.append(_state.add_finding(
+                    finding.model_dump(mode="json")))
         except Exception:
             continue
 
@@ -1204,7 +1232,8 @@ def extract_mft_timeline(
         _state,
         cache_key,
         path_key="csv_path",
-        required_keys=("csv_path", "source_execution_id", "timestomping_candidates"),
+        required_keys=("csv_path", "source_execution_id",
+                       "timestomping_candidates"),
     )
     if cached is not None:
         rows = _read_csv(str(cached["csv_path"]))
@@ -1215,7 +1244,8 @@ def extract_mft_timeline(
             parameters={"mft_path": resolved_mft_path},
             cache_key=cache_key,
             artifact_path=str(cached["csv_path"]),
-            cache_source_execution_id=str(cached.get("source_execution_id") or ""),
+            cache_source_execution_id=str(
+                cached.get("source_execution_id") or ""),
         )
         records, _, timestomping_candidates = _build_mft_records(
             rows,
@@ -1320,7 +1350,8 @@ def extract_mft_timeline(
         records=detailed_records if normalized_format == "detailed" else full_records,
         total_records=len(rows),
     )
-    response = _warn_if_empty(response, "extract_mft_timeline", mft_path, min_expected=10000)
+    response = _warn_if_empty(
+        response, "extract_mft_timeline", mft_path, min_expected=10000)
     _state.cache_artifact(
         cache_key,
         {
@@ -1599,14 +1630,31 @@ def summarize_evtx(
             effective_eids = DFIR_ESSENTIAL_EIDS
             event_id_strategy = "default"
 
-    cache_params = {
+    # Cache key for idempotency.  When the caller did NOT specify explicit
+    # event_ids (event_ids=None → adaptive or default), the cache key is
+    # based solely on the stable base params (evtx_dir, channel, dates).
+    # This prevents adaptive EID set drift (which changes every call as
+    # findings grow) from busting the cache and re-running EvtxECmd 30×.
+    caller_specified_eids = event_ids is not None
+    cache_base_params = {
         "evtx_dir": _resolved_path_str(evtx_dir),
         "channel": channel or "",
         "start_date": start_date or "",
         "end_date": end_date or "",
-        "event_ids": sorted(effective_eids) if effective_eids else [],
-        "event_id_strategy": event_id_strategy,
     }
+    if caller_specified_eids:
+        # Caller explicitly chose EIDs — include them in the cache key
+        cache_params = {
+            **cache_base_params,
+            "event_ids": sorted(effective_eids) if effective_eids else [],
+            "event_id_strategy": "explicit",
+        }
+    else:
+        # Auto-selected EIDs (adaptive or default) — cache on base params only
+        cache_params = {
+            **cache_base_params,
+            "event_id_strategy": "auto",
+        }
     cache_key = build_cache_key(tool, cache_params)
     cached = get_valid_cached_artifact(
         _state,
@@ -1614,26 +1662,6 @@ def summarize_evtx(
         path_key="csv_path",
         required_keys=("csv_path", "source_execution_id"),
     )
-    if cached is None and event_ids is None and event_id_strategy == "adaptive":
-        # Preserve Batch 2 idempotency semantics: if the first no-arg EVTX run
-        # produced a valid default cache entry, reuse it before rerunning the
-        # expensive parser with an adaptive EID set.
-        fallback_cache_key = build_cache_key(
-            tool,
-            {
-                **cache_params,
-                "event_ids": sorted(DFIR_ESSENTIAL_EIDS),
-                "event_id_strategy": "default",
-            },
-        )
-        cached = get_valid_cached_artifact(
-            _state,
-            fallback_cache_key,
-            path_key="csv_path",
-            required_keys=("csv_path", "source_execution_id"),
-        )
-        if cached is not None:
-            cache_key = fallback_cache_key
     if cached is not None:
         rows = _read_csv(str(cached["csv_path"]))
         cache_meta = record_cache_hit(
@@ -1649,7 +1677,8 @@ def summarize_evtx(
             },
             cache_key=cache_key,
             artifact_path=str(cached["csv_path"]),
-            cache_source_execution_id=str(cached.get("source_execution_id") or ""),
+            cache_source_execution_id=str(
+                cached.get("source_execution_id") or ""),
         )
         records, _ = _build_evtx_records(
             rows,
@@ -1781,7 +1810,8 @@ def summarize_evtx(
         records=detailed_records if normalized_format == "detailed" else full_records,
         total_records=len(rows),
     )
-    response = _warn_if_empty(response, "summarize_evtx", evtx_dir, min_expected=100)
+    response = _warn_if_empty(
+        response, "summarize_evtx", evtx_dir, min_expected=100)
     _state.cache_artifact(
         cache_key,
         {
@@ -2018,7 +2048,8 @@ def extract_registry_run_keys(
             },
             cache_key=cache_key,
             artifact_path=str(cached["csv_path"]),
-            cache_source_execution_id=str(cached.get("source_execution_id") or ""),
+            cache_source_execution_id=str(
+                cached.get("source_execution_id") or ""),
         )
         records, _, persistence_type_counts = _build_registry_records(
             rows,
