@@ -106,7 +106,7 @@ def main():
             "reason": "Investigation incomplete: " + "; ".join(warnings),
         }))
     else:
-        print(json.dumps({"decision": "allow"}))
+        print(json.dumps({"decision": "approve"}))
 
 
 if __name__ == "__main__":
