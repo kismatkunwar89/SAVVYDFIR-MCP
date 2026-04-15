@@ -14,6 +14,8 @@ exports/
 .nova-protector/
 local_zep_state.json
 investigations/
+Recentruns/
+referencemdfiles/
 
 # IDE and editor config files
 .cursor/
