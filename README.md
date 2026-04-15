@@ -10,7 +10,7 @@
 
 ## What It Does
 
-SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into an autonomous DFIR investigator on SANS SIFT Workstation. It exposes 31 typed forensic tools over stdio transport, runs cross-artifact correlation between disk and memory evidence, and produces fully traceable findings with evidence-triggered self-correction.
+SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into an autonomous DFIR investigator on SANS SIFT Workstation. It exposes 41 typed forensic tools over stdio transport, runs cross-artifact correlation between disk and memory evidence, and produces fully traceable findings with evidence-triggered self-correction.
 
 ---
 
@@ -48,10 +48,10 @@ SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns 
                                                                 ┌──────────────┐
                                                                 │   Output     │
                                                                 │              │
+                                                                │ state.json   │
                                                                 │ audit.jsonl  │
-                                                                │ findings.json│
-                                                                │ narrative.md │
-                                                                │ report.pdf   │
+                                                                │ report.html  │
+                                                                │ graph.html   │
                                                                 └──────────────┘
 ```
 
@@ -98,11 +98,11 @@ export ANTHROPIC_API_KEY='sk-ant-...'
 ```bash
 cd /opt/SAVVYDFIR-MCP
 claude --allowedTools "mcp__savvydfir__*" \
-  -p "Read case-templates/manifest.json and start the investigation."
+  -p "Read case-templates/manifest.json and start the investigation. Investigate fully, run compare_disk_and_memory(case_id), run sigma_scan(case_id), call generate_report(case_id), call generate_graph(case_id), and stop only after both report outputs are written."
 ```
 
-Claude calls MCP tools → accumulates findings → calls `generate_graph(case_id)` in Phase 5.
-Output: `reports/{case_id}/graph.html` — interactive D3 investigation graph.
+Claude calls MCP tools → accumulates findings → writes `analysis/state.json` + `analysis/audit.jsonl` → calls `generate_report(case_id)` and `generate_graph(case_id)`.
+Output: `reports/{case_id}/report.html` and `reports/{case_id}/graph.html`.
 
 ### Multi-host Enterprise Investigation
 
@@ -152,7 +152,7 @@ Claude Code skills provide on-demand forensic expertise. Skills auto-discover at
     base-wkstn-01-mem.zip          # Memory dump (compressed)
 ```
 
-Evidence directories are READ-ONLY. All output goes to `/cases/`.
+Evidence directories are READ-ONLY. By default output goes to `analysis/` and `reports/`. Set `SAVVYDFIR_ANALYSIS_DIR` before launching Claude when you want per-host isolation.
 
 ---
 
@@ -186,7 +186,7 @@ Evidence directories are READ-ONLY. All output goes to `/cases/`.
 
 ---
 
-## MCP Tools (26)
+## MCP Tools (41)
 
 | Namespace | Tools | Description |
 |---|---|---|
@@ -196,11 +196,20 @@ Evidence directories are READ-ONLY. All output goes to `/cases/`.
 | timeline | `build_timeline`, `query_timeline` | Plaso super timeline |
 | yara | `scan_files`, `scan_memory` | YARA signature scanning |
 | correlation | `compare_disk_and_memory`, `flag_discrepancy` | Cross-artifact correlation (6 checks) |
-| state | `read_state`, `export_trace` | Case state management |
-| lifecycle | `start_investigation`, `add_finding`, `generate_report` | Investigation lifecycle |
+| state | `read_state`, `get_finding`, `get_findings`, `export_trace` | Case state summary, retrieval, and trace export |
+| lifecycle | `start_investigation`, `add_finding`, `coverage_report`, `generate_report` | Investigation lifecycle |
 | mounting | `mount_image`, `load_memory` | Evidence preparation |
 | graph | `generate_graph`, `serve_graph`, `merge_host_graphs`, `build_reports_index` | D3 investigation graph + multi-host unified view + reports dashboard |
-| detection | `sigma_hunt`, `analyze_vss`, `extract_pca`, `extract_shimcache`, `extract_srum` | Chainsaw/Sigma EVTX detection; VSS shadow copy recovery; PCA execution artifacts; ShimCache (AppCompatCacheParser + rla.exe); SRUM network/resource usage (esedbexport) |
+| detection | `sigma_hunt`, `sigma_scan`, `analyze_vss`, `extract_pca`, `extract_shimcache`, `extract_srum` | Sigma/Chainsaw detection, universal anomaly detection, VSS recovery, PCA, ShimCache, SRUM |
+| analysis | `run_analysis` | Targeted local Pandas analysis over CSV outputs |
+
+### Retrieval and Response Contracts
+
+- `read_state(case_id)` is the summary/resume surface. Use it for case status, counts, open questions, and the latest finding window.
+- `get_findings(case_id, ...)` is the full finding-corpus retrieval surface. It supports `artifact_type`, `evidence_kind`, `finding_status`, `mitre_tactic`, `min_confidence`, `limit`, and `offset`.
+- `get_finding(case_id, finding_id)` drills into a single `F-NNN` record.
+- `extract_mft_timeline`, `summarize_evtx`, and `extract_registry_run_keys` are summary-first by default. Pass `response_format="detailed"` only when you truly need raw `data` arrays.
+- Summary mode preserves the operational fields agents need, including `execution_id`, `records_count`, `total_records`, `csv_path`, `cache_hit`, and `findings_created`.
 
 ---
 
@@ -243,16 +252,16 @@ SAVVYDFIR-MCP/
 ├── .mcp.json                          # MCP server connection config
 ├── requirements.txt                   # Python dependencies
 ├── .claude/
-│   ├── settings.json                  # Permission allow/deny lists
+│   ├── settings.json                  # Claude Code MCP + hook config
 │   ├── hooks/
-│   │   ├── post-tool-use.py           # Error detection + auto-fix suggestions
-│   │   └── stop.py                    # Completion verification
+│   │   ├── post-tool-use.py           # Non-blocking dispatcher + tool follow-up context
+│   │   └── stop.py                    # Completion verification from state.json + audit.jsonl
+│   ├── agents/                        # Specialist analysts (MFT, EVTX, registry, memory, etc.)
 │   └── skills/
-│       ├── memory-forensics/SKILL.md  # Volatility 3 reference
-│       ├── disk-forensics/SKILL.md    # Sleuth Kit + ewfmount
-│       ├── ez-tools/SKILL.md          # Eric Zimmerman tools
-│       ├── timeline/SKILL.md          # Plaso/log2timeline
-│       └── yara/SKILL.md              # YARA scanning
+│       ├── investigation-workflow/    # Primary investigation sequencing guidance
+│       ├── artifact-routing/          # Artifact-to-specialist routing
+│       ├── pivot-methodology/         # Cross-artifact pivoting patterns
+│       └── tools-reference/           # Tool contract reference
 ├── case-templates/
 │   └── manifest.json                  # Example case manifest
 ├── sift_mcp/
@@ -266,15 +275,23 @@ SAVVYDFIR-MCP/
 │   ├── investigation_graph.py         # Per-case D3 graph builder (called by generate_graph)
 │   ├── merge_graphs.py               # Cross-host IOC graph merger (called by merge_host_graphs)
 │   └── build_index.py                # Reports index generator (called by build_reports_index)
-├── investigations/                    # Per-host working state (gitignored)
+├── analysis/                          # Default single-host working state
+│   ├── state.json
+│   └── audit.jsonl
+├── investigations/                    # Optional per-host state roots via SAVVYDFIR_ANALYSIS_DIR
 │   └── {SCENARIO}-{HOST}/
 │       ├── manifest.json
 │       ├── state.json
 │       └── audit.jsonl
 ├── reports/                           # Investigation outputs (gitignored)
 │   ├── index.html                     # Dashboard (build_reports_index)
-│   ├── {case_id}/graph.html           # Per-host graph (generate_graph)
-│   └── unified/graph.html             # Cross-host graph (merge_host_graphs)
+│   ├── {case_id}/
+│   │   ├── report.html                # Per-host report (generate_report)
+│   │   ├── graph.html                 # Per-host graph (generate_graph)
+│   │   └── graph.json
+│   └── unified/
+│       ├── graph.html                 # Cross-host graph (merge_host_graphs)
+│       └── graph.json
 └── docs/                              # Architecture and methodology docs
 ```
 
