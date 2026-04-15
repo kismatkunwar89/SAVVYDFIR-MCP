@@ -171,7 +171,8 @@ def _augment_instruction(instruction: str, result_data: dict[str, Any]) -> str:
 
     csv_path = result_data.get("csv_path")
     if isinstance(csv_path, str) and csv_path:
-        total_records = result_data.get("total_records", result_data.get("records_count"))
+        total_records = result_data.get(
+            "total_records", result_data.get("records_count"))
         if total_records is not None:
             parts.append(f"CSV at: {csv_path} ({total_records} total rows).")
         else:
@@ -188,9 +189,13 @@ def _augment_instruction(instruction: str, result_data: dict[str, Any]) -> str:
 
 
 def _write_trigger(trigger: dict[str, Any], trigger_path: Optional[str] = None) -> None:
-    path = Path(trigger_path or os.environ.get("SAVVYDFIR_DELEGATE_PATH", DEFAULT_TRIGGER_PATH))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(trigger, indent=2), encoding="utf-8")
+    try:
+        path = Path(trigger_path or os.environ.get(
+            "SAVVYDFIR_DELEGATE_PATH", DEFAULT_TRIGGER_PATH))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(trigger, indent=2), encoding="utf-8")
+    except (OSError, IOError):
+        pass  # Trigger file is advisory — failure must not block the hook
 
 
 def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) -> Optional[dict[str, Any]]:

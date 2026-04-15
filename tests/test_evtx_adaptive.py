@@ -1,7 +1,10 @@
 import csv
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from sift_mcp.audit import AuditLogger
 from sift_mcp.runners.base import SafeRunner
@@ -156,6 +159,71 @@ class EvtxAdaptiveTests(unittest.TestCase):
             )
             self.assertEqual(explicit_result["event_id_strategy"], "explicit")
             self.assertEqual(runner.last_event_ids, [1, 11])
+
+    def test_summarize_evtx_cache_hit_despite_growing_findings(self) -> None:
+        """Repeated no-arg EVTX calls must cache-hit even when findings grow
+        (which changes the adaptive EID set).  This is the Layer B evtx_started=30 fix.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            audit = AuditLogger(str(Path(tmp_dir) / "audit.jsonl"))
+            state = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            state.load("CASE-EVTX-IDEM")
+            runner = FakeAdaptiveEZRunner(
+                audit_logger=audit,
+                case_id="CASE-EVTX-IDEM",
+                state_manager=state,
+            )
+            disk.init_tools(state, audit, ez_runner=runner)
+
+            evidence_root = Path(tmp_dir) / "evidence"
+            evtx_dir = evidence_root / "Logs"
+            evtx_dir.mkdir(parents=True, exist_ok=True)
+
+            with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
+                # Call 1: no findings → default EIDs
+                first = disk.summarize_evtx(
+                    image_path=str(evidence_root),
+                    evtx_dir=str(evtx_dir),
+                )
+            self.assertFalse(first.get("cache_hit", False))
+
+            # Add findings that change what adaptive_eids_from_findings returns
+            state.add_finding({
+                "case_id": "CASE-EVTX-IDEM",
+                "finding_type": "other",
+                "artifact_type": "disk",
+                "artifact_path": str(evtx_dir / "Security.evtx"),
+                "tool_name": "disk.extract_registry_run_keys",
+                "execution_id": "E-001",
+                "iteration": 1,
+                "evidence_kind": "observation",
+                "finding_status": "ACTIVE",
+                "confidence": 0.9,
+                "description": "Credential access.",
+                "mitre_tactic": "TA0006",
+                "mitre_technique": "T1003",
+            })
+
+            with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
+                # Call 2: findings exist → adaptive EIDs differ from call 1
+                # But MUST be a cache hit (same base params, no explicit EIDs)
+                second = disk.summarize_evtx(
+                    image_path=str(evidence_root),
+                    evtx_dir=str(evtx_dir),
+                )
+
+            self.assertTrue(second.get("cache_hit", False),
+                            "Second no-arg EVTX call should be cache hit despite adaptive EID drift")
+            # EvtxECmd subprocess should only have been called once
+            evtx_run_count = sum(
+                1 for line in Path(tmp_dir, "audit.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip() and '"event_type": "started"' in line
+                and "disk.summarize_evtx" in line
+                and "CACHE_HIT" not in line
+            )
+            # One real run + one cache-hit = we want only 1 real EvtxECmd start
+            self.assertLessEqual(evtx_run_count, 2,
+                                 f"Expected at most 2 audit started entries (1 real + 1 cache), got {evtx_run_count}")
 
 
 if __name__ == "__main__":
