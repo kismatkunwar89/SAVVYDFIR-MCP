@@ -180,6 +180,11 @@ def _persist_csv(tmp_csv_path: str, tool_short_name: str) -> str:
         return tmp_csv_path
 
 
+def _is_transient_persisted_path(path: Optional[str]) -> bool:
+    text = str(path or "").strip().lower()
+    return text.startswith("/tmp/savvydfir_") or text.startswith("/var/tmp/savvydfir_")
+
+
 def _persist_rows_as_csv(
     rows: list[dict[str, Any]],
     *,
@@ -570,7 +575,7 @@ def _evtx_contract_payload(
     records: list[EventRecord],
     image_path: str,
     evtx_dir: str,
-    csv_path: str,
+    csv_path: Optional[str],
 ) -> dict[str, Any]:
     channel_counts: dict[str, int] = {}
     for record in records:
@@ -602,7 +607,7 @@ def _evtx_contract_payload(
             execution_id=response.get("execution_id"),
             raw_command=response.get("raw_command"),
             state_path=state_path_for_manager(_state),
-            csv_path=csv_path,
+            csv_path=csv_path or None,
             cache_hit=response.get("cache_hit"),
             cache_source_execution_id=response.get("cache_source_execution_id"),
             artifact_paths=[evtx_dir],
@@ -641,7 +646,7 @@ def _evtx_contract_payload(
             path=csv_path,
             description="Persisted EvtxECmd CSV output.",
             tool_name="disk.summarize_evtx",
-        ),
+        ) if csv_path else None,
         query_constraints={
             "start_date": response.get("date_range", {}).get("start") if isinstance(response.get("date_range"), dict) else None,
             "end_date": response.get("date_range", {}).get("end") if isinstance(response.get("date_range"), dict) else None,
@@ -2403,6 +2408,13 @@ def summarize_evtx(
 
         rows = _read_csv(csv_path)
         persistent_csv = _persist_csv(csv_path, "evtx")
+        durable_csv = (
+            persistent_csv
+            if persistent_csv
+            and Path(persistent_csv).exists()
+            and not _is_transient_persisted_path(persistent_csv)
+            else None
+        )
 
     records, finding_ids = _build_evtx_records(
         rows,
@@ -2424,10 +2436,22 @@ def summarize_evtx(
         "raw_command": result.command_line,
         "records_count": len(detailed_records),
         "total_records": len(rows),
-        "csv_path": persistent_csv,
+        "csv_path": durable_csv,
         "requires_agent": "@evtx-analyst",
-        "agent_instruction": f"Analyze {persistent_csv} for attacker lifecycle — auth anomalies, lateral movement, persistence. {len(rows)} total rows.",
-        "note": f"Returning {len(detailed_records)} of {len(rows)} rows. Full CSV at {persistent_csv}.",
+        "agent_instruction": (
+            f"Analyze {durable_csv} for attacker lifecycle — auth anomalies, lateral movement, persistence. {len(rows)} total rows."
+            if durable_csv
+            else "Analyze the returned EVTX summary and persisted artifacts for attacker lifecycle pivots; the CSV handle could not be persisted cleanly."
+        ),
+        "note": (
+            f"Returning {len(detailed_records)} of {len(rows)} rows. Full CSV at {durable_csv}."
+            if durable_csv
+            else (
+                f"Returning {len(detailed_records)} of {len(rows)} rows. "
+                "CSV persistence did not produce a durable analyst-facing handle; "
+                'rerun summarize_evtx after fixing OUTPUT_BASE permissions before using run_analysis().'
+            )
+        ),
         "channel_filter": channel,
         "event_id_filter": effective_eids if effective_eids else "all",
         "event_id_strategy": event_id_strategy,
@@ -2444,23 +2468,31 @@ def summarize_evtx(
         records=detailed_records if normalized_format == "detailed" else full_records,
         total_records=len(rows),
     )
+    if not durable_csv:
+        response["status"] = "warning"
+        response["warning"] = (
+            "EVTX rows were parsed successfully, but the CSV output could not be persisted to a durable "
+            "artifact path. The returned summary is safe to use, but run_analysis() should wait for a "
+            "rerun that produces a persisted csv_path/handle.path."
+        )
     response = _warn_if_empty(
         response, "summarize_evtx", evtx_dir, min_expected=100)
-    _state.cache_artifact(
-        cache_key,
-        {
-            "source_execution_id": result.execution_id,
-            "csv_path": persistent_csv,
-            "findings_created": finding_ids,
-            "requires_agent": response.get("requires_agent"),
-            "agent_instruction": response.get("agent_instruction"),
-            "total_records": len(rows),
-            "channel_filter": channel,
-            "event_id_filter": effective_eids if effective_eids else "all",
-            "event_id_strategy": event_id_strategy,
-            "date_range": response.get("date_range"),
-        },
-    )
+    if durable_csv:
+        _state.cache_artifact(
+            cache_key,
+            {
+                "source_execution_id": result.execution_id,
+                "csv_path": durable_csv,
+                "findings_created": finding_ids,
+                "requires_agent": response.get("requires_agent"),
+                "agent_instruction": response.get("agent_instruction"),
+                "total_records": len(rows),
+                "channel_filter": channel,
+                "event_id_filter": effective_eids if effective_eids else "all",
+                "event_id_strategy": event_id_strategy,
+                "date_range": response.get("date_range"),
+            },
+        )
     promote_corroborated_findings(
         _state,
         "evtx_process_creation",
@@ -2476,7 +2508,7 @@ def summarize_evtx(
         records=detailed_records if normalized_format == "detailed" else full_records,
         image_path=image_path,
         evtx_dir=evtx_dir,
-        csv_path=persistent_csv,
+        csv_path=durable_csv,
     )
 
 

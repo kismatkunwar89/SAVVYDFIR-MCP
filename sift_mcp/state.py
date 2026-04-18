@@ -410,6 +410,7 @@ class CaseStateManager:
         artifact_type: Optional[str] = None,
         evidence_kind: Optional[str] = None,
         finding_status: Optional[str] = None,
+        finding_type: Optional[str] = None,
         mitre_tactic: Optional[str] = None,
         min_confidence: Optional[float] = None,
         status: Optional[str] = None,
@@ -429,6 +430,9 @@ class CaseStateManager:
         finding_status:
             Filter by ``finding["finding_status"]`` (case-insensitive).
             Example: ``"CONFIRMED"``, ``"HYPOTHESIS"``, ``"REJECTED"``.
+        finding_type:
+            Filter by ``finding["finding_type"]`` (case-insensitive).
+            Example: ``"threat_detection"``, ``"persistence"``.
         mitre_tactic:
             Filter by ``finding["mitre_tactic"]`` (case-insensitive).
             Example: ``"TA0003"``.
@@ -465,6 +469,9 @@ class CaseStateManager:
                         continue
                 if effective_status is not None:
                     if (f.get("finding_status") or "").lower() != effective_status.lower():
+                        continue
+                if finding_type is not None:
+                    if (f.get("finding_type") or "").lower() != finding_type.lower():
                         continue
                 if mitre_tactic is not None:
                     if (f.get("mitre_tactic") or "").lower() != mitre_tactic.lower():

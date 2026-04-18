@@ -307,6 +307,16 @@ def generate_report_payload(
         "evidence_kind_breakdown": evidence_kind_breakdown,
         "report_path": str(report_path),
     }
+    payload["top_confirmed_findings"] = [
+        dict(finding)
+        for finding in payload["top_findings"]
+        if _status_label(finding.get("finding_status")) == "CONFIRMED"
+    ][:10]
+    payload["top_active_leads"] = [
+        dict(finding)
+        for finding in payload["top_findings"]
+        if _status_label(finding.get("finding_status")) in {"HYPOTHESIS", "ACTIVE", "OBSERVATION"}
+    ][:10]
 
     report_path.write_text(render_report_html(payload), encoding="utf-8")
 
