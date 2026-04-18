@@ -160,6 +160,43 @@ def _not_initialised(tool_name: str) -> dict[str, Any]:
     }
 
 
+def _normalize_response_format(response_format: str) -> Optional[str]:
+    """Validate and normalize the heavy-tool response format selector."""
+    normalized = (response_format or "summary").strip().lower()
+    if normalized in {"summary", "detailed"}:
+        return normalized
+    return None
+
+
+def _persist_rows_as_csv(
+    rows: list[dict[str, Any]],
+    *,
+    tool_short_name: str,
+    filename: str,
+) -> Optional[str]:
+    """Persist structured rows as a reusable CSV artifact."""
+    import csv
+    import tempfile
+
+    try:
+        cid = _case_id()
+        base = Path(os.environ.get("OUTPUT_BASE", "/cases")) / cid / "artifacts" / tool_short_name
+        base.mkdir(parents=True, exist_ok=True)
+        dest = base / filename
+        if not rows:
+            dest.write_text("", encoding="utf-8")
+            return str(dest)
+        fieldnames = list(rows[0].keys())
+        with dest.open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({k: row.get(k, "") for k in fieldnames})
+        return str(dest)
+    except Exception:
+        return None
+
+
 def _runner_error(
     tool_name: str,
     exc: Exception,
@@ -664,7 +701,7 @@ def _parse_process_rows(
     return records
 
 
-def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: int = 0) -> dict[str, Any]:
+def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: int = 0, response_format: str = "summary") -> dict[str, Any]:
     """List running processes from a memory dump using Volatility 3 windows.pslist.
 
     Wraps ``python3 /opt/volatility3-2.20.0/vol.py -r json windows.pslist``
@@ -688,6 +725,9 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
     ----------
     dump_path:
         Absolute path to the raw memory dump.
+    response_format:
+        ``"summary"`` (default) omits the full process array and returns
+        counts/preview only.  ``"detailed"`` returns the full data array.
 
     Returns
     -------
@@ -699,6 +739,7 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
     tool = "memory.list_processes"
     if _runner is None or _state is None or _audit is None:
         return _not_initialised(tool)
+    normalized_format = _normalize_response_format(response_format)
 
     try:
         result = _runner.pslist(dump_path=dump_path, tool_name=tool)
@@ -730,8 +771,9 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
     # Apply suspicion heuristics
     finding_ids: list[str] = []
     suspicious_count = 0
+    suspicious_records: list[ProcessRecord] = []
 
-    for record in records:
+    for idx, record in enumerate(records):
         parent_name = pid_to_name.get(record.ppid)
         suspicious, reason = _score_process_suspicion(
             name=record.name,
@@ -740,12 +782,13 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
             parent_name=parent_name,
         )
         # Use model_copy to update fields (Pydantic v2)
-        record = record.model_copy(
+        records[idx] = record.model_copy(
             update={"suspicious": suspicious, "suspicion_reason": reason}
         )
 
         if suspicious:
             suspicious_count += 1
+            suspicious_records.append(records[idx])
             finding = Finding(
                 case_id=_case_id(),
                 finding_type="defense_evasion",
@@ -776,16 +819,43 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
             fid = _state.add_finding(finding.model_dump(mode="json"))
             finding_ids.append(fid)
 
-    return {
+    # Persist all rows to CSV for run_analysis() queries
+    all_rows = [r.model_dump(mode="json") for r in records]
+    csv_path = _persist_rows_as_csv(
+        all_rows, tool_short_name="pslist", filename="pslist.csv"
+    )
+
+    response: dict[str, Any] = {
         "tool_name": tool,
         "status": "success",
-        "data": [r.model_dump(mode="json") for r in records],
         "findings_created": finding_ids,
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "process_count": len(records),
         "suspicious_count": suspicious_count,
     }
+    if csv_path:
+        response["csv_path"] = csv_path
+
+    if normalized_format == "detailed":
+        response["data"] = all_rows
+    else:
+        # Summary: preview suspicious + a few representative normal processes
+        preview: list[dict[str, Any]] = [r.model_dump(mode="json") for r in suspicious_records[:10]]
+        normal_sample = [r for r in records if not r.suspicious][:5]
+        preview.extend(r.model_dump(mode="json") for r in normal_sample)
+        response["preview"] = preview
+        response["summary"] = (
+            f"{len(records)} processes found via pslist. "
+            f"{suspicious_count} flagged suspicious. "
+            f"Full data at {csv_path or 'not persisted'}."
+        )
+        response["note"] = (
+            'Full process array omitted by default; pass response_format="detailed" '
+            "for the complete data."
+        )
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -793,7 +863,7 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
 # ---------------------------------------------------------------------------
 
 
-def scan_processes(dump_path: str) -> dict[str, Any]:
+def scan_processes(dump_path: str, response_format: str = "summary") -> dict[str, Any]:
     """Scan physical memory for EPROCESS structures using Volatility 3 windows.psscan.
 
     Wraps ``python3 /opt/volatility3-2.20.0/vol.py -r json windows.psscan``
@@ -811,6 +881,9 @@ def scan_processes(dump_path: str) -> dict[str, Any]:
     ----------
     dump_path:
         Absolute path to the raw memory dump.
+    response_format:
+        ``"summary"`` (default) omits the full process array and returns
+        counts/preview only.  ``"detailed"`` returns the full data array.
 
     Returns
     -------
@@ -822,6 +895,7 @@ def scan_processes(dump_path: str) -> dict[str, Any]:
     tool = "memory.scan_processes"
     if _runner is None or _state is None or _audit is None:
         return _not_initialised(tool)
+    normalized_format = _normalize_response_format(response_format)
 
     try:
         result = _runner.psscan(dump_path=dump_path, tool_name=tool)
@@ -874,15 +948,38 @@ def scan_processes(dump_path: str) -> dict[str, Any]:
         fid = _state.add_finding(finding.model_dump(mode="json"))
         finding_ids.append(fid)
 
-    return {
+    # Persist all rows to CSV
+    all_rows = [r.model_dump(mode="json") for r in records]
+    csv_path = _persist_rows_as_csv(
+        all_rows, tool_short_name="psscan", filename="psscan.csv"
+    )
+
+    response: dict[str, Any] = {
         "tool_name": tool,
         "status": "success",
-        "data": [r.model_dump(mode="json") for r in records],
         "findings_created": finding_ids,
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "process_count": len(records),
     }
+    if csv_path:
+        response["csv_path"] = csv_path
+
+    if normalized_format == "detailed":
+        response["data"] = all_rows
+    else:
+        preview = [r.model_dump(mode="json") for r in records[:10]]
+        response["preview"] = preview
+        response["summary"] = (
+            f"{len(records)} EPROCESS structures found via psscan. "
+            f"Full data at {csv_path or 'not persisted'}."
+        )
+        response["note"] = (
+            'Full process array omitted by default; pass response_format="detailed" '
+            "for the complete data."
+        )
+
+    return response
 
 
 # ---------------------------------------------------------------------------
