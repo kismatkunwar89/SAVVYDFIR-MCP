@@ -1001,27 +1001,17 @@ def _build_registry_records(
     execution_id: str,
     batch_file_used: Optional[str],
     create_findings: bool,
-) -> tuple[list[RegistryRunKey], list[str], dict[str, int]]:
-    """Parse RECmd rows into records and optional high-value persistence findings."""
-    records: list[RegistryRunKey] = []
-    finding_ids: list[str] = []
-    persistence_type_counts: dict[str, int] = {}
-    high_value = {
-        "run",
-        "runonce",
-        "runservices",
-        "services",
-        "winlogon_shell",
-        "winlogon_userinit",
-        "appinit_dlls",
-        "lsa_package",
-        "credential_provider",
-        "ifeo_debugger",
-        "print_monitor",
-        "active_setup",
-        "bootexecute",
-    }
+) -> tuple[list[RegistryRunKey], list[str], dict[str, int], dict[str, Any]]:
+    """Parse RECmd rows into records and grouped high-signal persistence findings.
 
+    Returns (records, finding_ids, persistence_type_counts, grouping_meta).
+    grouping_meta carries suppression_summary, grouping_context,
+    promoted_group_count, and suppressed_group_count for the response.
+    """
+    records: list[RegistryRunKey] = []
+    persistence_type_counts: dict[str, int] = {}
+
+    # --- Phase 1: parse all rows into RegistryRunKey records ---
     for row in rows:
         try:
             key_path = (row.get("KeyPath") or row.get("Path") or "").strip()
@@ -1059,41 +1049,281 @@ def _build_registry_records(
             records.append(record)
             persistence_type_counts[ptype] = persistence_type_counts.get(
                 ptype, 0) + 1
-
-            if create_findings and _state is not None and str(ptype).lower() in high_value:
-                finding = Finding(
-                    case_id=_case_id(),
-                    finding_type="persistence",
-                    artifact_type="disk",
-                    artifact_path=key_path,
-                    tool_name=tool,
-                    execution_id=execution_id,
-                    iteration=_current_iteration(),
-                    evidence_kind=EvidenceKind.OBSERVATION,
-                    finding_status=FindingStatus.ACTIVE,
-                    confidence=0.85,
-                    description=(
-                        f"Registry persistence: {key_path}\\{value_name} = {value_data[:200]}. "
-                        f"Type: {ptype}."
-                    ),
-                    supporting_indicators=[
-                        key_path, f"value={value_data[:200]}"],
-                    mitre_tactic="TA0003",
-                    mitre_technique=(
-                        "T1547.001" if str(ptype).lower() in ("run", "runonce") else
-                        "T1546.010" if str(ptype).lower() == "appinit_dlls" else
-                        "T1547.004" if str(ptype).lower() in ("winlogon_shell", "winlogon_userinit") else
-                        "T1543.003" if str(ptype).lower() == "services" else
-                        "T1547.005" if str(ptype).lower() == "lsa_package" else
-                        "T1547"
-                    ),
-                )
-                finding_ids.append(_state.add_finding(
-                    finding.model_dump(mode="json")))
         except Exception:
             continue
 
-    return records, finding_ids, persistence_type_counts
+    # --- Phase 2: group and promote narrowly ---
+    finding_ids: list[str] = []
+    grouping_meta = _group_and_promote_registry(
+        records,
+        tool=tool,
+        execution_id=execution_id,
+        create_findings=create_findings,
+        finding_ids_out=finding_ids,
+    )
+
+    return records, finding_ids, persistence_type_counts, grouping_meta
+
+
+# ---------------------------------------------------------------------------
+# Registry grouping / promotion helpers  (One-Shot Quality Recovery)
+# ---------------------------------------------------------------------------
+
+_USER_WRITABLE_PREFIXES = (
+    "\\users\\",
+    "\\programdata\\",
+    "\\windows\\temp\\",
+    "\\temp\\",
+    "\\appdata\\",
+    "\\users\\public\\",
+    "\\recycle.bin\\",
+    "\\perflogs\\",
+)
+
+_SYSTEM_PREFIXES = (
+    "\\windows\\system32\\",
+    "\\windows\\syswow64\\",
+    "\\program files\\",
+    "\\program files (x86)\\",
+)
+
+_INTERPRETER_BASENAMES = frozenset({
+    "cmd.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "wscript.exe",
+    "cscript.exe",
+    "rundll32.exe",
+    "regsvr32.exe",
+    "mshta.exe",
+})
+
+# ASEP classes that ALWAYS promote (no path filtering)
+_ALWAYS_PROMOTE_CLASSES = frozenset({
+    "winlogon_shell",
+    "winlogon_userinit",
+    "appinit_dlls",
+    "lsa_package",
+    "credential_provider",
+    "ifeo",
+    "active_setup",
+    "bootexecute",
+    "print_monitor",
+})
+
+# ASEP classes that need path-based filtering
+_RUN_KEY_CLASSES = frozenset({"run", "runonce", "runservices"})
+
+
+def _extract_target_path(value_data: str) -> str:
+    """Extract the executable target from a registry value data string."""
+    text = value_data.strip().strip('"').strip("'")
+    # Handle paths with arguments: "C:\path\binary.exe -arg" -> C:\path\binary.exe
+    parts = re.split(r'\s+(?=-|/)', text, maxsplit=1)
+    return parts[0].strip().strip('"').strip("'")
+
+
+def _normalize_target_for_grouping(value_data: str) -> str:
+    """Return a lowercase normalized target path for group_key construction."""
+    target = _extract_target_path(value_data).lower()
+    # Strip drive letter if present (C:\... -> \...)
+    if len(target) >= 2 and target[1] == ':':
+        target = target[2:]
+    return target or value_data[:80].lower()
+
+
+def _is_user_writable_path(target: str) -> bool:
+    lower = target.lower()
+    return any(prefix in lower for prefix in _USER_WRITABLE_PREFIXES)
+
+
+def _is_system_path(target: str) -> bool:
+    lower = target.lower()
+    return any(prefix in lower for prefix in _SYSTEM_PREFIXES)
+
+
+def _is_interpreter_target(target: str) -> bool:
+    # Handle Windows-style backslash paths on Linux
+    basename = target.rsplit("\\", 1)[-1].rsplit("/", 1)[-1].lower().strip()
+    return basename in _INTERPRETER_BASENAMES
+
+
+def _classify_promotion_reason(
+    ptype: str,
+    target: str,
+    support_count: int,
+) -> Optional[str]:
+    """Return the promotion_reason if the group qualifies, else None."""
+    ptype_lower = ptype.lower()
+
+    # Always-promote classes
+    if ptype_lower in _ALWAYS_PROMOTE_CLASSES:
+        return "rare_autostart_class"
+
+    # Run/RunOnce/RunServices: conditional
+    if ptype_lower in _RUN_KEY_CLASSES:
+        if _is_user_writable_path(target):
+            return "user_writable_target"
+        if _is_interpreter_target(target):
+            return "interpreter_target"
+        if not target or target == "(default)":
+            return "missing_or_unparsed_target"
+        if support_count > 1:
+            return "duplicate_persistence_target"
+        return None
+
+    # Services: conditional
+    if ptype_lower == "services":
+        if _is_user_writable_path(target):
+            return "user_writable_target"
+        if _is_interpreter_target(target):
+            return "interpreter_target"
+        if not _is_system_path(target) and support_count > 1:
+            return "non_system_service_target"
+        return None
+
+    # Other persistence classes: no auto-promote
+    return None
+
+
+def _mitre_technique_for_ptype(ptype: str) -> str:
+    ptype_lower = ptype.lower()
+    if ptype_lower in ("run", "runonce"):
+        return "T1547.001"
+    if ptype_lower == "appinit_dlls":
+        return "T1546.010"
+    if ptype_lower in ("winlogon_shell", "winlogon_userinit"):
+        return "T1547.004"
+    if ptype_lower == "services":
+        return "T1543.003"
+    if ptype_lower == "lsa_package":
+        return "T1547.005"
+    if ptype_lower == "bootexecute":
+        return "T1547.012"
+    if ptype_lower == "ifeo":
+        return "T1546.012"
+    if ptype_lower == "active_setup":
+        return "T1547.014"
+    if ptype_lower == "print_monitor":
+        return "T1547.003"
+    if ptype_lower == "credential_provider":
+        return "T1547.002"
+    return "T1547"
+
+
+def _group_and_promote_registry(
+    records: list[RegistryRunKey],
+    *,
+    tool: str,
+    execution_id: str,
+    create_findings: bool,
+    finding_ids_out: list[str],
+) -> dict[str, Any]:
+    """Group registry records and promote only high-signal candidates into findings.
+
+    Returns grouping_meta dict with suppression_summary, grouping_context,
+    promoted_group_count, suppressed_group_count.
+    """
+    from collections import defaultdict
+
+    # Eligible persistence types for grouping/promotion consideration
+    eligible_types = _ALWAYS_PROMOTE_CLASSES | _RUN_KEY_CLASSES | {"services"}
+
+    # Group by (persistence_type, normalized_target)
+    groups: dict[str, list[RegistryRunKey]] = defaultdict(list)
+    for record in records:
+        ptype = str(record.persistence_type or "").lower()
+        if ptype not in eligible_types:
+            continue
+        target = _normalize_target_for_grouping(record.value_data)
+        group_key = f"registry:{ptype}:{target}"
+        groups[group_key].append(record)
+
+    promoted_groups: list[dict[str, Any]] = []
+    suppressed_groups: list[dict[str, Any]] = []
+
+    for group_key, group_records in groups.items():
+        ptype = str(group_records[0].persistence_type or "").lower()
+        target = _normalize_target_for_grouping(group_records[0].value_data)
+        support_count = len(group_records)
+
+        reason = _classify_promotion_reason(ptype, target, support_count)
+        if reason is None:
+            suppressed_groups.append({
+                "group_key": group_key,
+                "persistence_type": ptype,
+                "target": target,
+                "support_count": support_count,
+            })
+            continue
+
+        promoted_groups.append({
+            "group_key": group_key,
+            "persistence_type": ptype,
+            "target": target,
+            "support_count": support_count,
+            "promotion_reason": reason,
+        })
+
+        if create_findings and _state is not None:
+            representative = group_records[0]
+            mitre_tech = _mitre_technique_for_ptype(ptype)
+            sample_values = "; ".join(
+                f"{r.value_name}={r.value_data[:80]}"
+                for r in group_records[:3]
+            )
+            finding = Finding(
+                case_id=_case_id(),
+                finding_type="persistence",
+                artifact_type="disk",
+                artifact_path=representative.key_path,
+                tool_name=tool,
+                execution_id=execution_id,
+                iteration=_current_iteration(),
+                evidence_kind=EvidenceKind.OBSERVATION,
+                finding_status=FindingStatus.ACTIVE,
+                confidence=0.85,
+                description=(
+                    f"Registry persistence group ({ptype}): "
+                    f"{support_count} row(s) targeting {target[:120]}. "
+                    f"Samples: {sample_values[:200]}. "
+                    f"Promotion: {reason}."
+                ),
+                supporting_indicators=[
+                    representative.key_path,
+                    f"target={target[:200]}",
+                    f"support_count={support_count}",
+                ],
+                mitre_tactic="TA0003",
+                mitre_technique=mitre_tech,
+                group_key=group_key,
+                support_count=support_count,
+                promotion_reason=reason,
+            )
+            finding_ids_out.append(
+                _state.add_finding(finding.model_dump(mode="json"))
+            )
+
+    grouping_context = {
+        "promoted": promoted_groups,
+        "suppressed_sample": suppressed_groups[:10],
+        "total_eligible_records": sum(len(g) for g in groups.values()),
+    }
+    suppression_summary = {
+        "total_registry_rows_parsed": len(records),
+        "eligible_for_grouping": sum(len(g) for g in groups.values()),
+        "total_groups": len(groups),
+        "promoted_groups": len(promoted_groups),
+        "suppressed_groups": len(suppressed_groups),
+        "suppressed_rows": sum(g["support_count"] for g in suppressed_groups),
+    }
+
+    return {
+        "suppression_summary": suppression_summary,
+        "grouping_context": grouping_context,
+        "promoted_group_count": len(promoted_groups),
+        "suppressed_group_count": len(suppressed_groups),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1178,6 +1408,7 @@ def extract_prefetch(
     prefetch_dir: Optional[str] = None,
     case_id: Optional[str] = None,
     max_entries: int = 0,
+    response_format: str = "summary",
 ) -> dict[str, Any]:
     """Extract Windows Prefetch execution evidence using PECmd (EZ Tools).
 
@@ -1209,6 +1440,7 @@ def extract_prefetch(
     tool = "disk.extract_prefetch"
     if _ez_runner is None or _state is None or _audit is None:
         return _not_initialised(tool)
+    normalized_format = _normalize_response_format(response_format)
 
     # Derive default prefetch directory from image path
     if prefetch_dir is None:
@@ -1313,10 +1545,9 @@ def extract_prefetch(
         tool_short_name="prefetch",
         filename="prefetch.csv",
     )
-    response = _warn_if_empty({
+    response: dict[str, Any] = {
         "tool_name": tool,
         "status": "success",
-        "data": record_rows,
         "findings_created": finding_ids,
         "execution_id": exec_id,
         "raw_command": f"pyscca {prefetch_dir}/*.pf",
@@ -1327,7 +1558,21 @@ def extract_prefetch(
             f"Analyze {persistent_csv or prefetch_dir} for multi-path execution, orphaned .pf files, "
             f"and suspicious binaries. {len(records)} total rows."
         ),
-    }, "extract_prefetch", prefetch_dir)
+    }
+    if normalized_format == "detailed":
+        response["data"] = record_rows
+    else:
+        preview = record_rows[:10]
+        response["preview"] = preview
+        response["summary"] = (
+            f"{len(records)} prefetch entries parsed from {prefetch_dir}. "
+            f"Full data at {persistent_csv or 'not persisted'}."
+        )
+        response["note"] = (
+            'Full data array omitted by default; pass response_format="detailed" '
+            "for the complete data."
+        )
+    response = _warn_if_empty(response, "extract_prefetch", prefetch_dir)
     return _prefetch_contract_payload(
         response=response,
         records=records,
@@ -2451,7 +2696,7 @@ def extract_registry_run_keys(
             cache_source_execution_id=str(
                 cached.get("source_execution_id") or ""),
         )
-        records, _, persistence_type_counts = _build_registry_records(
+        records, _, persistence_type_counts, grouping_meta = _build_registry_records(
             rows,
             tool=tool,
             execution_id=cache_meta["execution_id"],
@@ -2483,6 +2728,7 @@ def extract_registry_run_keys(
             "user_hives_scanned": user_hives_found,
             "cache_hit": True,
             "cache_source_execution_id": cached.get("source_execution_id"),
+            **grouping_meta,
         }
         if batch_warning:
             cached_response["batch_warning"] = batch_warning
@@ -2563,7 +2809,7 @@ def extract_registry_run_keys(
         else:
             persistent_csv = _persist_csv(csv_path, "registry")
 
-    records, finding_ids, persistence_type_counts = _build_registry_records(
+    records, finding_ids, persistence_type_counts, grouping_meta = _build_registry_records(
         rows,
         tool=tool,
         execution_id=result.execution_id,
@@ -2592,6 +2838,7 @@ def extract_registry_run_keys(
         "user_hives_scanned": user_hives_found,
         "cache_hit": False,
         "cache_source_execution_id": None,
+        **grouping_meta,
     }
     if batch_warning:
         response["batch_warning"] = batch_warning

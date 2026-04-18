@@ -765,6 +765,7 @@ def extract_prefetch(
     image_path: str,
     case_id: str = "default",
     max_entries: int = 200,
+    response_format: str = "summary",
 ) -> dict[str, Any]:
     """Extract Windows Prefetch execution artefacts from a disk image.
 
@@ -785,6 +786,9 @@ def extract_prefetch(
         Case identifier — used to derive the output CSV path.
     max_entries:
         Maximum number of PrefetchRecord entries to return.
+    response_format:
+        ``"summary"`` (default) returns counts and preview.
+        ``"detailed"`` returns the full data array.
 
     Returns
     -------
@@ -793,7 +797,8 @@ def extract_prefetch(
     """
     try:
         _r = _extract_prefetch(image_path=image_path,
-                               case_id=case_id, max_entries=max_entries)
+                               case_id=case_id, max_entries=max_entries,
+                               response_format=response_format)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.extract_prefetch"))
         return _finalize_tool_response("disk.extract_prefetch", _r)
@@ -1113,7 +1118,7 @@ def detect_profile(dump_path: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def list_processes(dump_path: str) -> dict[str, Any]:
+def list_processes(dump_path: str, response_format: str = "summary") -> dict[str, Any]:
     """List running processes from a memory dump using the PEB linked list.
 
     Runs Volatility 3 ``windows.pslist.PsList`` — walks the
@@ -1125,6 +1130,9 @@ def list_processes(dump_path: str) -> dict[str, Any]:
     ----------
     dump_path:
         Absolute path to the raw memory dump.
+    response_format:
+        ``"summary"`` (default) returns counts and suspicious preview.
+        ``"detailed"`` returns the full process array.
 
     Returns
     -------
@@ -1136,14 +1144,14 @@ def list_processes(dump_path: str) -> dict[str, Any]:
     try:
         return _finalize_tool_response(
             "memory.list_processes",
-            _list_processes(dump_path=dump_path),
+            _list_processes(dump_path=dump_path, response_format=response_format),
         )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "list_processes"}
 
 
 @mcp.tool()
-def scan_processes(dump_path: str) -> dict[str, Any]:
+def scan_processes(dump_path: str, response_format: str = "summary") -> dict[str, Any]:
     """Scan physical memory for EPROCESS structures (pool tag scan).
 
     Runs Volatility 3 ``windows.psscan.PsScan`` — searches raw memory pages
@@ -1157,6 +1165,9 @@ def scan_processes(dump_path: str) -> dict[str, Any]:
     ----------
     dump_path:
         Absolute path to the raw memory dump.
+    response_format:
+        ``"summary"`` (default) returns counts and preview.
+        ``"detailed"`` returns the full process array.
 
     Returns
     -------
@@ -1167,7 +1178,7 @@ def scan_processes(dump_path: str) -> dict[str, Any]:
     if not _MEMORY_AVAILABLE:
         return _memory_unavailable("scan_processes")
     try:
-        _r = _scan_processes(dump_path=dump_path)
+        _r = _scan_processes(dump_path=dump_path, response_format=response_format)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("memory.scan_processes"))
         return _finalize_tool_response("memory.scan_processes", _r)
