@@ -94,6 +94,7 @@ from sift_mcp.reporting import generate_report_payload
 from sift_mcp.safe_analysis import SafeAnalysisError, run_safe_analysis
 from sift_mcp.semantics import compute_coverage_from_findings
 from sift_mcp.tool_catalog import group_tool_catalog
+from sift_mcp.tools._contracts import compact_unique
 
 # ---------------------------------------------------------------------------
 # Server instance
@@ -406,6 +407,107 @@ def _guess_ref_role(path: str, *, key_hint: Optional[str] = None) -> str:
     return "derived"
 
 
+def _is_transient_artifact_path(path: Any) -> bool:
+    normalized = (_normalize_path_ref(path) or "").lower()
+    return (
+        normalized.startswith("/tmp/savvydfir_")
+        or normalized.startswith("/var/tmp/savvydfir_")
+    )
+
+
+def _preferred_path_key(path: Any) -> str:
+    normalized = _normalize_path_ref(path) or ""
+    if not normalized:
+        return ""
+    try:
+        return Path(normalized).name.lower()
+    except Exception:
+        return normalized.lower()
+
+
+def _prefer_durable_ref_dicts(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prefer persisted artifact refs over transient temp-path refs."""
+    stable_keys = {
+        (_preferred_path_key(ref.get("path")), str(ref.get("role") or "").strip().lower())
+        for ref in refs
+        if isinstance(ref, dict) and not _is_transient_artifact_path(ref.get("path"))
+    }
+    filtered: list[dict[str, Any]] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        key = (_preferred_path_key(ref.get("path")), str(ref.get("role") or "").strip().lower())
+        if _is_transient_artifact_path(ref.get("path")) and key in stable_keys:
+            continue
+        filtered.append(ref)
+    return _merge_ref_dicts([], filtered)
+
+
+def _first_persisted_path(*candidates: Any) -> Optional[str]:
+    for candidate in candidates:
+        normalized = _normalize_path_ref(candidate)
+        if normalized and not _is_transient_artifact_path(normalized):
+            return normalized
+    for candidate in candidates:
+        normalized = _normalize_path_ref(candidate)
+        if normalized:
+            return normalized
+    return None
+
+
+def _replace_transient_path_hint(text: Any, persisted_path: Optional[str]) -> Any:
+    if not isinstance(text, str) or not persisted_path:
+        return text
+    return re.sub(
+        r"/(?:var/)?tmp/savvydfir_[^/\s]+/[^\s]+",
+        persisted_path,
+        text,
+    )
+
+
+def _canonicalize_response_artifact_paths(response: dict[str, Any]) -> dict[str, Any]:
+    """Prefer persisted analyst-facing handles over transient temp paths."""
+    canonical = dict(response)
+    provenance = dict(canonical.get("provenance") or {}) if isinstance(canonical.get("provenance"), dict) else {}
+    handle = dict(canonical.get("handle") or {}) if isinstance(canonical.get("handle"), dict) else {}
+
+    preferred_csv = _first_persisted_path(
+        canonical.get("csv_path"),
+        provenance.get("csv_path"),
+        handle.get("path") if handle.get("kind") == "csv" else None,
+    )
+    if preferred_csv:
+        canonical["csv_path"] = preferred_csv
+        if provenance.get("csv_path") or preferred_csv:
+            provenance["csv_path"] = preferred_csv
+        if handle.get("kind") == "csv":
+            handle["path"] = preferred_csv
+        canonical["agent_instruction"] = _replace_transient_path_hint(
+            canonical.get("agent_instruction"),
+            preferred_csv,
+        )
+
+    preferred_output = _first_persisted_path(canonical.get("output_path"))
+    if preferred_output:
+        canonical["output_path"] = preferred_output
+
+    if provenance:
+        artifact_paths = provenance.get("artifact_paths")
+        if isinstance(artifact_paths, list):
+            provenance["artifact_paths"] = compact_unique(
+                [
+                    preferred_csv if _is_transient_artifact_path(path) and preferred_csv else path
+                    for path in artifact_paths
+                    if path not in (None, "")
+                ],
+                limit=20,
+            )
+        canonical["provenance"] = provenance
+    if handle:
+        canonical["handle"] = handle
+    return canonical
+
+
 def _merge_ref_dicts(
     existing: list[dict[str, Any]] | None,
     new: list[dict[str, Any]] | None,
@@ -491,7 +593,7 @@ def _collect_raw_evidence_refs(tool_name: str, response: dict[str, Any]) -> list
         if isinstance(data, list) and data and isinstance(data[0], dict):
             _append_ref(refs, path=data[0].get("image_path"), role="input", key_hint="image_path")
 
-    return refs
+    return _prefer_durable_ref_dicts(refs)
 
 
 def _sha256_file(path: str) -> Optional[str]:
@@ -595,6 +697,77 @@ def _derive_artifact_hashes(
     return artifact_hashes, updated_refs
 
 
+def _recommended_batch_mode_for_tool(tool_name: str) -> str:
+    if tool_name in {"memory.list_processes", "memory.scan_processes"}:
+        return "parallel_safe"
+    if tool_name in {
+        "detection.sigma_hunt",
+        "reporting.generate_report",
+        "timeline.build_timeline",
+        "timeline.query_timeline",
+        "disk.extract_mft_timeline",
+    }:
+        return "serial_heavy"
+    if tool_name.startswith("disk.") or tool_name.startswith("timeline."):
+        return "serial_recommended"
+    return "parallel_safe"
+
+
+def _normalize_response_format(response_format: str, *, default: str = "summary") -> Optional[str]:
+    normalized = (response_format or default).strip().lower()
+    if normalized in {"summary", "detailed"}:
+        return normalized
+    return None
+
+
+def _truncate_text(value: Any, *, limit: int = 180) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _strip_heavy_finding_fields(
+    finding: dict[str, Any],
+    *,
+    include_raw_hit: bool,
+) -> dict[str, Any]:
+    trimmed = dict(finding)
+    if not include_raw_hit:
+        trimmed.pop("raw_hit", None)
+    return trimmed
+
+
+def _summarize_finding(finding: dict[str, Any]) -> dict[str, Any]:
+    summary = {
+        "finding_id": finding.get("finding_id"),
+        "finding_type": finding.get("finding_type"),
+        "artifact_type": finding.get("artifact_type"),
+        "tool_name": finding.get("tool_name"),
+        "evidence_kind": finding.get("evidence_kind"),
+        "finding_status": finding.get("finding_status"),
+        "confidence": finding.get("confidence"),
+        "mitre_tactic": finding.get("mitre_tactic"),
+        "mitre_technique": finding.get("mitre_technique"),
+        "description": _truncate_text(finding.get("description")),
+    }
+    for key in ("group_key", "support_count", "promotion_reason"):
+        value = finding.get(key)
+        if value not in (None, "", [], {}):
+            summary[key] = value
+    return summary
+
+
+def _summarize_report_finding(finding: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "finding_id": finding.get("finding_id"),
+        "finding_status": finding.get("finding_status"),
+        "confidence": finding.get("confidence"),
+        "tool_name": finding.get("tool_name"),
+        "description": _truncate_text(finding.get("description"), limit=160),
+    }
+
+
 def _sync_finding_provenance(finding_ids: list[str], raw_evidence_refs: list[dict[str, Any]]) -> None:
     for finding_id in finding_ids:
         finding = _state_manager.get_finding(finding_id)
@@ -644,6 +817,8 @@ def _finalize_tool_response(tool_name: str, response: Any) -> Any:
     """Append the Phase 7 linked audit event and reconcile execution provenance."""
     if not isinstance(response, dict):
         return response
+    response = _canonicalize_response_artifact_paths(response)
+    response.setdefault("recommended_batch_mode", _recommended_batch_mode_for_tool(tool_name))
     if response.get("status") == "error":
         return response
 
@@ -1680,12 +1855,43 @@ def get_findings(
     artifact_type: str = "",
     evidence_kind: str = "",
     finding_status: str = "",
+    finding_type: str = "",
     mitre_tactic: str = "",
     min_confidence: float = 0.0,
     limit: int = 50,
     offset: int = 0,
+    response_format: str = "summary",
+    include_raw_hit: bool = False,
 ) -> dict[str, Any]:
-    """Return filtered findings with server-side pagination."""
+    """Return filtered findings with server-side pagination.
+
+    Parameters
+    ----------
+    case_id:
+        The forensic case identifier.
+    artifact_type:
+        Optional canonical artifact family filter.
+    evidence_kind:
+        Optional evidence-kind filter such as ``observation`` or ``hypothesis``.
+    finding_status:
+        Optional lifecycle-status filter such as ``ACTIVE`` or ``CONFIRMED``.
+    finding_type:
+        Optional forensic-category filter such as ``threat_detection`` or ``persistence``.
+    mitre_tactic:
+        Optional ATT&CK tactic filter such as ``TA0003``.
+    min_confidence:
+        Inclusive confidence threshold.
+    limit:
+        Page size, capped server-side at 200.
+    offset:
+        Zero-based page offset.
+    response_format:
+        ``"summary"`` (default) returns compact rows suitable for LLM retrieval.
+        ``"detailed"`` returns the fuller finding payloads.
+    include_raw_hit:
+        When ``True``, preserve heavyweight nested fields such as Sigma ``raw_hit``.
+        Defaults to ``False`` even in detailed mode to keep responses compact.
+    """
     try:
         if limit < 1:
             return {
@@ -1699,6 +1905,13 @@ def get_findings(
                 "tool": "get_findings",
                 "error": "offset must be >= 0.",
             }
+        normalized_format = _normalize_response_format(response_format)
+        if normalized_format is None:
+            return {
+                "status": "error",
+                "tool": "get_findings",
+                "error": 'response_format must be "summary" or "detailed".',
+            }
 
         effective_limit = min(limit, 200)
         _state_manager.load(case_id)
@@ -1706,11 +1919,19 @@ def get_findings(
             artifact_type=artifact_type or None,
             evidence_kind=evidence_kind or None,
             finding_status=finding_status or None,
+            finding_type=finding_type or None,
             mitre_tactic=mitre_tactic or None,
             min_confidence=min_confidence if min_confidence > 0 else None,
         )
         total_findings = len(findings)
         paged = findings[offset: offset + effective_limit]
+        if normalized_format == "summary":
+            rendered = [_summarize_finding(finding) for finding in paged]
+        else:
+            rendered = [
+                _strip_heavy_finding_fields(finding, include_raw_hit=include_raw_hit)
+                for finding in paged
+            ]
         return {
             "status": "ok",
             "case_id": case_id,
@@ -1718,7 +1939,8 @@ def get_findings(
             "limit": effective_limit,
             "offset": offset,
             "returned_count": len(paged),
-            "findings": paged,
+            "response_format": normalized_format,
+            "findings": rendered,
         }
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "get_findings"}
@@ -2221,6 +2443,9 @@ def sigma_hunt(
     chainsaw_mapping: Optional[str] = None,
     max_entries: int = 50,
     case_id: str = "default",
+    severity: str = "",
+    techniques: str = "",
+    response_format: str = "summary",
 ) -> dict[str, Any]:
     """Run Chainsaw with community Sigma rules against Windows Event Log (EVTX) files.
 
@@ -2261,6 +2486,15 @@ def sigma_hunt(
         before truncation.  Defaults to 50.
     case_id:
         Case identifier for output file naming.
+    severity:
+        Optional comma-separated severity filter. Valid values:
+        ``critical,high,medium,low,informational``.
+    techniques:
+        Optional comma-separated ATT&CK technique filter such as
+        ``"T1003,T1059.001"``.
+    response_format:
+        ``"summary"`` (default) returns counts, breakdowns, and a compact preview.
+        ``"detailed"`` returns the filtered hit list.
 
     Returns
     -------
@@ -2295,6 +2529,10 @@ def sigma_hunt(
     import time as _time
 
     tool_name = "sigma_hunt"
+    command_repr = (
+        f"sigma_hunt({evtx_path!r}, severity={severity!r}, "
+        f"techniques={techniques!r}, response_format={response_format!r})"
+    )
     _eid = _audit_logger.next_execution_id()
     _started = _audit_logger.log_execution(
         execution_id=_eid,
@@ -2305,10 +2543,44 @@ def sigma_hunt(
             "chainsaw_mapping": chainsaw_mapping,
             "max_entries": max_entries,
             "case_id": case_id,
+            "severity": severity,
+            "techniques": techniques,
+            "response_format": response_format,
         },
-        command_line=f"sigma_hunt({evtx_path!r})",
+        command_line=command_repr,
     )
     _t0 = _time.monotonic()
+    normalized_format = _normalize_response_format(response_format)
+    if normalized_format is None:
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": 'response_format must be "summary" or "detailed".',
+        }
+
+    requested_severities = {
+        item.strip().lower()
+        for item in severity.split(",")
+        if item.strip()
+    }
+    valid_severities = {"critical", "high", "medium", "low", "informational"}
+    invalid_severities = sorted(requested_severities - valid_severities)
+    if invalid_severities:
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": (
+                "Invalid severity filter(s): "
+                f"{', '.join(invalid_severities)}. Valid values are "
+                "critical, high, medium, low, informational."
+            ),
+        }
+
+    requested_techniques = {
+        item.strip().upper()
+        for item in techniques.split(",")
+        if item.strip()
+    }
 
     # ------------------------------------------------------------------
     # 1. Resolve Chainsaw binary
@@ -2347,25 +2619,31 @@ def sigma_hunt(
             outputs_summary="chainsaw binary not found",
             finding_ids=[],
             tool_name="detection.sigma_hunt",
-            command_line=f"sigma_hunt({evtx_path!r})",
+            command_line=command_repr,
             parameters={
                 "evtx_path": evtx_path,
                 "sigma_rules_path": sigma_rules_path,
                 "chainsaw_mapping": chainsaw_mapping,
                 "max_entries": max_entries,
                 "case_id": case_id,
+                "severity": severity,
+                "techniques": techniques,
+                "response_format": response_format,
             },
         )
         _record_execution_parity(
             execution_id=_eid,
             tool_name="detection.sigma_hunt",
-            command_line=f"sigma_hunt({evtx_path!r})",
+            command_line=command_repr,
             parameters={
                 "evtx_path": evtx_path,
                 "sigma_rules_path": sigma_rules_path,
                 "chainsaw_mapping": chainsaw_mapping,
                 "max_entries": max_entries,
                 "case_id": case_id,
+                "severity": severity,
+                "techniques": techniques,
+                "response_format": response_format,
             },
             duration_seconds=_time.monotonic() - _t0,
             exit_code=127,
@@ -2379,7 +2657,7 @@ def sigma_hunt(
             "error": msg,
             "hint": "Run sigma_hunt after installing Chainsaw. Investigation can continue with summarize_evtx + LLM analysis in the meantime.",
             "execution_id": _eid,
-            "raw_command": f"sigma_hunt({evtx_path!r})",
+            "raw_command": command_repr,
         })
 
     # ------------------------------------------------------------------
@@ -2444,36 +2722,118 @@ def sigma_hunt(
     out_json = out_dir / f"chainsaw_{ts}.json"
 
     # ------------------------------------------------------------------
-    # 6. Build Chainsaw command
+    # 6. Build Chainsaw command helpers + fallback targets
     # ------------------------------------------------------------------
-    cmd: list[str] = [
-        chainsaw_bin, "hunt",
-        str(evtx_target),
-        "-s", sigma_dir,
-        "--json",
-        "--output", str(out_json),
-        # No --level filter: chainsaw v2.10 uses "info" not "informational"; emit all hits
-        "--skip-errors",               # don't abort on malformed EVTX records
-    ]
-    if mapping_file:
-        cmd += ["--mapping", mapping_file]
+    def _build_chainsaw_cmd(target_path: Path, output_path: Path) -> list[str]:
+        cmd: list[str] = [
+            chainsaw_bin, "hunt",
+            str(target_path),
+            "-s", sigma_dir,
+            "--json",
+            "--output", str(output_path),
+            "--skip-errors",
+        ]
+        if mapping_file:
+            cmd += ["--mapping", mapping_file]
+        return cmd
 
-    # ------------------------------------------------------------------
-    # 7. Execute Chainsaw
-    # ------------------------------------------------------------------
+    def _parse_chainsaw_hits(output_path: Path, stdout_text: str) -> list[dict[str, Any]]:
+        parsed_hits: list[dict[str, Any]] = []
+        if output_path.exists():
+            try:
+                parsed_hits = json.loads(output_path.read_text(encoding="utf-8"))
+                if not isinstance(parsed_hits, list):
+                    parsed_hits = [parsed_hits]
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                parsed_hits = []
+        if not parsed_hits and stdout_text.strip():
+            try:
+                parsed_hits = json.loads(stdout_text.strip())
+                if not isinstance(parsed_hits, list):
+                    parsed_hits = [parsed_hits]
+            except json.JSONDecodeError:
+                parsed_hits = []
+        return [hit for hit in parsed_hits if isinstance(hit, dict)]
+
+    fallback_applied = False
+    fallback_reason = ""
+    fallback_targets: list[str] = []
+
+    requested_target = evtx_target
+    output_target = out_json
+    proc: Optional[subprocess.CompletedProcess[str]] = None
     try:
         proc = subprocess.run(
-            cmd,
+            _build_chainsaw_cmd(requested_target, output_target),
             capture_output=True,
             text=True,
-            timeout=300,  # 5 minutes — large EVTX dirs can be slow
+            timeout=300,
         )
     except subprocess.TimeoutExpired:
-        return {
-            "status": "error",
-            "tool": tool_name,
-            "error": "Chainsaw timed out after 300 seconds. Try specifying a single EVTX file instead of a directory.",
-        }
+        if not evtx_target.is_dir():
+            return {
+                "status": "error",
+                "tool": tool_name,
+                "error": "Chainsaw timed out after 300 seconds.",
+            }
+
+        prioritized_names = [
+            "Security.evtx",
+            "Microsoft-Windows-Sysmon%4Operational.evtx",
+            "System.evtx",
+            "Windows PowerShell.evtx",
+            "Application.evtx",
+        ]
+        fallback_candidates = [
+            evtx_target / name
+            for name in prioritized_names
+            if (evtx_target / name).is_file()
+        ]
+        fallback_targets = [str(path) for path in fallback_candidates]
+        if not fallback_candidates:
+            return {
+                "status": "error",
+                "tool": tool_name,
+                "error": (
+                    "Chainsaw timed out after 300 seconds on the EVTX directory and "
+                    "no prioritized single-file fallback targets were present."
+                ),
+                "fallback_applied": False,
+                "fallback_targets": [],
+            }
+
+        fallback_applied = True
+        fallback_reason = "directory_timeout"
+        requested_target = fallback_candidates[0]
+        output_target = out_dir / f"chainsaw_{ts}_fallback.json"
+        try:
+            proc = subprocess.run(
+                _build_chainsaw_cmd(requested_target, output_target),
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "status": "error",
+                "tool": tool_name,
+                "error": (
+                    "Chainsaw timed out after 300 seconds on the EVTX directory and "
+                    "the prioritized single-file fallback also timed out."
+                ),
+                "fallback_applied": True,
+                "fallback_reason": fallback_reason,
+                "fallback_targets": fallback_targets,
+            }
+        except Exception as exc:
+            return {
+                "status": "error",
+                "tool": tool_name,
+                "error": f"Chainsaw fallback execution failed: {exc}",
+                "fallback_applied": True,
+                "fallback_reason": fallback_reason,
+                "fallback_targets": fallback_targets,
+            }
     except Exception as exc:
         return {
             "status": "error",
@@ -2481,83 +2841,105 @@ def sigma_hunt(
             "error": f"Chainsaw execution failed: {exc}",
         }
 
-    # ------------------------------------------------------------------
-    # 8. Parse JSON output
-    # ------------------------------------------------------------------
-    raw_hits: list[dict] = []
-    if out_json.exists():
-        try:
-            raw_hits = json.loads(out_json.read_text(encoding="utf-8"))
-            if not isinstance(raw_hits, list):
-                raw_hits = [raw_hits]
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            pass
-
-    # Chainsaw also outputs some hits to stdout when --json is used without --output
-    if not raw_hits and proc.stdout.strip():
-        try:
-            raw_hits = json.loads(proc.stdout.strip())
-            if not isinstance(raw_hits, list):
-                raw_hits = [raw_hits]
-        except json.JSONDecodeError:
-            pass
+    if proc is None:
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": "Chainsaw did not produce a process result.",
+        }
 
     # ------------------------------------------------------------------
-    # 9. Rank hits by severity before truncation
+    # 7. Parse JSON output
     # ------------------------------------------------------------------
-    SEVERITY_RANK = {"critical": 0, "high": 1,
-                     "medium": 2, "low": 3, "informational": 4}
-
-    def _hit_severity(hit: dict) -> int:
-        level = str(hit.get("level", "informational")).lower()
-        return SEVERITY_RANK.get(level, 5)
-
-    raw_hits.sort(key=_hit_severity)
-    hits_total = len(raw_hits)
-    hits_to_process = raw_hits[:max_entries]
+    raw_hits = _parse_chainsaw_hits(output_target, proc.stdout)
 
     # ------------------------------------------------------------------
-    # 10. Extract ATT&CK techniques from Sigma tags
+    # 8. Filter + rank hits before truncation
     # ------------------------------------------------------------------
+    SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
     ATTACK_TAG_RE = re.compile(r"attack\.(t\d{4}(?:\.\d{3})?)", re.IGNORECASE)
 
-    def _extract_techniques(hit: dict) -> list[str]:
+    def _extract_techniques(hit: dict[str, Any]) -> list[str]:
         tags = hit.get("tags", [])
         if isinstance(tags, str):
             tags = [tags]
-        techniques: list[str] = []
+        extracted: list[str] = []
         for tag in tags:
-            m = ATTACK_TAG_RE.search(str(tag))
-            if m:
-                techniques.append(m.group(1).upper())
-        return techniques or ["—"]
+            match = ATTACK_TAG_RE.search(str(tag))
+            if match:
+                extracted.append(match.group(1).upper())
+        return extracted or ["—"]
+
+    def _hit_severity(hit: dict[str, Any]) -> int:
+        level = str(hit.get("level", "informational")).lower()
+        return SEVERITY_RANK.get(level, 5)
+
+    filtered_hits: list[dict[str, Any]] = []
+    for hit in raw_hits:
+        level = str(hit.get("level", "informational")).lower()
+        if requested_severities and level not in requested_severities:
+            continue
+        hit_techniques = {tech for tech in _extract_techniques(hit) if tech != "—"}
+        if requested_techniques and not (hit_techniques & requested_techniques):
+            continue
+        filtered_hits.append(hit)
+
+    filtered_hits.sort(key=_hit_severity)
+    raw_hits_total = len(raw_hits)
+    hits_total = len(filtered_hits)
+    hits_to_process = filtered_hits[:max_entries]
+
+    severity_counts: dict[str, int] = {}
+    technique_counts: dict[str, int] = {}
+    technique_set: set[str] = set()
+    for hit in filtered_hits:
+        sev = str(hit.get("level", "informational")).lower()
+        severity_counts[sev] = severity_counts.get(sev, 0) + 1
+        for technique_id in _extract_techniques(hit):
+            if technique_id == "—":
+                continue
+            technique_set.add(technique_id)
+            technique_counts[technique_id] = technique_counts.get(technique_id, 0) + 1
+
+    preview_hits = [
+        {
+            "rule_name": hit.get("name", hit.get("rule", f"hit_{index}")),
+            "severity": str(hit.get("level", "informational")).lower(),
+            "event_id": str(hit.get("event_id", hit.get("EventID", "?"))),
+            "timestamp": str(hit.get("system_time", hit.get("timestamp", "unknown"))),
+            "techniques": _extract_techniques(hit),
+        }
+        for index, hit in enumerate(hits_to_process[:10])
+    ]
 
     # ------------------------------------------------------------------
-    # 11. Create CaseStateManager findings
+    # 9. Create CaseStateManager findings
     # ------------------------------------------------------------------
     finding_ids: list[str] = []
     execution_id = _eid
 
     for i, hit in enumerate(hits_to_process):
         rule_name = hit.get("name", hit.get("rule", f"unknown_rule_{i}"))
-        level = hit.get("level", "informational")
-        techniques = _extract_techniques(hit)
+        level = str(hit.get("level", "informational")).lower()
+        hit_techniques = _extract_techniques(hit)
         system_time = hit.get("system_time", hit.get("timestamp", "unknown"))
         event_id = hit.get("event_id", hit.get("EventID", "?"))
         computer = hit.get("computer", hit.get("Computer", ""))
         subject_user = hit.get("subject_user", hit.get("SubjectUserName", ""))
 
-        # Map severity to confidence score
         confidence_map = {
-            "critical": 0.95, "high": 0.88, "medium": 0.75,
-            "low": 0.60, "informational": 0.50,
+            "critical": 0.95,
+            "high": 0.88,
+            "medium": 0.75,
+            "low": 0.60,
+            "informational": 0.50,
         }
-        confidence = confidence_map.get(str(level).lower(), 0.65)
+        confidence = confidence_map.get(level, 0.65)
 
         description = (
             f"[Sigma/{level.upper()}] Rule: '{rule_name}' | "
             f"EID {event_id} @ {system_time} | "
-            f"ATT&CK: {', '.join(techniques)} | "
+            f"ATT&CK: {', '.join(hit_techniques)} | "
             f"Computer: {computer} | User: {subject_user}"
         )
 
@@ -2565,7 +2947,7 @@ def sigma_hunt(
             "case_id": case_id,
             "finding_type": "threat_detection",
             "artifact_type": "evtx",
-            "artifact_path": evtx_path,
+            "artifact_path": str(requested_target),
             "tool_name": tool_name,
             "execution_id": execution_id,
             "evidence_kind": "observation",
@@ -2574,52 +2956,40 @@ def sigma_hunt(
             "description": description,
             "supporting_indicators": [
                 rule_name,
-                f"ATT&CK: {', '.join(techniques)}",
+                f"ATT&CK: {', '.join(hit_techniques)}",
                 f"EID: {event_id}",
                 f"Level: {level}",
+                f"Output JSON: {output_target.name}",
             ],
-            "tags": hit.get("tags", []),
             "sigma_rule": rule_name,
-            "attck_techniques": techniques,
+            "attck_techniques": hit_techniques,
             "event_id": str(event_id),
             "severity": level,
             "system_time": str(system_time),
-            "raw_hit": hit,
         }
 
         try:
             fid = _state_manager.add_finding(finding_dict)
             finding_ids.append(fid)
         except Exception:
-            pass  # Don't abort on state write failures
+            pass
 
     # ------------------------------------------------------------------
-    # 12. Create summary finding
+    # 10. Create summary finding
     # ------------------------------------------------------------------
     if hits_total > 0:
-        technique_set: set[str] = set()
-        for hit in raw_hits:
-            for t in _extract_techniques(hit):
-                if t != "—":
-                    technique_set.add(t)
-
-        severity_counts: dict[str, int] = {}
-        for hit in raw_hits:
-            sev = str(hit.get("level", "informational")).lower()
-            severity_counts[sev] = severity_counts.get(sev, 0) + 1
-
         summary = (
-            f"Chainsaw/Sigma hunt: {hits_total} rule hits across {evtx_path}. "
+            f"Chainsaw/Sigma hunt: {hits_total} filtered rule hits across {requested_target}. "
             f"Severity breakdown: {severity_counts}. "
             f"ATT&CK techniques detected: {', '.join(sorted(technique_set)) or 'none tagged'}. "
-            f"Full results at: {out_json}"
+            f"Full results at: {output_target}"
         )
 
         summary_finding = {
             "case_id": case_id,
             "finding_type": "threat_detection",
             "artifact_type": "evtx",
-            "artifact_path": evtx_path,
+            "artifact_path": str(requested_target),
             "tool_name": tool_name,
             "execution_id": execution_id,
             "evidence_kind": "observation",
@@ -2644,25 +3014,31 @@ def sigma_hunt(
         outputs_summary=outputs_summary,
         finding_ids=[],
         tool_name="detection.sigma_hunt",
-        command_line=f"sigma_hunt({evtx_path!r})",
+        command_line=command_repr,
         parameters={
             "evtx_path": evtx_path,
             "sigma_rules_path": sigma_rules_path,
             "chainsaw_mapping": chainsaw_mapping,
             "max_entries": max_entries,
             "case_id": case_id,
+            "severity": severity,
+            "techniques": techniques,
+            "response_format": response_format,
         },
     )
     _record_execution_parity(
         execution_id=_eid,
         tool_name="detection.sigma_hunt",
-        command_line=f"sigma_hunt({evtx_path!r})",
+        command_line=command_repr,
         parameters={
             "evtx_path": evtx_path,
             "sigma_rules_path": sigma_rules_path,
             "chainsaw_mapping": chainsaw_mapping,
             "max_entries": max_entries,
             "case_id": case_id,
+            "severity": severity,
+            "techniques": techniques,
+            "response_format": response_format,
         },
         duration_seconds=_time.monotonic() - _t0,
         exit_code=0,
@@ -2670,29 +3046,41 @@ def sigma_hunt(
         started_entry=_started,
         completed_entry=_completed,
     )
-    return _finalize_tool_response("detection.sigma_hunt", {
+    response_payload = {
         "status": "success" if hits_total > 0 else "no_hits",
         "tool": tool_name,
         "evtx_path": evtx_path,
         "sigma_rules": sigma_dir,
         "hits_total": hits_total,
+        "raw_hits_total": raw_hits_total,
         "hits_returned": len(hits_to_process),
         "findings_created": finding_ids,
         "execution_id": execution_id,
-        "raw_command": f"sigma_hunt({evtx_path!r})",
-        "output_path": str(out_json),
+        "raw_command": command_repr,
+        "output_path": str(output_target),
         "chainsaw_stderr": proc.stderr.strip()[-2000:] if proc.stderr else "",
+        "severity_filter": sorted(requested_severities) if requested_severities else [],
+        "techniques_filter": sorted(requested_techniques) if requested_techniques else [],
+        "severity_breakdown": severity_counts,
+        "technique_breakdown": dict(sorted(technique_counts.items())),
+        "fallback_applied": fallback_applied,
+        "fallback_reason": fallback_reason or None,
+        "fallback_targets": fallback_targets,
+        "response_format": normalized_format,
         "note": (
-            f"Returning top {len(hits_to_process)} of {hits_total} hits (ranked by severity). "
-            f"Use run_analysis() on output_path for full dataset. "
+            f"Returning top {len(hits_to_process)} of {hits_total} filtered hits (ranked by severity). "
+            f"Use run_analysis() on output_path for the full persisted dataset. "
             f"Invoke sigma-analyst to interpret findings."
         ) if hits_total > max_entries else (
-            f"All {hits_total} hits returned as findings." if hits_total > 0
-            else "No Sigma rules triggered. Consider running with a broader ruleset or check if EVTX contains events."
+            f"All {hits_total} filtered hits were eligible for finding creation." if hits_total > 0
+            else "No Sigma rules matched the selected severity/technique filters."
         ),
-
+        "preview": preview_hits,
         **_forensic_envelope("detection.sigma_hunt"),
-    })
+    }
+    if normalized_format == "detailed":
+        response_payload["hits"] = hits_to_process
+    return _finalize_tool_response("detection.sigma_hunt", response_payload)
 
 
 # ===========================================================================
@@ -4243,7 +4631,7 @@ def coverage_report(case_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def generate_report(case_id: str) -> dict[str, Any]:
+def generate_report(case_id: str, response_format: str = "summary") -> dict[str, Any]:
     """Generate the final investigation report from the case state.
 
     Produces a summary of all findings, unresolved discrepancies,
@@ -4254,6 +4642,9 @@ def generate_report(case_id: str) -> dict[str, Any]:
     ----------
     case_id:
         The forensic case identifier.
+    response_format:
+        ``"summary"`` (default) returns compact case/report metadata.
+        ``"detailed"`` returns the richer structured payload.
 
     Returns
     -------
@@ -4267,10 +4658,17 @@ def generate_report(case_id: str) -> dict[str, Any]:
     _started = _audit_logger.log_execution(
         execution_id=_eid,
         tool_name=_tool,
-        parameters={"case_id": case_id},
-        command_line=f"generate_report({case_id!r})",
+        parameters={"case_id": case_id, "response_format": response_format},
+        command_line=f"generate_report({case_id!r}, response_format={response_format!r})",
     )
     _t0 = _time.monotonic()
+    normalized_format = _normalize_response_format(response_format)
+    if normalized_format is None:
+        return {
+            "status": "error",
+            "tool": "generate_report",
+            "error": 'response_format must be "summary" or "detailed".',
+        }
     try:
         result = generate_report_payload(
             case_id=case_id,
@@ -4288,14 +4686,14 @@ def generate_report(case_id: str) -> dict[str, Any]:
             outputs_summary=outputs_summary,
             finding_ids=[],
             tool_name=_tool,
-            command_line=f"generate_report({case_id!r})",
-            parameters={"case_id": case_id},
+            command_line=f"generate_report({case_id!r}, response_format={response_format!r})",
+            parameters={"case_id": case_id, "response_format": response_format},
         )
         _record_execution_parity(
             execution_id=_eid,
             tool_name=_tool,
-            command_line=f"generate_report({case_id!r})",
-            parameters={"case_id": case_id},
+            command_line=f"generate_report({case_id!r}, response_format={response_format!r})",
+            parameters={"case_id": case_id, "response_format": response_format},
             duration_seconds=duration,
             exit_code=exit_code,
             outputs_summary=outputs_summary,
@@ -4304,6 +4702,28 @@ def generate_report(case_id: str) -> dict[str, Any]:
         )
         if isinstance(result, dict):
             result.setdefault("execution_id", _eid)
+            result["response_format"] = normalized_format
+            if normalized_format == "summary":
+                result = {
+                    "status": result.get("status"),
+                    "case_id": result.get("case_id"),
+                    "summary": result.get("summary"),
+                    "status_breakdown": result.get("status_breakdown", {}),
+                    "evidence_kind_breakdown": result.get("evidence_kind_breakdown", {}),
+                    "findings_count": result.get("findings_count"),
+                    "unresolved_count": result.get("unresolved_count"),
+                    "report_path": result.get("report_path"),
+                    "top_confirmed_findings": [
+                        _summarize_report_finding(finding)
+                        for finding in result.get("top_confirmed_findings", [])[:5]
+                    ],
+                    "top_active_leads": [
+                        _summarize_report_finding(finding)
+                        for finding in result.get("top_active_leads", [])[:5]
+                    ],
+                    "execution_id": result.get("execution_id"),
+                    "response_format": normalized_format,
+                }
         return _finalize_tool_response(_tool, result)
     except Exception as exc:
         duration = _time.monotonic() - _t0
@@ -4315,14 +4735,14 @@ def generate_report(case_id: str) -> dict[str, Any]:
             outputs_summary=outputs_summary,
             finding_ids=[],
             tool_name=_tool,
-            command_line=f"generate_report({case_id!r})",
-            parameters={"case_id": case_id},
+            command_line=f"generate_report({case_id!r}, response_format={response_format!r})",
+            parameters={"case_id": case_id, "response_format": response_format},
         )
         _record_execution_parity(
             execution_id=_eid,
             tool_name=_tool,
-            command_line=f"generate_report({case_id!r})",
-            parameters={"case_id": case_id},
+            command_line=f"generate_report({case_id!r}, response_format={response_format!r})",
+            parameters={"case_id": case_id, "response_format": response_format},
             duration_seconds=duration,
             exit_code=1,
             outputs_summary=outputs_summary,
@@ -5158,6 +5578,8 @@ def run_analysis(
     ----------
     data_path:
         Absolute path to a CSV or JSON file to load as a DataFrame.
+        Prefer persisted MCP artifact handles (for example ``csv_path`` or
+        ``handle.path`` from the producing tool) over transient temp paths.
     query:
         A Pandas expression to evaluate. The DataFrame is available as ``df``.
     output_format:
@@ -5177,9 +5599,16 @@ def run_analysis(
 
         path = Path(data_path).resolve()
         if not path.exists():
+            hint = ""
+            normalized_missing = str(path)
+            if normalized_missing.startswith(("/tmp/savvydfir_", "/var/tmp/savvydfir_")):
+                hint = (
+                    " This looks like a transient tool temp path. Reuse the persisted "
+                    "csv_path/handle.path returned by the producing MCP tool instead."
+                )
             return ToolResult(
                 status="error", tool="run_analysis",
-                error=f"File not found: {data_path}",
+                error=f"File not found: {data_path}.{hint}",
             ).model_dump()
 
         return run_safe_analysis(str(path), query, output_format)
