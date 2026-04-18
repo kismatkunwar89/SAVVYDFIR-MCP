@@ -51,10 +51,13 @@ class RunnerAuditParityTests(unittest.TestCase):
                 self.assertEqual(entry["command_line"], "printf hello")
                 self.assertEqual(entry["agent_turn"], 7)
                 self.assertEqual(entry["execution_id"], result.execution_id)
+                self.assertEqual(entry["schema_version"], 2)
+                self.assertTrue(entry["entry_hash"])
 
             self.assertEqual(completed["exit_code"], 0)
             self.assertTrue(completed["outputs_summary"])
             self.assertEqual(completed["finding_ids_generated"], [])
+            self.assertEqual(completed["prev_entry_hash"], started["entry_hash"])
 
             persisted = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(persisted["executions_count"], 1)
@@ -67,6 +70,9 @@ class RunnerAuditParityTests(unittest.TestCase):
             self.assertEqual(execution["agent_turn"], 7)
             self.assertEqual(execution["exit_code"], 0)
             self.assertTrue(execution["outputs_summary"])
+            self.assertEqual(execution["audit_started_entry_hash"], started["entry_hash"])
+            self.assertEqual(execution["audit_completed_entry_hash"], completed["entry_hash"])
+            self.assertEqual(execution["finding_ids_generated"], [])
 
 
 if __name__ == "__main__":

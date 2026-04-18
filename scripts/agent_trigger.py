@@ -59,6 +59,14 @@ TOOL_AGENT_MAP: dict[str, tuple[str, str]] = {
         "@srum-analyst",
         "Analyze SRUM network usage, quantify exfiltration volume, and flag deleted or unresolved applications.",
     ),
+    "mcp__savvydfir__build_timeline": (
+        "@timeline-analyst",
+        "Use the storage handle to run narrow timeline pivots around attacker time windows, execution paths, and cleanup activity.",
+    ),
+    "mcp__savvydfir__query_timeline": (
+        "@timeline-analyst",
+        "Review the bounded timeline slice, identify the strongest pivots, and refine the next query window.",
+    ),
 }
 
 ERROR_PATTERNS: dict[str, str] = {
@@ -168,6 +176,10 @@ def _resolve_dispatch(tool_name: str, result_data: dict[str, Any]) -> Optional[t
 def _augment_instruction(instruction: str, result_data: dict[str, Any]) -> str:
     """Append high-signal artifact context to the base instruction."""
     parts = [instruction.strip()]
+
+    summary = result_data.get("summary")
+    if isinstance(summary, str) and summary:
+        parts.append(f"Summary: {summary}")
 
     csv_path = result_data.get("csv_path")
     if isinstance(csv_path, str) and csv_path:

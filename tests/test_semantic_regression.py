@@ -43,6 +43,27 @@ class SemanticRegressionTests(unittest.TestCase):
                 )
                 self.assertAlmostEqual(finding["confidence"], expected, places=3)
                 self.assertIn("content_key", finding)
+                self.assertIn("supporting_tool_families", finding)
+                self.assertIn("supporting_artifact_families", finding)
+                self.assertIn("confidence_support_inputs", finding)
+
+    def test_catalog_backed_family_derivation_adds_secondary_artifact_context(self) -> None:
+        cases = [
+            ("disk.get_amcache", r"C:\Temp\evil.exe", {"disk", "registry", "file_system"}),
+            ("memory.scan_network", r"memory.raw", {"memory", "network"}),
+        ]
+        for tool_name, artifact_path, expected_families in cases:
+            with self.subTest(tool_name=tool_name):
+                finding = normalize_finding_for_storage(
+                    _base_finding(
+                        tool_name=tool_name,
+                        description="Catalog-backed family derivation test.",
+                        artifact_path=artifact_path,
+                    )
+                )
+                self.assertTrue(
+                    expected_families.issubset(set(finding["supporting_artifact_families"]))
+                )
 
     def test_corroboration_promotion_upgrades_active_finding(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -78,6 +99,13 @@ class SemanticRegressionTests(unittest.TestCase):
             self.assertIn("prefetch", finding["corroborated_by"])
             self.assertEqual(finding["corroboration_completed_by"], "prefetch")
             self.assertAlmostEqual(finding["confidence"], 0.78, places=3)
+            self.assertEqual(finding["promotion_eligibility"], "confirmed")
+            self.assertIn("disk", finding["supporting_tool_families"])
+            self.assertIn("disk", finding["supporting_artifact_families"])
+            self.assertEqual(
+                finding["confidence_support_inputs"]["completed_corroboration"],
+                ["prefetch"],
+            )
 
 
 if __name__ == "__main__":
