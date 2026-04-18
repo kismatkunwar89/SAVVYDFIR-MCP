@@ -18,6 +18,10 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+_ARTIFACT_HASH_SOURCES = {"computed", "verify_integrity"}
+_ARTIFACT_HASH_ROLES = {"input", "output"}
+_RAW_EVIDENCE_REF_ROLES = {"input", "output", "derived", "handle"}
+
 
 # ---------------------------------------------------------------------------
 # Auto-incrementing ID counter (thread-safe)
@@ -227,9 +231,38 @@ class Execution(BaseModel):
             "saved (e.g. '<case_dir>/executions/E-001_stderr.txt')."
         ),
     )
+    outputs_summary: Optional[str] = Field(
+        None,
+        description="Short human-readable summary of the tool output.",
+    )
+    agent_turn: int = Field(
+        0,
+        ge=0,
+        description="Claude turn counter associated with this execution.",
+    )
     finding_ids_generated: list[str] = Field(
         default_factory=list,
         description="F-NNN IDs of every Finding created by this execution.",
+    )
+    audit_started_entry_hash: Optional[str] = Field(
+        None,
+        description="Hash of the append-only audit 'started' entry for this execution.",
+    )
+    audit_completed_entry_hash: Optional[str] = Field(
+        None,
+        description="Hash of the append-only audit 'completed' entry for this execution.",
+    )
+    audit_linked_entry_hash: Optional[str] = Field(
+        None,
+        description="Hash of the append-only audit 'linked' entry for this execution.",
+    )
+    artifact_hashes: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Structured SHA-256 hashes for input/output artifacts tied to this execution.",
+    )
+    raw_evidence_refs: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Structured references to primary and derived evidence artifacts.",
     )
     correction_event: Optional[CorrectionEvent] = Field(
         None,
@@ -238,13 +271,16 @@ class Execution(BaseModel):
             "of one or more prior findings."
         ),
     )
-    agent_reason: str = Field(
-        ...,
-        min_length=5,
+    agent_reason: Optional[str] = Field(
+        None,
         description=(
             "One-sentence explanation of why the agent chose to call this "
             "tool at this point in the investigation."
         ),
+    )
+    recorded_at: datetime = Field(
+        default_factory=lambda: datetime.now(tz=timezone.utc),
+        description="UTC timestamp when this execution record was persisted to state.",
     )
 
     @field_validator("execution_id", mode="before")
@@ -254,6 +290,90 @@ class Execution(BaseModel):
         if not v:
             return _ExecutionIDCounter.next()
         return str(v)
+
+    @field_validator("finding_ids_generated", mode="before")
+    @classmethod
+    def _normalize_finding_ids(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple, set)):
+            raise ValueError("finding_ids_generated must be a list of finding IDs.")
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            normalized.append(text)
+        return normalized
+
+    @field_validator("artifact_hashes", mode="before")
+    @classmethod
+    def _normalize_artifact_hashes(cls, value: object) -> list[dict[str, str]]:
+        if value is None:
+            return []
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("artifact_hashes must be a list of dicts.")
+        normalized: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for item in value:
+            if not isinstance(item, dict):
+                raise ValueError("Each artifact_hash must be a dict.")
+            path = str(item.get("path") or "").strip()
+            sha256 = str(item.get("sha256") or "").strip().lower()
+            role = str(item.get("role") or "").strip().lower()
+            source = str(item.get("source") or "").strip().lower()
+            if not path or not sha256:
+                raise ValueError("artifact_hashes items must include path and sha256.")
+            if role not in _ARTIFACT_HASH_ROLES:
+                raise ValueError("artifact_hashes.role must be 'input' or 'output'.")
+            if source not in _ARTIFACT_HASH_SOURCES:
+                raise ValueError("artifact_hashes.source must be computed or verify_integrity.")
+            key = (path, sha256, role, source)
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(
+                {"path": path, "sha256": sha256, "role": role, "source": source}
+            )
+        return normalized
+
+    @field_validator("raw_evidence_refs", mode="before")
+    @classmethod
+    def _normalize_raw_evidence_refs(cls, value: object) -> list[dict[str, str]]:
+        if value is None:
+            return []
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("raw_evidence_refs must be a list of dicts.")
+        normalized: list[dict[str, str]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for item in value:
+            if not isinstance(item, dict):
+                raise ValueError("Each raw_evidence_ref must be a dict.")
+            path = str(item.get("path") or "").strip()
+            role = str(item.get("role") or "").strip().lower()
+            if not path:
+                raise ValueError("raw_evidence_refs items must include path.")
+            if role not in _RAW_EVIDENCE_REF_ROLES:
+                raise ValueError(
+                    "raw_evidence_refs.role must be one of input, output, derived, handle."
+                )
+            offset = str(item.get("offset") or "").strip()
+            hash_status = str(item.get("hash_status") or "").strip()
+            key = (path, role, offset, hash_status)
+            if key in seen:
+                continue
+            seen.add(key)
+            ref = {"path": path, "role": role}
+            if offset:
+                ref["offset"] = offset
+            if hash_status:
+                ref["hash_status"] = hash_status
+            normalized.append(ref)
+        return normalized
 
     @model_validator(mode="after")
     def _compute_duration(self) -> "Execution":

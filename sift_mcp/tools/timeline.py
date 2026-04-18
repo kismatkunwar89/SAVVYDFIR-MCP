@@ -40,6 +40,15 @@ from sift_mcp.tools._cache import (
     get_valid_cached_artifact,
     record_cache_hit,
 )
+from sift_mcp.tools._contracts import (
+    build_contract_response,
+    build_follow_up_option,
+    build_handle,
+    build_provenance,
+    compact_unique,
+    sanitize_payload_fields,
+    state_path_for_manager,
+)
 
 __all__ = [
     "build_timeline",
@@ -59,6 +68,7 @@ _runner: Optional[PlasoRunner] = None
 def init_tools(
     audit_logger: AuditLogger,
     state_manager: CaseStateManager,
+    runner: Optional[PlasoRunner] = None,
 ) -> None:
     """Wire the shared audit logger and state manager into this tool module.
 
@@ -74,11 +84,139 @@ def init_tools(
     global _audit, _state_mgr, _runner
     _audit = audit_logger
     _state_mgr = state_manager
-    _runner = PlasoRunner(
-        audit_logger=audit_logger,
-        state_manager=state_manager,
-        case_id="",          # Updated per-call via runner's case_id property
-        tool_name="timeline",
+    if runner is not None:
+        _runner = runner
+    else:
+        _runner = PlasoRunner(
+            audit_logger=audit_logger,
+            state_manager=state_manager,
+            case_id="",          # Updated per-call via runner's case_id property
+            tool_name="timeline",
+        )
+
+
+def _build_timeline_contract_payload(
+    *,
+    response: dict[str, Any],
+    case_id: str,
+    source_path: str,
+    storage_path: str,
+) -> dict[str, Any]:
+    normalized = [
+        {
+            "case_id": case_id,
+            "parser_preset": response.get("parser_preset"),
+            "estimated_event_count": response.get("estimated_event_count"),
+            "cache_hit": response.get("cache_hit", False),
+        }
+    ]
+    return build_contract_response(
+        response,
+        tool_name="timeline.build_timeline",
+        summary=(
+            f"Timeline storage ready for case {case_id}. "
+            f"Use query_timeline() against {storage_path} instead of rebuilding."
+        ),
+        normalized_observations=normalized,
+        provenance=build_provenance(
+            tool_name="timeline.build_timeline",
+            execution_id=response.get("execution_id"),
+            state_path=state_path_for_manager(_state_mgr),
+            storage_path=storage_path,
+            source_path=source_path,
+            cache_hit=response.get("cache_hit"),
+            cache_source_execution_id=response.get("cache_source_execution_id"),
+            artifact_paths=[source_path, storage_path],
+        ),
+        pivot_entities={
+            "case_ids": [case_id],
+            "parser_presets": compact_unique([response.get("parser_preset")]),
+            "source_paths": compact_unique([source_path]),
+            "storage_paths": compact_unique([storage_path]),
+        },
+        follow_up_options=[
+            build_follow_up_option(
+                "query_timeline",
+                reason="Start with a bounded timeline query instead of broad reruns.",
+                parameters={"plaso_path": storage_path},
+            ),
+        ],
+        handle=build_handle(
+            kind="plaso_storage",
+            path=storage_path,
+            query_tool="query_timeline",
+            description="Persisted Plaso storage file.",
+            tool_name="timeline.build_timeline",
+        ),
+    )
+
+
+def _query_timeline_contract_payload(
+    *,
+    response: dict[str, Any],
+    events: list[dict[str, Any]],
+    plaso_path: str,
+    output_csv: str,
+    start: Optional[str],
+    end: Optional[str],
+    filter_expr: Optional[str],
+) -> dict[str, Any]:
+    normalized = [
+        {
+            "timestamp": event.get("timestamp"),
+            "source": event.get("source"),
+            "artifact_path": event.get("artifact_path"),
+        }
+        for event in events[:20]
+    ]
+    evidence_excerpt = next(
+        (
+            event.get("description")
+            for event in events
+            if isinstance(event.get("description"), str) and event.get("description")
+        ),
+        None,
+    )
+    return build_contract_response(
+        response,
+        tool_name="timeline.query_timeline",
+        summary=(
+            f"Timeline query returned {response.get('event_count', len(events))} events from {plaso_path}. "
+            "Use the same storage handle with narrower constraints for deeper pivots."
+        ),
+        normalized_observations=normalized,
+        provenance=build_provenance(
+            tool_name="timeline.query_timeline",
+            execution_id=response.get("execution_id"),
+            state_path=state_path_for_manager(_state_mgr),
+            storage_path=plaso_path,
+            csv_path=output_csv,
+            artifact_paths=[plaso_path, output_csv],
+        ),
+        pivot_entities={
+            "sources": compact_unique(event.get("source") for event in events),
+            "artifact_paths": compact_unique(event.get("artifact_path") for event in events),
+            "timestamps": compact_unique(event.get("timestamp") for event in events),
+        },
+        follow_up_options=[
+            build_follow_up_option(
+                "query_timeline",
+                reason="Narrow the timeline further by time range or filter expression.",
+                parameters={"plaso_path": plaso_path},
+            ),
+        ],
+        handle=build_handle(
+            kind="timeline_query_result",
+            path=output_csv,
+            description="CSV output from the current psort query.",
+            tool_name="timeline.query_timeline",
+        ),
+        query_constraints={
+            "start": start,
+            "end": end,
+            "filter_expr": filter_expr,
+        },
+        evidence_excerpt=evidence_excerpt,
     )
 
 
@@ -182,7 +320,7 @@ def build_timeline(
             artifact_path=str(cached["storage_path"]),
             cache_source_execution_id=str(cached.get("source_execution_id") or ""),
         )
-        return {
+        response = {
             "status": "ok",
             "storage_path": str(cached["storage_path"]),
             "parser_preset": cached.get("parser_preset", parsers),
@@ -193,7 +331,17 @@ def build_timeline(
             "execution_id": cache_meta["execution_id"],
             "cache_hit": True,
             "cache_source_execution_id": cached.get("source_execution_id"),
+            "requires_agent": "@timeline-analyst",
+            "agent_instruction": (
+                f"Use {cached['storage_path']} to run narrow timeline pivots instead of rebuilding storage."
+            ),
         }
+        return _build_timeline_contract_payload(
+            response=response,
+            case_id=case_id,
+            source_path=str(cached.get("source_path", source_path)),
+            storage_path=str(cached["storage_path"]),
+        )
 
     try:
         result = _runner.log2timeline(
@@ -243,6 +391,10 @@ def build_timeline(
         "execution_id": result.execution_id,
         "cache_hit": False,
         "cache_source_execution_id": None,
+        "requires_agent": "@timeline-analyst",
+        "agent_instruction": (
+            f"Use {storage_path} to run bounded timeline queries and correlate cross-artifact activity."
+        ),
     }
     _state_mgr.cache_artifact(
         cache_key,
@@ -255,7 +407,12 @@ def build_timeline(
             "estimated_event_count": event_count,
         },
     )
-    return response
+    return _build_timeline_contract_payload(
+        response=response,
+        case_id=case_id,
+        source_path=source_path,
+        storage_path=storage_path,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -390,11 +547,12 @@ def query_timeline(
                 "execution_id": result.execution_id,
             }
 
-    return {
+    response = {
         "status": "ok",
         "events": events,
         "event_count": len(events),
         "plaso_path": plaso_path,
+        "query_result_path": output_csv,
         "filters_applied": {
             "start": start,
             "end": end,
@@ -402,6 +560,20 @@ def query_timeline(
         },
         "execution_id": result.execution_id,
     }
+    if response["events"]:
+        response["events"] = [
+            sanitize_payload_fields(event, "description", "extra_fields")
+            for event in response["events"]
+        ]
+    return _query_timeline_contract_payload(
+        response=response,
+        events=response["events"],
+        plaso_path=plaso_path,
+        output_csv=output_csv,
+        start=start,
+        end=end,
+        filter_expr=filter_expr,
+    )
 
 
 # ---------------------------------------------------------------------------

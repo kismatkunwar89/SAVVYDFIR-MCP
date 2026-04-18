@@ -62,6 +62,11 @@ class StateFoundationTests(unittest.TestCase):
                 ["CONFIRMED", "ACTIVE", "ACTIVE", "REJECTED"],
             )
             self.assertTrue(all("status" not in finding for finding in findings))
+            self.assertEqual(findings[1]["evidence_kind"], "hypothesis")
+            self.assertEqual(findings[0]["tool_name"], "legacy.migrated")
+            self.assertEqual(findings[0]["execution_id"], "E-000")
+            self.assertIn("supporting_tool_families", findings[0])
+            self.assertIn("confidence_support_inputs", findings[0])
 
             self.assertEqual(
                 [f["finding_id"] for f in manager.get_findings(finding_status="confirmed")],
@@ -77,7 +82,7 @@ class StateFoundationTests(unittest.TestCase):
 
             summary = manager.to_summary()
             self.assertEqual(summary["confirmed_count"], 1)
-            self.assertEqual(summary["hypothesis_count"], 0)
+            self.assertEqual(summary["hypothesis_count"], 1)
             self.assertEqual(summary["rejected_count"], 1)
             self.assertEqual(summary["unresolved_discrepancies"], 1)
 

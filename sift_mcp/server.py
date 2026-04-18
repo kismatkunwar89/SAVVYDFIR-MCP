@@ -1,6 +1,6 @@
 """SAVVYDFIR-MCP Server — Purpose-built forensic MCP backend for Protocol SIFT.
 
-This server exposes 41 typed forensic tools through the Model Context
+This server exposes 42 typed forensic tools through the Model Context
 Protocol (MCP) using stdio transport. It is designed to be used with Claude Code
 as the primary agentic execution engine on SANS SIFT Workstation.
 
@@ -16,7 +16,7 @@ Architecture
 * **FastMCP** — synchronous MCP server over stdio; all tool functions are sync
   because ``SafeRunner`` uses ``subprocess.run()``.
 
-Tool namespaces (41 tools)
+Tool namespaces (42 tools)
 --------------------------
 Evidence (2):   verify_integrity, get_provenance
 Disk (6):       extract_prefetch, get_amcache, extract_mft_timeline,
@@ -26,7 +26,8 @@ Memory (6):     detect_profile, list_processes, scan_processes,
 Timeline (2):   build_timeline, query_timeline
 YARA (2):       scan_files, scan_memory
 Correlation (2): compare_disk_and_memory, flag_discrepancy
-State (4):      read_state, get_finding, get_findings, export_trace
+State (5):      read_state, get_finding, get_findings, export_trace,
+                describe_tool_catalog
 Graph (4):      generate_graph, serve_graph, merge_host_graphs,
                 build_reports_index
 Detection (6):  sigma_hunt, sigma_scan, analyze_vss, extract_pca,
@@ -68,6 +69,7 @@ from sift_mcp.state import CaseStateManager
 from sift_mcp.audit import AuditLogger
 
 import ipaddress
+import hashlib
 import json
 import os
 import re
@@ -91,6 +93,7 @@ from sift_mcp.models.sigma import (
 from sift_mcp.reporting import generate_report_payload
 from sift_mcp.safe_analysis import SafeAnalysisError, run_safe_analysis
 from sift_mcp.semantics import compute_coverage_from_findings
+from sift_mcp.tool_catalog import group_tool_catalog
 
 # ---------------------------------------------------------------------------
 # Server instance
@@ -100,7 +103,7 @@ mcp = FastMCP(
     name="savvydfir-mcp",
     instructions=(
         "Autonomous DFIR triage agent with cross-artifact correlation and "
-        "self-correction. Exposes 41 typed forensic tools over stdio MCP transport "
+        "self-correction. Exposes 42 typed forensic tools over stdio MCP transport "
         "for use with Claude Code on SANS SIFT Workstation."
     ),
 )
@@ -375,6 +378,321 @@ def _forensic_envelope(tool_name: str) -> dict:
     return {k: v for k, v in envelope.items() if v is not None}
 
 
+def _normalize_path_ref(path: Any) -> Optional[str]:
+    text = str(path or "").strip()
+    if not text:
+        return None
+    try:
+        return str(Path(text).resolve())
+    except Exception:
+        return text
+
+
+def _guess_ref_role(path: str, *, key_hint: Optional[str] = None) -> str:
+    hint = (key_hint or "").lower()
+    normalized = _normalize_path_ref(path) or path
+    if hint == "handle":
+        return "handle"
+    if hint in {"csv_path", "storage_path"}:
+        return "derived"
+    if hint in {"output_path", "report_path", "export_dir"}:
+        return "output"
+    if normalized.startswith(("/evidence/", "/mnt/", "/media/")):
+        return "input"
+    if normalized.startswith((str(_ANALYSIS_DIR), "/cases/", "/tmp/")):
+        return "derived"
+    if hint.endswith("_path"):
+        return "input"
+    return "derived"
+
+
+def _merge_ref_dicts(
+    existing: list[dict[str, Any]] | None,
+    new: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for collection in (existing or [], new or []):
+        if not isinstance(collection, dict):
+            items = [collection] if isinstance(collection, dict) else collection
+        else:
+            items = [collection]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                str(item.get("path") or "").strip(),
+                str(item.get("role") or "").strip(),
+                str(item.get("offset") or "").strip(),
+                str(item.get("hash_status") or "").strip(),
+            )
+            if not key[0] or not key[1] or key in seen:
+                continue
+            seen.add(key)
+            merged.append(dict(item))
+    return merged
+
+
+def _append_ref(
+    refs: list[dict[str, Any]],
+    *,
+    path: Any,
+    role: Optional[str] = None,
+    offset: Any = None,
+    hash_status: Optional[str] = None,
+    key_hint: Optional[str] = None,
+) -> None:
+    normalized_path = _normalize_path_ref(path)
+    if not normalized_path:
+        return
+    resolved_role = role or _guess_ref_role(normalized_path, key_hint=key_hint)
+    item: dict[str, Any] = {"path": normalized_path, "role": resolved_role}
+    if offset not in (None, ""):
+        item["offset"] = str(offset).strip()
+    if hash_status:
+        item["hash_status"] = hash_status
+    merged = _merge_ref_dicts(refs, [item])
+    refs[:] = merged
+
+
+def _collect_raw_evidence_refs(tool_name: str, response: dict[str, Any]) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    provenance = response.get("provenance")
+    if isinstance(provenance, dict):
+        _append_ref(refs, path=provenance.get("source_path"), role="input", key_hint="source_path")
+        _append_ref(refs, path=provenance.get("csv_path"), role="derived", key_hint="csv_path")
+        _append_ref(refs, path=provenance.get("storage_path"), role="derived", key_hint="storage_path")
+        for artifact_path in provenance.get("artifact_paths", []) or []:
+            _append_ref(refs, path=artifact_path, key_hint="artifact_paths")
+
+    handle = response.get("handle")
+    if isinstance(handle, dict):
+        _append_ref(refs, path=handle.get("path"), role="handle", key_hint="handle")
+
+    for key in (
+        "csv_path",
+        "storage_path",
+        "output_path",
+        "report_path",
+        "export_dir",
+        "image_path",
+        "target_path",
+        "dump_path",
+        "source_path",
+        "plaso_path",
+        "evtx_path",
+        "disk_image_path",
+        "mount_point",
+    ):
+        _append_ref(refs, path=response.get(key), key_hint=key)
+
+    if tool_name == "evidence.verify_integrity":
+        data = response.get("data")
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            _append_ref(refs, path=data[0].get("image_path"), role="input", key_hint="image_path")
+
+    return refs
+
+
+def _sha256_file(path: str) -> Optional[str]:
+    target = Path(path)
+    if not target.is_file():
+        return None
+    digest = hashlib.sha256()
+    with target.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _extract_verify_integrity_hash(response: dict[str, Any]) -> Optional[dict[str, str]]:
+    data = response.get("data")
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return None
+    record = data[0]
+    algorithm = str(record.get("algorithm") or "").strip().lower()
+    computed_hash = str(record.get("computed_hash") or "").strip().lower()
+    image_path = _normalize_path_ref(record.get("image_path"))
+    if algorithm != "sha256" or not computed_hash or not image_path:
+        return None
+    return {
+        "path": image_path,
+        "sha256": computed_hash,
+        "role": "input",
+        "source": "verify_integrity",
+    }
+
+
+def _derive_artifact_hashes(
+    tool_name: str,
+    response: dict[str, Any],
+    refs: list[dict[str, Any]],
+) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    artifact_hashes: list[dict[str, str]] = []
+    updated_refs = [dict(ref) for ref in refs]
+    seen: set[tuple[str, str, str, str]] = set()
+
+    verify_hash = _extract_verify_integrity_hash(response) if tool_name == "evidence.verify_integrity" else None
+    if verify_hash:
+        key = (
+            verify_hash["path"],
+            verify_hash["sha256"],
+            verify_hash["role"],
+            verify_hash["source"],
+        )
+        seen.add(key)
+        artifact_hashes.append(verify_hash)
+
+    for ref in updated_refs:
+        path = str(ref.get("path") or "").strip()
+        role = str(ref.get("role") or "").strip().lower()
+        if not path or not role:
+            continue
+
+        artifact_role = "input" if role == "input" else "output"
+        if artifact_role == "input":
+            reused = _state_manager.lookup_artifact_hash(path)
+            if reused:
+                candidate = {
+                    "path": _normalize_path_ref(reused.get("path")) or path,
+                    "sha256": str(reused.get("sha256") or "").strip().lower(),
+                    "role": "input",
+                    "source": str(reused.get("source") or "verify_integrity").strip().lower(),
+                }
+                key = (
+                    candidate["path"],
+                    candidate["sha256"],
+                    candidate["role"],
+                    candidate["source"],
+                )
+                if candidate["sha256"] and key not in seen:
+                    seen.add(key)
+                    artifact_hashes.append(candidate)
+                continue
+            ref.setdefault("hash_status", "unhashed_primary_input")
+            continue
+
+        sha256 = _sha256_file(path)
+        if not sha256:
+            continue
+        candidate = {
+            "path": _normalize_path_ref(path) or path,
+            "sha256": sha256,
+            "role": artifact_role,
+            "source": "computed",
+        }
+        key = (
+            candidate["path"],
+            candidate["sha256"],
+            candidate["role"],
+            candidate["source"],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        artifact_hashes.append(candidate)
+
+    return artifact_hashes, updated_refs
+
+
+def _sync_finding_provenance(finding_ids: list[str], raw_evidence_refs: list[dict[str, Any]]) -> None:
+    for finding_id in finding_ids:
+        finding = _state_manager.get_finding(finding_id)
+        if not finding:
+            continue
+        base_refs: list[dict[str, Any]] = []
+        _append_ref(
+            base_refs,
+            path=finding.get("artifact_path"),
+            offset=finding.get("artifact_offset"),
+            key_hint="artifact_path",
+        )
+        merged = _merge_ref_dicts(base_refs, raw_evidence_refs)
+        _state_manager.update_finding(finding_id, raw_evidence_refs=merged)
+
+
+def _record_execution_parity(
+    *,
+    execution_id: str,
+    tool_name: str,
+    command_line: str,
+    parameters: dict[str, Any],
+    duration_seconds: float,
+    exit_code: int,
+    outputs_summary: str,
+    started_entry: dict[str, Any],
+    completed_entry: dict[str, Any],
+) -> None:
+    _state_manager.add_execution(
+        {
+            "execution_id": execution_id,
+            "tool_name": tool_name,
+            "command_line": command_line,
+            "parameters": parameters,
+            "duration_seconds": round(duration_seconds, 4),
+            "exit_code": exit_code,
+            "outputs_summary": outputs_summary,
+            "iteration": _audit_logger.current_iteration,
+            "audit_started_entry_hash": started_entry.get("entry_hash"),
+            "audit_completed_entry_hash": completed_entry.get("entry_hash"),
+            "finding_ids_generated": [],
+        }
+    )
+
+
+def _finalize_tool_response(tool_name: str, response: Any) -> Any:
+    """Append the Phase 7 linked audit event and reconcile execution provenance."""
+    if not isinstance(response, dict):
+        return response
+    if response.get("status") == "error":
+        return response
+
+    execution_id = str(response.get("execution_id") or "").strip()
+    if not execution_id:
+        return response
+
+    try:
+        execution = _state_manager.get_execution(execution_id)
+        if execution and execution.get("audit_linked_entry_hash"):
+            return response
+
+        finding_ids = [
+            str(finding_id).strip()
+            for finding_id in response.get("findings_created", []) or []
+            if str(finding_id).strip()
+        ]
+        raw_evidence_refs = _collect_raw_evidence_refs(tool_name, response)
+        artifact_hashes, raw_evidence_refs = _derive_artifact_hashes(
+            tool_name,
+            response,
+            raw_evidence_refs,
+        )
+        linked_entry = _audit_logger.log_link(
+            execution_id=execution_id,
+            tool_name=tool_name,
+            finding_ids=finding_ids,
+            artifact_refs=[ref["path"] for ref in raw_evidence_refs],
+            artifact_hashes=artifact_hashes,
+            raw_evidence_refs=raw_evidence_refs,
+        )
+        _state_manager.link_execution(
+            execution_id,
+            tool_name=tool_name,
+            command_line=response.get("raw_command"),
+            finding_ids_generated=finding_ids,
+            audit_linked_entry_hash=linked_entry.get("entry_hash"),
+            artifact_hashes=artifact_hashes,
+            raw_evidence_refs=raw_evidence_refs,
+        )
+        _sync_finding_provenance(finding_ids, raw_evidence_refs)
+        response["artifact_hashes"] = artifact_hashes
+        response["raw_evidence_refs"] = raw_evidence_refs
+        return response
+    except Exception as exc:
+        response.setdefault("phase7_link_warning", str(exc))
+        return response
+
+
 # ===========================================================================
 # EVIDENCE NAMESPACE (2 tools)
 # ===========================================================================
@@ -403,7 +721,10 @@ def verify_integrity(image_path: str) -> dict[str, Any]:
         algorithm, verified (bool), verification_time.
     """
     try:
-        return _verify_integrity(image_path=image_path)
+        return _finalize_tool_response(
+            "evidence.verify_integrity",
+            _verify_integrity(image_path=image_path),
+        )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "verify_integrity"}
 
@@ -475,7 +796,7 @@ def extract_prefetch(
                                case_id=case_id, max_entries=max_entries)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.extract_prefetch"))
-        return _r
+        return _finalize_tool_response("disk.extract_prefetch", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "extract_prefetch"}
 
@@ -514,7 +835,7 @@ def get_amcache(
                           case_id=case_id, max_entries=max_entries)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.get_amcache"))
-        return _r
+        return _finalize_tool_response("disk.get_amcache", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "get_amcache"}
 
@@ -562,7 +883,7 @@ def extract_mft_timeline(
         )
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.extract_mft_timeline"))
-        return _r
+        return _finalize_tool_response("disk.extract_mft_timeline", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "extract_mft_timeline"}
 
@@ -597,7 +918,10 @@ def list_deleted_files(
         status, records (list of DeletedFile dicts), count, execution_id.
     """
     try:
-        return _list_deleted_files(image_path=image_path, case_id=case_id, max_entries=max_entries)
+        return _finalize_tool_response(
+            "disk.list_deleted_files",
+            _list_deleted_files(image_path=image_path, case_id=case_id, max_entries=max_entries),
+        )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "list_deleted_files"}
 
@@ -680,7 +1004,7 @@ def summarize_evtx(
         )
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.summarize_evtx"))
-        return _r
+        return _finalize_tool_response("disk.summarize_evtx", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "summarize_evtx"}
 
@@ -746,7 +1070,7 @@ def extract_registry_run_keys(
         )
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.extract_registry_run_keys"))
-        return _r
+        return _finalize_tool_response("disk.extract_registry_run_keys", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "extract_registry_run_keys"}
 
@@ -780,7 +1104,10 @@ def detect_profile(dump_path: str) -> dict[str, Any]:
     if not _MEMORY_AVAILABLE:
         return _memory_unavailable("detect_profile")
     try:
-        return _detect_profile(dump_path=dump_path)
+        return _finalize_tool_response(
+            "memory.detect_profile",
+            _detect_profile(dump_path=dump_path),
+        )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "detect_profile"}
 
@@ -807,7 +1134,10 @@ def list_processes(dump_path: str) -> dict[str, Any]:
     if not _MEMORY_AVAILABLE:
         return _memory_unavailable("list_processes")
     try:
-        return _list_processes(dump_path=dump_path)
+        return _finalize_tool_response(
+            "memory.list_processes",
+            _list_processes(dump_path=dump_path),
+        )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "list_processes"}
 
@@ -840,7 +1170,7 @@ def scan_processes(dump_path: str) -> dict[str, Any]:
         _r = _scan_processes(dump_path=dump_path)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("memory.scan_processes"))
-        return _r
+        return _finalize_tool_response("memory.scan_processes", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "scan_processes"}
 
@@ -873,7 +1203,7 @@ def scan_network(dump_path: str) -> dict[str, Any]:
         _r = _scan_network(dump_path=dump_path)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("memory.scan_network"))
-        return _r
+        return _finalize_tool_response("memory.scan_network", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "scan_network"}
 
@@ -912,7 +1242,7 @@ def detect_injection(
         _r = _detect_injection(dump_path=dump_path, pid=pid)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("memory.detect_injection"))
-        return _r
+        return _finalize_tool_response("memory.detect_injection", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "detect_injection"}
 
@@ -944,7 +1274,7 @@ def list_dlls(dump_path: str, pid: int) -> dict[str, Any]:
         _r = _list_dlls(dump_path=dump_path, pid=pid)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("memory.list_dlls"))
-        return _r
+        return _finalize_tool_response("memory.list_dlls", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "list_dlls"}
 
@@ -986,7 +1316,10 @@ def build_timeline(
         duration_seconds, execution_id.
     """
     try:
-        return _build_timeline(source_path=source_path, case_id=case_id, parsers=parsers)
+        return _finalize_tool_response(
+            "timeline.build_timeline",
+            _build_timeline(source_path=source_path, case_id=case_id, parsers=parsers),
+        )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "build_timeline"}
 
@@ -1031,12 +1364,15 @@ def query_timeline(
         status, events (list of TimelineEvent dicts), event_count, execution_id.
     """
     try:
-        return _query_timeline(
-            plaso_path=plaso_path,
-            start=start,
-            end=end,
-            filter_expr=filter_expr,
-            output_format=output_format,
+        return _finalize_tool_response(
+            "timeline.query_timeline",
+            _query_timeline(
+                plaso_path=plaso_path,
+                start=start,
+                end=end,
+                filter_expr=filter_expr,
+                output_format=output_format,
+            ),
         )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "query_timeline"}
@@ -1077,7 +1413,10 @@ def scan_files(
         status, matches (list), match_count, execution_id.
     """
     try:
-        return _scan_files(rules_path=rules_path, target_path=target_path, recursive=recursive)
+        return _finalize_tool_response(
+            "yara.scan_files",
+            _scan_files(rules_path=rules_path, target_path=target_path, recursive=recursive),
+        )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "scan_files"}
 
@@ -1108,7 +1447,10 @@ def scan_memory(
         status, matches (list), match_count, execution_id.
     """
     try:
-        return _scan_memory(rules_path=rules_path, dump_path=dump_path)
+        return _finalize_tool_response(
+            "yara.scan_memory",
+            _scan_memory(rules_path=rules_path, dump_path=dump_path),
+        )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "scan_memory"}
 
@@ -1158,7 +1500,7 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
     import time as _time
     _tool = "correlation.compare_disk_and_memory"
     _eid = _audit_logger.next_execution_id()
-    _audit_logger.log_execution(
+    _started = _audit_logger.log_execution(
         execution_id=_eid,
         tool_name=_tool,
         parameters={"case_id": case_id},
@@ -1167,27 +1509,55 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
     _t0 = _time.monotonic()
     try:
         result = _compare_disk_and_memory(case_id=case_id)
-        _audit_logger.log_result(
+        duration = _time.monotonic() - _t0
+        outputs_summary = f"{result.get('discrepancy_count', 0)} discrepancies found"
+        _completed = _audit_logger.log_result(
             execution_id=_eid,
             exit_code=0,
-            duration=_time.monotonic() - _t0,
-            outputs_summary=f"{result.get('discrepancy_count', 0)} discrepancies found",
+            duration=duration,
+            outputs_summary=outputs_summary,
             finding_ids=[],
             tool_name=_tool,
             command_line=f"compare_disk_and_memory({case_id!r})",
             parameters={"case_id": case_id},
         )
-        return result
+        _record_execution_parity(
+            execution_id=_eid,
+            tool_name=_tool,
+            command_line=f"compare_disk_and_memory({case_id!r})",
+            parameters={"case_id": case_id},
+            duration_seconds=duration,
+            exit_code=0,
+            outputs_summary=outputs_summary,
+            started_entry=_started,
+            completed_entry=_completed,
+        )
+        if isinstance(result, dict):
+            result.setdefault("execution_id", _eid)
+        return _finalize_tool_response(_tool, result)
     except Exception as exc:
-        _audit_logger.log_result(
+        duration = _time.monotonic() - _t0
+        outputs_summary = f"error: {exc}"
+        _completed = _audit_logger.log_result(
             execution_id=_eid,
             exit_code=1,
-            duration=_time.monotonic() - _t0,
-            outputs_summary=f"error: {exc}",
+            duration=duration,
+            outputs_summary=outputs_summary,
             finding_ids=[],
             tool_name=_tool,
             command_line=f"compare_disk_and_memory({case_id!r})",
             parameters={"case_id": case_id},
+        )
+        _record_execution_parity(
+            execution_id=_eid,
+            tool_name=_tool,
+            command_line=f"compare_disk_and_memory({case_id!r})",
+            parameters={"case_id": case_id},
+            duration_seconds=duration,
+            exit_code=1,
+            outputs_summary=outputs_summary,
+            started_entry=_started,
+            completed_entry=_completed,
         )
         return {"status": "error", "error": str(exc), "tool": "compare_disk_and_memory"}
 
@@ -1234,7 +1604,7 @@ def flag_discrepancy(
 
 
 # ===========================================================================
-# STATE NAMESPACE (4 tools)
+# STATE NAMESPACE (5 tools)
 # ===========================================================================
 
 
@@ -1373,6 +1743,40 @@ def export_trace(case_id: str) -> dict[str, Any]:
         return _export_trace(case_id=case_id)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "export_trace"}
+
+
+@mcp.tool()
+def describe_tool_catalog(domain: Optional[str] = None) -> dict[str, Any]:
+    """Return the authoritative MCP tool-domain catalog for integration planning.
+
+    This is a read-only introspection tool. It exposes the stable catalog used
+    by response contracts and finding normalization so future orchestration can
+    scope tools by concern without reverse-engineering source files.
+
+    Parameters
+    ----------
+    domain:
+        Optional domain filter such as ``"disk"``, ``"memory"``, or
+        ``"timeline"``.
+
+    Returns
+    -------
+    dict
+        status, domain_filter, domain_count, tool_count, catalog.
+    """
+    try:
+        grouped = group_tool_catalog(domain=domain)
+    except ValueError as exc:
+        return {"status": "error", "error": str(exc), "tool": "describe_tool_catalog"}
+
+    return {
+        "status": "ok",
+        "tool_name": "state.describe_tool_catalog",
+        "domain_filter": domain.lower() if isinstance(domain, str) and domain else None,
+        "domain_count": len(grouped),
+        "tool_count": sum(len(entries) for entries in grouped.values()),
+        "catalog": grouped,
+    }
 
 
 # ===========================================================================
@@ -1877,8 +2281,23 @@ def sigma_hunt(
         # Get Sigma rules
         git clone --depth=1 https://github.com/SigmaHQ/sigma.git /opt/sigma
     """
+    import time as _time
+
     tool_name = "sigma_hunt"
-    # audit: tool started (logged via state_manager)
+    _eid = _audit_logger.next_execution_id()
+    _started = _audit_logger.log_execution(
+        execution_id=_eid,
+        tool_name="detection.sigma_hunt",
+        parameters={
+            "evtx_path": evtx_path,
+            "sigma_rules_path": sigma_rules_path,
+            "chainsaw_mapping": chainsaw_mapping,
+            "max_entries": max_entries,
+            "case_id": case_id,
+        },
+        command_line=f"sigma_hunt({evtx_path!r})",
+    )
+    _t0 = _time.monotonic()
 
     # ------------------------------------------------------------------
     # 1. Resolve Chainsaw binary
@@ -1910,13 +2329,47 @@ def sigma_hunt(
             "Then get Sigma rules:\n"
             "  git clone --depth=1 https://github.com/SigmaHQ/sigma.git /opt/sigma"
         )
-        # audit: tool completed
-        return {
+        _completed = _audit_logger.log_result(
+            execution_id=_eid,
+            exit_code=127,
+            duration=_time.monotonic() - _t0,
+            outputs_summary="chainsaw binary not found",
+            finding_ids=[],
+            tool_name="detection.sigma_hunt",
+            command_line=f"sigma_hunt({evtx_path!r})",
+            parameters={
+                "evtx_path": evtx_path,
+                "sigma_rules_path": sigma_rules_path,
+                "chainsaw_mapping": chainsaw_mapping,
+                "max_entries": max_entries,
+                "case_id": case_id,
+            },
+        )
+        _record_execution_parity(
+            execution_id=_eid,
+            tool_name="detection.sigma_hunt",
+            command_line=f"sigma_hunt({evtx_path!r})",
+            parameters={
+                "evtx_path": evtx_path,
+                "sigma_rules_path": sigma_rules_path,
+                "chainsaw_mapping": chainsaw_mapping,
+                "max_entries": max_entries,
+                "case_id": case_id,
+            },
+            duration_seconds=_time.monotonic() - _t0,
+            exit_code=127,
+            outputs_summary="chainsaw binary not found",
+            started_entry=_started,
+            completed_entry=_completed,
+        )
+        return _finalize_tool_response("detection.sigma_hunt", {
             "status": "tool_not_found",
             "tool": tool_name,
             "error": msg,
             "hint": "Run sigma_hunt after installing Chainsaw. Investigation can continue with summarize_evtx + LLM analysis in the meantime.",
-        }
+            "execution_id": _eid,
+            "raw_command": f"sigma_hunt({evtx_path!r})",
+        })
 
     # ------------------------------------------------------------------
     # 2. Resolve Sigma rules directory
@@ -2072,7 +2525,7 @@ def sigma_hunt(
     # 11. Create CaseStateManager findings
     # ------------------------------------------------------------------
     finding_ids: list[str] = []
-    execution_id = f"E-sigma-{ts}"
+    execution_id = _eid
 
     for i, hit in enumerate(hits_to_process):
         rule_name = hit.get("name", hit.get("rule", f"unknown_rule_{i}"))
@@ -2172,7 +2625,41 @@ def sigma_hunt(
 
     # audit: tool completed
 
-    return {
+    outputs_summary = f"{hits_total} sigma hits across {evtx_path}"
+    _completed = _audit_logger.log_result(
+        execution_id=_eid,
+        exit_code=0,
+        duration=_time.monotonic() - _t0,
+        outputs_summary=outputs_summary,
+        finding_ids=[],
+        tool_name="detection.sigma_hunt",
+        command_line=f"sigma_hunt({evtx_path!r})",
+        parameters={
+            "evtx_path": evtx_path,
+            "sigma_rules_path": sigma_rules_path,
+            "chainsaw_mapping": chainsaw_mapping,
+            "max_entries": max_entries,
+            "case_id": case_id,
+        },
+    )
+    _record_execution_parity(
+        execution_id=_eid,
+        tool_name="detection.sigma_hunt",
+        command_line=f"sigma_hunt({evtx_path!r})",
+        parameters={
+            "evtx_path": evtx_path,
+            "sigma_rules_path": sigma_rules_path,
+            "chainsaw_mapping": chainsaw_mapping,
+            "max_entries": max_entries,
+            "case_id": case_id,
+        },
+        duration_seconds=_time.monotonic() - _t0,
+        exit_code=0,
+        outputs_summary=outputs_summary,
+        started_entry=_started,
+        completed_entry=_completed,
+    )
+    return _finalize_tool_response("detection.sigma_hunt", {
         "status": "success" if hits_total > 0 else "no_hits",
         "tool": tool_name,
         "evtx_path": evtx_path,
@@ -2181,6 +2668,7 @@ def sigma_hunt(
         "hits_returned": len(hits_to_process),
         "findings_created": finding_ids,
         "execution_id": execution_id,
+        "raw_command": f"sigma_hunt({evtx_path!r})",
         "output_path": str(out_json),
         "chainsaw_stderr": proc.stderr.strip()[-2000:] if proc.stderr else "",
         "note": (
@@ -2193,7 +2681,7 @@ def sigma_hunt(
         ),
 
         **_forensic_envelope("detection.sigma_hunt"),
-    }
+    })
 
 
 # ===========================================================================
@@ -2273,8 +2761,9 @@ def analyze_vss(
            ``cp /mnt/shadow_<N>/Windows/System32/winevt/Logs/Security.evtx /cases/<case_id>/``
         4. Run ``summarize_evtx`` on the recovered file, then ``sigma_hunt``.
     """
+    import time as _time
+
     tool_name = "analyze_vss"
-    # audit: tool started (logged via state_manager)
 
     # Default artifacts to check
     if check_artifacts is None:
@@ -2318,6 +2807,20 @@ def analyze_vss(
             "error": "vshadowinfo not found. Install with: sudo apt-get install libvshadow-utils",
             "hint": "On SIFT: vshadowinfo should be pre-installed. Check: which vshadowinfo",
         }
+
+    _eid = _audit_logger.next_execution_id()
+    _started = _audit_logger.log_execution(
+        execution_id=_eid,
+        tool_name="disk.analyze_vss",
+        parameters={
+            "disk_image_path": disk_image_path,
+            "partition_offset_sectors": partition_offset_sectors,
+            "check_artifacts": check_artifacts,
+            "case_id": case_id,
+        },
+        command_line=f"analyze_vss({disk_image_path!r})",
+    )
+    _t0 = _time.monotonic()
 
     # ------------------------------------------------------------------
     # 2. Auto-detect partition offset if not provided
@@ -2583,8 +3086,7 @@ def analyze_vss(
     # ------------------------------------------------------------------
     # 6. Create CaseStateManager findings
     # ------------------------------------------------------------------
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    execution_id = f"E-vss-{ts}"
+    execution_id = _eid
     finding_ids: list[str] = []
 
     # Summary finding: shadow copy inventory
@@ -2689,7 +3191,39 @@ def analyze_vss(
 
     # audit: tool completed
 
-    return {
+    outputs_summary = f"{total_shadows} shadow copies analyzed for {disk_image_path}"
+    _completed = _audit_logger.log_result(
+        execution_id=_eid,
+        exit_code=0,
+        duration=_time.monotonic() - _t0,
+        outputs_summary=outputs_summary,
+        finding_ids=[],
+        tool_name="disk.analyze_vss",
+        command_line=f"analyze_vss({disk_image_path!r})",
+        parameters={
+            "disk_image_path": disk_image_path,
+            "partition_offset_sectors": partition_offset_sectors,
+            "check_artifacts": check_artifacts,
+            "case_id": case_id,
+        },
+    )
+    _record_execution_parity(
+        execution_id=_eid,
+        tool_name="disk.analyze_vss",
+        command_line=f"analyze_vss({disk_image_path!r})",
+        parameters={
+            "disk_image_path": disk_image_path,
+            "partition_offset_sectors": partition_offset_sectors,
+            "check_artifacts": check_artifacts,
+            "case_id": case_id,
+        },
+        duration_seconds=_time.monotonic() - _t0,
+        exit_code=0,
+        outputs_summary=outputs_summary,
+        started_entry=_started,
+        completed_entry=_completed,
+    )
+    return _finalize_tool_response("disk.analyze_vss", {
         "status": "success",
         "tool": tool_name,
         "disk_image_path": disk_image_path,
@@ -2699,6 +3233,7 @@ def analyze_vss(
         "artifacts_recoverable": {k: v for k, v in artifacts_recoverable.items() if v},
         "findings_created": finding_ids,
         "execution_id": execution_id,
+        "raw_command": f"analyze_vss({disk_image_path!r})",
         "vshadowinfo_output": vsi_result.stdout[-3000:] if hasattr(vsi_result, 'stdout') else "",
         "note": (
             "If Security.evtx is recoverable and EID 1102 was found in the live EVTX, "
@@ -2710,7 +3245,7 @@ def analyze_vss(
         ),
 
         **_forensic_envelope("disk.analyze_vss"),
-    }
+    })
 
 
 # ===========================================================================
@@ -2793,8 +3328,9 @@ def extract_pca(
     that is the same identifier used in Amcache.  Cross-referencing allows hash
     lookup even if the binary was deleted before Amcache was parsed.
     """
+    import time as _time
+
     tool_name = "extract_pca"
-    # audit: tool started (logged via state_manager)
 
     # ------------------------------------------------------------------
     # 1. Construct artifact paths
@@ -2842,6 +3378,20 @@ def extract_pca(
                 "extract_prefetch() + get_amcache() + extract_registry_run_keys()"
             ),
         }
+
+    _eid = _audit_logger.next_execution_id()
+    _started = _audit_logger.log_execution(
+        execution_id=_eid,
+        tool_name="disk.extract_pca",
+        parameters={
+            "mount_point": mount_point,
+            "max_entries": max_entries,
+            "flag_suspicious_paths": flag_suspicious_paths,
+            "case_id": case_id,
+        },
+        command_line=f"extract_pca({mount_point!r})",
+    )
+    _t0 = _time.monotonic()
 
     # ------------------------------------------------------------------
     # 3. Suspicious path indicators
@@ -2978,8 +3528,7 @@ def extract_pca(
     # ------------------------------------------------------------------
     # 7. Create CaseStateManager findings
     # ------------------------------------------------------------------
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    execution_id = f"E-pca-{ts}"
+    execution_id = _eid
     finding_ids: list[str] = []
 
     # Summary finding
@@ -3048,7 +3597,39 @@ def extract_pca(
 
     # audit: tool completed
 
-    return {
+    outputs_summary = f"{total_entries} PCA entries parsed from {pca_launch_dic}"
+    _completed = _audit_logger.log_result(
+        execution_id=_eid,
+        exit_code=0,
+        duration=_time.monotonic() - _t0,
+        outputs_summary=outputs_summary,
+        finding_ids=[],
+        tool_name="disk.extract_pca",
+        command_line=f"extract_pca({mount_point!r})",
+        parameters={
+            "mount_point": mount_point,
+            "max_entries": max_entries,
+            "flag_suspicious_paths": flag_suspicious_paths,
+            "case_id": case_id,
+        },
+    )
+    _record_execution_parity(
+        execution_id=_eid,
+        tool_name="disk.extract_pca",
+        command_line=f"extract_pca({mount_point!r})",
+        parameters={
+            "mount_point": mount_point,
+            "max_entries": max_entries,
+            "flag_suspicious_paths": flag_suspicious_paths,
+            "case_id": case_id,
+        },
+        duration_seconds=_time.monotonic() - _t0,
+        exit_code=0,
+        outputs_summary=outputs_summary,
+        started_entry=_started,
+        completed_entry=_completed,
+    )
+    return _finalize_tool_response("disk.extract_pca", {
         "status": "success",
         "tool": tool_name,
         "pca_dir": str(pca_dir),
@@ -3060,6 +3641,7 @@ def extract_pca(
         "general_db_entries": general_db_entries[:50],
         "findings_created": finding_ids,
         "execution_id": execution_id,
+        "raw_command": f"extract_pca({mount_point!r})",
         "parse_errors": parse_errors[:10] if parse_errors else [],
         "windows_version_note": "PCA artifact present — confirms Windows 11 22H2 or later.",
         "note": (
@@ -3069,7 +3651,7 @@ def extract_pca(
             f"PcaGeneralDb returned {len(general_db_entries[:50])} of {len(general_db_entries)} entries. "
             "Cross-reference executable paths with Amcache SHA-1 hashes."
         ),
-    }
+    })
 
 
 # ===========================================================================
@@ -3671,7 +4253,7 @@ def generate_report(case_id: str) -> dict[str, Any]:
     import time as _time
     _tool = "reporting.generate_report"
     _eid = _audit_logger.next_execution_id()
-    _audit_logger.log_execution(
+    _started = _audit_logger.log_execution(
         execution_id=_eid,
         tool_name=_tool,
         parameters={"case_id": case_id},
@@ -3685,27 +4267,56 @@ def generate_report(case_id: str) -> dict[str, Any]:
             sigma_scan_fn=sigma_scan,
             coverage_fn=coverage_report,
         )
-        _audit_logger.log_result(
+        duration = _time.monotonic() - _t0
+        exit_code = 0 if result.get("status") == "ok" else 1
+        outputs_summary = f"report generated: {result.get('report_path', 'unknown')}"
+        _completed = _audit_logger.log_result(
             execution_id=_eid,
-            exit_code=0 if result.get("status") == "ok" else 1,
-            duration=_time.monotonic() - _t0,
-            outputs_summary=f"report generated: {result.get('report_path', 'unknown')}",
+            exit_code=exit_code,
+            duration=duration,
+            outputs_summary=outputs_summary,
             finding_ids=[],
             tool_name=_tool,
             command_line=f"generate_report({case_id!r})",
             parameters={"case_id": case_id},
         )
-        return result
+        _record_execution_parity(
+            execution_id=_eid,
+            tool_name=_tool,
+            command_line=f"generate_report({case_id!r})",
+            parameters={"case_id": case_id},
+            duration_seconds=duration,
+            exit_code=exit_code,
+            outputs_summary=outputs_summary,
+            started_entry=_started,
+            completed_entry=_completed,
+        )
+        if isinstance(result, dict):
+            result.setdefault("execution_id", _eid)
+        return _finalize_tool_response(_tool, result)
     except Exception as exc:
-        _audit_logger.log_result(
+        duration = _time.monotonic() - _t0
+        outputs_summary = f"error: {exc}"
+        _completed = _audit_logger.log_result(
             execution_id=_eid,
             exit_code=1,
-            duration=_time.monotonic() - _t0,
-            outputs_summary=f"error: {exc}",
+            duration=duration,
+            outputs_summary=outputs_summary,
             finding_ids=[],
             tool_name=_tool,
             command_line=f"generate_report({case_id!r})",
             parameters={"case_id": case_id},
+        )
+        _record_execution_parity(
+            execution_id=_eid,
+            tool_name=_tool,
+            command_line=f"generate_report({case_id!r})",
+            parameters={"case_id": case_id},
+            duration_seconds=duration,
+            exit_code=1,
+            outputs_summary=outputs_summary,
+            started_entry=_started,
+            completed_entry=_completed,
         )
         return {"status": "error", "error": str(exc), "tool": "generate_report"}
 
@@ -4414,7 +5025,7 @@ def sigma_scan(case_id: str) -> dict[str, Any]:
     import time as _time
     _tool = "detection.sigma_scan"
     _eid = _audit_logger.next_execution_id()
-    _audit_logger.log_execution(
+    _started = _audit_logger.log_execution(
         execution_id=_eid,
         tool_name=_tool,
         parameters={"case_id": case_id},
@@ -4454,28 +5065,58 @@ def sigma_scan(case_id: str) -> dict[str, Any]:
         )
 
         payload = result.model_dump()
-        _audit_logger.log_result(
+        duration = _time.monotonic() - _t0
+        outputs_summary = (
+            f"{len(all_hits)} hits ({critical} critical, {high} high) across "
+            f"{len(detectors_run)} detectors"
+        )
+        _completed = _audit_logger.log_result(
             execution_id=_eid,
             exit_code=0,
-            duration=_time.monotonic() - _t0,
-            outputs_summary=f"{len(all_hits)} hits ({critical} critical, {high} high) across {len(detectors_run)} detectors",
+            duration=duration,
+            outputs_summary=outputs_summary,
             finding_ids=[],
             tool_name=_tool,
             command_line=f"sigma_scan({case_id!r})",
             parameters={"case_id": case_id},
         )
-        return payload
+        _record_execution_parity(
+            execution_id=_eid,
+            tool_name=_tool,
+            command_line=f"sigma_scan({case_id!r})",
+            parameters={"case_id": case_id},
+            duration_seconds=duration,
+            exit_code=0,
+            outputs_summary=outputs_summary,
+            started_entry=_started,
+            completed_entry=_completed,
+        )
+        payload.setdefault("execution_id", _eid)
+        return _finalize_tool_response(_tool, payload)
 
     except Exception as exc:
-        _audit_logger.log_result(
+        duration = _time.monotonic() - _t0
+        outputs_summary = f"error: {exc}"
+        _completed = _audit_logger.log_result(
             execution_id=_eid,
             exit_code=1,
-            duration=_time.monotonic() - _t0,
-            outputs_summary=f"error: {exc}",
+            duration=duration,
+            outputs_summary=outputs_summary,
             finding_ids=[],
             tool_name=_tool,
             command_line=f"sigma_scan({case_id!r})",
             parameters={"case_id": case_id},
+        )
+        _record_execution_parity(
+            execution_id=_eid,
+            tool_name=_tool,
+            command_line=f"sigma_scan({case_id!r})",
+            parameters={"case_id": case_id},
+            duration_seconds=duration,
+            exit_code=1,
+            outputs_summary=outputs_summary,
+            started_entry=_started,
+            completed_entry=_completed,
         )
         return ToolResult(
             status="error", tool="sigma_scan", error=str(exc),

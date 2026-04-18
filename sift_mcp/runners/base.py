@@ -416,7 +416,7 @@ class SafeRunner:
         effective_tool = tool_name or self._tool_name
 
         # Fail-closed: if this write raises, we do NOT run the command.
-        self._audit.log_execution(
+        started_entry = self._audit.log_execution(
             execution_id=execution_id,
             tool_name=effective_tool,
             parameters=parameters,
@@ -465,7 +465,7 @@ class SafeRunner:
         # ------------------------------------------------------------------
         outputs_summary = self._build_outputs_summary(stdout, stderr, exit_code, timed_out)
 
-        self._audit.log_result(
+        completed_entry = self._audit.log_result(
             execution_id=execution_id,
             exit_code=exit_code,
             duration=duration,
@@ -490,6 +490,10 @@ class SafeRunner:
                         "duration_seconds": round(duration, 4),
                         "exit_code": exit_code,
                         "outputs_summary": outputs_summary,
+                        "iteration": getattr(self._audit, "current_iteration", 1),
+                        "audit_started_entry_hash": started_entry.get("entry_hash"),
+                        "audit_completed_entry_hash": completed_entry.get("entry_hash"),
+                        "finding_ids_generated": [],
                     }
                 )
             except CaseStateError:

@@ -53,6 +53,15 @@ from sift_mcp.tools._cache import (
     get_valid_cached_artifact,
     record_cache_hit,
 )
+from sift_mcp.tools._contracts import (
+    build_contract_response,
+    build_follow_up_option,
+    build_handle,
+    build_provenance,
+    compact_unique,
+    sanitize_payload_fields,
+    state_path_for_manager,
+)
 
 if TYPE_CHECKING:
     from sift_mcp.audit import AuditLogger
@@ -169,6 +178,25 @@ def _persist_csv(tmp_csv_path: str, tool_short_name: str) -> str:
         return str(dest)
     except OSError:
         return tmp_csv_path
+
+
+def _persist_rows_as_csv(
+    rows: list[dict[str, Any]],
+    *,
+    tool_short_name: str,
+    filename: str,
+) -> Optional[str]:
+    """Persist structured rows as a reusable CSV artifact."""
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"savvydfir_{tool_short_name}_rows_") as tmp_dir:
+            tmp_csv = os.path.join(tmp_dir, filename)
+            _write_csv_rows(
+                [{key: "" if value is None else str(value) for key, value in row.items()} for row in rows],
+                tmp_csv,
+            )
+            return _persist_csv(tmp_csv, tool_short_name)
+    except Exception:
+        return None
 
 
 def _read_csv(csv_path: str) -> list[dict[str, str]]:
@@ -315,6 +343,312 @@ def _resolved_path_str(path: str) -> str:
         return str(Path(path).resolve())
     except OSError:
         return path
+
+
+def _dt_to_iso(value: Optional[datetime]) -> Optional[str]:
+    if value is None:
+        return None
+    return value.isoformat()
+
+
+def _prefetch_contract_payload(
+    *,
+    response: dict[str, Any],
+    records: list[PrefetchRecord],
+    image_path: str,
+    prefetch_dir: str,
+    csv_path: Optional[str],
+) -> dict[str, Any]:
+    normalized = [
+        {
+            "executable_name": record.executable_name,
+            "run_count": record.run_count,
+            "first_execution_time": _dt_to_iso(record.source_created),
+            "last_execution_time": _dt_to_iso(record.source_modified),
+            "prefetch_path": record.prefetch_path,
+        }
+        for record in records[:20]
+    ]
+    summary = (
+        f"Prefetch parsed {response.get('records_count', len(records))} execution artifacts "
+        f"from {prefetch_dir}. Persisted CSV{' available' if csv_path else ' unavailable'} for deeper review."
+    )
+    return build_contract_response(
+        response,
+        tool_name="disk.extract_prefetch",
+        summary=summary,
+        normalized_observations=normalized,
+        provenance=build_provenance(
+            tool_name="disk.extract_prefetch",
+            execution_id=response.get("execution_id"),
+            raw_command=response.get("raw_command"),
+            state_path=state_path_for_manager(_state),
+            csv_path=csv_path,
+            artifact_paths=[prefetch_dir],
+        ),
+        pivot_entities={
+            "executable_names": compact_unique(record.executable_name for record in records),
+            "prefetch_paths": compact_unique(record.prefetch_path for record in records),
+            "referenced_files": compact_unique(
+                path for record in records for path in record.referenced_files
+            ),
+            "timestamps": compact_unique(
+                _dt_to_iso(record.source_modified) or _dt_to_iso(record.source_created)
+                for record in records
+            ),
+        },
+        follow_up_options=[
+            build_follow_up_option(
+                "get_amcache",
+                reason="Recover hashes and publisher metadata for executed binaries.",
+                parameters={"image_path": image_path},
+            ),
+            build_follow_up_option(
+                "summarize_evtx",
+                reason="Correlate execution with Security 4688 process-creation evidence.",
+                parameters={"image_path": image_path, "event_ids": "4688"},
+            ),
+            build_follow_up_option(
+                "extract_mft_timeline",
+                reason="Pivot from execution evidence into file creation and timestomping context.",
+                parameters={"image_path": image_path},
+            ),
+        ],
+        handle=build_handle(
+            kind="csv",
+            path=csv_path or prefetch_dir,
+            description="Persisted Prefetch artifact snapshot.",
+            tool_name="disk.extract_prefetch",
+        ),
+    )
+
+
+def _amcache_contract_payload(
+    *,
+    response: dict[str, Any],
+    records: list[AmcacheRecord],
+    image_path: str,
+    hive_path: str,
+    csv_path: Optional[str],
+) -> dict[str, Any]:
+    normalized = [
+        {
+            "file_path": record.file_path,
+            "sha1_hash": record.sha1_hash,
+            "publisher": record.publisher,
+            "install_time": _dt_to_iso(record.install_time),
+        }
+        for record in records[:20]
+    ]
+    summary = (
+        f"Amcache returned {response.get('records_count', len(records))} execution records from {hive_path}. "
+        "Use the persisted CSV to pivot on hashes and deleted binaries."
+    )
+    return build_contract_response(
+        response,
+        tool_name="disk.get_amcache",
+        summary=summary,
+        normalized_observations=normalized,
+        provenance=build_provenance(
+            tool_name="disk.get_amcache",
+            execution_id=response.get("execution_id"),
+            raw_command=response.get("raw_command"),
+            state_path=state_path_for_manager(_state),
+            csv_path=csv_path,
+            artifact_paths=[hive_path],
+        ),
+        pivot_entities={
+            "file_paths": compact_unique(record.file_path for record in records),
+            "sha1_hashes": compact_unique(record.sha1_hash for record in records),
+            "publishers": compact_unique(record.publisher for record in records),
+        },
+        follow_up_options=[
+            build_follow_up_option(
+                "extract_prefetch",
+                reason="Confirm execution count and first/last run timestamps.",
+                parameters={"image_path": image_path},
+            ),
+            build_follow_up_option(
+                "summarize_evtx",
+                reason="Correlate binaries with process-creation and service-install events.",
+                parameters={"image_path": image_path, "event_ids": "4688,7045,4698"},
+            ),
+            build_follow_up_option(
+                "extract_registry_run_keys",
+                reason="Check whether executed binaries were also persisted via ASEPs.",
+                parameters={"image_path": image_path},
+            ),
+        ],
+        handle=build_handle(
+            kind="csv",
+            path=csv_path or hive_path,
+            description="Persisted Amcache execution dataset.",
+            tool_name="disk.get_amcache",
+        ),
+    )
+
+
+def _mft_contract_payload(
+    *,
+    response: dict[str, Any],
+    records: list[MftEntry],
+    image_path: str,
+    mft_path: str,
+    csv_path: str,
+) -> dict[str, Any]:
+    normalized = [
+        {
+            "entry_number": record.entry_number,
+            "file_path": record.file_path,
+            "si_created": _dt_to_iso(record.si_created),
+            "fn_created": _dt_to_iso(record.fn_created),
+            "is_deleted": record.is_deleted,
+        }
+        for record in records[:20]
+    ]
+    summary = (
+        f"MFT timeline returned {response.get('records_count', len(records))} rows "
+        f"from {mft_path} with {response.get('timestomping_candidates', 0)} timestomping candidates."
+    )
+    evidence_excerpt = next(
+        (record.file_path for record in records if record.file_path),
+        None,
+    )
+    return build_contract_response(
+        response,
+        tool_name="disk.extract_mft_timeline",
+        summary=summary,
+        normalized_observations=normalized,
+        provenance=build_provenance(
+            tool_name="disk.extract_mft_timeline",
+            execution_id=response.get("execution_id"),
+            raw_command=response.get("raw_command"),
+            state_path=state_path_for_manager(_state),
+            csv_path=csv_path,
+            cache_hit=response.get("cache_hit"),
+            cache_source_execution_id=response.get("cache_source_execution_id"),
+            artifact_paths=[mft_path],
+        ),
+        pivot_entities={
+            "file_paths": compact_unique(record.file_path for record in records),
+            "entry_numbers": compact_unique(record.entry_number for record in records),
+            "timestamps": compact_unique(
+                _dt_to_iso(record.fn_created) or _dt_to_iso(record.si_created)
+                for record in records
+            ),
+        },
+        follow_up_options=[
+            build_follow_up_option(
+                "extract_prefetch",
+                reason="Correlate file-system activity with execution evidence.",
+                parameters={"image_path": image_path},
+            ),
+            build_follow_up_option(
+                "get_amcache",
+                reason="Recover hashes for suspicious executables or deleted binaries.",
+                parameters={"image_path": image_path},
+            ),
+            build_follow_up_option(
+                "summarize_evtx",
+                reason="Cross-reference file activity with process creation or service-install events.",
+                parameters={"image_path": image_path, "event_ids": "4688,7045,4698"},
+            ),
+        ],
+        handle=build_handle(
+            kind="csv",
+            path=csv_path,
+            description="Persisted MFTECmd CSV output.",
+            tool_name="disk.extract_mft_timeline",
+        ),
+        evidence_excerpt=evidence_excerpt,
+    )
+
+
+def _evtx_contract_payload(
+    *,
+    response: dict[str, Any],
+    records: list[EventRecord],
+    image_path: str,
+    evtx_dir: str,
+    csv_path: str,
+) -> dict[str, Any]:
+    channel_counts: dict[str, int] = {}
+    for record in records:
+        channel_counts[record.channel] = channel_counts.get(record.channel, 0) + 1
+    normalized = [
+        {
+            "event_id": record.event_id,
+            "channel": record.channel,
+            "timestamp": _dt_to_iso(record.timestamp),
+            "computer": record.computer,
+            "provider": record.provider,
+        }
+        for record in records[:20]
+    ]
+    evidence_excerpt = next(
+        (record.message_summary for record in records if record.message_summary),
+        None,
+    )
+    return build_contract_response(
+        response,
+        tool_name="disk.summarize_evtx",
+        summary=(
+            f"EVTX summarization returned {response.get('records_count', len(records))} rows "
+            f"from {evtx_dir}. Channel filter: {response.get('channel_filter') or 'all'}."
+        ),
+        normalized_observations=normalized,
+        provenance=build_provenance(
+            tool_name="disk.summarize_evtx",
+            execution_id=response.get("execution_id"),
+            raw_command=response.get("raw_command"),
+            state_path=state_path_for_manager(_state),
+            csv_path=csv_path,
+            cache_hit=response.get("cache_hit"),
+            cache_source_execution_id=response.get("cache_source_execution_id"),
+            artifact_paths=[evtx_dir],
+        ),
+        pivot_entities={
+            "event_ids": compact_unique(record.event_id for record in records),
+            "channels": compact_unique(record.channel for record in records),
+            "computers": compact_unique(record.computer for record in records),
+            "user_sids": compact_unique(record.user_sid for record in records),
+            "process_paths": compact_unique(_extract_evtx_process_paths(records)),
+        },
+        follow_up_options=[
+            build_follow_up_option(
+                "extract_prefetch",
+                reason="Confirm binaries referenced in 4688/Sysmon process events.",
+                parameters={"image_path": image_path},
+            ),
+            build_follow_up_option(
+                "get_amcache",
+                reason="Pivot from event log process names into hash-backed execution evidence.",
+                parameters={"image_path": image_path},
+            ),
+            build_follow_up_option(
+                "extract_registry_run_keys",
+                reason="Check whether suspicious services or scheduled tasks are also persisted in registry ASEPs.",
+                parameters={"image_path": image_path},
+            ),
+        ],
+        preview=[
+            {"channel": channel, "count": count}
+            for channel, count in sorted(channel_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ],
+        evidence_excerpt=evidence_excerpt,
+        handle=build_handle(
+            kind="csv",
+            path=csv_path,
+            description="Persisted EvtxECmd CSV output.",
+            tool_name="disk.summarize_evtx",
+        ),
+        query_constraints={
+            "start_date": response.get("date_range", {}).get("start") if isinstance(response.get("date_range"), dict) else None,
+            "end_date": response.get("date_range", {}).get("end") if isinstance(response.get("date_range"), dict) else None,
+            "channel": response.get("channel_filter"),
+            "event_ids": response.get("event_id_filter"),
+        },
+    )
 
 
 def _replay_hive_with_rla(hive_path: Path, label: str) -> tuple[Path, Path, Path]:
@@ -973,16 +1307,34 @@ def extract_prefetch(
             "prefetch",
             [record.executable_name for record in records if record.executable_name],
         )
-
-    return _warn_if_empty({
+    record_rows = [r.model_dump(mode="json") for r in records]
+    persistent_csv = _persist_rows_as_csv(
+        record_rows,
+        tool_short_name="prefetch",
+        filename="prefetch.csv",
+    )
+    response = _warn_if_empty({
         "tool_name": tool,
         "status": "success",
-        "data": [r.model_dump(mode="json") for r in records],
+        "data": record_rows,
         "findings_created": finding_ids,
         "execution_id": exec_id,
         "raw_command": f"pyscca {prefetch_dir}/*.pf",
         "records_count": len(records),
+        "csv_path": persistent_csv,
+        "requires_agent": "@prefetch-analyst",
+        "agent_instruction": (
+            f"Analyze {persistent_csv or prefetch_dir} for multi-path execution, orphaned .pf files, "
+            f"and suspicious binaries. {len(records)} total rows."
+        ),
     }, "extract_prefetch", prefetch_dir)
+    return _prefetch_contract_payload(
+        response=response,
+        records=records,
+        image_path=image_path,
+        prefetch_dir=prefetch_dir,
+        csv_path=persistent_csv,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1150,7 +1502,7 @@ def get_amcache(
 
     if max_entries and max_entries > 0:
         records = records[:max_entries]
-    return _warn_if_empty({
+    response = _warn_if_empty({
         "tool_name": tool,
         "status": "success",
         "data": [r.model_dump(mode="json") for r in records],
@@ -1161,7 +1513,19 @@ def get_amcache(
         "total_records": len(rows),
         "csv_path": persistent_csv,
         "note": f"Returning {len(records[:max_entries]) if max_entries and max_entries > 0 else len(records)} of {len(rows)} total rows. Full CSV at {persistent_csv}.",
+        "requires_agent": "@amcache-analyst",
+        "agent_instruction": (
+            f"Analyze {persistent_csv} for renamed malware, suspicious execution paths, and hash pivots. "
+            f"{len(rows)} total rows."
+        ),
     }, "get_amcache", hive_path)
+    return _amcache_contract_payload(
+        response=response,
+        records=records,
+        image_path=image_path,
+        hive_path=hive_path,
+        csv_path=persistent_csv,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1283,7 +1647,14 @@ def extract_mft_timeline(
             records=detailed_records if normalized_format == "detailed" else full_records,
             total_records=len(rows),
         )
-        return _warn_if_empty(formatted, "extract_mft_timeline", mft_path, min_expected=10000)
+        formatted = _warn_if_empty(formatted, "extract_mft_timeline", mft_path, min_expected=10000)
+        return _mft_contract_payload(
+            response=formatted,
+            records=detailed_records if normalized_format == "detailed" else full_records,
+            image_path=image_path,
+            mft_path=mft_path,
+            csv_path=str(cached["csv_path"]),
+        )
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_mftecmd_") as tmp_dir:
         csv_filename = "mft_timeline.csv"
@@ -1364,7 +1735,13 @@ def extract_mft_timeline(
             "total_records": len(rows),
         },
     )
-    return response
+    return _mft_contract_payload(
+        response=response,
+        records=detailed_records if normalized_format == "detailed" else full_records,
+        image_path=image_path,
+        mft_path=mft_path,
+        csv_path=persistent_csv,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1731,7 +2108,19 @@ def summarize_evtx(
             records=detailed_records if normalized_format == "detailed" else full_records,
             total_records=len(rows),
         )
-        return _warn_if_empty(formatted, "summarize_evtx", evtx_dir, min_expected=100)
+        formatted = _warn_if_empty(formatted, "summarize_evtx", evtx_dir, min_expected=100)
+        if "data" in formatted:
+            formatted["data"] = [
+                sanitize_payload_fields(record, "message_summary", "extra_fields")
+                for record in formatted["data"]
+            ]
+        return _evtx_contract_payload(
+            response=formatted,
+            records=detailed_records if normalized_format == "detailed" else full_records,
+            image_path=image_path,
+            evtx_dir=evtx_dir,
+            csv_path=str(cached["csv_path"]),
+        )
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_evtx_") as tmp_dir:
         csv_filename = "evtx_timeline.csv"
@@ -1832,7 +2221,18 @@ def summarize_evtx(
         "evtx_process_creation",
         _extract_evtx_process_paths(records),
     )
-    return response
+    if "data" in response:
+        response["data"] = [
+            sanitize_payload_fields(record, "message_summary", "extra_fields")
+            for record in response["data"]
+        ]
+    return _evtx_contract_payload(
+        response=response,
+        records=detailed_records if normalized_format == "detailed" else full_records,
+        image_path=image_path,
+        evtx_dir=evtx_dir,
+        csv_path=persistent_csv,
+    )
 
 
 # ---------------------------------------------------------------------------

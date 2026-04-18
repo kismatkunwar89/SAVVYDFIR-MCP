@@ -422,17 +422,29 @@ def get_provenance(finding_id: str) -> dict[str, Any]:
             "chain_length": 0,
         }
 
+    finding_detail: Optional[dict[str, Any]] = None
+    if _state is not None:
+        try:
+            finding_detail = _state.get_finding(finding_id)
+        except Exception:
+            pass  # Non-fatal; omit finding detail
+
     try:
         chain = _audit.get_execution_chain(finding_id)
-    except FileNotFoundError as exc:
-        return {
-            "tool_name": "evidence.get_provenance",
-            "status": "error",
-            "error_message": str(exc),
-            "finding_id": finding_id,
-            "execution_chain": [],
-            "chain_length": 0,
-        }
+    except FileNotFoundError:
+        if finding_detail is None:
+            return {
+                "tool_name": "evidence.get_provenance",
+                "status": "error",
+                "error_message": (
+                    f"Audit log not found: {_audit.output_path}. "
+                    "Has any tool been executed yet?"
+                ),
+                "finding_id": finding_id,
+                "execution_chain": [],
+                "chain_length": 0,
+            }
+        chain = []
     except Exception as exc:
         return {
             "tool_name": "evidence.get_provenance",
@@ -443,13 +455,11 @@ def get_provenance(finding_id: str) -> dict[str, Any]:
             "chain_length": 0,
         }
 
-    # Optionally cross-reference the finding itself from state
-    finding_detail: Optional[dict[str, Any]] = None
-    if _state is not None:
-        try:
-            finding_detail = _state.get_finding(finding_id)
-        except Exception:
-            pass  # Non-fatal; omit finding detail
+    legacy_unsealed = False
+    if not chain:
+        legacy_unsealed = finding_detail is not None
+    else:
+        legacy_unsealed = any(not entry.get("entry_hash") for entry in chain)
 
     return {
         "tool_name": "evidence.get_provenance",
@@ -458,4 +468,5 @@ def get_provenance(finding_id: str) -> dict[str, Any]:
         "execution_chain": chain,
         "chain_length": len(chain),
         "finding_detail": finding_detail,
+        "legacy_unsealed": legacy_unsealed,
     }

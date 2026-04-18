@@ -72,6 +72,37 @@ class StateDedupTests(unittest.TestCase):
             self.assertNotEqual(first_id, third_id)
             self.assertEqual(len(manager.get_findings()), 3)
 
+    def test_subtype_aliases_are_queryable_via_artifact_type_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            manager.load("CASE-DEDUP-3")
+
+            finding_id = manager.add_finding(
+                {
+                    "case_id": "CASE-DEDUP-3",
+                    "finding_type": "threat_detection",
+                    "artifact_type": "evtx",
+                    "artifact_path": r"C:\Windows\System32\winevt\Logs\Security.evtx",
+                    "tool_name": "disk.summarize_evtx",
+                    "execution_id": "E-001",
+                    "iteration": 1,
+                    "evidence_kind": "DISK_ARTIFACT",
+                    "finding_status": "ACTIVE",
+                    "confidence": 0.8,
+                    "description": "Security.evtx shows a suspicious process creation event.",
+                    "supporting_indicators": ["EID 4688"],
+                }
+            )
+
+            finding = manager.get_finding(finding_id)
+            assert finding is not None
+            self.assertEqual(finding["artifact_type"], "disk")
+            self.assertEqual(finding["artifact_subtype"], "evtx")
+            self.assertEqual(
+                [item["finding_id"] for item in manager.get_findings(artifact_type="evtx")],
+                [finding_id],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
