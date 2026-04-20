@@ -1007,14 +1007,14 @@ def extract_prefetch(
 ) -> dict[str, Any]:
     """Extract Windows Prefetch execution artefacts from a disk image.
 
-    Runs ``dotnet PECmd.dll`` (EZ Tools) against the Prefetch directory on
-    *image_path* and returns a list of PrefetchRecord dicts.  Prefetch files
-    prove binary execution and record the last 8 run times (v26+) plus the
-    list of files opened at launch.
+    Parses Prefetch files on Linux and returns Prefetch-native execution
+    history plus `.pf` file metadata. Prefetch files prove binary execution
+    and record the last 8 run times (v26+) plus the list of files opened at
+    launch.
 
-    The ``source_created`` timestamp of the .PF file equals the FIRST
-    execution time of the binary — forensically significant for establishing
-    initial compromise time.
+    ``last_run_times`` contains exact recent execution history from the
+    Prefetch structure itself. ``pf_created_time`` and ``pf_modified_time``
+    are separate `.pf` file metadata values, not exact execution timestamps.
 
     Parameters
     ----------
@@ -5567,7 +5567,7 @@ def _detect_mft_anomalies(findings: list[dict]) -> list[ArtifactHit]:
                         fn_created), "delta_seconds": delta},
                     mitre_technique="T1070.006",
                     mitre_tactic="TA0005",
-                    pivot_suggestion="Check prefetch/amcache for true first execution time of this binary",
+                    pivot_suggestion="Check Prefetch last_run_times and .pf metadata, plus Amcache execution evidence, for timeline context on this binary",
                 ))
         except (ValueError, TypeError):
             continue

@@ -247,9 +247,10 @@ class NetworkArtifact(BaseModel):
 class PrefetchRecord(BaseModel):
     """A Windows Prefetch entry indicating a binary was executed.
 
-    Produced by ``extract_prefetch`` (EZ Tools ``PECmd``).  The filesystem
-    creation time of the .PF file equals the FIRST execution time of the
-    binary — this is forensically significant.
+    Produced by ``extract_prefetch``. The Prefetch structure itself records
+    exact recent execution history in ``last_run_times``. Separate `.pf` file
+    timestamps can also be surfaced as file metadata, but they are not the
+    same thing as exact Prefetch-native execution timestamps.
 
     Attributes:
         executable_name:  Name of the executed binary (e.g. 'CMD.EXE').
@@ -262,10 +263,14 @@ class PrefetchRecord(BaseModel):
         referenced_files: List of file paths opened by the binary at launch.
         volume_path:      Volume mount path (e.g. '\\Device\\HarddiskVolume3').
         volume_serial:    Volume serial number (hex string).
-        source_created:   UTC timestamp of the .PF file's $SI Created time
-                          (= first execution time).
-        source_modified:  UTC timestamp of the .PF file's $SI Modified time
-                          (= most recent execution time).
+        pf_created_time:  `.pf` file metadata creation timestamp from MFT or
+                          mounted NTFS-backed filesystem metadata. Useful
+                          context, but not an exact execution timestamp.
+        pf_modified_time: `.pf` file metadata modification timestamp from MFT
+                          or mounted NTFS-backed filesystem metadata. Useful
+                          context, but not an exact execution timestamp.
+        pf_timestamp_source:
+                          Provenance for the `.pf` file metadata fields.
     """
 
     executable_name: str = Field(
@@ -296,18 +301,27 @@ class PrefetchRecord(BaseModel):
     volume_serial: Optional[str] = Field(
         None, description="Volume serial number (hex string)."
     )
-    source_created: Optional[datetime] = Field(
+    pf_created_time: Optional[datetime] = Field(
         None,
         description=(
-            "UTC $SI Created timestamp of the .PF file "
-            "(equals the first execution time of the binary)."
+            "UTC `.pf` file creation timestamp from MFT or mounted NTFS-backed "
+            "filesystem metadata. Useful `.pf` file metadata, but not an exact "
+            "execution timestamp."
         ),
     )
-    source_modified: Optional[datetime] = Field(
+    pf_modified_time: Optional[datetime] = Field(
         None,
         description=(
-            "UTC $SI Modified timestamp of the .PF file "
-            "(equals the most recent execution time)."
+            "UTC `.pf` file modification timestamp from MFT or mounted "
+            "NTFS-backed filesystem metadata. Useful `.pf` file metadata, but "
+            "not an exact execution timestamp."
+        ),
+    )
+    pf_timestamp_source: Optional[str] = Field(
+        None,
+        description=(
+            "Source used to populate `.pf` file timestamps. "
+            "Expected values: 'mft', 'mounted_ntfs_stat', or None."
         ),
     )
 

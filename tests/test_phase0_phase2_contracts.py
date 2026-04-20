@@ -296,9 +296,14 @@ class Phase0Phase2ContractTests(unittest.TestCase):
                     return r"C:\Temp\evil.exe"
 
             fake_pyscca = types.SimpleNamespace(open=lambda _: _FakePrefetchFile())
+            stat_metadata = {
+                "pf_created_time": datetime(2026, 4, 14, 9, 30, tzinfo=timezone.utc),
+                "pf_modified_time": datetime(2026, 4, 14, 10, 30, tzinfo=timezone.utc),
+                "pf_timestamp_source": "mounted_ntfs_stat",
+            }
 
             with mock.patch.dict(sys.modules, {"pyscca": fake_pyscca}, clear=False):
-                with mock.patch.object(disk, "_extract_prefetch_metadata_rows", return_value=[]):
+                with mock.patch.object(disk, "_prefetch_metadata_from_stat", return_value=stat_metadata):
                     with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
                         result = disk.extract_prefetch(image_path=str(evidence_root), prefetch_dir=str(prefetch_dir))
 
@@ -310,10 +315,28 @@ class Phase0Phase2ContractTests(unittest.TestCase):
             self.assertIn("follow_up_options", result)
             self.assertEqual(result["domain_metadata"]["tool_domain"], "disk")
             self.assertEqual(result["handle"]["domain"], "disk")
-            self.assertIsNone(result["normalized_observations"][0]["first_execution_time"])
-            self.assertIsNone(result["normalized_observations"][0]["last_execution_time"])
+            self.assertEqual(
+                result["normalized_observations"][0]["pf_created_time"],
+                "2026-04-14T09:30:00+00:00",
+            )
+            self.assertEqual(
+                result["normalized_observations"][0]["pf_modified_time"],
+                "2026-04-14T10:30:00+00:00",
+            )
+            self.assertEqual(
+                result["normalized_observations"][0]["last_run_times"],
+                ["2026-04-14T10:00:00+00:00"],
+            )
+            self.assertEqual(
+                result["normalized_observations"][0]["pf_timestamp_source"],
+                "mounted_ntfs_stat",
+            )
+            self.assertEqual(
+                result["pf_timestamp_source_counts"]["mounted_ntfs_stat"],
+                1,
+            )
 
-    def test_prefetch_contract_enriches_execution_times_from_metadata(self) -> None:
+    def test_prefetch_contract_uses_mft_metadata_with_parentpath_join(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             audit, state = self._make_state(tmp_dir, "CASE-PREFETCH-ENRICH")
             runner = FakePhase0EZRunner(audit_logger=audit, case_id="CASE-PREFETCH-ENRICH", state_manager=state)
@@ -339,29 +362,140 @@ class Phase0Phase2ContractTests(unittest.TestCase):
                     return r"C:\Temp\evil.exe"
 
             fake_pyscca = types.SimpleNamespace(open=lambda _: _FakePrefetchFile())
-            metadata_rows = [
+            mft_csv = Path(tmp_dir) / "artifacts" / "mft_timeline.csv"
+            _write_rows(
+                mft_csv,
+                [
+                    {
+                        "FileName": pf_file.name,
+                        "ParentPath": r".\Windows\Prefetch",
+                        "Created0x10": "2026-04-14 09:30:00",
+                        "LastModified0x10": "2026-04-14 10:30:00",
+                    }
+                ],
+            )
+            state.add_execution(
                 {
-                    "SourceFilePath": str(pf_file).replace("/", "\\").upper(),
-                    "SourceCreated": "2026-04-14 09:30:00",
-                    "SourceModified": "2026-04-14 10:30:00",
-                    "ExecutableName": "EVIL.EXE",
+                    "execution_id": "E-555",
+                    "tool_name": "disk.extract_mft_timeline",
+                    "command_line": "disk.extract_mft_timeline",
+                    "parameters": {},
+                    "raw_evidence_refs": [{"path": str(mft_csv), "role": "derived"}],
                 }
-            ]
+            )
 
             with mock.patch.dict(sys.modules, {"pyscca": fake_pyscca}, clear=False):
-                with mock.patch.object(disk, "_extract_prefetch_metadata_rows", return_value=metadata_rows):
+                with mock.patch.object(disk, "_prefetch_metadata_from_stat", return_value=None):
                     with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
                         result = disk.extract_prefetch(image_path=str(evidence_root), prefetch_dir=str(prefetch_dir))
 
             self.assertEqual(result["status"], "success")
             self.assertEqual(
-                result["normalized_observations"][0]["first_execution_time"],
+                result["normalized_observations"][0]["pf_created_time"],
                 "2026-04-14T09:30:00+00:00",
             )
             self.assertEqual(
-                result["normalized_observations"][0]["last_execution_time"],
+                result["normalized_observations"][0]["pf_modified_time"],
                 "2026-04-14T10:30:00+00:00",
             )
+            self.assertEqual(
+                result["normalized_observations"][0]["pf_timestamp_source"],
+                "mft",
+            )
+            self.assertEqual(result["pf_timestamp_source_counts"]["mft"], 1)
+
+    def test_prefetch_contract_prefers_mft_metadata_over_stat_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            audit, state = self._make_state(tmp_dir, "CASE-PREFETCH-PRECEDENCE")
+            runner = FakePhase0EZRunner(audit_logger=audit, case_id="CASE-PREFETCH-PRECEDENCE", state_manager=state)
+            disk.init_tools(state, audit, ez_runner=runner)
+
+            evidence_root = Path(tmp_dir) / "evidence"
+            prefetch_dir = evidence_root / "Windows" / "Prefetch"
+            prefetch_dir.mkdir(parents=True, exist_ok=True)
+            pf_file = prefetch_dir / "EVIL.EXE-12345678.pf"
+            pf_file.write_text("placeholder", encoding="utf-8")
+
+            class _FakePrefetchFile:
+                executable_filename = "EVIL.EXE"
+                run_count = 3
+                number_of_filenames = 1
+
+                def get_last_run_time(self, index: int):
+                    if index == 0:
+                        return datetime(2026, 4, 14, 10, 0, tzinfo=timezone.utc)
+                    raise IndexError
+
+                def get_filename(self, index: int):
+                    return r"C:\Temp\evil.exe"
+
+            fake_pyscca = types.SimpleNamespace(open=lambda _: _FakePrefetchFile())
+            mft_csv = Path(tmp_dir) / "artifacts" / "mft_timeline.csv"
+            _write_rows(
+                mft_csv,
+                [
+                    {
+                        "FileName": pf_file.name,
+                        "ParentPath": r".\Windows\Prefetch",
+                        "Created0x10": "2026-04-14 09:30:00",
+                        "LastModified0x10": "2026-04-14 10:30:00",
+                    }
+                ],
+            )
+            state.add_execution(
+                {
+                    "execution_id": "E-556",
+                    "tool_name": "disk.extract_mft_timeline",
+                    "command_line": "disk.extract_mft_timeline",
+                    "parameters": {},
+                    "raw_evidence_refs": [{"path": str(mft_csv), "role": "handle"}],
+                }
+            )
+            stat_metadata = {
+                "pf_created_time": datetime(2030, 1, 1, 1, 0, tzinfo=timezone.utc),
+                "pf_modified_time": datetime(2030, 1, 1, 2, 0, tzinfo=timezone.utc),
+                "pf_timestamp_source": "mounted_ntfs_stat",
+            }
+
+            with mock.patch.dict(sys.modules, {"pyscca": fake_pyscca}, clear=False):
+                with mock.patch.object(disk, "_prefetch_metadata_from_stat", return_value=stat_metadata):
+                    with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
+                        result = disk.extract_prefetch(image_path=str(evidence_root), prefetch_dir=str(prefetch_dir))
+
+            self.assertEqual(
+                result["normalized_observations"][0]["pf_created_time"],
+                "2026-04-14T09:30:00+00:00",
+            )
+            self.assertEqual(
+                result["normalized_observations"][0]["pf_modified_time"],
+                "2026-04-14T10:30:00+00:00",
+            )
+            self.assertEqual(
+                result["normalized_observations"][0]["pf_timestamp_source"],
+                "mft",
+            )
+
+    def test_prefetch_stat_metadata_uses_atime_and_mtime_not_ctime(self) -> None:
+        class _FakeStat:
+            st_atime = 1713087000.0
+            st_mtime = 1713090600.0
+            st_ctime = 1999999999.0
+
+        metadata = disk._prefetch_metadata_from_stat_result(_FakeStat())
+
+        self.assertEqual(
+            metadata["pf_created_time"].isoformat(),
+            datetime.fromtimestamp(_FakeStat.st_atime, tz=timezone.utc).isoformat(),
+        )
+        self.assertEqual(
+            metadata["pf_modified_time"].isoformat(),
+            datetime.fromtimestamp(_FakeStat.st_mtime, tz=timezone.utc).isoformat(),
+        )
+        self.assertNotEqual(
+            metadata["pf_created_time"].isoformat(),
+            datetime.fromtimestamp(_FakeStat.st_ctime, tz=timezone.utc).isoformat(),
+        )
+        self.assertEqual(metadata["pf_timestamp_source"], "mounted_ntfs_stat")
 
     def test_mft_contract_fields_and_fenced_excerpt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
