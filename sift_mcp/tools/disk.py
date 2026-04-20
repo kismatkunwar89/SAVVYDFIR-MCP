@@ -10,7 +10,7 @@ parse the CLI output into typed Pydantic models, and return plain dicts.
 
 Tools
 -----
-- ``extract_prefetch``         — PECmd: Windows Prefetch execution evidence.
+- ``extract_prefetch``         — Prefetch execution evidence via ``pyscca``.
 - ``get_amcache``              — AmcacheParser: SHA-1 evidence of execution.
 - ``extract_mft_timeline``     — MFTECmd: Full NTFS MFT with SI/FN timestamps
                                   (timestomping detection).
@@ -52,6 +52,15 @@ from sift_mcp.tools._cache import (
     build_cache_key,
     get_valid_cached_artifact,
     record_cache_hit,
+)
+from sift_mcp.tools._contracts import (
+    build_contract_response,
+    build_follow_up_option,
+    build_handle,
+    build_provenance,
+    compact_unique,
+    sanitize_payload_fields,
+    state_path_for_manager,
 )
 
 if TYPE_CHECKING:
@@ -141,6 +150,132 @@ def _case_id() -> str:
         return "unknown"
 
 
+def _artifact_output_dir(tool_short_name: str) -> Path:
+    """Return the durable artifact directory for one disk tool."""
+    return (
+        Path(os.environ.get("OUTPUT_BASE", "/cases"))
+        / _case_id()
+        / "artifacts"
+        / tool_short_name
+    )
+
+
+def _persistence_fix_hint(output_root: Path) -> str:
+    configured_base = Path(os.environ.get("OUTPUT_BASE", "/cases"))
+    return (
+        f"Ensure OUTPUT_BASE ({configured_base}) is writable and that "
+        f"{output_root} can be created, then rerun the tool."
+    )
+
+
+def _preflight_artifact_persistence(
+    tool_short_name: str,
+    filename: str,
+) -> dict[str, Any]:
+    """Validate the durable artifact destination before expensive work starts."""
+    output_root = _artifact_output_dir(tool_short_name)
+    expected_path = output_root / filename
+    try:
+        output_root.mkdir(parents=True, exist_ok=True)
+        probe = tempfile.NamedTemporaryFile(
+            dir=str(output_root),
+            prefix=".savvydfir_preflight_",
+            delete=False,
+        )
+        probe.write(b"ok")
+        probe.close()
+        Path(probe.name).unlink(missing_ok=True)
+        return {
+            "ok": True,
+            "status": "durable",
+            "output_root": str(output_root),
+            "persisted_path": str(expected_path),
+            "reason": f"Durable artifact path is writable under {output_root}.",
+            "fix_hint": None,
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "status": "transient",
+            "output_root": str(output_root),
+            "persisted_path": None,
+            "reason": (
+                f"Unable to persist analyst-facing artifact output under {output_root}: {exc}"
+            ),
+            "fix_hint": _persistence_fix_hint(output_root),
+        }
+
+
+def _artifact_preflight_error(
+    *,
+    tool_name: str,
+    preflight: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a standard response when durable artifact output is unavailable."""
+    return {
+        "tool_name": tool_name,
+        "status": "error",
+        "error_message": str(
+            preflight.get("reason")
+            or "Artifact persistence preflight failed."
+        ),
+        "data": [],
+        "findings_created": [],
+        "execution_id": None,
+        "raw_command": None,
+        "artifact_persistence": {
+            "status": "transient",
+            "persisted_path": None,
+            "reason": str(preflight.get("reason") or ""),
+            "fix_hint": preflight.get("fix_hint"),
+        },
+    }
+
+
+def _finalize_artifact_persistence(
+    *,
+    artifact_label: str,
+    persisted_path: Optional[str],
+    preflight: Optional[dict[str, Any]],
+) -> tuple[Optional[str], dict[str, Any]]:
+    """Return the durable analyst-facing path and artifact_persistence block."""
+    normalized_path = _resolved_path_str(persisted_path) if persisted_path else None
+    if (
+        normalized_path
+        and Path(normalized_path).exists()
+        and not _is_transient_persisted_path(normalized_path)
+    ):
+        return normalized_path, {
+            "status": "durable",
+            "persisted_path": normalized_path,
+            "reason": f"{artifact_label} persisted to analyst-facing artifact storage.",
+            "fix_hint": None,
+        }
+
+    preflight_reason = str(preflight.get("reason") or "").strip() if isinstance(preflight, dict) else ""
+    preflight_hint = preflight.get("fix_hint") if isinstance(preflight, dict) else None
+    output_root = Path(str(preflight.get("output_root"))) if isinstance(preflight, dict) and preflight.get("output_root") else _artifact_output_dir("unknown")
+    if normalized_path and _is_transient_persisted_path(normalized_path):
+        reason = (
+            f"{artifact_label} was produced, but persistence fell back to a transient temp path "
+            "that will not survive after the tool returns."
+        )
+    elif preflight_reason:
+        reason = preflight_reason
+    else:
+        reason = (
+            f"{artifact_label} was produced, but persistence did not create a durable "
+            "analyst-facing handle."
+        )
+
+    return None, {
+        "status": "transient",
+        "persisted_path": None,
+        "reason": reason,
+        "fix_hint": preflight_hint or _persistence_fix_hint(output_root),
+    }
+
+
 def _current_iteration() -> int:
     """Return the current audit iteration number."""
     if _audit is None:
@@ -159,9 +294,7 @@ def _persist_csv(tmp_csv_path: str, tool_short_name: str) -> str:
     src_path = Path(tmp_csv_path)
     if not src_path.exists():
         return tmp_csv_path
-    cid = _case_id()
-    base = Path(os.environ.get("OUTPUT_BASE", "/cases")) / \
-        cid / "artifacts" / tool_short_name
+    base = _artifact_output_dir(tool_short_name)
     try:
         base.mkdir(parents=True, exist_ok=True)
         dest = base / src_path.name
@@ -169,6 +302,30 @@ def _persist_csv(tmp_csv_path: str, tool_short_name: str) -> str:
         return str(dest)
     except OSError:
         return tmp_csv_path
+
+
+def _is_transient_persisted_path(path: Optional[str]) -> bool:
+    text = str(path or "").strip().lower()
+    return text.startswith("/tmp/savvydfir_") or text.startswith("/var/tmp/savvydfir_")
+
+
+def _persist_rows_as_csv(
+    rows: list[dict[str, Any]],
+    *,
+    tool_short_name: str,
+    filename: str,
+) -> Optional[str]:
+    """Persist structured rows as a reusable CSV artifact."""
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"savvydfir_{tool_short_name}_rows_") as tmp_dir:
+            tmp_csv = os.path.join(tmp_dir, filename)
+            _write_csv_rows(
+                [{key: "" if value is None else str(value) for key, value in row.items()} for row in rows],
+                tmp_csv,
+            )
+            return _persist_csv(tmp_csv, tool_short_name)
+    except Exception:
+        return None
 
 
 def _read_csv(csv_path: str) -> list[dict[str, str]]:
@@ -284,6 +441,8 @@ def _apply_response_format(
     """Return a summary-first or detailed response payload."""
     payload = dict(result)
     normalized = _normalize_response_format(response_format)
+    if normalized:
+        payload["response_format"] = normalized
     if normalized == "summary":
         payload.pop("data", None)
         payload["records_count"] = len(records)
@@ -315,6 +474,547 @@ def _resolved_path_str(path: str) -> str:
         return str(Path(path).resolve())
     except OSError:
         return path
+
+
+def _dt_to_iso(value: Optional[datetime]) -> Optional[str]:
+    if value is None:
+        return None
+    return value.isoformat()
+
+
+def _normalize_prefetch_match_key(path: str) -> str:
+    """Normalize a Prefetch file path into a comparable relative artifact key."""
+    text = str(path or "").strip().strip('"').strip("'")
+    if not text:
+        return ""
+    normalized = re.sub(r"/+", "/", text.replace("\\", "/").lower()).strip()
+    if not normalized:
+        return ""
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    if normalized.startswith("/mnt/disk/"):
+        normalized = normalized[len("/mnt/disk/"):]
+    elif re.match(r"^[a-z]:/", normalized):
+        normalized = normalized[3:]
+    elif normalized.startswith("/cases/"):
+        case_mount = re.search(r"/mnt/[a-z]/(.+)$", normalized)
+        normalized = case_mount.group(1) if case_mount else normalized.lstrip("/")
+    else:
+        normalized = normalized.lstrip("/")
+    return normalized.lstrip("./").rstrip("/")
+
+
+def _prefetch_match_keys(path: str) -> list[str]:
+    """Return full-path and basename keys for best-effort Prefetch joins."""
+    normalized = _normalize_prefetch_match_key(path)
+    if not normalized:
+        return []
+    keys = [normalized]
+    basename = normalized.rsplit("/", 1)[-1]
+    if basename and basename not in keys:
+        keys.append(basename)
+    return keys
+
+
+def _latest_durable_csv_for_tool(tool_name: str) -> Optional[str]:
+    """Return the latest durable CSV linked to *tool_name* in state executions."""
+    if _state is None:
+        return None
+    for execution in reversed(_state.get_executions(tool_name=tool_name)):
+        refs = execution.get("raw_evidence_refs") or []
+        preferred: list[str] = []
+        fallback: list[str] = []
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            path = str(ref.get("path") or "").strip()
+            if not path:
+                continue
+            resolved = _resolved_path_str(path)
+            if (
+                not resolved.lower().endswith(".csv")
+                or _is_transient_persisted_path(resolved)
+                or not Path(resolved).exists()
+            ):
+                continue
+            role = str(ref.get("role") or "").strip().lower()
+            if role in {"derived", "handle"}:
+                preferred.append(resolved)
+            else:
+                fallback.append(resolved)
+        if preferred:
+            return preferred[0]
+        if fallback:
+            return fallback[0]
+    return None
+
+
+def _prefetch_mft_candidate_path(row: dict[str, str]) -> str:
+    """Build a comparable Prefetch file path from an MFT CSV row."""
+    file_name = str(row.get("FileName") or "").strip()
+    parent_path = str(row.get("ParentPath") or row.get("FilePath") or "").strip()
+    if parent_path and file_name:
+        return f"{parent_path.rstrip('/\\\\')}/{file_name}"
+    return file_name or parent_path
+
+
+def _prefetch_mft_timestamp_lookup(csv_path: str) -> dict[str, dict[str, Any]]:
+    """Build a lookup of Prefetch file metadata from a durable MFT CSV."""
+    lookup: dict[str, dict[str, Any]] = {}
+    for row in _read_csv(csv_path):
+        candidate_path = _prefetch_mft_candidate_path(row)
+        if not candidate_path.lower().endswith(".pf"):
+            continue
+        metadata = {
+            "pf_created_time": _parse_dt(row.get("Created0x10") or row.get("SICreated") or ""),
+            "pf_modified_time": _parse_dt(
+                row.get("LastModified0x10") or row.get("SIModified") or ""
+            ),
+            "pf_timestamp_source": "mft",
+        }
+        if metadata["pf_created_time"] is None and metadata["pf_modified_time"] is None:
+            continue
+        for key in _prefetch_match_keys(candidate_path):
+            lookup.setdefault(key, metadata)
+    return lookup
+
+
+def _prefetch_metadata_from_stat_result(stat_result: os.stat_result) -> dict[str, Any]:
+    """Map a stat result into `.pf` file metadata without using ctime."""
+    created = None
+    modified = None
+    try:
+        if getattr(stat_result, "st_atime", 0):
+            created = datetime.fromtimestamp(stat_result.st_atime, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        created = None
+    try:
+        if getattr(stat_result, "st_mtime", 0):
+            modified = datetime.fromtimestamp(stat_result.st_mtime, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        modified = None
+    return {
+        "pf_created_time": created,
+        "pf_modified_time": modified,
+        "pf_timestamp_source": "mounted_ntfs_stat" if created or modified else None,
+    }
+
+
+def _prefetch_metadata_from_stat(prefetch_path: str) -> Optional[dict[str, Any]]:
+    """Read `.pf` file metadata from the mounted NTFS-backed filesystem."""
+    path = Path(prefetch_path)
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        metadata = _prefetch_metadata_from_stat_result(path.stat())
+    except OSError:
+        return None
+    if metadata["pf_created_time"] is None and metadata["pf_modified_time"] is None:
+        return None
+    return metadata
+
+
+def _enrich_prefetch_records_with_filesystem_metadata(
+    records: list[PrefetchRecord],
+) -> None:
+    """Populate `.pf` file metadata from MFT when available, else mounted stat()."""
+    if not records:
+        return
+    mft_lookup: dict[str, dict[str, Any]] = {}
+    mft_csv = _latest_durable_csv_for_tool("disk.extract_mft_timeline")
+    if mft_csv:
+        mft_lookup = _prefetch_mft_timestamp_lookup(mft_csv)
+    for record in records:
+        metadata: Optional[dict[str, Any]] = None
+        for key in _prefetch_match_keys(record.prefetch_path):
+            metadata = mft_lookup.get(key)
+            if metadata:
+                break
+        if not metadata:
+            metadata = _prefetch_metadata_from_stat(record.prefetch_path)
+        if metadata:
+            record.pf_created_time = metadata.get("pf_created_time")
+            record.pf_modified_time = metadata.get("pf_modified_time")
+            record.pf_timestamp_source = metadata.get("pf_timestamp_source")
+
+
+def _prefetch_contract_payload(
+    *,
+    response: dict[str, Any],
+    records: list[PrefetchRecord],
+    image_path: str,
+    prefetch_dir: str,
+    csv_path: Optional[str],
+) -> dict[str, Any]:
+    normalized = [
+        {
+            "executable_name": record.executable_name,
+            "run_count": record.run_count,
+            "last_run_times": [_dt_to_iso(value) for value in record.last_run_times],
+            "pf_created_time": _dt_to_iso(record.pf_created_time),
+            "pf_modified_time": _dt_to_iso(record.pf_modified_time),
+            "pf_timestamp_source": record.pf_timestamp_source,
+            "prefetch_path": record.prefetch_path,
+        }
+        for record in records[:20]
+    ]
+    summary = (
+        f"Prefetch parsed {response.get('records_count', len(records))} execution artifacts "
+        f"from {prefetch_dir}. `last_run_times` capture exact Prefetch-native execution history; "
+        f"`pf_created_time` and `pf_modified_time` are `.pf` file metadata. "
+        f"Persisted CSV{' available' if csv_path else ' unavailable'} for deeper review."
+    )
+    return build_contract_response(
+        response,
+        tool_name="disk.extract_prefetch",
+        summary=summary,
+        normalized_observations=normalized,
+        provenance=build_provenance(
+            tool_name="disk.extract_prefetch",
+            execution_id=response.get("execution_id"),
+            raw_command=response.get("raw_command"),
+            state_path=state_path_for_manager(_state),
+            csv_path=csv_path,
+            artifact_paths=[prefetch_dir],
+        ),
+        pivot_entities={
+            "executable_names": compact_unique(record.executable_name for record in records),
+            "prefetch_paths": compact_unique(record.prefetch_path for record in records),
+            "referenced_files": compact_unique(
+                path for record in records for path in record.referenced_files
+            ),
+            "last_run_times": compact_unique(
+                _dt_to_iso(timestamp)
+                for record in records
+                for timestamp in record.last_run_times
+            ),
+            "pf_file_timestamps": compact_unique(
+                _dt_to_iso(record.pf_modified_time) or _dt_to_iso(record.pf_created_time)
+                for record in records
+            ),
+            "pf_timestamp_sources": compact_unique(record.pf_timestamp_source for record in records),
+        },
+        follow_up_options=[
+            build_follow_up_option(
+                "get_amcache",
+                reason="Recover hashes and publisher metadata for executed binaries.",
+                parameters={"image_path": image_path},
+            ),
+            build_follow_up_option(
+                "summarize_evtx",
+                reason="Correlate execution with Security 4688 process-creation evidence.",
+                parameters={"image_path": image_path, "event_ids": "4688"},
+            ),
+            build_follow_up_option(
+                "extract_mft_timeline",
+                reason="Pivot from execution evidence into file creation and timestomping context.",
+                parameters={"image_path": image_path},
+            ),
+        ],
+        handle=build_handle(
+            kind="csv",
+            path=csv_path,
+            description="Persisted Prefetch artifact snapshot.",
+            tool_name="disk.extract_prefetch",
+        ) if csv_path else None,
+    )
+
+
+def _amcache_contract_payload(
+    *,
+    response: dict[str, Any],
+    records: list[AmcacheRecord],
+    image_path: str,
+    hive_path: str,
+    csv_path: Optional[str],
+) -> dict[str, Any]:
+    normalized = [
+        {
+            "file_path": record.file_path,
+            "sha1_hash": record.sha1_hash,
+            "publisher": record.publisher,
+            "install_time": _dt_to_iso(record.install_time),
+        }
+        for record in records[:20]
+    ]
+    summary = (
+        f"Amcache returned {response.get('records_count', len(records))} execution records from {hive_path}. "
+        f"Persisted CSV{' is available' if csv_path else ' is unavailable'} for hash and path pivots."
+    )
+    return build_contract_response(
+        response,
+        tool_name="disk.get_amcache",
+        summary=summary,
+        normalized_observations=normalized,
+        provenance=build_provenance(
+            tool_name="disk.get_amcache",
+            execution_id=response.get("execution_id"),
+            raw_command=response.get("raw_command"),
+            state_path=state_path_for_manager(_state),
+            csv_path=csv_path,
+            artifact_paths=[hive_path],
+        ),
+        pivot_entities={
+            "file_paths": compact_unique(record.file_path for record in records),
+            "sha1_hashes": compact_unique(record.sha1_hash for record in records),
+            "publishers": compact_unique(record.publisher for record in records),
+        },
+        follow_up_options=[
+            build_follow_up_option(
+                "extract_prefetch",
+                reason="Confirm execution count and first/last run timestamps.",
+                parameters={"image_path": image_path},
+            ),
+            build_follow_up_option(
+                "summarize_evtx",
+                reason="Correlate binaries with process-creation and service-install events.",
+                parameters={"image_path": image_path, "event_ids": "4688,7045,4698"},
+            ),
+            build_follow_up_option(
+                "extract_registry_run_keys",
+                reason="Check whether executed binaries were also persisted via ASEPs.",
+                parameters={"image_path": image_path},
+            ),
+        ],
+        handle=build_handle(
+            kind="csv",
+            path=csv_path,
+            description="Persisted Amcache execution dataset.",
+            tool_name="disk.get_amcache",
+        ) if csv_path else None,
+    )
+
+
+def _mft_contract_payload(
+    *,
+    response: dict[str, Any],
+    records: list[MftEntry],
+    image_path: str,
+    mft_path: str,
+    csv_path: Optional[str],
+) -> dict[str, Any]:
+    normalized = [
+        {
+            "entry_number": record.entry_number,
+            "file_path": record.file_path,
+            "si_created": _dt_to_iso(record.si_created),
+            "fn_created": _dt_to_iso(record.fn_created),
+            "is_deleted": record.is_deleted,
+        }
+        for record in records[:20]
+    ]
+    summary = (
+        f"MFT timeline returned {response.get('records_count', len(records))} rows "
+        f"from {mft_path} with {response.get('timestomping_candidates', 0)} timestomping candidates."
+    )
+    evidence_excerpt = next(
+        (record.file_path for record in records if record.file_path),
+        None,
+    )
+    return build_contract_response(
+        response,
+        tool_name="disk.extract_mft_timeline",
+        summary=summary,
+        normalized_observations=normalized,
+        provenance=build_provenance(
+            tool_name="disk.extract_mft_timeline",
+            execution_id=response.get("execution_id"),
+            raw_command=response.get("raw_command"),
+            state_path=state_path_for_manager(_state),
+            csv_path=csv_path,
+            cache_hit=response.get("cache_hit"),
+            cache_source_execution_id=response.get("cache_source_execution_id"),
+            artifact_paths=[mft_path],
+        ),
+        pivot_entities={
+            "file_paths": compact_unique(record.file_path for record in records),
+            "entry_numbers": compact_unique(record.entry_number for record in records),
+            "timestamps": compact_unique(
+                _dt_to_iso(record.fn_created) or _dt_to_iso(record.si_created)
+                for record in records
+            ),
+        },
+        follow_up_options=[
+            build_follow_up_option(
+                "extract_prefetch",
+                reason="Correlate file-system activity with execution evidence.",
+                parameters={"image_path": image_path},
+            ),
+            build_follow_up_option(
+                "get_amcache",
+                reason="Recover hashes for suspicious executables or deleted binaries.",
+                parameters={"image_path": image_path},
+            ),
+            build_follow_up_option(
+                "summarize_evtx",
+                reason="Cross-reference file activity with process creation or service-install events.",
+                parameters={"image_path": image_path, "event_ids": "4688,7045,4698"},
+            ),
+        ],
+        handle=build_handle(
+            kind="csv",
+            path=csv_path,
+            description="Persisted MFTECmd CSV output.",
+            tool_name="disk.extract_mft_timeline",
+        ) if csv_path else None,
+        evidence_excerpt=evidence_excerpt,
+    )
+
+
+def _evtx_contract_payload(
+    *,
+    response: dict[str, Any],
+    records: list[EventRecord],
+    image_path: str,
+    evtx_dir: str,
+    csv_path: Optional[str],
+) -> dict[str, Any]:
+    channel_counts: dict[str, int] = {}
+    for record in records:
+        channel_counts[record.channel] = channel_counts.get(record.channel, 0) + 1
+    normalized = [
+        {
+            "event_id": record.event_id,
+            "channel": record.channel,
+            "timestamp": _dt_to_iso(record.timestamp),
+            "computer": record.computer,
+            "provider": record.provider,
+        }
+        for record in records[:20]
+    ]
+    evidence_excerpt = next(
+        (record.message_summary for record in records if record.message_summary),
+        None,
+    )
+    return build_contract_response(
+        response,
+        tool_name="disk.summarize_evtx",
+        summary=(
+            f"EVTX summarization returned {response.get('records_count', len(records))} rows "
+            f"from {evtx_dir}. Channel filter: {response.get('channel_filter') or 'all'}."
+        ),
+        normalized_observations=normalized,
+        provenance=build_provenance(
+            tool_name="disk.summarize_evtx",
+            execution_id=response.get("execution_id"),
+            raw_command=response.get("raw_command"),
+            state_path=state_path_for_manager(_state),
+            csv_path=csv_path or None,
+            cache_hit=response.get("cache_hit"),
+            cache_source_execution_id=response.get("cache_source_execution_id"),
+            artifact_paths=[evtx_dir],
+        ),
+        pivot_entities={
+            "event_ids": compact_unique(record.event_id for record in records),
+            "channels": compact_unique(record.channel for record in records),
+            "computers": compact_unique(record.computer for record in records),
+            "user_sids": compact_unique(record.user_sid for record in records),
+            "process_paths": compact_unique(_extract_evtx_process_paths(records)),
+        },
+        follow_up_options=[
+            build_follow_up_option(
+                "extract_prefetch",
+                reason="Confirm binaries referenced in 4688/Sysmon process events.",
+                parameters={"image_path": image_path},
+            ),
+            build_follow_up_option(
+                "get_amcache",
+                reason="Pivot from event log process names into hash-backed execution evidence.",
+                parameters={"image_path": image_path},
+            ),
+            build_follow_up_option(
+                "extract_registry_run_keys",
+                reason="Check whether suspicious services or scheduled tasks are also persisted in registry ASEPs.",
+                parameters={"image_path": image_path},
+            ),
+        ],
+        preview=[
+            {"channel": channel, "count": count}
+            for channel, count in sorted(channel_counts.items(), key=lambda item: (-item[1], item[0]))[:5]
+        ],
+        evidence_excerpt=evidence_excerpt,
+        handle=build_handle(
+            kind="csv",
+            path=csv_path,
+            description="Persisted EvtxECmd CSV output.",
+            tool_name="disk.summarize_evtx",
+        ) if csv_path else None,
+        query_constraints={
+            "start_date": response.get("date_range", {}).get("start") if isinstance(response.get("date_range"), dict) else None,
+            "end_date": response.get("date_range", {}).get("end") if isinstance(response.get("date_range"), dict) else None,
+            "channel": response.get("channel_filter"),
+            "event_ids": response.get("event_id_filter"),
+        },
+    )
+
+
+def _registry_contract_payload(
+    *,
+    response: dict[str, Any],
+    records: list[RegistryRunKey],
+    image_path: str,
+    hive_dir: str,
+    csv_path: Optional[str],
+    suppressed_csv_path: Optional[str],
+) -> dict[str, Any]:
+    normalized = [
+        {
+            "hive": record.hive,
+            "key_path": record.key_path,
+            "value_name": record.value_name,
+            "persistence_type": record.persistence_type,
+        }
+        for record in records[:20]
+    ]
+    follow_up_options = [
+        build_follow_up_option(
+            "extract_prefetch",
+            reason="Correlate registry ASEPs with execution evidence.",
+            parameters={"image_path": image_path},
+        ),
+        build_follow_up_option(
+            "get_amcache",
+            reason="Pivot from persisted targets into hash-backed execution records.",
+            parameters={"image_path": image_path},
+        ),
+        build_follow_up_option(
+            "summarize_evtx",
+            reason="Correlate persistence mechanisms with service, task, and process events.",
+            parameters={"image_path": image_path, "event_ids": "4688,4698,7045"},
+        ),
+    ]
+    return build_contract_response(
+        response,
+        tool_name="disk.extract_registry_run_keys",
+        summary=(
+            f"Registry persistence extraction returned {response.get('records_count', len(records))} rows "
+            f"from {hive_dir}. Persisted main CSV{' available' if csv_path else ' unavailable'}."
+        ),
+        normalized_observations=normalized,
+        provenance=build_provenance(
+            tool_name="disk.extract_registry_run_keys",
+            execution_id=response.get("execution_id"),
+            raw_command=response.get("raw_command"),
+            state_path=state_path_for_manager(_state),
+            csv_path=csv_path,
+            cache_hit=response.get("cache_hit"),
+            cache_source_execution_id=response.get("cache_source_execution_id"),
+            artifact_paths=[hive_dir, suppressed_csv_path] if suppressed_csv_path else [hive_dir],
+        ),
+        pivot_entities={
+            "persistence_types": compact_unique(record.persistence_type for record in records),
+            "registry_paths": compact_unique(record.key_path for record in records),
+            "value_names": compact_unique(record.value_name for record in records),
+            "targets": compact_unique(record.value_data for record in records),
+        },
+        follow_up_options=follow_up_options,
+        handle=build_handle(
+            kind="csv",
+            path=csv_path,
+            description="Persisted grouped registry persistence dataset.",
+            tool_name="disk.extract_registry_run_keys",
+        ) if csv_path else None,
+    )
 
 
 def _replay_hive_with_rla(hive_path: Path, label: str) -> tuple[Path, Path, Path]:
@@ -667,27 +1367,17 @@ def _build_registry_records(
     execution_id: str,
     batch_file_used: Optional[str],
     create_findings: bool,
-) -> tuple[list[RegistryRunKey], list[str], dict[str, int]]:
-    """Parse RECmd rows into records and optional high-value persistence findings."""
-    records: list[RegistryRunKey] = []
-    finding_ids: list[str] = []
-    persistence_type_counts: dict[str, int] = {}
-    high_value = {
-        "run",
-        "runonce",
-        "runservices",
-        "services",
-        "winlogon_shell",
-        "winlogon_userinit",
-        "appinit_dlls",
-        "lsa_package",
-        "credential_provider",
-        "ifeo_debugger",
-        "print_monitor",
-        "active_setup",
-        "bootexecute",
-    }
+) -> tuple[list[RegistryRunKey], list[str], dict[str, int], dict[str, Any]]:
+    """Parse RECmd rows into records and grouped high-signal persistence findings.
 
+    Returns (records, finding_ids, persistence_type_counts, grouping_meta).
+    grouping_meta carries suppression_summary, grouping_context,
+    promoted_group_count, and suppressed_group_count for the response.
+    """
+    records: list[RegistryRunKey] = []
+    persistence_type_counts: dict[str, int] = {}
+
+    # --- Phase 1: parse all rows into RegistryRunKey records ---
     for row in rows:
         try:
             key_path = (row.get("KeyPath") or row.get("Path") or "").strip()
@@ -725,41 +1415,287 @@ def _build_registry_records(
             records.append(record)
             persistence_type_counts[ptype] = persistence_type_counts.get(
                 ptype, 0) + 1
-
-            if create_findings and _state is not None and str(ptype).lower() in high_value:
-                finding = Finding(
-                    case_id=_case_id(),
-                    finding_type="persistence",
-                    artifact_type="disk",
-                    artifact_path=key_path,
-                    tool_name=tool,
-                    execution_id=execution_id,
-                    iteration=_current_iteration(),
-                    evidence_kind=EvidenceKind.OBSERVATION,
-                    finding_status=FindingStatus.ACTIVE,
-                    confidence=0.85,
-                    description=(
-                        f"Registry persistence: {key_path}\\{value_name} = {value_data[:200]}. "
-                        f"Type: {ptype}."
-                    ),
-                    supporting_indicators=[
-                        key_path, f"value={value_data[:200]}"],
-                    mitre_tactic="TA0003",
-                    mitre_technique=(
-                        "T1547.001" if str(ptype).lower() in ("run", "runonce") else
-                        "T1546.010" if str(ptype).lower() == "appinit_dlls" else
-                        "T1547.004" if str(ptype).lower() in ("winlogon_shell", "winlogon_userinit") else
-                        "T1543.003" if str(ptype).lower() == "services" else
-                        "T1547.005" if str(ptype).lower() == "lsa_package" else
-                        "T1547"
-                    ),
-                )
-                finding_ids.append(_state.add_finding(
-                    finding.model_dump(mode="json")))
         except Exception:
             continue
 
-    return records, finding_ids, persistence_type_counts
+    # --- Phase 2: group and promote narrowly ---
+    finding_ids: list[str] = []
+    grouping_meta = _group_and_promote_registry(
+        records,
+        tool=tool,
+        execution_id=execution_id,
+        create_findings=create_findings,
+        finding_ids_out=finding_ids,
+    )
+
+    return records, finding_ids, persistence_type_counts, grouping_meta
+
+
+# ---------------------------------------------------------------------------
+# Registry grouping / promotion helpers  (One-Shot Quality Recovery)
+# ---------------------------------------------------------------------------
+
+_USER_WRITABLE_PREFIXES = (
+    "\\users\\",
+    "\\programdata\\",
+    "\\windows\\temp\\",
+    "\\temp\\",
+    "\\appdata\\",
+    "\\users\\public\\",
+    "\\recycle.bin\\",
+    "\\perflogs\\",
+)
+
+_SYSTEM_PREFIXES = (
+    "\\windows\\system32\\",
+    "\\windows\\syswow64\\",
+    "\\program files\\",
+    "\\program files (x86)\\",
+)
+
+_INTERPRETER_BASENAMES = frozenset({
+    "cmd.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "wscript.exe",
+    "cscript.exe",
+    "rundll32.exe",
+    "regsvr32.exe",
+    "mshta.exe",
+})
+
+# ASEP classes that ALWAYS promote (no path filtering)
+_ALWAYS_PROMOTE_CLASSES = frozenset({
+    "winlogon_shell",
+    "winlogon_userinit",
+    "appinit_dlls",
+    "lsa_package",
+    "credential_provider",
+    "ifeo",
+    "active_setup",
+    "bootexecute",
+    "print_monitor",
+})
+
+# ASEP classes that need path-based filtering
+_RUN_KEY_CLASSES = frozenset({"run", "runonce", "runservices"})
+
+
+def _extract_target_path(value_data: str) -> str:
+    """Extract the executable target from a registry value data string."""
+    text = value_data.strip().strip('"').strip("'")
+    # Handle paths with arguments: "C:\path\binary.exe -arg" -> C:\path\binary.exe
+    parts = re.split(r'\s+(?=-|/)', text, maxsplit=1)
+    return parts[0].strip().strip('"').strip("'")
+
+
+def _normalize_target_for_grouping(value_data: str) -> str:
+    """Return a lowercase normalized target path for group_key construction."""
+    target = _extract_target_path(value_data).lower()
+    # Strip drive letter if present (C:\... -> \...)
+    if len(target) >= 2 and target[1] == ':':
+        target = target[2:]
+    return target or value_data[:80].lower()
+
+
+def _is_user_writable_path(target: str) -> bool:
+    lower = target.lower()
+    return any(prefix in lower for prefix in _USER_WRITABLE_PREFIXES)
+
+
+def _is_system_path(target: str) -> bool:
+    lower = target.lower()
+    return any(prefix in lower for prefix in _SYSTEM_PREFIXES)
+
+
+def _is_interpreter_target(target: str) -> bool:
+    # Handle Windows-style backslash paths on Linux
+    basename = target.rsplit("\\", 1)[-1].rsplit("/", 1)[-1].lower().strip()
+    return basename in _INTERPRETER_BASENAMES
+
+
+def _classify_promotion_reason(
+    ptype: str,
+    target: str,
+    support_count: int,
+) -> Optional[str]:
+    """Return the promotion_reason if the group qualifies, else None."""
+    ptype_lower = ptype.lower()
+
+    # Always-promote classes
+    if ptype_lower in _ALWAYS_PROMOTE_CLASSES:
+        return "rare_autostart_class"
+
+    # Run/RunOnce/RunServices: conditional
+    if ptype_lower in _RUN_KEY_CLASSES:
+        if _is_user_writable_path(target):
+            return "user_writable_target"
+        if _is_interpreter_target(target):
+            return "interpreter_target"
+        if not target or target == "(default)":
+            return "missing_or_unparsed_target"
+        if support_count > 1:
+            return "duplicate_persistence_target"
+        return None
+
+    # Services: conditional
+    if ptype_lower == "services":
+        if _is_user_writable_path(target):
+            return "user_writable_target"
+        if _is_interpreter_target(target):
+            return "interpreter_target"
+        if not _is_system_path(target) and support_count > 1:
+            return "non_system_service_target"
+        return None
+
+    # Other persistence classes: no auto-promote
+    return None
+
+
+def _mitre_technique_for_ptype(ptype: str) -> str:
+    ptype_lower = ptype.lower()
+    if ptype_lower in ("run", "runonce"):
+        return "T1547.001"
+    if ptype_lower == "appinit_dlls":
+        return "T1546.010"
+    if ptype_lower in ("winlogon_shell", "winlogon_userinit"):
+        return "T1547.004"
+    if ptype_lower == "services":
+        return "T1543.003"
+    if ptype_lower == "lsa_package":
+        return "T1547.005"
+    if ptype_lower == "bootexecute":
+        return "T1547.012"
+    if ptype_lower == "ifeo":
+        return "T1546.012"
+    if ptype_lower == "active_setup":
+        return "T1547.014"
+    if ptype_lower == "print_monitor":
+        return "T1547.003"
+    if ptype_lower == "credential_provider":
+        return "T1547.002"
+    return "T1547"
+
+
+def _group_and_promote_registry(
+    records: list[RegistryRunKey],
+    *,
+    tool: str,
+    execution_id: str,
+    create_findings: bool,
+    finding_ids_out: list[str],
+) -> dict[str, Any]:
+    """Group registry records and promote only high-signal candidates into findings.
+
+    Returns grouping_meta dict with suppression_summary, grouping_context,
+    promoted_group_count, suppressed_group_count.
+    """
+    from collections import defaultdict
+
+    # Eligible persistence types for grouping/promotion consideration
+    eligible_types = _ALWAYS_PROMOTE_CLASSES | _RUN_KEY_CLASSES | {"services"}
+
+    # Group by (persistence_type, normalized_target)
+    groups: dict[str, list[RegistryRunKey]] = defaultdict(list)
+    for record in records:
+        ptype = str(record.persistence_type or "").lower()
+        if ptype not in eligible_types:
+            continue
+        target = _normalize_target_for_grouping(record.value_data)
+        group_key = f"registry:{ptype}:{target}"
+        groups[group_key].append(record)
+
+    promoted_groups: list[dict[str, Any]] = []
+    suppressed_groups: list[dict[str, Any]] = []
+    suppressed_rows: list[dict[str, Any]] = []
+
+    for group_key, group_records in groups.items():
+        ptype = str(group_records[0].persistence_type or "").lower()
+        target = _normalize_target_for_grouping(group_records[0].value_data)
+        support_count = len(group_records)
+
+        reason = _classify_promotion_reason(ptype, target, support_count)
+        if reason is None:
+            suppressed_groups.append({
+                "group_key": group_key,
+                "persistence_type": ptype,
+                "target": target,
+                "support_count": support_count,
+            })
+            suppressed_rows.extend(
+                record.model_dump(mode="json")
+                for record in group_records
+            )
+            continue
+
+        promoted_groups.append({
+            "group_key": group_key,
+            "persistence_type": ptype,
+            "target": target,
+            "support_count": support_count,
+            "promotion_reason": reason,
+        })
+
+        if create_findings and _state is not None:
+            representative = group_records[0]
+            mitre_tech = _mitre_technique_for_ptype(ptype)
+            sample_values = "; ".join(
+                f"{r.value_name}={r.value_data[:80]}"
+                for r in group_records[:3]
+            )
+            finding = Finding(
+                case_id=_case_id(),
+                finding_type="persistence",
+                artifact_type="disk",
+                artifact_path=representative.key_path,
+                tool_name=tool,
+                execution_id=execution_id,
+                iteration=_current_iteration(),
+                evidence_kind=EvidenceKind.OBSERVATION,
+                finding_status=FindingStatus.ACTIVE,
+                confidence=0.85,
+                description=(
+                    f"Registry persistence group ({ptype}): "
+                    f"{support_count} row(s) targeting {target[:120]}. "
+                    f"Samples: {sample_values[:200]}. "
+                    f"Promotion: {reason}."
+                ),
+                supporting_indicators=[
+                    representative.key_path,
+                    f"target={target[:200]}",
+                    f"support_count={support_count}",
+                ],
+                mitre_tactic="TA0003",
+                mitre_technique=mitre_tech,
+                group_key=group_key,
+                support_count=support_count,
+                promotion_reason=reason,
+            )
+            finding_ids_out.append(
+                _state.add_finding(finding.model_dump(mode="json"))
+            )
+
+    grouping_context = {
+        "promoted": promoted_groups,
+        "suppressed_sample": suppressed_groups[:10],
+        "total_eligible_records": sum(len(g) for g in groups.values()),
+    }
+    suppression_summary = {
+        "total_registry_rows_parsed": len(records),
+        "eligible_for_grouping": sum(len(g) for g in groups.values()),
+        "total_groups": len(groups),
+        "promoted_groups": len(promoted_groups),
+        "suppressed_groups": len(suppressed_groups),
+        "suppressed_rows": sum(g["support_count"] for g in suppressed_groups),
+    }
+
+    return {
+        "suppression_summary": suppression_summary,
+        "grouping_context": grouping_context,
+        "promoted_group_count": len(promoted_groups),
+        "suppressed_group_count": len(suppressed_groups),
+        "suppressed_rows": suppressed_rows,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -844,15 +1780,16 @@ def extract_prefetch(
     prefetch_dir: Optional[str] = None,
     case_id: Optional[str] = None,
     max_entries: int = 0,
+    response_format: str = "summary",
 ) -> dict[str, Any]:
-    """Extract Windows Prefetch execution evidence using PECmd (EZ Tools).
-
-    Wraps ``dotnet /opt/zimmermantools/PECmd.dll`` on SIFT Workstation.
+    """Extract Windows Prefetch execution evidence on Linux with `pyscca`.
 
     Prefetch files (``.pf``) are stored in ``C:\\Windows\\Prefetch`` and
     record up to 8 execution timestamps plus the list of files referenced
-    during the binary's first seconds.  The ``$SI Created`` time of the ``.pf``
-    file equals the **first** execution time — this is forensically significant.
+    during the binary's first seconds. Exact recent execution history is
+    surfaced in ``last_run_times``. Separate `.pf` file metadata is returned
+    as ``pf_created_time`` / ``pf_modified_time`` when it can be sourced from
+    durable MFT output or mounted NTFS-backed filesystem metadata.
 
     Parameters
     ----------
@@ -875,6 +1812,7 @@ def extract_prefetch(
     tool = "disk.extract_prefetch"
     if _ez_runner is None or _state is None or _audit is None:
         return _not_initialised(tool)
+    normalized_format = _normalize_response_format(response_format)
 
     # Derive default prefetch directory from image path
     if prefetch_dir is None:
@@ -887,9 +1825,12 @@ def extract_prefetch(
         else:
             # Legacy convention: <case_dir>/evidence/mnt/C/Windows/Prefetch
             prefetch_dir = str(base / "mnt" / "C" / "Windows" / "Prefetch")
+    preflight = _preflight_artifact_persistence("prefetch", "prefetch.csv")
+    if not preflight.get("ok"):
+        return _artifact_preflight_error(tool_name=tool, preflight=preflight)
 
     # Use pyscca (libscca) — handles Windows 10 MAM-compressed .pf files on Linux
-    # PECmd requires Windows APIs for decompression; pyscca is the Linux-native solution
+    # and exposes Prefetch-native run history without relying on Windows-only PECmd.
     records: list[PrefetchRecord] = []
     finding_ids: list[str] = []
     exec_id = f"E-{os.getpid():05d}"  # must match ^E-\d{{3,}}$ pattern
@@ -941,6 +1882,12 @@ def extract_prefetch(
         except Exception:
             continue
 
+    _enrich_prefetch_records_with_filesystem_metadata(records)
+    pf_timestamp_source_counts: dict[str, int] = {}
+    for record in records:
+        key = record.pf_timestamp_source or "unavailable"
+        pf_timestamp_source_counts[key] = pf_timestamp_source_counts.get(key, 0) + 1
+
     # One summary finding for the whole batch — not one per .pf file
     if records:
         first_runs = sorted(
@@ -973,16 +1920,68 @@ def extract_prefetch(
             "prefetch",
             [record.executable_name for record in records if record.executable_name],
         )
-
-    return _warn_if_empty({
+    record_rows = [r.model_dump(mode="json") for r in records]
+    persistent_csv = _persist_rows_as_csv(
+        record_rows,
+        tool_short_name="prefetch",
+        filename="prefetch.csv",
+    )
+    durable_csv, artifact_persistence = _finalize_artifact_persistence(
+        artifact_label="Prefetch CSV",
+        persisted_path=persistent_csv,
+        preflight=preflight,
+    )
+    response: dict[str, Any] = {
         "tool_name": tool,
-        "status": "success",
-        "data": [r.model_dump(mode="json") for r in records],
+        "status": "success" if durable_csv else "warning",
         "findings_created": finding_ids,
         "execution_id": exec_id,
         "raw_command": f"pyscca {prefetch_dir}/*.pf",
         "records_count": len(records),
-    }, "extract_prefetch", prefetch_dir)
+        "csv_path": durable_csv,
+        "artifact_persistence": artifact_persistence,
+        "response_format": normalized_format,
+        "requires_agent": "@prefetch-analyst",
+        "agent_instruction": (
+            f"Analyze {durable_csv} for multi-path execution, orphaned .pf files, "
+            f"and suspicious binaries. {len(records)} total rows."
+            if durable_csv
+            else (
+                "Analyze the returned Prefetch summary and rerun extract_prefetch after fixing "
+                "artifact persistence to obtain a reusable handle for deeper pivots."
+            )
+        ),
+    }
+    if normalized_format == "detailed":
+        response["data"] = record_rows
+    else:
+        preview = record_rows[:10]
+        response["preview"] = preview
+        response["summary"] = (
+            f"{len(records)} prefetch entries parsed from {prefetch_dir}. "
+            f"`last_run_times` reflects exact Prefetch-native execution history; "
+            f"`pf_created_time` / `pf_modified_time` are `.pf` file metadata. "
+            f"Full data at {durable_csv or 'not persisted'}."
+        )
+        response["note"] = (
+            'Full data array omitted by default; pass response_format="detailed" '
+            "for the complete data."
+        )
+    response["pf_timestamp_source_counts"] = pf_timestamp_source_counts
+    if not durable_csv:
+        response["warning"] = (
+            "Prefetch rows were parsed successfully, but the CSV output could not be persisted to "
+            "a durable artifact path. Use the summary now and rerun after fixing OUTPUT_BASE to "
+            "obtain a reusable handle."
+        )
+    response = _warn_if_empty(response, "extract_prefetch", prefetch_dir)
+    return _prefetch_contract_payload(
+        response=response,
+        records=records,
+        image_path=image_path,
+        prefetch_dir=prefetch_dir,
+        csv_path=durable_csv,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -995,6 +1994,7 @@ def get_amcache(
     hive_path: Optional[str] = None,
     case_id: Optional[str] = None,
     max_entries: int = 0,
+    response_format: str = "summary",
 ) -> dict[str, Any]:
     """Extract execution evidence from the Amcache.hve registry hive.
 
@@ -1024,6 +2024,17 @@ def get_amcache(
     tool = "disk.get_amcache"
     if _ez_runner is None or _state is None or _audit is None:
         return _not_initialised(tool)
+    normalized_format = _normalize_response_format(response_format)
+    if normalized_format is None:
+        return {
+            "tool_name": tool,
+            "status": "error",
+            "error_message": "Invalid response_format. Use 'summary' or 'detailed'.",
+            "data": [],
+            "findings_created": [],
+            "execution_id": None,
+            "raw_command": None,
+        }
 
     if hive_path is None:
         base = Path(image_path)
@@ -1033,6 +2044,12 @@ def get_amcache(
         else:
             hive_path = str(base / "mnt" / "C" / "Windows" /
                             "appcompat" / "Programs" / "Amcache.hve")
+    preflight = _preflight_artifact_persistence(
+        "amcache",
+        "amcache_UnassociatedFileEntries.csv",
+    )
+    if not preflight.get("ok"):
+        return _artifact_preflight_error(tool_name=tool, preflight=preflight)
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_amcache_") as tmp_dir:
         csv_filename = "amcache.csv"
@@ -1067,6 +2084,11 @@ def get_amcache(
 
         rows = _read_csv(csv_path)
         persistent_csv = _persist_csv(csv_path, "amcache")
+        durable_csv, artifact_persistence = _finalize_artifact_persistence(
+            artifact_label="Amcache CSV",
+            persisted_path=persistent_csv,
+            preflight=preflight,
+        )
 
     records: list[AmcacheRecord] = []
     finding_ids: list[str] = []
@@ -1150,18 +2172,54 @@ def get_amcache(
 
     if max_entries and max_entries > 0:
         records = records[:max_entries]
-    return _warn_if_empty({
+    response = {
         "tool_name": tool,
-        "status": "success",
-        "data": [r.model_dump(mode="json") for r in records],
+        "status": "success" if durable_csv else "warning",
         "findings_created": finding_ids,
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(records),
         "total_records": len(rows),
-        "csv_path": persistent_csv,
-        "note": f"Returning {len(records[:max_entries]) if max_entries and max_entries > 0 else len(records)} of {len(rows)} total rows. Full CSV at {persistent_csv}.",
-    }, "get_amcache", hive_path)
+        "csv_path": durable_csv,
+        "artifact_persistence": artifact_persistence,
+        "response_format": normalized_format,
+        "note": (
+            f"Returning {len(records)} of {len(rows)} total rows. Full CSV at {durable_csv}."
+            if durable_csv
+            else (
+                f"Returning {len(records)} of {len(rows)} total rows. "
+                "CSV persistence did not produce a durable analyst-facing handle; "
+                "fix OUTPUT_BASE and rerun get_amcache before using run_analysis()."
+            )
+        ),
+        "requires_agent": "@amcache-analyst",
+        "agent_instruction": (
+            f"Analyze {durable_csv} for renamed malware, suspicious execution paths, and hash pivots. "
+            f"{len(rows)} total rows."
+            if durable_csv
+            else (
+                "Analyze the Amcache summary now, then rerun get_amcache after fixing artifact "
+                "persistence to obtain a reusable handle for hash pivots."
+            )
+        ),
+    }
+    if normalized_format == "detailed":
+        response["data"] = [r.model_dump(mode="json") for r in records]
+    else:
+        response["preview"] = [r.model_dump(mode="json") for r in records[:10]]
+    if not durable_csv:
+        response["warning"] = (
+            "Amcache rows were parsed successfully, but the CSV output could not be persisted to "
+            "a durable artifact path."
+        )
+    response = _warn_if_empty(response, "get_amcache", hive_path)
+    return _amcache_contract_payload(
+        response=response,
+        records=records,
+        image_path=image_path,
+        hive_path=hive_path,
+        csv_path=durable_csv,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1225,6 +2283,9 @@ def extract_mft_timeline(
             mft_path = str(_mft)
         else:
             mft_path = str(base / "mnt" / "C" / "$MFT")
+    preflight = _preflight_artifact_persistence("mft", "mft_timeline.csv")
+    if not preflight.get("ok"):
+        return _artifact_preflight_error(tool_name=tool, preflight=preflight)
 
     resolved_mft_path = _resolved_path_str(mft_path)
     cache_key = build_cache_key(tool, {"mft_path": resolved_mft_path})
@@ -1276,6 +2337,12 @@ def extract_mft_timeline(
             ),
             "cache_hit": True,
             "cache_source_execution_id": cached.get("source_execution_id"),
+            "artifact_persistence": {
+                "status": "durable",
+                "persisted_path": str(cached["csv_path"]),
+                "reason": "Cached MFTECmd CSV is available at a durable artifact path.",
+                "fix_hint": None,
+            },
         }
         formatted = _apply_response_format(
             response,
@@ -1283,7 +2350,14 @@ def extract_mft_timeline(
             records=detailed_records if normalized_format == "detailed" else full_records,
             total_records=len(rows),
         )
-        return _warn_if_empty(formatted, "extract_mft_timeline", mft_path, min_expected=10000)
+        formatted = _warn_if_empty(formatted, "extract_mft_timeline", mft_path, min_expected=10000)
+        return _mft_contract_payload(
+            response=formatted,
+            records=detailed_records if normalized_format == "detailed" else full_records,
+            image_path=image_path,
+            mft_path=mft_path,
+            csv_path=str(cached["csv_path"]),
+        )
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_mftecmd_") as tmp_dir:
         csv_filename = "mft_timeline.csv"
@@ -1316,6 +2390,11 @@ def extract_mft_timeline(
 
         rows = _read_csv(csv_path)
         persistent_csv = _persist_csv(csv_path, "mft")
+        durable_csv, artifact_persistence = _finalize_artifact_persistence(
+            artifact_label="MFT CSV",
+            persisted_path=persistent_csv,
+            preflight=preflight,
+        )
 
     records, finding_ids, timestomping_candidates = _build_mft_records(
         rows,
@@ -1330,17 +2409,33 @@ def extract_mft_timeline(
         detailed_records = detailed_records[:max_entries]
     response = {
         "tool_name": tool,
-        "status": "success",
+        "status": "success" if durable_csv else "warning",
         "findings_created": finding_ids,
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(detailed_records),
         "total_records": len(rows),
         "timestomping_candidates": timestomping_candidates,
-        "csv_path": persistent_csv,
-        "note": f"Returning {len(detailed_records)} of {len(rows)} MFT rows. Full CSV at {persistent_csv}.",
+        "csv_path": durable_csv,
+        "artifact_persistence": artifact_persistence,
+        "note": (
+            f"Returning {len(detailed_records)} of {len(rows)} MFT rows. Full CSV at {durable_csv}."
+            if durable_csv
+            else (
+                f"Returning {len(detailed_records)} of {len(rows)} MFT rows. "
+                "CSV persistence did not produce a durable analyst-facing handle; "
+                "fix OUTPUT_BASE and rerun extract_mft_timeline before using run_analysis()."
+            )
+        ),
         "requires_agent": "@mft-analyst",
-        "agent_instruction": f"Analyze {persistent_csv} for timestomping, attacker file drops, staging. {len(rows)} total rows.",
+        "agent_instruction": (
+            f"Analyze {durable_csv} for timestomping, attacker file drops, staging. {len(rows)} total rows."
+            if durable_csv
+            else (
+                "Analyze the MFT summary now, then rerun extract_mft_timeline after fixing "
+                "artifact persistence to obtain a reusable handle."
+            )
+        ),
         "cache_hit": False,
         "cache_source_execution_id": None,
     }
@@ -1352,19 +2447,31 @@ def extract_mft_timeline(
     )
     response = _warn_if_empty(
         response, "extract_mft_timeline", mft_path, min_expected=10000)
-    _state.cache_artifact(
-        cache_key,
-        {
-            "source_execution_id": result.execution_id,
-            "csv_path": persistent_csv,
-            "findings_created": finding_ids,
-            "requires_agent": response.get("requires_agent"),
-            "agent_instruction": response.get("agent_instruction"),
-            "timestomping_candidates": timestomping_candidates,
-            "total_records": len(rows),
-        },
+    if not durable_csv:
+        response["warning"] = (
+            "MFT rows were parsed successfully, but the CSV output could not be persisted to a "
+            "durable artifact path."
+        )
+    if durable_csv:
+        _state.cache_artifact(
+            cache_key,
+            {
+                "source_execution_id": result.execution_id,
+                "csv_path": durable_csv,
+                "findings_created": finding_ids,
+                "requires_agent": response.get("requires_agent"),
+                "agent_instruction": response.get("agent_instruction"),
+                "timestomping_candidates": timestomping_candidates,
+                "total_records": len(rows),
+            },
+        )
+    return _mft_contract_payload(
+        response=response,
+        records=detailed_records if normalized_format == "detailed" else full_records,
+        image_path=image_path,
+        mft_path=mft_path,
+        csv_path=durable_csv,
     )
-    return response
 
 
 # ---------------------------------------------------------------------------
@@ -1613,6 +2720,9 @@ def summarize_evtx(
         else:
             evtx_dir = str(base / "mnt" / "C" / "Windows" /
                            "System32" / "winevt" / "Logs")
+    preflight = _preflight_artifact_persistence("evtx", "evtx_timeline.csv")
+    if not preflight.get("ok"):
+        return _artifact_preflight_error(tool_name=tool, preflight=preflight)
 
     event_id_strategy = "explicit"
     if event_ids is not None:
@@ -1724,6 +2834,12 @@ def summarize_evtx(
             } if start_date or end_date else None,
             "cache_hit": True,
             "cache_source_execution_id": cached.get("source_execution_id"),
+            "artifact_persistence": {
+                "status": "durable",
+                "persisted_path": str(cached["csv_path"]),
+                "reason": "Cached EVTX CSV is available at a durable artifact path.",
+                "fix_hint": None,
+            },
         }
         formatted = _apply_response_format(
             response,
@@ -1731,7 +2847,19 @@ def summarize_evtx(
             records=detailed_records if normalized_format == "detailed" else full_records,
             total_records=len(rows),
         )
-        return _warn_if_empty(formatted, "summarize_evtx", evtx_dir, min_expected=100)
+        formatted = _warn_if_empty(formatted, "summarize_evtx", evtx_dir, min_expected=100)
+        if "data" in formatted:
+            formatted["data"] = [
+                sanitize_payload_fields(record, "message_summary", "extra_fields")
+                for record in formatted["data"]
+            ]
+        return _evtx_contract_payload(
+            response=formatted,
+            records=detailed_records if normalized_format == "detailed" else full_records,
+            image_path=image_path,
+            evtx_dir=evtx_dir,
+            csv_path=str(cached["csv_path"]),
+        )
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_evtx_") as tmp_dir:
         csv_filename = "evtx_timeline.csv"
@@ -1769,6 +2897,11 @@ def summarize_evtx(
 
         rows = _read_csv(csv_path)
         persistent_csv = _persist_csv(csv_path, "evtx")
+        durable_csv, artifact_persistence = _finalize_artifact_persistence(
+            artifact_label="EVTX CSV",
+            persisted_path=persistent_csv,
+            preflight=preflight,
+        )
 
     records, finding_ids = _build_evtx_records(
         rows,
@@ -1790,10 +2923,23 @@ def summarize_evtx(
         "raw_command": result.command_line,
         "records_count": len(detailed_records),
         "total_records": len(rows),
-        "csv_path": persistent_csv,
+        "csv_path": durable_csv,
+        "artifact_persistence": artifact_persistence,
         "requires_agent": "@evtx-analyst",
-        "agent_instruction": f"Analyze {persistent_csv} for attacker lifecycle — auth anomalies, lateral movement, persistence. {len(rows)} total rows.",
-        "note": f"Returning {len(detailed_records)} of {len(rows)} rows. Full CSV at {persistent_csv}.",
+        "agent_instruction": (
+            f"Analyze {durable_csv} for attacker lifecycle — auth anomalies, lateral movement, persistence. {len(rows)} total rows."
+            if durable_csv
+            else "Analyze the returned EVTX summary and persisted artifacts for attacker lifecycle pivots; the CSV handle could not be persisted cleanly."
+        ),
+        "note": (
+            f"Returning {len(detailed_records)} of {len(rows)} rows. Full CSV at {durable_csv}."
+            if durable_csv
+            else (
+                f"Returning {len(detailed_records)} of {len(rows)} rows. "
+                "CSV persistence did not produce a durable analyst-facing handle; "
+                'rerun summarize_evtx after fixing OUTPUT_BASE permissions before using run_analysis().'
+            )
+        ),
         "channel_filter": channel,
         "event_id_filter": effective_eids if effective_eids else "all",
         "event_id_strategy": event_id_strategy,
@@ -1810,29 +2956,48 @@ def summarize_evtx(
         records=detailed_records if normalized_format == "detailed" else full_records,
         total_records=len(rows),
     )
+    if not durable_csv:
+        response["status"] = "warning"
+        response["warning"] = (
+            "EVTX rows were parsed successfully, but the CSV output could not be persisted to a durable "
+            "artifact path. The returned summary is safe to use, but run_analysis() should wait for a "
+            "rerun that produces a persisted csv_path/handle.path."
+        )
     response = _warn_if_empty(
         response, "summarize_evtx", evtx_dir, min_expected=100)
-    _state.cache_artifact(
-        cache_key,
-        {
-            "source_execution_id": result.execution_id,
-            "csv_path": persistent_csv,
-            "findings_created": finding_ids,
-            "requires_agent": response.get("requires_agent"),
-            "agent_instruction": response.get("agent_instruction"),
-            "total_records": len(rows),
-            "channel_filter": channel,
-            "event_id_filter": effective_eids if effective_eids else "all",
-            "event_id_strategy": event_id_strategy,
-            "date_range": response.get("date_range"),
-        },
-    )
+    if durable_csv:
+        _state.cache_artifact(
+            cache_key,
+            {
+                "source_execution_id": result.execution_id,
+                "csv_path": durable_csv,
+                "findings_created": finding_ids,
+                "requires_agent": response.get("requires_agent"),
+                "agent_instruction": response.get("agent_instruction"),
+                "total_records": len(rows),
+                "channel_filter": channel,
+                "event_id_filter": effective_eids if effective_eids else "all",
+                "event_id_strategy": event_id_strategy,
+                "date_range": response.get("date_range"),
+            },
+        )
     promote_corroborated_findings(
         _state,
         "evtx_process_creation",
         _extract_evtx_process_paths(records),
     )
-    return response
+    if "data" in response:
+        response["data"] = [
+            sanitize_payload_fields(record, "message_summary", "extra_fields")
+            for record in response["data"]
+        ]
+    return _evtx_contract_payload(
+        response=response,
+        records=detailed_records if normalized_format == "detailed" else full_records,
+        image_path=image_path,
+        evtx_dir=evtx_dir,
+        csv_path=durable_csv,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1981,6 +3146,10 @@ def extract_registry_run_keys(
         else:
             hive_dir = str(base / "mnt" / "C" / "Windows" /
                            "System32" / "config")
+    preflight = _preflight_artifact_persistence("registry", "registry_combined.csv")
+    suppressed_preflight = _preflight_artifact_persistence("registry", "registry_suppressed.csv")
+    if not preflight.get("ok"):
+        return _artifact_preflight_error(tool_name=tool, preflight=preflight)
     resolved_hive_dir = _resolved_path_str(hive_dir)
 
     # Resolve DFIRBatch file path
@@ -2051,7 +3220,7 @@ def extract_registry_run_keys(
             cache_source_execution_id=str(
                 cached.get("source_execution_id") or ""),
         )
-        records, _, persistence_type_counts = _build_registry_records(
+        records, _, persistence_type_counts, grouping_meta = _build_registry_records(
             rows,
             tool=tool,
             execution_id=cache_meta["execution_id"],
@@ -2083,7 +3252,38 @@ def extract_registry_run_keys(
             "user_hives_scanned": user_hives_found,
             "cache_hit": True,
             "cache_source_execution_id": cached.get("source_execution_id"),
+            "artifact_persistence": {
+                "status": "durable",
+                "persisted_path": str(cached["csv_path"]),
+                "reason": "Cached registry CSV is available at a durable artifact path.",
+                "fix_hint": None,
+            },
+            "suppressed_csv_path": cached.get("suppressed_csv_path"),
+            "suppressed_row_count": int(cached.get("suppressed_row_count") or 0),
+            "suppressed_artifact_persistence": (
+                {
+                    "status": "durable",
+                    "persisted_path": str(cached["suppressed_csv_path"]),
+                    "reason": "Cached suppressed registry CSV is available at a durable artifact path.",
+                    "fix_hint": None,
+                }
+                if cached.get("suppressed_csv_path")
+                else {
+                    "status": "unavailable",
+                    "persisted_path": None,
+                    "reason": "No suppressed registry CSV was persisted for this cached result.",
+                    "fix_hint": None,
+                }
+            ),
+            **grouping_meta,
         }
+        if cached.get("suppressed_csv_path"):
+            cached_response["suppressed_handle"] = build_handle(
+                kind="csv",
+                path=str(cached["suppressed_csv_path"]),
+                description="Persisted suppressed registry rows for read-only review.",
+                tool_name="disk.extract_registry_run_keys",
+            )
         if batch_warning:
             cached_response["batch_warning"] = batch_warning
         formatted = _apply_response_format(
@@ -2092,7 +3292,15 @@ def extract_registry_run_keys(
             records=detailed_records if normalized_format == "detailed" else full_records,
             total_records=len(rows),
         )
-        return _warn_if_empty(formatted, "extract_registry_run_keys", hive_dir)
+        formatted = _warn_if_empty(formatted, "extract_registry_run_keys", hive_dir)
+        return _registry_contract_payload(
+            response=formatted,
+            records=detailed_records if normalized_format == "detailed" else full_records,
+            image_path=image_path,
+            hive_dir=hive_dir,
+            csv_path=str(cached["csv_path"]),
+            suppressed_csv_path=str(cached.get("suppressed_csv_path") or "") or None,
+        )
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_recmd_") as tmp_dir:
         csv_filename = "registry.csv"
@@ -2162,8 +3370,13 @@ def extract_registry_run_keys(
             persistent_csv = _persist_csv(combined_csv_path, "registry")
         else:
             persistent_csv = _persist_csv(csv_path, "registry")
+        durable_csv, artifact_persistence = _finalize_artifact_persistence(
+            artifact_label="Registry CSV",
+            persisted_path=persistent_csv,
+            preflight=preflight,
+        )
 
-    records, finding_ids, persistence_type_counts = _build_registry_records(
+    records, finding_ids, persistence_type_counts, grouping_meta = _build_registry_records(
         rows,
         tool=tool,
         execution_id=result.execution_id,
@@ -2174,25 +3387,72 @@ def extract_registry_run_keys(
     detailed_records = list(full_records)
     if max_entries and max_entries > 0:
         detailed_records = detailed_records[:max_entries]
+    suppressed_rows = list(grouping_meta.pop("suppressed_rows", []))
+    suppressed_csv_raw = _persist_rows_as_csv(
+        suppressed_rows,
+        tool_short_name="registry",
+        filename="registry_suppressed.csv",
+    ) if suppressed_rows else None
+    if suppressed_rows:
+        durable_suppressed_csv, suppressed_artifact_persistence = _finalize_artifact_persistence(
+            artifact_label="Suppressed registry CSV",
+            persisted_path=suppressed_csv_raw,
+            preflight=suppressed_preflight,
+        )
+    else:
+        durable_suppressed_csv = None
+        suppressed_artifact_persistence = {
+            "status": "unavailable",
+            "persisted_path": None,
+            "reason": "No suppressed registry rows were produced for this run.",
+            "fix_hint": None,
+        }
 
     response: dict[str, Any] = {
         "tool_name": tool,
-        "status": "success",
+        "status": "success" if durable_csv else "warning",
         "findings_created": finding_ids,
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(detailed_records),
         "total_records": len(rows),
-        "csv_path": persistent_csv,
-        "note": f"Returning {len(detailed_records)} of {len(rows)} rows. Full CSV at {persistent_csv}.",
+        "csv_path": durable_csv,
+        "artifact_persistence": artifact_persistence,
+        "note": (
+            f"Returning {len(detailed_records)} of {len(rows)} rows. Full CSV at {durable_csv}."
+            if durable_csv
+            else (
+                f"Returning {len(detailed_records)} of {len(rows)} rows. "
+                "CSV persistence did not produce a durable analyst-facing handle; "
+                "fix OUTPUT_BASE and rerun extract_registry_run_keys before using run_analysis()."
+            )
+        ),
         "requires_agent": "@registry-analyst",
-        "agent_instruction": f"Analyze {persistent_csv} for persistence mechanisms, fileless malware, credential theft. {len(rows)} total rows.",
+        "agent_instruction": (
+            f"Analyze {durable_csv} for persistence mechanisms, fileless malware, credential theft. {len(rows)} total rows."
+            if durable_csv
+            else (
+                "Analyze the registry summary now, then rerun extract_registry_run_keys after "
+                "fixing artifact persistence to obtain a reusable handle."
+            )
+        ),
         "persistence_type_counts": persistence_type_counts,
         "batch_file_used": batch_file_used,
         "user_hives_scanned": user_hives_found,
         "cache_hit": False,
         "cache_source_execution_id": None,
+        "suppressed_csv_path": durable_suppressed_csv,
+        "suppressed_row_count": len(suppressed_rows),
+        "suppressed_artifact_persistence": suppressed_artifact_persistence,
+        **grouping_meta,
     }
+    if durable_suppressed_csv:
+        response["suppressed_handle"] = build_handle(
+            kind="csv",
+            path=durable_suppressed_csv,
+            description="Persisted suppressed registry rows for read-only review.",
+            tool_name="disk.extract_registry_run_keys",
+        )
     if batch_warning:
         response["batch_warning"] = batch_warning
     response = _apply_response_format(
@@ -2201,20 +3461,36 @@ def extract_registry_run_keys(
         records=detailed_records if normalized_format == "detailed" else full_records,
         total_records=len(rows),
     )
+    if not durable_csv:
+        response["warning"] = (
+            "Registry rows were parsed successfully, but the main CSV output could not be "
+            "persisted to a durable artifact path."
+        )
 
-    _state.cache_artifact(
-        cache_key,
-        {
-            "source_execution_id": result.execution_id,
-            "csv_path": persistent_csv,
-            "findings_created": finding_ids,
-            "requires_agent": response.get("requires_agent"),
-            "agent_instruction": response.get("agent_instruction"),
-            "total_records": len(rows),
-            "persistence_type_counts": persistence_type_counts,
-            "batch_file_used": batch_file_used,
-            "user_hives_scanned": user_hives_found,
-            "batch_warning": batch_warning,
-        },
+    if durable_csv:
+        _state.cache_artifact(
+            cache_key,
+            {
+                "source_execution_id": result.execution_id,
+                "csv_path": durable_csv,
+                "suppressed_csv_path": durable_suppressed_csv,
+                "suppressed_row_count": len(suppressed_rows),
+                "findings_created": finding_ids,
+                "requires_agent": response.get("requires_agent"),
+                "agent_instruction": response.get("agent_instruction"),
+                "total_records": len(rows),
+                "persistence_type_counts": persistence_type_counts,
+                "batch_file_used": batch_file_used,
+                "user_hives_scanned": user_hives_found,
+                "batch_warning": batch_warning,
+            },
+        )
+    response = _warn_if_empty(response, "extract_registry_run_keys", hive_dir)
+    return _registry_contract_payload(
+        response=response,
+        records=detailed_records if normalized_format == "detailed" else full_records,
+        image_path=image_path,
+        hive_dir=hive_dir,
+        csv_path=durable_csv,
+        suppressed_csv_path=durable_suppressed_csv,
     )
-    return _warn_if_empty(response, "extract_registry_run_keys", hive_dir)

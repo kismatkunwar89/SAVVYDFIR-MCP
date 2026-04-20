@@ -11,6 +11,17 @@ def _status_label(value: Any) -> str:
     return str(value or "UNKNOWN").upper()
 
 
+# Status precedence: CONFIRMED findings surface first, then HYPOTHESIS → OBSERVATION.
+# REJECTED findings are demoted to last.
+_STATUS_PRECEDENCE: dict[str, int] = {
+    "CONFIRMED": 4,
+    "HYPOTHESIS": 3,
+    "ACTIVE": 2,
+    "OBSERVATION": 1,
+    "REJECTED": 0,
+}
+
+
 def _short_description(value: Any, limit: int = 140) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
@@ -19,13 +30,37 @@ def _short_description(value: Any, limit: int = 140) -> str:
 
 
 def _rank_findings(findings: list[dict[str, Any]], *, limit: int = 25) -> list[dict[str, Any]]:
-    def _sort_key(finding: dict[str, Any]) -> tuple[float, str]:
+    def _sort_key(finding: dict[str, Any]) -> tuple[int, float, str]:
+        status = _status_label(finding.get("finding_status"))
+        precedence = _STATUS_PRECEDENCE.get(status, 1)
         confidence = float(finding.get("confidence", 0.0) or 0.0)
         recency = str(finding.get("updated_at") or finding.get("created_at") or "")
-        return (confidence, recency)
+        return (precedence, confidence, recency)
 
     ranked = sorted(findings, key=_sort_key, reverse=True)
     return [dict(finding) for finding in ranked[:limit]]
+
+
+def _split_findings_by_status(
+    findings: list[dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Bucket findings by normalized status."""
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for f in findings:
+        status = _status_label(f.get("finding_status"))
+        buckets.setdefault(status, []).append(f)
+    return buckets
+
+
+def _count_by_key(
+    findings: list[dict[str, Any]], key: str,
+) -> dict[str, int]:
+    """Count findings grouped by a given key field."""
+    counts: dict[str, int] = {}
+    for f in findings:
+        val = str(f.get(key) or "UNKNOWN").upper()
+        counts[val] = counts.get(val, 0) + 1
+    return counts
 
 
 def _render_findings_rows(findings: list[dict[str, Any]]) -> str:
@@ -69,6 +104,31 @@ def render_report_html(payload: dict[str, Any]) -> str:
     coverage = payload["coverage"]
     top_findings = payload["top_findings"]
     open_questions = payload.get("open_questions", [])
+    status_breakdown = payload.get("status_breakdown", {})
+    evidence_kind_breakdown = payload.get("evidence_kind_breakdown", {})
+
+    confirmed_count = status_breakdown.get("CONFIRMED", 0)
+    hypothesis_count = status_breakdown.get("HYPOTHESIS", 0) + status_breakdown.get("ACTIVE", 0)
+
+    # Split top findings into confirmed vs active leads
+    confirmed_findings = [
+        f for f in top_findings
+        if _status_label(f.get("finding_status")) == "CONFIRMED"
+    ]
+    active_findings = [
+        f for f in top_findings
+        if _status_label(f.get("finding_status")) in ("HYPOTHESIS", "ACTIVE", "OBSERVATION")
+    ]
+
+    no_confirmed_banner = ""
+    if confirmed_count == 0:
+        no_confirmed_banner = (
+            '<div class="card" style="border-color: var(--warn);">'
+            '<h2 style="color: var(--warn);">No Structurally Confirmed Findings</h2>'
+            "<p>No findings have been independently corroborated by multiple artifact sources. "
+            "All findings below are hypotheses or observations that require further validation.</p>"
+            "</div>"
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -132,8 +192,10 @@ def render_report_html(payload: dict[str, Any]) -> str:
 
   <section class="card">
     <h2>Executive Summary</h2>
-    <p>Case <strong>{html.escape(payload['case_id'])}</strong> contains <strong>{summary.get('findings_count', 0)}</strong> findings, of which <strong>{summary.get('confirmed_count', 0)}</strong> are confirmed. The current unresolved discrepancy count is <strong>{summary.get('unresolved_discrepancies', 0)}</strong>. Sigma preflight reported <strong>{sigma.get('critical_count', 0)}</strong> CRITICAL and <strong>{sigma.get('high_count', 0)}</strong> HIGH anomalies.</p>
+    <p>Case <strong>{html.escape(payload['case_id'])}</strong> contains <strong>{summary.get('findings_count', 0)}</strong> findings, of which <strong>{confirmed_count}</strong> are confirmed and <strong>{hypothesis_count}</strong> are hypotheses/active leads. The current unresolved discrepancy count is <strong>{summary.get('unresolved_discrepancies', 0)}</strong>. Sigma preflight reported <strong>{sigma.get('critical_count', 0)}</strong> CRITICAL and <strong>{sigma.get('high_count', 0)}</strong> HIGH anomalies.</p>
   </section>
+
+  {no_confirmed_banner}
 
   <section class="card">
     <h2>Sigma Anomaly Summary</h2>
@@ -159,15 +221,34 @@ def render_report_html(payload: dict[str, Any]) -> str:
   </section>
 
   <section class="card">
-    <h2>Top Findings</h2>
+    <h2>Top Confirmed Findings</h2>
     <table>
       <thead>
         <tr><th>ID</th><th>Status</th><th>Confidence</th><th>Tool</th><th>Description</th></tr>
       </thead>
       <tbody>
-        {_render_findings_rows(top_findings)}
+        {_render_findings_rows(confirmed_findings) if confirmed_findings else "<tr><td colspan='5'>No confirmed findings — all evidence requires further corroboration.</td></tr>"}
       </tbody>
     </table>
+  </section>
+
+  <section class="card">
+    <h2>Top Active Leads</h2>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Status</th><th>Confidence</th><th>Tool</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        {_render_findings_rows(active_findings)}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Findings Status Breakdown</h2>
+    <div class="grid">
+      {''.join(f'<div class="card"><div class="metric-label">{html.escape(k)}</div><div class="metric-value">{v}</div></div>' for k, v in sorted(status_breakdown.items()))}
+    </div>
   </section>
 </main>
 </body>
@@ -209,6 +290,9 @@ def generate_report_payload(
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / "report.html"
 
+    status_breakdown = _count_by_key(findings, "finding_status")
+    evidence_kind_breakdown = _count_by_key(findings, "evidence_kind")
+
     payload = {
         "status": "ok",
         "case_id": case_id,
@@ -219,8 +303,20 @@ def generate_report_payload(
         "sigma_scan": sigma_result,
         "coverage": coverage_result,
         "top_findings": _rank_findings(findings),
+        "status_breakdown": status_breakdown,
+        "evidence_kind_breakdown": evidence_kind_breakdown,
         "report_path": str(report_path),
     }
+    payload["top_confirmed_findings"] = [
+        dict(finding)
+        for finding in payload["top_findings"]
+        if _status_label(finding.get("finding_status")) == "CONFIRMED"
+    ][:10]
+    payload["top_active_leads"] = [
+        dict(finding)
+        for finding in payload["top_findings"]
+        if _status_label(finding.get("finding_status")) in {"HYPOTHESIS", "ACTIVE", "OBSERVATION"}
+    ][:10]
 
     report_path.write_text(render_report_html(payload), encoding="utf-8")
 

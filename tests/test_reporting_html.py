@@ -64,7 +64,7 @@ class ReportingHtmlTests(unittest.TestCase):
             self.assertIn("Executive Summary", html_text)
             self.assertIn("ATT&amp;CK Coverage", html_text)
             self.assertIn("Sigma Anomaly Summary", html_text)
-            self.assertIn("Top Findings", html_text)
+            self.assertIn("Top Confirmed Findings", html_text)
 
             persisted = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(persisted["status"], "COMPLETE")

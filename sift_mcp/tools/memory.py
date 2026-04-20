@@ -43,8 +43,19 @@ from sift_mcp.models.artifacts import (
     ProfileResult,
 )
 from sift_mcp.models.finding import EvidenceKind, Finding, FindingStatus
+from sift_mcp.tool_catalog import domain_metadata_for_tool
+from sift_mcp.tools._contracts import (
+    build_contract_response,
+    build_follow_up_option,
+    build_provenance,
+    compact_unique,
+    sanitize_payload_fields,
+    state_path_for_manager,
+)
 
 if TYPE_CHECKING:
+    from collections import defaultdict as _defaultdict_type  # noqa: F401
+
     from sift_mcp.audit import AuditLogger
     from sift_mcp.runners.volatility import VolatilityRunner
     from sift_mcp.state import CaseStateManager
@@ -122,6 +133,21 @@ def _current_iteration() -> int:
     return _audit.current_iteration
 
 
+def _classify_port(port: Optional[int]) -> str:
+    """Classify a port number into a structural bucket for grouping.
+
+    Returns a stable token used as part of the netscan group_key so that
+    connections to the same host on similar ports collapse together.
+    """
+    if port is None or port == 0:
+        return "none"
+    if port <= 1023:
+        return "well_known"
+    if port <= 49151:
+        return "registered"
+    return "ephemeral"
+
+
 def _not_initialised(tool_name: str) -> dict[str, Any]:
     return {
         "tool_name": tool_name,
@@ -132,6 +158,43 @@ def _not_initialised(tool_name: str) -> dict[str, Any]:
         "execution_id": None,
         "raw_command": None,
     }
+
+
+def _normalize_response_format(response_format: str) -> Optional[str]:
+    """Validate and normalize the heavy-tool response format selector."""
+    normalized = (response_format or "summary").strip().lower()
+    if normalized in {"summary", "detailed"}:
+        return normalized
+    return None
+
+
+def _persist_rows_as_csv(
+    rows: list[dict[str, Any]],
+    *,
+    tool_short_name: str,
+    filename: str,
+) -> Optional[str]:
+    """Persist structured rows as a reusable CSV artifact."""
+    import csv
+    import tempfile
+
+    try:
+        cid = _case_id()
+        base = Path(os.environ.get("OUTPUT_BASE", "/cases")) / cid / "artifacts" / tool_short_name
+        base.mkdir(parents=True, exist_ok=True)
+        dest = base / filename
+        if not rows:
+            dest.write_text("", encoding="utf-8")
+            return str(dest)
+        fieldnames = list(rows[0].keys())
+        with dest.open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({k: row.get(k, "") for k in fieldnames})
+        return str(dest)
+    except Exception:
+        return None
 
 
 def _runner_error(
@@ -150,6 +213,69 @@ def _runner_error(
         "raw_command": str(exc),
         "stderr": stderr,
     }
+
+
+def _detect_injection_contract_payload(
+    *,
+    response: dict[str, Any],
+    records: list[InjectionIndicator],
+    dump_path: str,
+) -> dict[str, Any]:
+    normalized = [
+        {
+            "pid": record.pid,
+            "process_name": record.process_name,
+            "vad_start": record.vad_start,
+            "protection": record.protection,
+            "has_mz_header": record.has_mz_header,
+            "suspicious_score": round(record.suspicious_score, 3),
+        }
+        for record in records[:20]
+    ]
+    evidence_excerpt = next(
+        (record.disassembly_preview for record in records if record.disassembly_preview),
+        None,
+    )
+    return build_contract_response(
+        response,
+        tool_name="memory.detect_injection",
+        summary=(
+            f"Malfind returned {response.get('injection_count', len(records))} suspicious memory regions "
+            f"from {dump_path}."
+        ),
+        normalized_observations=normalized,
+        provenance=build_provenance(
+            tool_name="memory.detect_injection",
+            execution_id=response.get("execution_id"),
+            raw_command=response.get("raw_command"),
+            state_path=state_path_for_manager(_state),
+            artifact_paths=[dump_path],
+        ),
+        pivot_entities={
+            "pids": compact_unique(record.pid for record in records),
+            "process_names": compact_unique(record.process_name for record in records),
+            "vad_regions": compact_unique(f"{record.vad_start}-{record.vad_end}" for record in records),
+            "protections": compact_unique(record.protection for record in records),
+        },
+        follow_up_options=[
+            build_follow_up_option(
+                "list_dlls",
+                reason="Inspect suspicious processes for sideloaded or reflectively loaded DLLs.",
+                parameters={"dump_path": dump_path},
+            ),
+            build_follow_up_option(
+                "scan_network",
+                reason="Check whether suspicious processes maintained external network connections.",
+                parameters={"dump_path": dump_path},
+            ),
+            build_follow_up_option(
+                "scan_processes",
+                reason="Compare malfind candidates with pool-scan process visibility.",
+                parameters={"dump_path": dump_path},
+            ),
+        ],
+        evidence_excerpt=evidence_excerpt,
+    )
 
 
 def _parse_vol_dt(value: Any) -> Optional[datetime]:
@@ -575,7 +701,7 @@ def _parse_process_rows(
     return records
 
 
-def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: int = 0) -> dict[str, Any]:
+def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: int = 0, response_format: str = "summary") -> dict[str, Any]:
     """List running processes from a memory dump using Volatility 3 windows.pslist.
 
     Wraps ``python3 /opt/volatility3-2.20.0/vol.py -r json windows.pslist``
@@ -599,6 +725,9 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
     ----------
     dump_path:
         Absolute path to the raw memory dump.
+    response_format:
+        ``"summary"`` (default) omits the full process array and returns
+        counts/preview only.  ``"detailed"`` returns the full data array.
 
     Returns
     -------
@@ -610,6 +739,7 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
     tool = "memory.list_processes"
     if _runner is None or _state is None or _audit is None:
         return _not_initialised(tool)
+    normalized_format = _normalize_response_format(response_format)
 
     try:
         result = _runner.pslist(dump_path=dump_path, tool_name=tool)
@@ -641,8 +771,9 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
     # Apply suspicion heuristics
     finding_ids: list[str] = []
     suspicious_count = 0
+    suspicious_records: list[ProcessRecord] = []
 
-    for record in records:
+    for idx, record in enumerate(records):
         parent_name = pid_to_name.get(record.ppid)
         suspicious, reason = _score_process_suspicion(
             name=record.name,
@@ -651,12 +782,13 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
             parent_name=parent_name,
         )
         # Use model_copy to update fields (Pydantic v2)
-        record = record.model_copy(
+        records[idx] = record.model_copy(
             update={"suspicious": suspicious, "suspicion_reason": reason}
         )
 
         if suspicious:
             suspicious_count += 1
+            suspicious_records.append(records[idx])
             finding = Finding(
                 case_id=_case_id(),
                 finding_type="defense_evasion",
@@ -687,16 +819,43 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
             fid = _state.add_finding(finding.model_dump(mode="json"))
             finding_ids.append(fid)
 
-    return {
+    # Persist all rows to CSV for run_analysis() queries
+    all_rows = [r.model_dump(mode="json") for r in records]
+    csv_path = _persist_rows_as_csv(
+        all_rows, tool_short_name="pslist", filename="pslist.csv"
+    )
+
+    response: dict[str, Any] = {
         "tool_name": tool,
         "status": "success",
-        "data": [r.model_dump(mode="json") for r in records],
         "findings_created": finding_ids,
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "process_count": len(records),
         "suspicious_count": suspicious_count,
     }
+    if csv_path:
+        response["csv_path"] = csv_path
+
+    if normalized_format == "detailed":
+        response["data"] = all_rows
+    else:
+        # Summary: preview suspicious + a few representative normal processes
+        preview: list[dict[str, Any]] = [r.model_dump(mode="json") for r in suspicious_records[:10]]
+        normal_sample = [r for r in records if not r.suspicious][:5]
+        preview.extend(r.model_dump(mode="json") for r in normal_sample)
+        response["preview"] = preview
+        response["summary"] = (
+            f"{len(records)} processes found via pslist. "
+            f"{suspicious_count} flagged suspicious. "
+            f"Full data at {csv_path or 'not persisted'}."
+        )
+        response["note"] = (
+            'Full process array omitted by default; pass response_format="detailed" '
+            "for the complete data."
+        )
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -704,7 +863,7 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
 # ---------------------------------------------------------------------------
 
 
-def scan_processes(dump_path: str) -> dict[str, Any]:
+def scan_processes(dump_path: str, response_format: str = "summary") -> dict[str, Any]:
     """Scan physical memory for EPROCESS structures using Volatility 3 windows.psscan.
 
     Wraps ``python3 /opt/volatility3-2.20.0/vol.py -r json windows.psscan``
@@ -722,6 +881,9 @@ def scan_processes(dump_path: str) -> dict[str, Any]:
     ----------
     dump_path:
         Absolute path to the raw memory dump.
+    response_format:
+        ``"summary"`` (default) omits the full process array and returns
+        counts/preview only.  ``"detailed"`` returns the full data array.
 
     Returns
     -------
@@ -733,6 +895,7 @@ def scan_processes(dump_path: str) -> dict[str, Any]:
     tool = "memory.scan_processes"
     if _runner is None or _state is None or _audit is None:
         return _not_initialised(tool)
+    normalized_format = _normalize_response_format(response_format)
 
     try:
         result = _runner.psscan(dump_path=dump_path, tool_name=tool)
@@ -785,15 +948,38 @@ def scan_processes(dump_path: str) -> dict[str, Any]:
         fid = _state.add_finding(finding.model_dump(mode="json"))
         finding_ids.append(fid)
 
-    return {
+    # Persist all rows to CSV
+    all_rows = [r.model_dump(mode="json") for r in records]
+    csv_path = _persist_rows_as_csv(
+        all_rows, tool_short_name="psscan", filename="psscan.csv"
+    )
+
+    response: dict[str, Any] = {
         "tool_name": tool,
         "status": "success",
-        "data": [r.model_dump(mode="json") for r in records],
         "findings_created": finding_ids,
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "process_count": len(records),
     }
+    if csv_path:
+        response["csv_path"] = csv_path
+
+    if normalized_format == "detailed":
+        response["data"] = all_rows
+    else:
+        preview = [r.model_dump(mode="json") for r in records[:10]]
+        response["preview"] = preview
+        response["summary"] = (
+            f"{len(records)} EPROCESS structures found via psscan. "
+            f"Full data at {csv_path or 'not persisted'}."
+        )
+        response["note"] = (
+            'Full process array omitted by default; pass response_format="detailed" '
+            "for the complete data."
+        )
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -853,6 +1039,11 @@ def scan_network(dump_path: str, case_id: Optional[str] = None, max_results: int
     records: list[NetworkArtifact] = []
     finding_ids: list[str] = []
     established_count = 0
+
+    # Phase 5: group established connections by (pid, remote_ip, port_class)
+    # instead of emitting one finding per row.
+    from collections import defaultdict
+    _net_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
     for row in rows:
         try:
@@ -937,41 +1128,77 @@ def scan_network(dump_path: str, case_id: Optional[str] = None, max_results: int
             if state and state.upper() == "ESTABLISHED":
                 established_count += 1
 
-                # Flag established connections as observations (potential C2)
+                # Phase 5: accumulate into groups instead of emitting per-row
                 if foreign_addr and foreign_addr not in ("127.0.0.1", "::1"):
-                    finding = Finding(
-                        case_id=_case_id(),
-                        finding_type="data_exfil",
-                        artifact_type="memory",
-                        artifact_path=dump_path,
-                        artifact_offset=offset,
-                        tool_name=tool,
-                        execution_id=result.execution_id,
-                        iteration=_current_iteration(),
-                        evidence_kind=EvidenceKind.OBSERVATION,
-                        finding_status=FindingStatus.ACTIVE,
-                        confidence=0.75,
-                        description=(
-                            f"Established {proto} connection: "
-                            f"{local_addr}:{local_port} → {foreign_addr}:{foreign_port}. "
-                            f"Owning process: {owner or 'unknown'} (PID {pid}). "
-                            "Established connections to external addresses at acquisition "
-                            "time may indicate active C2 or data exfiltration."
-                        ),
-                        supporting_indicators=[
-                            f"{local_addr}:{local_port}",
-                            f"{foreign_addr}:{foreign_port}",
-                            f"pid={pid}",
-                            f"process={owner or 'unknown'}",
-                        ],
-                        mitre_tactic="TA0011",
-                        mitre_technique="T1071",
-                    )
-                    fid = _state.add_finding(finding.model_dump(mode="json"))
-                    finding_ids.append(fid)
+                    port_class = _classify_port(foreign_port)
+                    group_key = f"netscan:{pid}:{foreign_addr}:{port_class}"
+                    _net_groups[group_key].append({
+                        "pid": pid,
+                        "owner": owner,
+                        "local_addr": local_addr,
+                        "local_port": local_port,
+                        "remote_addr": foreign_addr,
+                        "remote_port": foreign_port,
+                        "proto": proto,
+                        "offset": offset,
+                    })
 
         except Exception:
             continue
+
+    # Phase 5: emit one finding per group (pid + remote_ip + port_class)
+    suppressed_count = 0
+    for group_key, members in _net_groups.items():
+        representative = members[0]
+        count = len(members)
+        ports = compact_unique(str(m["remote_port"]) for m in members)
+        local_endpoints = compact_unique(f"{m['local_addr']}:{m['local_port']}" for m in members)
+        owner_name = representative["owner"] or "unknown"
+        finding = Finding(
+            case_id=_case_id(),
+            finding_type="data_exfil",
+            artifact_type="memory",
+            artifact_path=dump_path,
+            artifact_offset=representative["offset"],
+            tool_name=tool,
+            execution_id=result.execution_id,
+            iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION,
+            finding_status=FindingStatus.ACTIVE,
+            confidence=0.75,
+            description=(
+                f"{count} established {representative['proto']} connection(s) to "
+                f"{representative['remote_addr']} (ports: {', '.join(ports)}). "
+                f"Owning process: {owner_name} (PID {representative['pid']}). "
+                "Grouped connections to the same external host from the same process "
+                "may indicate active C2 or data exfiltration."
+            ),
+            supporting_indicators=(
+                [f"remote={representative['remote_addr']}"]
+                + [f"port={p}" for p in ports[:5]]
+                + local_endpoints[:5]
+                + [
+                    f"pid={representative['pid']}",
+                    f"process={owner_name}",
+                    f"connection_count={count}",
+                ]
+            ),
+            mitre_tactic="TA0011",
+            mitre_technique="T1071",
+            group_key=group_key,
+            support_count=count,
+            promotion_reason="established_external",
+        )
+        fid = _state.add_finding(finding.model_dump(mode="json"))
+        finding_ids.append(fid)
+        suppressed_count += count - 1  # all but the representative
+
+    grouping_context = {
+        "strategy": "pid_remoteip_portclass",
+        "groups_formed": len(_net_groups),
+        "total_candidates": sum(len(m) for m in _net_groups.values()),
+        "suppressed_duplicates": suppressed_count,
+    }
 
     return {
         "tool_name": tool,
@@ -982,6 +1209,14 @@ def scan_network(dump_path: str, case_id: Optional[str] = None, max_results: int
         "raw_command": result.command_line,
         "connection_count": len(records),
         "established_count": established_count,
+        "suppression_summary": {
+            "total_raw_signals": sum(len(m) for m in _net_groups.values()),
+            "findings_emitted": len(finding_ids),
+            "signals_suppressed": suppressed_count,
+            "reason": "Grouped by pid + remote_ip + port_class to reduce noise.",
+        },
+        "grouping_context": grouping_context,
+        "domain_metadata": domain_metadata_for_tool(tool),
     }
 
 
@@ -1054,6 +1289,10 @@ def detect_injection(
     finding_ids: list[str] = []
     mz_header_count = 0
 
+    # Phase 5: group malfind regions by PID instead of one finding per region.
+    from collections import defaultdict
+    _injection_groups: dict[int, list[dict[str, Any]]] = defaultdict(list)
+
     for row in rows:
         try:
             row_pid = int(row.get("PID") or row.get(
@@ -1124,46 +1363,88 @@ def detect_injection(
             )
             records.append(record)
 
-            # Create a finding for each injection indicator
-            mitre_technique = "T1055.001" if has_mz else "T1055"
-            finding = Finding(
-                case_id=_case_id(),
-                finding_type="process_injection",
-                artifact_type="memory",
-                artifact_path=dump_path,
-                artifact_offset=vad_start,
-                tool_name=tool,
-                execution_id=result.execution_id,
-                iteration=_current_iteration(),
-                evidence_kind=EvidenceKind.OBSERVATION,
-                finding_status=FindingStatus.ACTIVE,
-                confidence=score,
-                description=(
-                    f"Possible process injection detected in {proc_name} (PID {row_pid}). "
-                    f"Suspicious VAD region: {vad_start} – {vad_end}, "
-                    f"protection: {protection}. "
-                    + ("MZ (PE) header detected at region base — likely reflective DLL injection. "
-                       if has_mz else
-                       "Anonymous executable region — possible shellcode. ")
-                    + f"Suspicion score: {score:.2f}."
-                ),
-                supporting_indicators=[
-                    f"pid={row_pid}",
-                    f"process={proc_name}",
-                    f"vad_start={vad_start}",
-                    f"protection={protection}",
-                    f"has_mz={has_mz}",
-                ],
-                mitre_tactic="TA0005",
-                mitre_technique=mitre_technique,
-            )
-            fid = _state.add_finding(finding.model_dump(mode="json"))
-            finding_ids.append(fid)
+            # Phase 5: accumulate into per-PID groups
+            _injection_groups[row_pid].append({
+                "pid": row_pid,
+                "process_name": proc_name,
+                "vad_start": vad_start,
+                "vad_end": vad_end,
+                "protection": protection,
+                "has_mz": has_mz,
+                "score": score,
+                "disasm_preview": disasm[:200] if disasm else None,
+            })
 
         except Exception:
             continue
 
-    return {
+    # Phase 5: emit one finding per PID group, not per VAD region.
+    suppressed_count = 0
+    for group_pid, members in _injection_groups.items():
+        count = len(members)
+        representative = members[0]
+        proc_name = representative["process_name"]
+        max_score = max(m["score"] for m in members)
+        group_mz_count = sum(1 for m in members if m["has_mz"])
+        has_any_mz = group_mz_count > 0
+        mitre_technique = "T1055.001" if has_any_mz else "T1055"
+        vad_regions = [f"{m['vad_start']}-{m['vad_end']}" for m in members]
+        protections = compact_unique(m["protection"] for m in members)
+
+        # Determine promotion reason
+        if has_any_mz:
+            promotion_reason = "mz_header_present"
+        elif count > 1:
+            promotion_reason = "multi_region_injection"
+        else:
+            promotion_reason = "single_suspicious_region"
+
+        group_key = f"malfind:{group_pid}:{proc_name}"
+
+        finding = Finding(
+            case_id=_case_id(),
+            finding_type="process_injection",
+            artifact_type="memory",
+            artifact_path=dump_path,
+            artifact_offset=representative["vad_start"],
+            tool_name=tool,
+            execution_id=result.execution_id,
+            iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION,
+            finding_status=FindingStatus.ACTIVE,
+            confidence=max_score,
+            description=(
+                f"{count} suspicious VAD region(s) in {proc_name} (PID {group_pid}). "
+                + (f"{group_mz_count} region(s) contain MZ headers — likely reflective DLL injection. "
+                   if has_any_mz else
+                   "Anonymous executable regions — possible shellcode injection. ")
+                + f"Protections: {', '.join(protections)}. "
+                f"Max suspicion score: {max_score:.2f}."
+            ),
+            supporting_indicators=(
+                [f"pid={group_pid}", f"process={proc_name}"]
+                + [f"vad={v}" for v in vad_regions[:5]]
+                + [f"protection={p}" for p in protections[:3]]
+                + [f"mz_regions={group_mz_count}", f"total_regions={count}"]
+            ),
+            mitre_tactic="TA0005",
+            mitre_technique=mitre_technique,
+            group_key=group_key,
+            support_count=count,
+            promotion_reason=promotion_reason,
+        )
+        fid = _state.add_finding(finding.model_dump(mode="json"))
+        finding_ids.append(fid)
+        suppressed_count += count - 1  # all but the representative
+
+    grouping_context = {
+        "strategy": "pid_process",
+        "groups_formed": len(_injection_groups),
+        "total_candidates": sum(len(m) for m in _injection_groups.values()),
+        "suppressed_duplicates": suppressed_count,
+    }
+
+    response = {
         "tool_name": tool,
         "status": "success",
         "data": [r.model_dump(mode="json") for r in records],
@@ -1172,7 +1453,28 @@ def detect_injection(
         "raw_command": result.command_line,
         "injection_count": len(records),
         "mz_header_count": mz_header_count,
+        "requires_agent": "@memory-analyst",
+        "agent_instruction": (
+            f"Review malfind output for confirmed code injection, hidden processes, and C2 pivots in {dump_path}."
+        ),
+        "suppression_summary": {
+            "total_raw_signals": sum(len(m) for m in _injection_groups.values()),
+            "findings_emitted": len(finding_ids),
+            "signals_suppressed": suppressed_count,
+            "reason": "Grouped by PID/process to reduce per-region noise.",
+        },
+        "grouping_context": grouping_context,
     }
+    if response["data"]:
+        response["data"] = [
+            sanitize_payload_fields(record, "disassembly_preview")
+            for record in response["data"]
+        ]
+    return _detect_injection_contract_payload(
+        response=response,
+        records=records,
+        dump_path=dump_path,
+    )
 
 
 # ---------------------------------------------------------------------------

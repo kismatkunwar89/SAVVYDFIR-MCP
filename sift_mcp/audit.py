@@ -33,6 +33,7 @@ after every entry.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from datetime import datetime, timezone
@@ -40,6 +41,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 __all__ = ["AuditLogger", "AuditEntry"]
+
+
+_SCHEMA_VERSION = 2
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +87,7 @@ class AuditLogger:
         self._lock = threading.RLock()
         self._execution_counter: int = 0
         self._current_iteration: int = 1
+        self._last_entry_hash: Optional[str] = None
 
         # Initialise counter from existing file so IDs remain monotonic
         # across server restarts.
@@ -128,7 +133,7 @@ class AuditLogger:
         parameters: dict[str, Any],
         command_line: str,
         agent_turn: int = 0,
-    ) -> None:
+    ) -> AuditEntry:
         """Write a ``started`` entry to ``audit.jsonl``.
 
         This is called **before** the subprocess is launched.  If this write
@@ -165,7 +170,7 @@ class AuditLogger:
             "finding_ids_generated": [],
             "correction_event": None,
         }
-        self._write_entry(entry)
+        return self._write_entry(entry)
 
     def log_result(
         self,
@@ -179,7 +184,7 @@ class AuditLogger:
         command_line: Optional[str] = None,
         parameters: Optional[dict[str, Any]] = None,
         agent_turn: Optional[int] = None,
-    ) -> None:
+    ) -> AuditEntry:
         """Write a ``completed`` entry to ``audit.jsonl``.
 
         This is called **after** the subprocess returns (or times out).
@@ -224,7 +229,30 @@ class AuditLogger:
             "finding_ids_generated": finding_ids,
             "correction_event": correction_event,
         }
-        self._write_entry(entry)
+        return self._write_entry(entry)
+
+    def log_link(
+        self,
+        execution_id: str,
+        tool_name: str,
+        finding_ids: list[str],
+        artifact_refs: list[str],
+        artifact_hashes: list[dict[str, Any]],
+        raw_evidence_refs: list[dict[str, Any]],
+    ) -> AuditEntry:
+        """Write a post-execution ``linked`` entry once findings are known."""
+        entry: AuditEntry = {
+            "timestamp": _utcnow_iso(),
+            "execution_id": execution_id,
+            "event_type": "linked",
+            "tool": tool_name,
+            "iteration": self._current_iteration,
+            "finding_ids_generated": finding_ids,
+            "artifact_refs": artifact_refs,
+            "artifact_hashes": artifact_hashes,
+            "raw_evidence_refs": raw_evidence_refs,
+        }
+        return self._write_entry(entry)
 
     def log_timeout(self, execution_id: str, timeout_seconds: int) -> None:
         """Write a ``completed`` entry marking an execution timeout.
@@ -257,7 +285,7 @@ class AuditLogger:
     # ------------------------------------------------------------------
 
     def get_execution_chain(self, finding_id: str) -> list[AuditEntry]:
-        """Return all audit entries whose ``finding_ids_generated`` contains *finding_id*.
+        """Return the full audit chain for the execution(s) that produced *finding_id*.
 
         This lets callers trace a specific finding back to the exact tool
         invocation and command line that produced it.
@@ -287,7 +315,8 @@ class AuditLogger:
                 "Has any tool been executed yet?"
             )
 
-        chain: list[AuditEntry] = []
+        entries: list[AuditEntry] = []
+        matching_execution_ids: set[str] = set()
         with self._lock:
             with self.output_path.open("r", encoding="utf-8") as fh:
                 for lineno, raw_line in enumerate(fh, start=1):
@@ -303,11 +332,18 @@ class AuditLogger:
                             exc.pos,
                         ) from exc
 
+                    entries.append(entry)
                     generated: list[str] = entry.get("finding_ids_generated") or []
                     if finding_id in generated:
-                        chain.append(entry)
+                        execution_id = entry.get("execution_id")
+                        if execution_id:
+                            matching_execution_ids.add(str(execution_id))
 
-        return chain
+        return [
+            entry
+            for entry in entries
+            if entry.get("execution_id") in matching_execution_ids
+        ]
 
     def read_all(self) -> list[AuditEntry]:
         """Return every entry in ``audit.jsonl`` as a list of dicts.
@@ -334,7 +370,7 @@ class AuditLogger:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _write_entry(self, entry: AuditEntry) -> None:
+    def _write_entry(self, entry: AuditEntry) -> AuditEntry:
         """Serialise *entry* to a JSONL line and flush to disk.
 
         This is the single write bottleneck.  The internal lock serialises
@@ -355,7 +391,8 @@ class AuditLogger:
             # Ensure parent directory exists on first write.
             self.output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            line = json.dumps(entry, ensure_ascii=False, default=str) + "\n"
+            sealed = self._seal_entry(entry)
+            line = json.dumps(sealed, ensure_ascii=False, default=str) + "\n"
 
             # Open in append mode so we never truncate existing entries.
             with self.output_path.open("a", encoding="utf-8") as fh:
@@ -364,6 +401,27 @@ class AuditLogger:
                 # Force kernel buffer to disk so a crash cannot lose the entry.
                 import os as _os
                 _os.fsync(fh.fileno())
+            self._last_entry_hash = sealed["entry_hash"]
+            return sealed
+
+    def _seal_entry(self, entry: AuditEntry) -> AuditEntry:
+        """Attach forward-only hash-chain metadata to a newly written entry."""
+        sealed = dict(entry)
+        sealed["schema_version"] = _SCHEMA_VERSION
+        sealed["prev_entry_hash"] = self._last_entry_hash
+        sealed["entry_hash"] = self._compute_entry_hash(sealed)
+        return sealed
+
+    def _compute_entry_hash(self, entry: AuditEntry) -> str:
+        """Return the canonical SHA-256 hash for an audit entry."""
+        payload = {key: value for key, value in entry.items() if key != "entry_hash"}
+        canonical = json.dumps(
+            payload,
+            sort_keys=True,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def _sync_counter_from_file(self) -> None:
         """Initialise ``_execution_counter`` from any pre-existing audit file.
@@ -379,6 +437,7 @@ class AuditLogger:
             return
 
         max_id = 0
+        last_entry_hash: Optional[str] = None
         try:
             with self.output_path.open("r", encoding="utf-8") as fh:
                 for raw_line in fh:
@@ -398,10 +457,15 @@ class AuditLogger:
                                 max_id = numeric
                         except ValueError:
                             pass
+                    if entry.get("entry_hash"):
+                        last_entry_hash = str(entry["entry_hash"])
+                    else:
+                        last_entry_hash = None
         except OSError:
             pass  # Best-effort; counter stays at 0
 
         self._execution_counter = max_id
+        self._last_entry_hash = last_entry_hash
 
 
 # ---------------------------------------------------------------------------

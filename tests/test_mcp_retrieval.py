@@ -95,6 +95,7 @@ class McpRetrievalTests(unittest.TestCase):
 
             result = server.get_findings(
                 "CASE-MCP",
+                finding_type="observation",
                 artifact_type="disk",
                 evidence_kind="observation",
                 finding_status="ACTIVE",
@@ -109,8 +110,46 @@ class McpRetrievalTests(unittest.TestCase):
             self.assertEqual(result["limit"], 2)
             self.assertEqual(result["offset"], 1)
             self.assertEqual(result["returned_count"], 2)
+            self.assertEqual(result["response_format"], "summary")
             self.assertTrue(all(f["mitre_tactic"] == "TA0003" for f in result["findings"]))
             self.assertTrue(all(float(f["confidence"]) >= 0.72 for f in result["findings"]))
+            self.assertTrue(all("artifact_path" not in f for f in result["findings"]))
+
+    def test_get_findings_detailed_mode_preserves_raw_hit_only_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server = _load_server_for_test(Path(tmp_dir) / "analysis")
+            server._state_manager.load("CASE-MCP")
+            finding = _finding_payload(
+                0,
+                finding_type="threat_detection",
+                raw_hit={"rule": "sigma_test", "level": "high"},
+            )
+
+            original = server._state_manager.get_findings
+
+            def _fake_get_findings(**kwargs):
+                self.assertEqual(kwargs.get("finding_type"), "threat_detection")
+                return [dict(finding)]
+
+            server._state_manager.get_findings = _fake_get_findings  # type: ignore[assignment]
+            try:
+                trimmed = server.get_findings(
+                    "CASE-MCP",
+                    finding_type="threat_detection",
+                    response_format="detailed",
+                )
+                expanded = server.get_findings(
+                    "CASE-MCP",
+                    finding_type="threat_detection",
+                    response_format="detailed",
+                    include_raw_hit=True,
+                )
+            finally:
+                server._state_manager.get_findings = original  # type: ignore[assignment]
+
+            self.assertEqual(trimmed["status"], "ok")
+            self.assertNotIn("raw_hit", trimmed["findings"][0])
+            self.assertEqual(expanded["findings"][0]["raw_hit"]["rule"], "sigma_test")
 
     def test_get_findings_enforces_limit_cap_and_offset_validation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

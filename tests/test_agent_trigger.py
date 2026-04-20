@@ -71,6 +71,27 @@ class AgentTriggerTests(unittest.TestCase):
             self.assertEqual(payload["agent"], "@custom-analyst")
             self.assertIn("Use the metadata-driven path.", payload["instruction"])
 
+    def test_build_timeline_storage_dispatches_to_timeline_analyst(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            event = self._nested_event(
+                "mcp__savvydfir__build_timeline",
+                {
+                    "status": "ok",
+                    "summary": "Timeline storage ready for case CASE-TL.",
+                    "storage_path": "/cases/CASE-TL/analysis/case-tl.plaso",
+                },
+            )
+
+            result = agent_trigger.process_event(event, trigger_path=str(trigger_path))
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["decision"], "allow")
+            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["agent"], "@timeline-analyst")
+            self.assertIn("storage handle", payload["instruction"])
+            self.assertIn("Summary:", payload["instruction"])
+
     def test_sigma_hits_dispatch_to_sigma_analyst(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             trigger_path = Path(tmp_dir) / "delegate.json"

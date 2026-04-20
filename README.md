@@ -1,6 +1,6 @@
 # SAVVYDFIR-MCP
 
-> Autonomous DFIR agent that correlates disk and memory evidence, self-corrects on contradiction, and produces fully traceable forensic findings — without human intervention.
+> DFIR MCP server for SIFT Workstation that correlates disk and memory evidence, tracks provenance, and produces investigation reports.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: SIFT Workstation](https://img.shields.io/badge/Platform-SIFT%20Workstation-orange.svg)](https://github.com/teamdfir/protocol-sift)
@@ -10,7 +10,7 @@
 
 ## What It Does
 
-SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into an autonomous DFIR investigator on SANS SIFT Workstation. It exposes 41 typed forensic tools over stdio transport, runs cross-artifact correlation between disk and memory evidence, and produces fully traceable findings with evidence-triggered self-correction.
+SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It currently exposes 43 typed forensic tools over stdio transport, supports cross-artifact correlation between disk and memory evidence, and keeps findings traceable through persisted artifacts, state, and audit logs.
 
 ---
 
@@ -226,11 +226,11 @@ Evidence directories are READ-ONLY. By default output goes to `analysis/` and `r
 | timeline | `build_timeline`, `query_timeline` | Plaso super timeline |
 | yara | `scan_files`, `scan_memory` | YARA signature scanning |
 | correlation | `compare_disk_and_memory`, `flag_discrepancy` | Cross-artifact correlation (6 checks) |
-| state | `read_state`, `get_finding`, `get_findings`, `export_trace` | Case state summary, retrieval, and trace export |
+| state | `read_state`, `get_finding`, `get_findings`, `export_trace`, `describe_tool_catalog` | Case state summary, retrieval, trace export, and catalog metadata |
 | lifecycle | `start_investigation`, `add_finding`, `coverage_report`, `generate_report` | Investigation lifecycle |
 | mounting | `mount_image`, `load_memory` | Evidence preparation |
 | graph | `generate_graph`, `serve_graph`, `merge_host_graphs`, `build_reports_index` | D3 investigation graph + multi-host unified view + reports dashboard |
-| detection | `sigma_hunt`, `sigma_scan`, `analyze_vss`, `extract_pca`, `extract_shimcache`, `extract_srum` | Sigma/Chainsaw detection, universal anomaly detection, VSS recovery, PCA, ShimCache, SRUM |
+| detection | `sigma_hunt`, `query_sigma_results`, `sigma_scan`, `analyze_vss`, `extract_pca`, `extract_shimcache`, `extract_srum` | Sigma/Chainsaw detection, read-only Sigma result paging, VSS recovery, PCA, ShimCache, SRUM |
 | analysis | `run_analysis` | Targeted local Pandas analysis over CSV outputs |
 
 ### Retrieval and Response Contracts
@@ -238,7 +238,9 @@ Evidence directories are READ-ONLY. By default output goes to `analysis/` and `r
 - `read_state(case_id)` is the summary/resume surface. Use it for case status, counts, open questions, and the latest finding window.
 - `get_findings(case_id, ...)` is the full finding-corpus retrieval surface. It supports `artifact_type`, `evidence_kind`, `finding_status`, `mitre_tactic`, `min_confidence`, `limit`, and `offset`.
 - `get_finding(case_id, finding_id)` drills into a single `F-NNN` record.
-- `extract_mft_timeline`, `summarize_evtx`, and `extract_registry_run_keys` are summary-first by default. Pass `response_format="detailed"` only when you truly need raw `data` arrays.
+- `extract_prefetch`, `get_amcache`, `extract_mft_timeline`, `summarize_evtx`, `extract_registry_run_keys`, and `generate_report` are summary-first by default. Pass `response_format="detailed"` only when you truly need raw `data` arrays.
+- `extract_prefetch` separates exact Prefetch-native execution history from `.pf` file metadata: use `last_run_times` for run history, and treat `pf_created_time` / `pf_modified_time` as `.pf` file timestamps.
+- `sigma_hunt(...)` creates findings and persists full hunt output. Use `query_sigma_results(output_path=..., ...)` for read-only filtering and paging over persisted Sigma JSON.
 - Summary mode preserves the operational fields agents need, including `execution_id`, `records_count`, `total_records`, `csv_path`, `cache_hit`, and `findings_created`.
 
 ---
