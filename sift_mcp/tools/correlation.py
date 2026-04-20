@@ -43,8 +43,12 @@ The 6 Correlation Checks
 
 from __future__ import annotations
 
+import csv
+import io
 import os
+import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 from sift_mcp.audit import AuditLogger
@@ -74,6 +78,11 @@ _LEGITIMATE_PATHS = (
     "c:\\program files",
     "c:\\program files (x86)",
     "c:\\windows\\",
+)
+
+_EXECUTABLE_NAME_RE = re.compile(
+    r"^[A-Za-z0-9_.-]+\.(?:exe|dll|bat|cmd|ps1|vbs|com|scr|sys)$",
+    re.IGNORECASE,
 )
 
 
@@ -181,12 +190,12 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
 
     discrepancies: list[dict[str, Any]] = []
     confirmed_consistencies = 0
+    disk_inventory = _collect_disk_inventory(disk_findings)
 
     # -----------------------------------------------------------------------
     # Check 1: Process in memory with no disk binary
     # -----------------------------------------------------------------------
     process_records = _extract_typed(memory_findings, finding_type_contains="process")
-    disk_paths = _collect_disk_paths(disk_findings)
 
     for proc_finding in process_records:
         meta = proc_finding.get("supporting_indicators", [])
@@ -198,8 +207,7 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
             proc_path = _path_from_description(desc)
 
         if proc_path:
-            norm_path = proc_path.lower().replace("\\", "/")
-            if not _path_in_set(norm_path, disk_paths):
+            if not _path_in_inventory(proc_path, disk_inventory):
                 alert = _make_discrepancy(
                     discrepancy_type="process_no_disk_binary",
                     severity="HIGH",
@@ -246,7 +254,9 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
             exec_name = _exe_from_description(desc)
 
         if exec_name:
-            base_name = os.path.basename(exec_name).lower()
+            base_name = _basename_token(exec_name)
+            if not base_name:
+                continue
             if base_name in deleted_names:
                 # Find matching deleted file finding
                 del_fid = _find_deleted_match(deleted_file_findings, base_name)
@@ -326,7 +336,6 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
     # Check 4: Network connection with no disk artefact
     # -----------------------------------------------------------------------
     network_findings = _extract_typed(memory_findings, finding_type_contains="network")
-    disk_process_names = _collect_disk_process_names(disk_findings)
 
     for net_finding in network_findings:
         owner = _extract_indicator(
@@ -336,8 +345,7 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
             owner = _owner_from_description(net_finding.get("description", ""))
 
         if owner:
-            owner_base = os.path.basename(owner).lower()
-            if owner_base not in disk_process_names:
+            if not _path_in_inventory(owner, disk_inventory):
                 alert = _make_discrepancy(
                     discrepancy_type="network_no_disk_evidence",
                     severity="MEDIUM",
@@ -370,7 +378,6 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
     # Check 5: Registry persistence for missing binary
     # -----------------------------------------------------------------------
     registry_findings = _extract_typed(disk_findings, finding_type_contains="persistence")
-    disk_path_set = _collect_disk_paths(disk_findings)
 
     for reg_finding in registry_findings:
         reg_path = _extract_indicator(
@@ -380,10 +387,8 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
             reg_path = _path_from_description(reg_finding.get("description", ""))
 
         if reg_path:
-            # Strip CLI arguments — take only the binary path portion
-            binary_part = reg_path.split('"')[1] if reg_path.startswith('"') else reg_path.split()[0]
-            norm_binary = binary_part.lower().replace("\\", "/")
-            if not _path_in_set(norm_binary, disk_path_set):
+            binary_part = _extract_path_candidate(reg_path) or reg_path
+            if not _path_in_inventory(binary_part, disk_inventory):
                 alert = _make_discrepancy(
                     discrepancy_type="persistence_missing_binary",
                     severity="HIGH",
@@ -682,18 +687,35 @@ def _extract_timestamp_indicator(
     return None
 
 
-def _collect_disk_paths(disk_findings: list[dict[str, Any]]) -> set[str]:
-    """Collect all normalised file paths mentioned in disk findings."""
-    paths: set[str] = set()
+def _collect_disk_inventory(disk_findings: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Build disk path truth from durable artifacts, falling back to findings."""
+    authoritative_paths: list[str] = []
+    latest_mft_csv = _latest_durable_csv_for_tool("disk.extract_mft_timeline")
+    if latest_mft_csv:
+        authoritative_paths.extend(_extract_mft_paths_from_csv(latest_mft_csv))
+    latest_amcache_csv = _latest_durable_csv_for_tool("disk.get_amcache")
+    if latest_amcache_csv:
+        authoritative_paths.extend(_extract_amcache_paths_from_csv(latest_amcache_csv))
+    if authoritative_paths:
+        return _build_path_inventory(authoritative_paths)
+    return _build_path_inventory(_collect_disk_paths_from_findings(disk_findings))
+
+
+def _collect_disk_paths_from_findings(disk_findings: list[dict[str, Any]]) -> list[str]:
+    """Collect candidate file paths from disk findings as a best-effort fallback."""
+    paths: list[str] = []
     for finding in disk_findings:
         for ind in finding.get("supporting_indicators", []):
             s = str(ind)
-            if s.startswith("/") or (len(s) > 1 and s[1] == ":"):
-                paths.add(s.lower().replace("\\", "/"))
-        # Also check artifact_path
-        ap = finding.get("artifact_path", "")
+            candidate = _extract_path_candidate(s)
+            if candidate:
+                paths.append(candidate)
+        ap = str(finding.get("artifact_path") or "").strip()
         if ap:
-            paths.add(ap.lower().replace("\\", "/"))
+            paths.append(ap)
+        desc_path = _path_from_description(finding.get("description", ""))
+        if desc_path:
+            paths.append(desc_path)
     return paths
 
 
@@ -705,12 +727,16 @@ def _collect_disk_process_names(disk_findings: list[dict[str, Any]]) -> set[str]
             s = str(ind)
             if s.lower().startswith("executable:"):
                 val = s[11:].strip()
-                names.add(os.path.basename(val).lower())
+                base_name = _basename_token(val)
+                if base_name:
+                    names.add(base_name)
         # Also check executable hints in description
         desc = finding.get("description", "")
         exe = _exe_from_description(desc)
         if exe:
-            names.add(os.path.basename(exe).lower())
+            base_name = _basename_token(exe)
+            if base_name:
+                names.add(base_name)
     return names
 
 
@@ -724,7 +750,9 @@ def _collect_deleted_file_names(
             s = str(ind)
             if s.startswith("/") or ":\\" in s or s.lower().startswith("file_path:"):
                 path = s[10:].strip() if s.lower().startswith("file_path:") else s
-                names.add(os.path.basename(path).lower())
+                base_name = _basename_token(path)
+                if base_name:
+                    names.add(base_name)
     return names
 
 
@@ -736,17 +764,205 @@ def _find_deleted_match(
     for finding in deleted_findings:
         for ind in finding.get("supporting_indicators", []):
             s = str(ind)
-            if os.path.basename(s).lower() == base_name:
+            if _basename_token(s) == base_name:
                 return finding.get("finding_id")
     return None
 
 
-def _path_in_set(norm_path: str, path_set: set[str]) -> bool:
-    """Check whether *norm_path* or its basename appears in *path_set*."""
-    if norm_path in path_set:
+def _build_path_inventory(paths: list[str]) -> dict[str, set[str]]:
+    inventory = {"relative_paths": set(), "basenames": set()}
+    for path in paths:
+        relative_path, basename = _path_tokens(path)
+        if relative_path:
+            inventory["relative_paths"].add(relative_path)
+        if basename:
+            inventory["basenames"].add(basename)
+    return inventory
+
+
+def _path_in_inventory(candidate: str, inventory: dict[str, set[str]]) -> bool:
+    """Check whether a path or binary name appears in the inventory."""
+    relative_path, basename = _path_tokens(candidate)
+    if relative_path and relative_path in inventory.get("relative_paths", set()):
         return True
-    base = os.path.basename(norm_path)
-    return any(base == os.path.basename(p) for p in path_set)
+    return bool(basename and basename in inventory.get("basenames", set()))
+
+
+def _path_tokens(value: str) -> tuple[Optional[str], Optional[str]]:
+    """Return canonical relative-path and basename tokens for comparison."""
+    text = str(value or "").strip()
+    if not text:
+        return None, None
+    candidate = _extract_path_candidate(text)
+    if not candidate:
+        stripped = text.strip().strip('"').strip("'")
+        if _EXECUTABLE_NAME_RE.match(stripped):
+            candidate = stripped
+        else:
+            return None, None
+    normalized = re.sub(r"/+", "/", candidate.replace("\\", "/").lower()).strip()
+    if not normalized:
+        return None, None
+    basename = normalized.rsplit("/", 1)[-1].strip() or None
+    relative_path = _canonical_relative_path(candidate)
+    if relative_path is None and basename is not None:
+        relative_path = basename
+    return relative_path, basename
+
+
+def _basename_token(value: str) -> Optional[str]:
+    """Return the comparison basename token for *value*."""
+    _, basename = _path_tokens(value)
+    return basename
+
+
+def _extract_path_candidate(value: str) -> Optional[str]:
+    """Extract a binary/file path from a raw string or command line."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for quote in ('"', "'"):
+        if text.startswith(quote):
+            end = text.find(quote, 1)
+            if end > 1:
+                quoted = text[1:end].strip()
+                if _looks_like_path(quoted) or _EXECUTABLE_NAME_RE.match(quoted):
+                    return _trim_command_line_path(quoted)
+    match = re.search(r"([A-Za-z]:\\[^\"'\r\n]+|/[^\"'\r\n]+)", text)
+    if match:
+        return _trim_command_line_path(match.group(1))
+    if _looks_like_path(text) or _EXECUTABLE_NAME_RE.match(text.strip().strip('"').strip("'")):
+        return _trim_command_line_path(text)
+    return None
+
+
+def _trim_command_line_path(value: str) -> str:
+    """Trim CLI arguments from a candidate path while preserving the path itself."""
+    candidate = str(value or "").strip().strip('"').strip("'")
+    if not candidate:
+        return ""
+    executable_match = re.search(
+        r"\.(?:exe|dll|bat|cmd|ps1|vbs|com|scr|sys)\b",
+        candidate,
+        re.IGNORECASE,
+    )
+    if executable_match:
+        return candidate[:executable_match.end()]
+    if " " in candidate and ("/" in candidate or "\\" in candidate):
+        return candidate.split()[0]
+    return candidate
+
+
+def _canonical_relative_path(value: str) -> Optional[str]:
+    """Normalize Windows and mounted evidence paths into a comparable relative form."""
+    candidate = _trim_command_line_path(value)
+    if not candidate:
+        return None
+    normalized = re.sub(r"/+", "/", candidate.replace("\\", "/").lower()).strip()
+    if not normalized:
+        return None
+    drive_match = re.match(r"^[a-z]:/(.+)$", normalized)
+    if drive_match:
+        normalized = drive_match.group(1)
+    elif normalized.startswith("/mnt/disk/"):
+        normalized = normalized[len("/mnt/disk/"):]
+    else:
+        mount_match = re.search(r"/mnt/([a-z])/(.+)$", normalized)
+        if mount_match:
+            normalized = mount_match.group(2)
+        else:
+            normalized = normalized.lstrip("/")
+    parts = [part for part in normalized.split("/") if part]
+    if parts and len(parts[0]) == 1 and parts[0].isalpha():
+        parts = parts[1:]
+    relative_path = "/".join(parts).strip()
+    return relative_path or None
+
+
+def _looks_like_path(value: str) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and (
+        "/" in text or "\\" in text or bool(re.match(r"^[A-Za-z]:", text))
+    )
+
+
+def _latest_durable_csv_for_tool(tool_name: str) -> Optional[str]:
+    """Return the latest durable CSV reference for a tool from execution provenance."""
+    if _state_mgr is None:
+        return None
+    for execution in reversed(_state_mgr.get_executions(tool_name=tool_name)):
+        refs = execution.get("raw_evidence_refs") or []
+        preferred: list[str] = []
+        fallback: list[str] = []
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            path = str(ref.get("path") or "").strip()
+            if not path:
+                continue
+            resolved = str(Path(path).resolve())
+            if (
+                not resolved.lower().endswith(".csv")
+                or _is_transient_path(resolved)
+                or not Path(resolved).exists()
+            ):
+                continue
+            role = str(ref.get("role") or "").strip().lower()
+            if role in {"derived", "handle"}:
+                preferred.append(resolved)
+            else:
+                fallback.append(resolved)
+        if preferred:
+            return preferred[0]
+        if fallback:
+            return fallback[0]
+    return None
+
+
+def _is_transient_path(path: str) -> bool:
+    normalized = str(path or "").strip().lower()
+    return normalized.startswith("/tmp/savvydfir_") or normalized.startswith("/var/tmp/savvydfir_")
+
+
+def _read_artifact_csv_rows(csv_path: str) -> list[dict[str, str]]:
+    """Read a persisted CSV artifact while tolerating UTF-8 BOMs and NUL bytes."""
+    path = Path(csv_path)
+    if not path.exists() or not path.is_file():
+        return []
+    raw = path.read_bytes().replace(b"\x00", b"")
+    text = raw.decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(text))
+    return [dict(row) for row in reader]
+
+
+def _extract_mft_paths_from_csv(csv_path: str) -> list[str]:
+    """Extract candidate file paths from a persisted MFT CSV artifact."""
+    paths: list[str] = []
+    for row in _read_artifact_csv_rows(csv_path):
+        candidate = str(
+            row.get("FileName")
+            or row.get("FilePath")
+            or row.get("ParentPath")
+            or ""
+        ).strip()
+        if candidate:
+            paths.append(candidate)
+    return paths
+
+
+def _extract_amcache_paths_from_csv(csv_path: str) -> list[str]:
+    """Extract candidate executable paths from a persisted Amcache CSV artifact."""
+    paths: list[str] = []
+    for row in _read_artifact_csv_rows(csv_path):
+        candidate = str(
+            row.get("FullPath")
+            or row.get("FilePath")
+            or row.get("Path")
+            or ""
+        ).strip()
+        if candidate:
+            paths.append(candidate)
+    return paths
 
 
 def _is_legitimate_path(path: str) -> bool:
@@ -757,10 +973,7 @@ def _is_legitimate_path(path: str) -> bool:
 
 def _path_from_description(desc: str) -> Optional[str]:
     """Heuristically extract a Windows/Unix file path from a description string."""
-    import re
-    # Match Windows paths like C:\Windows\... or Unix paths /usr/...
-    m = re.search(r"([A-Za-z]:\\[^\s'\"]+|/[^\s'\"]+\.[a-z]{2,4})", desc)
-    return m.group(1) if m else None
+    return _extract_path_candidate(desc)
 
 
 def _exe_from_description(desc: str) -> Optional[str]:

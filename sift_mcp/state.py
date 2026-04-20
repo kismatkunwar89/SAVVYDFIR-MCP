@@ -520,6 +520,32 @@ class CaseStateManager:
                 return None
             return dict(self._state["executions"][index])
 
+    def get_executions(self, tool_name: Optional[str] = None) -> list[dict[str, Any]]:
+        """Return execution records in insertion order.
+
+        Parameters
+        ----------
+        tool_name:
+            Optional tool-name filter matched case-insensitively against the
+            stored ``execution["tool_name"]`` field.
+
+        Returns
+        -------
+        list[dict[str, Any]]
+            Matching execution records as shallow copies, oldest first.
+        """
+        with self._lock:
+            self._assert_loaded()
+            results: list[dict[str, Any]] = []
+            requested = str(tool_name or "").strip().lower()
+            for execution in self._state.get("executions", []):
+                if not isinstance(execution, dict):
+                    continue
+                if requested and str(execution.get("tool_name") or "").strip().lower() != requested:
+                    continue
+                results.append(dict(execution))
+            return results
+
     def lookup_artifact_hash(self, artifact_path: str) -> Optional[dict[str, Any]]:
         """Return the most recent artifact-hash record for *artifact_path*."""
         with self._lock:
