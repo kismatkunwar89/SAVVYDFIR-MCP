@@ -1,6 +1,6 @@
 """SAVVYDFIR-MCP Server — Purpose-built forensic MCP backend for Protocol SIFT.
 
-This server exposes 42 typed forensic tools through the Model Context
+This server exposes 43 typed forensic tools through the Model Context
 Protocol (MCP) using stdio transport. It is designed to be used with Claude Code
 as the primary agentic execution engine on SANS SIFT Workstation.
 
@@ -16,7 +16,7 @@ Architecture
 * **FastMCP** — synchronous MCP server over stdio; all tool functions are sync
   because ``SafeRunner`` uses ``subprocess.run()``.
 
-Tool namespaces (42 tools)
+Tool namespaces (43 tools)
 --------------------------
 Evidence (2):   verify_integrity, get_provenance
 Disk (6):       extract_prefetch, get_amcache, extract_mft_timeline,
@@ -30,8 +30,8 @@ State (5):      read_state, get_finding, get_findings, export_trace,
                 describe_tool_catalog
 Graph (4):      generate_graph, serve_graph, merge_host_graphs,
                 build_reports_index
-Detection (6):  sigma_hunt, sigma_scan, analyze_vss, extract_pca,
-                extract_shimcache, extract_srum
+Detection (7):  sigma_hunt, query_sigma_results, sigma_scan, analyze_vss,
+                extract_pca, extract_shimcache, extract_srum
 Lifecycle (4):  start_investigation, add_finding, coverage_report,
                 generate_report
 Mounting (2):   mount_image, load_memory
@@ -94,7 +94,7 @@ from sift_mcp.reporting import generate_report_payload
 from sift_mcp.safe_analysis import SafeAnalysisError, run_safe_analysis
 from sift_mcp.semantics import compute_coverage_from_findings
 from sift_mcp.tool_catalog import group_tool_catalog
-from sift_mcp.tools._contracts import compact_unique
+from sift_mcp.tools._contracts import build_handle, compact_unique
 
 # ---------------------------------------------------------------------------
 # Server instance
@@ -104,7 +104,7 @@ mcp = FastMCP(
     name="savvydfir-mcp",
     instructions=(
         "Autonomous DFIR triage agent with cross-artifact correlation and "
-        "self-correction. Exposes 42 typed forensic tools over stdio MCP transport "
+        "self-correction. Exposes 43 typed forensic tools over stdio MCP transport "
         "for use with Claude Code on SANS SIFT Workstation."
     ),
 )
@@ -166,6 +166,17 @@ def validate_path(path: str, *, write: bool = False) -> bool:
     # Read access: allow evidence, mount, and output paths
     allowed = EVIDENCE_PATHS + OUTPUT_PATHS
     return any(resolved.startswith(p) for p in allowed)
+
+
+def _path_within_analysis_dir(path: str) -> bool:
+    try:
+        resolved = Path(path).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    try:
+        return str(resolved).startswith(str(_ANALYSIS_DIR))
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -470,12 +481,40 @@ def _canonicalize_response_artifact_paths(response: dict[str, Any]) -> dict[str,
     canonical = dict(response)
     provenance = dict(canonical.get("provenance") or {}) if isinstance(canonical.get("provenance"), dict) else {}
     handle = dict(canonical.get("handle") or {}) if isinstance(canonical.get("handle"), dict) else {}
-
-    preferred_csv = _first_persisted_path(
-        canonical.get("csv_path"),
-        provenance.get("csv_path"),
-        handle.get("path") if handle.get("kind") == "csv" else None,
+    artifact_persistence = (
+        dict(canonical.get("artifact_persistence") or {})
+        if isinstance(canonical.get("artifact_persistence"), dict)
+        else {}
     )
+    suppressed_handle = (
+        dict(canonical.get("suppressed_handle") or {})
+        if isinstance(canonical.get("suppressed_handle"), dict)
+        else {}
+    )
+
+    artifact_status = str(artifact_persistence.get("status") or "").strip().lower()
+    preferred_csv = _first_persisted_path(
+        artifact_persistence.get("persisted_path"),
+        None if artifact_status in {"transient", "unavailable"} else canonical.get("csv_path"),
+        None if artifact_status in {"transient", "unavailable"} else provenance.get("csv_path"),
+        (
+            handle.get("path")
+            if handle.get("kind") == "csv" and artifact_status not in {"transient", "unavailable"}
+            else None
+        ),
+    )
+
+    if artifact_status in {"transient", "unavailable"} and not preferred_csv:
+        canonical["csv_path"] = None
+        if provenance.get("csv_path"):
+            provenance["csv_path"] = None
+        if handle.get("kind") == "csv":
+            handle = {}
+        canonical["agent_instruction"] = _replace_transient_path_hint(
+            canonical.get("agent_instruction"),
+            None,
+        )
+
     if preferred_csv:
         canonical["csv_path"] = preferred_csv
         if provenance.get("csv_path") or preferred_csv:
@@ -487,6 +526,18 @@ def _canonicalize_response_artifact_paths(response: dict[str, Any]) -> dict[str,
             preferred_csv,
         )
 
+    preferred_suppressed = _first_persisted_path(
+        canonical.get("suppressed_csv_path"),
+        suppressed_handle.get("path") if suppressed_handle.get("kind") == "csv" else None,
+    )
+    if preferred_suppressed:
+        canonical["suppressed_csv_path"] = preferred_suppressed
+        if suppressed_handle.get("kind") == "csv":
+            suppressed_handle["path"] = preferred_suppressed
+    elif canonical.get("suppressed_csv_path") and _is_transient_artifact_path(canonical.get("suppressed_csv_path")):
+        canonical["suppressed_csv_path"] = None
+        suppressed_handle = {}
+
     preferred_output = _first_persisted_path(canonical.get("output_path"))
     if preferred_output:
         canonical["output_path"] = preferred_output
@@ -496,7 +547,9 @@ def _canonicalize_response_artifact_paths(response: dict[str, Any]) -> dict[str,
         if isinstance(artifact_paths, list):
             provenance["artifact_paths"] = compact_unique(
                 [
-                    preferred_csv if _is_transient_artifact_path(path) and preferred_csv else path
+                    preferred_csv if _is_transient_artifact_path(path) and preferred_csv else (
+                        preferred_suppressed if _is_transient_artifact_path(path) and preferred_suppressed else path
+                    )
                     for path in artifact_paths
                     if path not in (None, "")
                 ],
@@ -505,6 +558,12 @@ def _canonicalize_response_artifact_paths(response: dict[str, Any]) -> dict[str,
         canonical["provenance"] = provenance
     if handle:
         canonical["handle"] = handle
+    elif "handle" in canonical:
+        canonical["handle"] = None
+    if suppressed_handle:
+        canonical["suppressed_handle"] = suppressed_handle
+    elif "suppressed_handle" in canonical:
+        canonical["suppressed_handle"] = None
     return canonical
 
 
@@ -570,9 +629,13 @@ def _collect_raw_evidence_refs(tool_name: str, response: dict[str, Any]) -> list
     handle = response.get("handle")
     if isinstance(handle, dict):
         _append_ref(refs, path=handle.get("path"), role="handle", key_hint="handle")
+    suppressed_handle = response.get("suppressed_handle")
+    if isinstance(suppressed_handle, dict):
+        _append_ref(refs, path=suppressed_handle.get("path"), role="handle", key_hint="suppressed_handle")
 
     for key in (
         "csv_path",
+        "suppressed_csv_path",
         "storage_path",
         "output_path",
         "report_path",
@@ -698,7 +761,7 @@ def _derive_artifact_hashes(
 
 
 def _recommended_batch_mode_for_tool(tool_name: str) -> str:
-    if tool_name in {"memory.list_processes", "memory.scan_processes"}:
+    if tool_name in {"memory.list_processes", "memory.scan_processes", "detection.query_sigma_results"}:
         return "parallel_safe"
     if tool_name in {
         "detection.sigma_hunt",
@@ -986,6 +1049,7 @@ def get_amcache(
     image_path: str,
     case_id: str = "default",
     max_entries: int = 500,
+    response_format: str = "summary",
 ) -> dict[str, Any]:
     """Extract Amcache.hve execution evidence from a disk image.
 
@@ -1004,6 +1068,9 @@ def get_amcache(
         Case identifier for output file naming.
     max_entries:
         Maximum number of AmcacheRecord entries to return.
+    response_format:
+        ``"summary"`` (default) omits raw rows and returns preview + metadata.
+        Use ``"detailed"`` to include the ``data`` array.
 
     Returns
     -------
@@ -1012,7 +1079,8 @@ def get_amcache(
     """
     try:
         _r = _get_amcache(image_path=image_path,
-                          case_id=case_id, max_entries=max_entries)
+                          case_id=case_id, max_entries=max_entries,
+                          response_format=response_format)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.get_amcache"))
         return _finalize_tool_response("disk.get_amcache", _r)
@@ -2436,6 +2504,87 @@ def build_reports_index(
     }
 
 
+_SIGMA_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
+_SIGMA_ATTACK_TAG_RE = re.compile(r"attack\.(t\d{4}(?:\.\d{3})?)", re.IGNORECASE)
+_SIGMA_VALID_SEVERITIES = {"critical", "high", "medium", "low", "informational"}
+
+
+def _parse_sigma_filter_values(raw_value: str, *, upper: bool = False) -> set[str]:
+    values = {
+        item.strip()
+        for item in str(raw_value or "").split(",")
+        if item.strip()
+    }
+    if upper:
+        return {item.upper() for item in values}
+    return {item.lower() for item in values}
+
+
+def _extract_sigma_techniques(hit: dict[str, Any]) -> list[str]:
+    tags = hit.get("tags", [])
+    if isinstance(tags, str):
+        tags = [tags]
+    extracted: list[str] = []
+    for tag in tags:
+        match = _SIGMA_ATTACK_TAG_RE.search(str(tag))
+        if match:
+            extracted.append(match.group(1).upper())
+    return extracted or ["—"]
+
+
+def _filter_sigma_hits(
+    hits: list[dict[str, Any]],
+    *,
+    requested_severities: set[str],
+    requested_techniques: set[str],
+) -> list[dict[str, Any]]:
+    filtered_hits: list[dict[str, Any]] = []
+    for hit in hits:
+        level = str(hit.get("level", "informational")).lower()
+        if requested_severities and level not in requested_severities:
+            continue
+        hit_techniques = {tech for tech in _extract_sigma_techniques(hit) if tech != "—"}
+        if requested_techniques and not (hit_techniques & requested_techniques):
+            continue
+        filtered_hits.append(hit)
+    filtered_hits.sort(
+        key=lambda hit: _SIGMA_SEVERITY_RANK.get(
+            str(hit.get("level", "informational")).lower(), 5
+        )
+    )
+    return filtered_hits
+
+
+def _sigma_breakdowns(
+    hits: list[dict[str, Any]],
+) -> tuple[dict[str, int], dict[str, int], set[str]]:
+    severity_counts: dict[str, int] = {}
+    technique_counts: dict[str, int] = {}
+    technique_set: set[str] = set()
+    for hit in hits:
+        sev = str(hit.get("level", "informational")).lower()
+        severity_counts[sev] = severity_counts.get(sev, 0) + 1
+        for technique_id in _extract_sigma_techniques(hit):
+            if technique_id == "—":
+                continue
+            technique_set.add(technique_id)
+            technique_counts[technique_id] = technique_counts.get(technique_id, 0) + 1
+    return severity_counts, dict(sorted(technique_counts.items())), technique_set
+
+
+def _sigma_preview(hits: list[dict[str, Any]], *, limit: int = 10) -> list[dict[str, Any]]:
+    return [
+        {
+            "rule_name": hit.get("name", hit.get("rule", f"hit_{index}")),
+            "severity": str(hit.get("level", "informational")).lower(),
+            "event_id": str(hit.get("event_id", hit.get("EventID", "?"))),
+            "timestamp": str(hit.get("system_time", hit.get("timestamp", "unknown"))),
+            "techniques": _extract_sigma_techniques(hit),
+        }
+        for index, hit in enumerate(hits[:limit])
+    ]
+
+
 @mcp.tool()
 def sigma_hunt(
     evtx_path: str,
@@ -2558,13 +2707,8 @@ def sigma_hunt(
             "error": 'response_format must be "summary" or "detailed".',
         }
 
-    requested_severities = {
-        item.strip().lower()
-        for item in severity.split(",")
-        if item.strip()
-    }
-    valid_severities = {"critical", "high", "medium", "low", "informational"}
-    invalid_severities = sorted(requested_severities - valid_severities)
+    requested_severities = _parse_sigma_filter_values(severity)
+    invalid_severities = sorted(requested_severities - _SIGMA_VALID_SEVERITIES)
     if invalid_severities:
         return {
             "status": "error",
@@ -2576,11 +2720,7 @@ def sigma_hunt(
             ),
         }
 
-    requested_techniques = {
-        item.strip().upper()
-        for item in techniques.split(",")
-        if item.strip()
-    }
+    requested_techniques = _parse_sigma_filter_values(techniques, upper=True)
 
     # ------------------------------------------------------------------
     # 1. Resolve Chainsaw binary
@@ -2856,61 +2996,16 @@ def sigma_hunt(
     # ------------------------------------------------------------------
     # 8. Filter + rank hits before truncation
     # ------------------------------------------------------------------
-    SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "informational": 4}
-    ATTACK_TAG_RE = re.compile(r"attack\.(t\d{4}(?:\.\d{3})?)", re.IGNORECASE)
-
-    def _extract_techniques(hit: dict[str, Any]) -> list[str]:
-        tags = hit.get("tags", [])
-        if isinstance(tags, str):
-            tags = [tags]
-        extracted: list[str] = []
-        for tag in tags:
-            match = ATTACK_TAG_RE.search(str(tag))
-            if match:
-                extracted.append(match.group(1).upper())
-        return extracted or ["—"]
-
-    def _hit_severity(hit: dict[str, Any]) -> int:
-        level = str(hit.get("level", "informational")).lower()
-        return SEVERITY_RANK.get(level, 5)
-
-    filtered_hits: list[dict[str, Any]] = []
-    for hit in raw_hits:
-        level = str(hit.get("level", "informational")).lower()
-        if requested_severities and level not in requested_severities:
-            continue
-        hit_techniques = {tech for tech in _extract_techniques(hit) if tech != "—"}
-        if requested_techniques and not (hit_techniques & requested_techniques):
-            continue
-        filtered_hits.append(hit)
-
-    filtered_hits.sort(key=_hit_severity)
+    filtered_hits = _filter_sigma_hits(
+        raw_hits,
+        requested_severities=requested_severities,
+        requested_techniques=requested_techniques,
+    )
     raw_hits_total = len(raw_hits)
     hits_total = len(filtered_hits)
     hits_to_process = filtered_hits[:max_entries]
-
-    severity_counts: dict[str, int] = {}
-    technique_counts: dict[str, int] = {}
-    technique_set: set[str] = set()
-    for hit in filtered_hits:
-        sev = str(hit.get("level", "informational")).lower()
-        severity_counts[sev] = severity_counts.get(sev, 0) + 1
-        for technique_id in _extract_techniques(hit):
-            if technique_id == "—":
-                continue
-            technique_set.add(technique_id)
-            technique_counts[technique_id] = technique_counts.get(technique_id, 0) + 1
-
-    preview_hits = [
-        {
-            "rule_name": hit.get("name", hit.get("rule", f"hit_{index}")),
-            "severity": str(hit.get("level", "informational")).lower(),
-            "event_id": str(hit.get("event_id", hit.get("EventID", "?"))),
-            "timestamp": str(hit.get("system_time", hit.get("timestamp", "unknown"))),
-            "techniques": _extract_techniques(hit),
-        }
-        for index, hit in enumerate(hits_to_process[:10])
-    ]
+    severity_counts, technique_counts, technique_set = _sigma_breakdowns(filtered_hits)
+    preview_hits = _sigma_preview(hits_to_process)
 
     # ------------------------------------------------------------------
     # 9. Create CaseStateManager findings
@@ -2921,7 +3016,7 @@ def sigma_hunt(
     for i, hit in enumerate(hits_to_process):
         rule_name = hit.get("name", hit.get("rule", f"unknown_rule_{i}"))
         level = str(hit.get("level", "informational")).lower()
-        hit_techniques = _extract_techniques(hit)
+        hit_techniques = _extract_sigma_techniques(hit)
         system_time = hit.get("system_time", hit.get("timestamp", "unknown"))
         event_id = hit.get("event_id", hit.get("EventID", "?"))
         computer = hit.get("computer", hit.get("Computer", ""))
@@ -3069,18 +3164,160 @@ def sigma_hunt(
         "response_format": normalized_format,
         "note": (
             f"Returning top {len(hits_to_process)} of {hits_total} filtered hits (ranked by severity). "
-            f"Use run_analysis() on output_path for the full persisted dataset. "
-            f"Invoke sigma-analyst to interpret findings."
+            'Use query_sigma_results(output_path=handle.path, ...) for read-only paging/filtering of the '
+            "persisted Sigma dataset. Invoke sigma-analyst to interpret findings."
         ) if hits_total > max_entries else (
             f"All {hits_total} filtered hits were eligible for finding creation." if hits_total > 0
             else "No Sigma rules matched the selected severity/technique filters."
         ),
         "preview": preview_hits,
+        "handle": build_handle(
+            kind="json",
+            path=str(output_target),
+            query_tool="query_sigma_results",
+            description="Persisted Chainsaw Sigma JSON results.",
+            tool_name="detection.sigma_hunt",
+        ),
         **_forensic_envelope("detection.sigma_hunt"),
     }
     if normalized_format == "detailed":
         response_payload["hits"] = hits_to_process
     return _finalize_tool_response("detection.sigma_hunt", response_payload)
+
+
+@mcp.tool()
+def query_sigma_results(
+    output_path: str,
+    severity: str = "",
+    techniques: str = "",
+    limit: int = 50,
+    offset: int = 0,
+    response_format: str = "summary",
+) -> dict[str, Any]:
+    """Read a persisted Sigma JSON result set without creating new findings.
+
+    Use this after ``sigma_hunt()`` to page through a large persisted Chainsaw
+    result file. The tool is read-only: it never mutates state and never
+    re-creates findings.
+
+    Parameters
+    ----------
+    output_path:
+        Path to the persisted Sigma JSON written by ``sigma_hunt()``.
+        Prefer the returned ``handle.path`` or ``output_path`` field.
+    severity:
+        Optional comma-separated severity filter. Valid values:
+        ``critical,high,medium,low,informational``.
+    techniques:
+        Optional comma-separated ATT&CK technique filter such as
+        ``"T1003,T1059.001"``.
+    limit:
+        Maximum number of hits to return in one page. Capped at 200.
+    offset:
+        Zero-based page offset into the filtered hit list.
+    response_format:
+        ``"summary"`` (default) returns counts, page metadata, and preview.
+        ``"detailed"`` returns the selected hit page.
+
+    Returns
+    -------
+    dict
+        status, output_path, total_hits, filtered_hits_total, returned_count,
+        severity_breakdown, technique_breakdown, preview, and optionally hits.
+    """
+    normalized_format = _normalize_response_format(response_format)
+    if normalized_format is None:
+        return {
+            "status": "error",
+            "tool": "query_sigma_results",
+            "error": 'response_format must be "summary" or "detailed".',
+        }
+    if offset < 0:
+        return {"status": "error", "tool": "query_sigma_results", "error": "offset must be >= 0."}
+    safe_limit = max(1, min(int(limit or 50), 200))
+
+    requested_severities = _parse_sigma_filter_values(severity)
+    invalid_severities = sorted(requested_severities - _SIGMA_VALID_SEVERITIES)
+    if invalid_severities:
+        return {
+            "status": "error",
+            "tool": "query_sigma_results",
+            "error": (
+                "Invalid severity filter(s): "
+                f"{', '.join(invalid_severities)}. Valid values are "
+                "critical, high, medium, low, informational."
+            ),
+        }
+    requested_techniques = _parse_sigma_filter_values(techniques, upper=True)
+
+    if not validate_path(output_path, write=False) and not _path_within_analysis_dir(output_path):
+        return {
+            "status": "error",
+            "tool": "query_sigma_results",
+            "error": f"RBAC: path not permitted: {output_path}",
+        }
+
+    target = Path(output_path).resolve()
+    if not target.exists():
+        return {
+            "status": "error",
+            "tool": "query_sigma_results",
+            "error": f"Sigma results file not found: {output_path}",
+        }
+
+    try:
+        parsed = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "status": "error",
+            "tool": "query_sigma_results",
+            "error": f"Failed to read Sigma results JSON: {exc}",
+        }
+
+    if isinstance(parsed, dict):
+        hits = [parsed]
+    elif isinstance(parsed, list):
+        hits = [item for item in parsed if isinstance(item, dict)]
+    else:
+        hits = []
+
+    filtered_hits = _filter_sigma_hits(
+        hits,
+        requested_severities=requested_severities,
+        requested_techniques=requested_techniques,
+    )
+    severity_counts, technique_counts, _ = _sigma_breakdowns(filtered_hits)
+    page = filtered_hits[offset: offset + safe_limit]
+    payload: dict[str, Any] = {
+        "status": "ok" if filtered_hits else "no_hits",
+        "tool": "query_sigma_results",
+        "output_path": str(target),
+        "total_hits": len(hits),
+        "filtered_hits_total": len(filtered_hits),
+        "limit": safe_limit,
+        "offset": offset,
+        "returned_count": len(page),
+        "severity_filter": sorted(requested_severities) if requested_severities else [],
+        "techniques_filter": sorted(requested_techniques) if requested_techniques else [],
+        "severity_breakdown": severity_counts,
+        "technique_breakdown": technique_counts,
+        "response_format": normalized_format,
+        "preview": _sigma_preview(page),
+        "handle": build_handle(
+            kind="json",
+            path=str(target),
+            query_tool="query_sigma_results",
+            description="Persisted Chainsaw Sigma JSON results.",
+            tool_name="detection.query_sigma_results",
+        ),
+        "note": (
+            f"Returning {len(page)} of {len(filtered_hits)} filtered Sigma hits from {target.name}."
+        ),
+        **_forensic_envelope("detection.query_sigma_results"),
+    }
+    if normalized_format == "detailed":
+        payload["hits"] = page
+    return _finalize_tool_response("detection.query_sigma_results", payload)
 
 
 # ===========================================================================
@@ -5554,6 +5791,44 @@ def sigma_scan(case_id: str) -> dict[str, Any]:
         ).model_dump()
 
 
+def _analysis_handle_hint_for_path(path_text: str) -> str:
+    normalized = path_text.lower()
+    if "registry_suppressed" in normalized or (
+        "suppressed" in normalized and "/artifacts/registry/" in normalized
+    ):
+        return (
+            " Reuse extract_registry_run_keys()'s suppressed_handle.path for the "
+            "persisted suppressed-registry dataset."
+        )
+    mappings = [
+        ("/artifacts/evtx/", "summarize_evtx()'s handle.path or csv_path"),
+        ("/artifacts/prefetch/", "extract_prefetch()'s handle.path or csv_path"),
+        ("/artifacts/amcache/", "get_amcache()'s handle.path or csv_path"),
+        ("/artifacts/mft/", "extract_mft_timeline()'s handle.path or csv_path"),
+        ("/artifacts/registry/", "extract_registry_run_keys()'s handle.path or csv_path"),
+        ("/sigma_hunt/", "sigma_hunt()'s handle.path/output_path or query_sigma_results()"),
+        ("evtx_timeline.csv", "summarize_evtx()'s persisted handle.path or csv_path"),
+        ("prefetch.csv", "extract_prefetch()'s persisted handle.path or csv_path"),
+        ("amcache_", "get_amcache()'s persisted handle.path or csv_path"),
+        ("mft_timeline.csv", "extract_mft_timeline()'s persisted handle.path or csv_path"),
+        ("registry.csv", "extract_registry_run_keys()'s persisted handle.path or csv_path"),
+    ]
+    for marker, hint in mappings:
+        if marker in normalized:
+            return f" Reuse {hint}."
+    return ""
+
+
+def _analysis_missing_path_hint(path_text: str) -> str:
+    normalized = path_text.lower()
+    if normalized.startswith(("/tmp/savvydfir_", "/var/tmp/savvydfir_")):
+        return (
+            " This looks like a transient tool temp path that was cleaned up after execution."
+            + _analysis_handle_hint_for_path(normalized)
+        )
+    return _analysis_handle_hint_for_path(normalized)
+
+
 @mcp.tool()
 def run_analysis(
     data_path: str,
@@ -5599,13 +5874,8 @@ def run_analysis(
 
         path = Path(data_path).resolve()
         if not path.exists():
-            hint = ""
             normalized_missing = str(path)
-            if normalized_missing.startswith(("/tmp/savvydfir_", "/var/tmp/savvydfir_")):
-                hint = (
-                    " This looks like a transient tool temp path. Reuse the persisted "
-                    "csv_path/handle.path returned by the producing MCP tool instead."
-                )
+            hint = _analysis_missing_path_hint(normalized_missing)
             return ToolResult(
                 status="error", tool="run_analysis",
                 error=f"File not found: {data_path}.{hint}",

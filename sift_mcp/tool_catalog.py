@@ -186,6 +186,13 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         "detection",
         ("event_logs", "registry", "file_system", "network", "memory"),
         "finding_candidates",
+        query_tool="query_sigma_results",
+    ),
+    "detection.query_sigma_results": _entry(
+        "detection.query_sigma_results",
+        "detection",
+        ("event_logs", "reporting"),
+        "artifact",
     ),
     "detection.analyze_vss": _entry(
         "detection.analyze_vss", "detection", ("disk", "file_system"), "artifact"
