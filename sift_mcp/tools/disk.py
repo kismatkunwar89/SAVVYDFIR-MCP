@@ -482,6 +482,98 @@ def _dt_to_iso(value: Optional[datetime]) -> Optional[str]:
     return value.isoformat()
 
 
+def _normalize_prefetch_match_key(path: str) -> str:
+    """Normalize a Prefetch file path for record-to-metadata joins."""
+    return re.sub(
+        r"/+",
+        "/",
+        str(path or "").strip().strip('"').strip("'").replace("\\", "/").lower(),
+    ).rstrip("/")
+
+
+def _prefetch_match_keys(path: str) -> list[str]:
+    """Return full-path and basename keys for best-effort Prefetch joins."""
+    normalized = _normalize_prefetch_match_key(path)
+    if not normalized:
+        return []
+    keys = [normalized]
+    basename = normalized.rsplit("/", 1)[-1]
+    if basename and basename not in keys:
+        keys.append(basename)
+    return keys
+
+
+def _extract_prefetch_metadata_rows(prefetch_dir: str) -> list[dict[str, str]]:
+    """Best-effort PECmd metadata pass for SourceCreated/SourceModified fields."""
+    if not prefetch_dir or not Path(prefetch_dir).exists():
+        return []
+    pecmd_bin = shutil.which("PECmd") or "/usr/local/bin/PECmd"
+    if os.path.exists(pecmd_bin):
+        cmd = [pecmd_bin]
+    else:
+        cmd = ["dotnet", "/opt/zimmermantools/PECmd.dll"]
+    try:
+        with tempfile.TemporaryDirectory(prefix="savvydfir_prefetch_meta_") as tmp_dir:
+            csv_filename = "prefetch_metadata.csv"
+            csv_path = os.path.join(tmp_dir, csv_filename)
+            completed = subprocess.run(
+                [
+                    *cmd,
+                    "-d",
+                    prefetch_dir,
+                    "--csv",
+                    tmp_dir,
+                    "--csvf",
+                    csv_filename,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=300,
+                check=False,
+            )
+            if completed.returncode != 0 and not Path(csv_path).exists():
+                return []
+            return _read_csv(csv_path)
+    except Exception:
+        return []
+
+
+def _enrich_prefetch_records_with_metadata(
+    records: list[PrefetchRecord],
+    *,
+    prefetch_dir: str,
+) -> None:
+    """Merge PECmd metadata into pyscca records without replacing the primary parser."""
+    if not records:
+        return
+    metadata_rows = _extract_prefetch_metadata_rows(prefetch_dir)
+    if not metadata_rows:
+        return
+    metadata_lookup: dict[str, dict[str, str]] = {}
+    for row in metadata_rows:
+        source_path = str(row.get("SourceFilePath") or row.get("SourceFile") or "").strip()
+        for key in _prefetch_match_keys(source_path):
+            metadata_lookup.setdefault(key, row)
+    for record in records:
+        metadata: Optional[dict[str, str]] = None
+        for key in _prefetch_match_keys(record.prefetch_path):
+            metadata = metadata_lookup.get(key)
+            if metadata:
+                break
+        if not metadata:
+            continue
+        if record.source_created is None:
+            record.source_created = _parse_dt(
+                metadata.get("SourceCreated") or metadata.get("Created") or ""
+            )
+        if record.source_modified is None:
+            record.source_modified = _parse_dt(
+                metadata.get("SourceModified") or metadata.get("Modified") or ""
+            )
+
+
 def _prefetch_contract_payload(
     *,
     response: dict[str, Any],
@@ -1715,6 +1807,8 @@ def extract_prefetch(
             records.append(record)
         except Exception:
             continue
+
+    _enrich_prefetch_records_with_metadata(records, prefetch_dir=prefetch_dir)
 
     # One summary finding for the whole batch — not one per .pf file
     if records:

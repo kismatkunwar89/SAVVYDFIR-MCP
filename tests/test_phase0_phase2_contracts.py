@@ -298,8 +298,9 @@ class Phase0Phase2ContractTests(unittest.TestCase):
             fake_pyscca = types.SimpleNamespace(open=lambda _: _FakePrefetchFile())
 
             with mock.patch.dict(sys.modules, {"pyscca": fake_pyscca}, clear=False):
-                with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
-                    result = disk.extract_prefetch(image_path=str(evidence_root), prefetch_dir=str(prefetch_dir))
+                with mock.patch.object(disk, "_extract_prefetch_metadata_rows", return_value=[]):
+                    with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
+                        result = disk.extract_prefetch(image_path=str(evidence_root), prefetch_dir=str(prefetch_dir))
 
             self.assertEqual(result["status"], "success")
             self.assertIn("csv_path", result)
@@ -309,6 +310,58 @@ class Phase0Phase2ContractTests(unittest.TestCase):
             self.assertIn("follow_up_options", result)
             self.assertEqual(result["domain_metadata"]["tool_domain"], "disk")
             self.assertEqual(result["handle"]["domain"], "disk")
+            self.assertIsNone(result["normalized_observations"][0]["first_execution_time"])
+            self.assertIsNone(result["normalized_observations"][0]["last_execution_time"])
+
+    def test_prefetch_contract_enriches_execution_times_from_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            audit, state = self._make_state(tmp_dir, "CASE-PREFETCH-ENRICH")
+            runner = FakePhase0EZRunner(audit_logger=audit, case_id="CASE-PREFETCH-ENRICH", state_manager=state)
+            disk.init_tools(state, audit, ez_runner=runner)
+
+            evidence_root = Path(tmp_dir) / "evidence"
+            prefetch_dir = evidence_root / "Windows" / "Prefetch"
+            prefetch_dir.mkdir(parents=True, exist_ok=True)
+            pf_file = prefetch_dir / "EVIL.EXE-12345678.pf"
+            pf_file.write_text("placeholder", encoding="utf-8")
+
+            class _FakePrefetchFile:
+                executable_filename = "EVIL.EXE"
+                run_count = 3
+                number_of_filenames = 1
+
+                def get_last_run_time(self, index: int):
+                    if index == 0:
+                        return datetime(2026, 4, 14, 10, 0, tzinfo=timezone.utc)
+                    raise IndexError
+
+                def get_filename(self, index: int):
+                    return r"C:\Temp\evil.exe"
+
+            fake_pyscca = types.SimpleNamespace(open=lambda _: _FakePrefetchFile())
+            metadata_rows = [
+                {
+                    "SourceFilePath": str(pf_file).replace("/", "\\").upper(),
+                    "SourceCreated": "2026-04-14 09:30:00",
+                    "SourceModified": "2026-04-14 10:30:00",
+                    "ExecutableName": "EVIL.EXE",
+                }
+            ]
+
+            with mock.patch.dict(sys.modules, {"pyscca": fake_pyscca}, clear=False):
+                with mock.patch.object(disk, "_extract_prefetch_metadata_rows", return_value=metadata_rows):
+                    with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
+                        result = disk.extract_prefetch(image_path=str(evidence_root), prefetch_dir=str(prefetch_dir))
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(
+                result["normalized_observations"][0]["first_execution_time"],
+                "2026-04-14T09:30:00+00:00",
+            )
+            self.assertEqual(
+                result["normalized_observations"][0]["last_execution_time"],
+                "2026-04-14T10:30:00+00:00",
+            )
 
     def test_mft_contract_fields_and_fenced_excerpt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
