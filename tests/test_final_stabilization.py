@@ -115,6 +115,26 @@ class FinalStabilizationServerTests(unittest.TestCase):
             self.assertEqual(canonical["handle"]["path"], stable_path)
             self.assertNotIn("/tmp/savvydfir_", canonical["agent_instruction"])
 
+    def test_canonicalize_response_suppresses_transient_handle_when_marked_transient(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server = _load_server_for_test(Path(tmp_dir) / "analysis")
+            canonical = server._canonicalize_response_artifact_paths(
+                {
+                    "status": "warning",
+                    "execution_id": "E-010",
+                    "csv_path": "/tmp/savvydfir_prefetch_abc/prefetch.csv",
+                    "handle": {"kind": "csv", "path": "/tmp/savvydfir_prefetch_abc/prefetch.csv"},
+                    "artifact_persistence": {
+                        "status": "transient",
+                        "persisted_path": None,
+                        "reason": "copy failed",
+                    },
+                }
+            )
+
+            self.assertIsNone(canonical.get("csv_path"))
+            self.assertIsNone(canonical.get("handle"))
+
     def test_sigma_hunt_directory_timeout_falls_back_and_filters_hits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             server = _load_server_for_test(Path(tmp_dir) / "analysis")
@@ -177,6 +197,46 @@ class FinalStabilizationServerTests(unittest.TestCase):
             self.assertNotIn("hits", result)
             self.assertEqual(result["preview"][0]["rule_name"], "Credential Dump Attempt")
             self.assertTrue(Path(result["output_path"]).exists())
+            self.assertEqual(result["handle"]["query_tool"], "query_sigma_results")
+
+    def test_query_sigma_results_filters_and_pages_without_creating_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server = _load_server_for_test(Path(tmp_dir) / "analysis")
+            sigma_path = Path(tmp_dir) / "chainsaw.json"
+            sigma_path.write_text(
+                json.dumps(
+                    [
+                        {"name": "Credential Dump Attempt", "level": "high", "tags": ["attack.t1003"]},
+                        {"name": "PowerShell Execution", "level": "high", "tags": ["attack.t1059.001"]},
+                        {"name": "Noise", "level": "low", "tags": ["attack.t1003"]},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            summary = server.query_sigma_results(
+                str(sigma_path),
+                severity="high",
+                techniques="T1003",
+                limit=1,
+                offset=0,
+                response_format="summary",
+            )
+            detailed = server.query_sigma_results(
+                str(sigma_path),
+                severity="high",
+                limit=2,
+                offset=0,
+                response_format="detailed",
+            )
+
+            self.assertEqual(summary["status"], "ok")
+            self.assertEqual(summary["filtered_hits_total"], 1)
+            self.assertEqual(summary["returned_count"], 1)
+            self.assertNotIn("hits", summary)
+            self.assertEqual(summary["handle"]["query_tool"], "query_sigma_results")
+            self.assertEqual(detailed["returned_count"], 2)
+            self.assertEqual(len(detailed["hits"]), 2)
 
 
 class FinalStabilizationDiskTests(unittest.TestCase):
@@ -184,6 +244,7 @@ class FinalStabilizationDiskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_path = Path(tmp_dir) / "state.json"
             audit_path = Path(tmp_dir) / "audit.jsonl"
+            output_base = Path(tmp_dir) / "cases"
             state_manager = CaseStateManager(str(state_path))
             state_manager.load("CASE-EVTX")
             audit_logger = AuditLogger(str(audit_path))
@@ -227,7 +288,8 @@ class FinalStabilizationDiskTests(unittest.TestCase):
                 extra_fields={"NewProcessName": r"C:\Windows\System32\cmd.exe"},
             )
 
-            with patch.object(disk_tools, "_persist_csv", side_effect=lambda path, tool: path), \
+            with patch.dict(os.environ, {"OUTPUT_BASE": str(output_base)}), \
+                 patch.object(disk_tools, "_persist_csv", side_effect=lambda path, tool: path), \
                  patch.object(disk_tools, "_build_evtx_records", return_value=([fake_record], [])), \
                  patch.object(disk_tools, "promote_corroborated_findings", return_value=None):
                 result = disk_tools.summarize_evtx(
@@ -242,6 +304,108 @@ class FinalStabilizationDiskTests(unittest.TestCase):
             self.assertFalse(result.get("csv_path"))
             self.assertFalse(result.get("provenance", {}).get("csv_path"))
             self.assertIsNone(result.get("handle"))
+            self.assertEqual(result["artifact_persistence"]["status"], "transient")
+
+    def test_get_amcache_summary_mode_returns_durable_handle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state.json"
+            audit_path = Path(tmp_dir) / "audit.jsonl"
+            output_base = Path(tmp_dir) / "cases"
+            state_manager = CaseStateManager(str(state_path))
+            state_manager.load("CASE-AMCACHE")
+            audit_logger = AuditLogger(str(audit_path))
+
+            class _FakeRunner:
+                def run_amcacheparser(self, *, hive_path, csv_dir, csv_filename, tool_name):
+                    csv_path = Path(csv_dir) / "amcache_UnassociatedFileEntries.csv"
+                    csv_path.write_text(
+                        "FullPath,SHA1,FileSize,Publisher\n"
+                        "C:\\Users\\Bob\\AppData\\evil.exe,0123456789abcdef0123456789abcdef01234567,1234,Acme\n",
+                        encoding="utf-8",
+                    )
+                    return SimpleNamespace(
+                        ok=True,
+                        exit_code=0,
+                        stderr="",
+                        execution_id="E-002",
+                        command_line="AmcacheParser --csv",
+                    )
+
+            disk_tools.init_tools(
+                state_manager=state_manager,
+                audit_logger=audit_logger,
+                ez_runner=_FakeRunner(),
+                sk_runner=SimpleNamespace(),
+            )
+
+            image_root = Path(tmp_dir) / "mnt" / "disk"
+            hive_path = image_root / "Windows" / "appcompat" / "Programs" / "Amcache.hve"
+            hive_path.parent.mkdir(parents=True, exist_ok=True)
+            hive_path.write_text("placeholder", encoding="utf-8")
+
+            with patch.dict(os.environ, {"OUTPUT_BASE": str(output_base)}):
+                result = disk_tools.get_amcache(
+                    image_path=str(image_root),
+                    hive_path=str(hive_path),
+                    response_format="summary",
+                )
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["response_format"], "summary")
+            self.assertEqual(result["artifact_persistence"]["status"], "durable")
+            self.assertTrue(result["handle"]["path"].startswith(str(output_base)))
+            self.assertNotIn("data", result)
+
+    def test_extract_registry_run_keys_returns_suppressed_handle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state.json"
+            audit_path = Path(tmp_dir) / "audit.jsonl"
+            output_base = Path(tmp_dir) / "cases"
+            state_manager = CaseStateManager(str(state_path))
+            state_manager.load("CASE-REG")
+            audit_logger = AuditLogger(str(audit_path))
+
+            class _FakeRunner:
+                def run_recmd(self, *, hive_dir, csv_dir, csv_filename, batch_file, sync_batch, tool_name):
+                    csv_path = Path(csv_dir) / csv_filename
+                    csv_path.write_text(
+                        "KeyPath,ValueName,ValueData,HiveType\n"
+                        "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run,Good,C:\\Windows\\System32\\calc.exe,SOFTWARE\n"
+                        "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run,UserDrop,C:\\Users\\Bob\\AppData\\evil.exe,SOFTWARE\n",
+                        encoding="utf-8",
+                    )
+                    return SimpleNamespace(
+                        ok=True,
+                        exit_code=0,
+                        stderr="",
+                        execution_id="E-003",
+                        command_line="RECmd --csv",
+                    )
+
+            disk_tools.init_tools(
+                state_manager=state_manager,
+                audit_logger=audit_logger,
+                ez_runner=_FakeRunner(),
+                sk_runner=SimpleNamespace(),
+            )
+
+            image_root = Path(tmp_dir) / "mnt" / "disk"
+            hive_dir = image_root / "Windows" / "System32" / "config"
+            hive_dir.mkdir(parents=True, exist_ok=True)
+
+            with patch.dict(os.environ, {"OUTPUT_BASE": str(output_base)}):
+                result = disk_tools.extract_registry_run_keys(
+                    image_path=str(image_root),
+                    hive_dir=str(hive_dir),
+                    response_format="summary",
+                    batch_mode=False,
+                )
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["artifact_persistence"]["status"], "durable")
+            self.assertGreater(result["suppressed_row_count"], 0)
+            self.assertTrue(result["suppressed_csv_path"].startswith(str(output_base)))
+            self.assertEqual(result["suppressed_handle"]["path"], result["suppressed_csv_path"])
 
 
 if __name__ == "__main__":
