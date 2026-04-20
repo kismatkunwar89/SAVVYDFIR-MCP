@@ -10,7 +10,7 @@ parse the CLI output into typed Pydantic models, and return plain dicts.
 
 Tools
 -----
-- ``extract_prefetch``         — PECmd: Windows Prefetch execution evidence.
+- ``extract_prefetch``         — Prefetch execution evidence via ``pyscca``.
 - ``get_amcache``              — AmcacheParser: SHA-1 evidence of execution.
 - ``extract_mft_timeline``     — MFTECmd: Full NTFS MFT with SI/FN timestamps
                                   (timestomping detection).
@@ -483,12 +483,25 @@ def _dt_to_iso(value: Optional[datetime]) -> Optional[str]:
 
 
 def _normalize_prefetch_match_key(path: str) -> str:
-    """Normalize a Prefetch file path for record-to-metadata joins."""
-    return re.sub(
-        r"/+",
-        "/",
-        str(path or "").strip().strip('"').strip("'").replace("\\", "/").lower(),
-    ).rstrip("/")
+    """Normalize a Prefetch file path into a comparable relative artifact key."""
+    text = str(path or "").strip().strip('"').strip("'")
+    if not text:
+        return ""
+    normalized = re.sub(r"/+", "/", text.replace("\\", "/").lower()).strip()
+    if not normalized:
+        return ""
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    if normalized.startswith("/mnt/disk/"):
+        normalized = normalized[len("/mnt/disk/"):]
+    elif re.match(r"^[a-z]:/", normalized):
+        normalized = normalized[3:]
+    elif normalized.startswith("/cases/"):
+        case_mount = re.search(r"/mnt/[a-z]/(.+)$", normalized)
+        normalized = case_mount.group(1) if case_mount else normalized.lstrip("/")
+    else:
+        normalized = normalized.lstrip("/")
+    return normalized.lstrip("./").rstrip("/")
 
 
 def _prefetch_match_keys(path: str) -> list[str]:
@@ -503,75 +516,126 @@ def _prefetch_match_keys(path: str) -> list[str]:
     return keys
 
 
-def _extract_prefetch_metadata_rows(prefetch_dir: str) -> list[dict[str, str]]:
-    """Best-effort PECmd metadata pass for SourceCreated/SourceModified fields."""
-    if not prefetch_dir or not Path(prefetch_dir).exists():
-        return []
-    pecmd_bin = shutil.which("PECmd") or "/usr/local/bin/PECmd"
-    if os.path.exists(pecmd_bin):
-        cmd = [pecmd_bin]
-    else:
-        cmd = ["dotnet", "/opt/zimmermantools/PECmd.dll"]
+def _latest_durable_csv_for_tool(tool_name: str) -> Optional[str]:
+    """Return the latest durable CSV linked to *tool_name* in state executions."""
+    if _state is None:
+        return None
+    for execution in reversed(_state.get_executions(tool_name=tool_name)):
+        refs = execution.get("raw_evidence_refs") or []
+        preferred: list[str] = []
+        fallback: list[str] = []
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            path = str(ref.get("path") or "").strip()
+            if not path:
+                continue
+            resolved = _resolved_path_str(path)
+            if (
+                not resolved.lower().endswith(".csv")
+                or _is_transient_persisted_path(resolved)
+                or not Path(resolved).exists()
+            ):
+                continue
+            role = str(ref.get("role") or "").strip().lower()
+            if role in {"derived", "handle"}:
+                preferred.append(resolved)
+            else:
+                fallback.append(resolved)
+        if preferred:
+            return preferred[0]
+        if fallback:
+            return fallback[0]
+    return None
+
+
+def _prefetch_mft_candidate_path(row: dict[str, str]) -> str:
+    """Build a comparable Prefetch file path from an MFT CSV row."""
+    file_name = str(row.get("FileName") or "").strip()
+    parent_path = str(row.get("ParentPath") or row.get("FilePath") or "").strip()
+    if parent_path and file_name:
+        return f"{parent_path.rstrip('/\\\\')}/{file_name}"
+    return file_name or parent_path
+
+
+def _prefetch_mft_timestamp_lookup(csv_path: str) -> dict[str, dict[str, Any]]:
+    """Build a lookup of Prefetch file metadata from a durable MFT CSV."""
+    lookup: dict[str, dict[str, Any]] = {}
+    for row in _read_csv(csv_path):
+        candidate_path = _prefetch_mft_candidate_path(row)
+        if not candidate_path.lower().endswith(".pf"):
+            continue
+        metadata = {
+            "pf_created_time": _parse_dt(row.get("Created0x10") or row.get("SICreated") or ""),
+            "pf_modified_time": _parse_dt(
+                row.get("LastModified0x10") or row.get("SIModified") or ""
+            ),
+            "pf_timestamp_source": "mft",
+        }
+        if metadata["pf_created_time"] is None and metadata["pf_modified_time"] is None:
+            continue
+        for key in _prefetch_match_keys(candidate_path):
+            lookup.setdefault(key, metadata)
+    return lookup
+
+
+def _prefetch_metadata_from_stat_result(stat_result: os.stat_result) -> dict[str, Any]:
+    """Map a stat result into `.pf` file metadata without using ctime."""
+    created = None
+    modified = None
     try:
-        with tempfile.TemporaryDirectory(prefix="savvydfir_prefetch_meta_") as tmp_dir:
-            csv_filename = "prefetch_metadata.csv"
-            csv_path = os.path.join(tmp_dir, csv_filename)
-            completed = subprocess.run(
-                [
-                    *cmd,
-                    "-d",
-                    prefetch_dir,
-                    "--csv",
-                    tmp_dir,
-                    "--csvf",
-                    csv_filename,
-                ],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=300,
-                check=False,
-            )
-            if completed.returncode != 0 and not Path(csv_path).exists():
-                return []
-            return _read_csv(csv_path)
-    except Exception:
-        return []
+        if getattr(stat_result, "st_atime", 0):
+            created = datetime.fromtimestamp(stat_result.st_atime, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        created = None
+    try:
+        if getattr(stat_result, "st_mtime", 0):
+            modified = datetime.fromtimestamp(stat_result.st_mtime, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        modified = None
+    return {
+        "pf_created_time": created,
+        "pf_modified_time": modified,
+        "pf_timestamp_source": "mounted_ntfs_stat" if created or modified else None,
+    }
 
 
-def _enrich_prefetch_records_with_metadata(
+def _prefetch_metadata_from_stat(prefetch_path: str) -> Optional[dict[str, Any]]:
+    """Read `.pf` file metadata from the mounted NTFS-backed filesystem."""
+    path = Path(prefetch_path)
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        metadata = _prefetch_metadata_from_stat_result(path.stat())
+    except OSError:
+        return None
+    if metadata["pf_created_time"] is None and metadata["pf_modified_time"] is None:
+        return None
+    return metadata
+
+
+def _enrich_prefetch_records_with_filesystem_metadata(
     records: list[PrefetchRecord],
-    *,
-    prefetch_dir: str,
 ) -> None:
-    """Merge PECmd metadata into pyscca records without replacing the primary parser."""
+    """Populate `.pf` file metadata from MFT when available, else mounted stat()."""
     if not records:
         return
-    metadata_rows = _extract_prefetch_metadata_rows(prefetch_dir)
-    if not metadata_rows:
-        return
-    metadata_lookup: dict[str, dict[str, str]] = {}
-    for row in metadata_rows:
-        source_path = str(row.get("SourceFilePath") or row.get("SourceFile") or "").strip()
-        for key in _prefetch_match_keys(source_path):
-            metadata_lookup.setdefault(key, row)
+    mft_lookup: dict[str, dict[str, Any]] = {}
+    mft_csv = _latest_durable_csv_for_tool("disk.extract_mft_timeline")
+    if mft_csv:
+        mft_lookup = _prefetch_mft_timestamp_lookup(mft_csv)
     for record in records:
-        metadata: Optional[dict[str, str]] = None
+        metadata: Optional[dict[str, Any]] = None
         for key in _prefetch_match_keys(record.prefetch_path):
-            metadata = metadata_lookup.get(key)
+            metadata = mft_lookup.get(key)
             if metadata:
                 break
         if not metadata:
-            continue
-        if record.source_created is None:
-            record.source_created = _parse_dt(
-                metadata.get("SourceCreated") or metadata.get("Created") or ""
-            )
-        if record.source_modified is None:
-            record.source_modified = _parse_dt(
-                metadata.get("SourceModified") or metadata.get("Modified") or ""
-            )
+            metadata = _prefetch_metadata_from_stat(record.prefetch_path)
+        if metadata:
+            record.pf_created_time = metadata.get("pf_created_time")
+            record.pf_modified_time = metadata.get("pf_modified_time")
+            record.pf_timestamp_source = metadata.get("pf_timestamp_source")
 
 
 def _prefetch_contract_payload(
@@ -586,15 +650,19 @@ def _prefetch_contract_payload(
         {
             "executable_name": record.executable_name,
             "run_count": record.run_count,
-            "first_execution_time": _dt_to_iso(record.source_created),
-            "last_execution_time": _dt_to_iso(record.source_modified),
+            "last_run_times": [_dt_to_iso(value) for value in record.last_run_times],
+            "pf_created_time": _dt_to_iso(record.pf_created_time),
+            "pf_modified_time": _dt_to_iso(record.pf_modified_time),
+            "pf_timestamp_source": record.pf_timestamp_source,
             "prefetch_path": record.prefetch_path,
         }
         for record in records[:20]
     ]
     summary = (
         f"Prefetch parsed {response.get('records_count', len(records))} execution artifacts "
-        f"from {prefetch_dir}. Persisted CSV{' available' if csv_path else ' unavailable'} for deeper review."
+        f"from {prefetch_dir}. `last_run_times` capture exact Prefetch-native execution history; "
+        f"`pf_created_time` and `pf_modified_time` are `.pf` file metadata. "
+        f"Persisted CSV{' available' if csv_path else ' unavailable'} for deeper review."
     )
     return build_contract_response(
         response,
@@ -615,10 +683,16 @@ def _prefetch_contract_payload(
             "referenced_files": compact_unique(
                 path for record in records for path in record.referenced_files
             ),
-            "timestamps": compact_unique(
-                _dt_to_iso(record.source_modified) or _dt_to_iso(record.source_created)
+            "last_run_times": compact_unique(
+                _dt_to_iso(timestamp)
+                for record in records
+                for timestamp in record.last_run_times
+            ),
+            "pf_file_timestamps": compact_unique(
+                _dt_to_iso(record.pf_modified_time) or _dt_to_iso(record.pf_created_time)
                 for record in records
             ),
+            "pf_timestamp_sources": compact_unique(record.pf_timestamp_source for record in records),
         },
         follow_up_options=[
             build_follow_up_option(
@@ -1708,14 +1782,14 @@ def extract_prefetch(
     max_entries: int = 0,
     response_format: str = "summary",
 ) -> dict[str, Any]:
-    """Extract Windows Prefetch execution evidence using PECmd (EZ Tools).
-
-    Wraps ``dotnet /opt/zimmermantools/PECmd.dll`` on SIFT Workstation.
+    """Extract Windows Prefetch execution evidence on Linux with `pyscca`.
 
     Prefetch files (``.pf``) are stored in ``C:\\Windows\\Prefetch`` and
     record up to 8 execution timestamps plus the list of files referenced
-    during the binary's first seconds.  The ``$SI Created`` time of the ``.pf``
-    file equals the **first** execution time — this is forensically significant.
+    during the binary's first seconds. Exact recent execution history is
+    surfaced in ``last_run_times``. Separate `.pf` file metadata is returned
+    as ``pf_created_time`` / ``pf_modified_time`` when it can be sourced from
+    durable MFT output or mounted NTFS-backed filesystem metadata.
 
     Parameters
     ----------
@@ -1756,7 +1830,7 @@ def extract_prefetch(
         return _artifact_preflight_error(tool_name=tool, preflight=preflight)
 
     # Use pyscca (libscca) — handles Windows 10 MAM-compressed .pf files on Linux
-    # PECmd requires Windows APIs for decompression; pyscca is the Linux-native solution
+    # and exposes Prefetch-native run history without relying on Windows-only PECmd.
     records: list[PrefetchRecord] = []
     finding_ids: list[str] = []
     exec_id = f"E-{os.getpid():05d}"  # must match ^E-\d{{3,}}$ pattern
@@ -1808,7 +1882,11 @@ def extract_prefetch(
         except Exception:
             continue
 
-    _enrich_prefetch_records_with_metadata(records, prefetch_dir=prefetch_dir)
+    _enrich_prefetch_records_with_filesystem_metadata(records)
+    pf_timestamp_source_counts: dict[str, int] = {}
+    for record in records:
+        key = record.pf_timestamp_source or "unavailable"
+        pf_timestamp_source_counts[key] = pf_timestamp_source_counts.get(key, 0) + 1
 
     # One summary finding for the whole batch — not one per .pf file
     if records:
@@ -1881,12 +1959,15 @@ def extract_prefetch(
         response["preview"] = preview
         response["summary"] = (
             f"{len(records)} prefetch entries parsed from {prefetch_dir}. "
+            f"`last_run_times` reflects exact Prefetch-native execution history; "
+            f"`pf_created_time` / `pf_modified_time` are `.pf` file metadata. "
             f"Full data at {durable_csv or 'not persisted'}."
         )
         response["note"] = (
             'Full data array omitted by default; pass response_format="detailed" '
             "for the complete data."
         )
+    response["pf_timestamp_source_counts"] = pf_timestamp_source_counts
     if not durable_csv:
         response["warning"] = (
             "Prefetch rows were parsed successfully, but the CSV output could not be persisted to "

@@ -10,7 +10,8 @@ parse the CLI output into typed Pydantic models, and return plain dicts.
 
 Tools
 -----
-- ``extract_prefetch``         — PECmd: Windows Prefetch execution evidence.
+- ``extract_prefetch``         — Windows Prefetch execution evidence with
+                                  `.pf` file metadata.
 - ``get_amcache``              — AmcacheParser: SHA-1 evidence of execution.
 - ``extract_mft_timeline``     — MFTECmd: Full NTFS MFT with SI/FN timestamps
                                   (timestomping detection).
@@ -245,8 +246,9 @@ def extract_prefetch(
 
     Prefetch files (``.pf``) are stored in ``C:\\Windows\\Prefetch`` and
     record up to 8 execution timestamps plus the list of files referenced
-    during the binary's first seconds.  The ``$SI Created`` time of the ``.pf``
-    file equals the **first** execution time — this is forensically significant.
+    during the binary's first seconds. Any `.pf` filesystem timestamps in the
+    parsed output are file metadata, separate from the exact Prefetch-native
+    run history in ``last_run_times``.
 
     Parameters
     ----------
@@ -353,9 +355,9 @@ def extract_prefetch(
                 volume_path=row.get("Volume0Name") or row.get("VolumePath"),
                 volume_serial=row.get(
                     "Volume0Serial") or row.get("VolumeSerial"),
-                source_created=_parse_dt(
+                pf_created_time=_parse_dt(
                     row.get("SourceCreated") or row.get("Created") or ""),
-                source_modified=_parse_dt(
+                pf_modified_time=_parse_dt(
                     row.get("SourceModified") or row.get("Modified") or ""),
             )
             records.append(record)
