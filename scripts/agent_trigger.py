@@ -263,19 +263,14 @@ def _agent_description(subagent_type: str, lane_id: str, tool_name: str) -> str:
     return f"Analyze {lane_id} lane after {tool_name}"
 
 
-def _agent_call_text(
+def _delegation_text(
     *,
     subagent_type: str,
     description: str,
     prompt: str,
 ) -> str:
-    return (
-        "Agent("
-        f"subagent_type={json.dumps(subagent_type)}, "
-        f"description={json.dumps(description)}, "
-        f"prompt={json.dumps(prompt)}"
-        ")"
-    )
+    legacy_agent = f"@{subagent_type}"
+    return f"{legacy_agent} - {description}. {prompt}"
 
 
 def _write_trigger(trigger: dict[str, Any], trigger_path: Optional[str] = None) -> None:
@@ -308,15 +303,17 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
     source_path = _source_artifact_path(result_data)
     description = _agent_description(subagent_type, lane_id, tool_name)
     prompt = (
-        f"Read the current SAVVYDFIR case state, own lane_id={lane_id!r}, and review "
-        f"the source artifact produced by {tool_name}. {instruction} "
-        "Return JSON with lane_id, status, assigned_agent, execution_ids, finding_ids, "
-        "data_gaps, anti_forensics_warnings, unresolved_discrepancies, next_pivots, "
-        "summary, and confidence_notes. Call record_analysis_lane with those validated IDs."
+        f"Read current SAVVYDFIR state, own lane_id={lane_id!r}, and analyze the "
+        f"artifact handle from {tool_name}. {instruction} "
+        "Do not ask the parent to load the full CSV into context. Use run_analysis "
+        "for focused pivots, add evidence-backed findings only, and return compact JSON "
+        "with lane_id, status, execution_ids, finding_ids, data_gaps, "
+        "anti_forensics_warnings, unresolved_discrepancies, next_pivots, summary, "
+        "and confidence_notes so the parent can call record_analysis_lane."
     )
     if source_path:
-        prompt += f" Source artifact path: {source_path}."
-    agent_call = _agent_call_text(
+        prompt += f" Context handle: {source_path}."
+    delegation_text = _delegation_text(
         subagent_type=subagent_type,
         description=description,
         prompt=prompt,
@@ -329,7 +326,8 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
         "prompt": prompt,
         "lane_id": lane_id,
         "source_artifact_path": source_path,
-        "agent_call": agent_call,
+        "agent_call": delegation_text,
+        "delegation_text": delegation_text,
         "tool": tool_name,
         "instruction": instruction,
         "csv_path": result_data.get("csv_path"),
@@ -342,8 +340,9 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
         "decision": "allow",
         "message": (
             f"SAVVYDFIR HOOK: {tool_name} completed. "
-            "MANDATORY: spawn the specialist subagent before proceeding. "
-            f"Use this exact call shape: {agent_call}"
+            f"MANDATORY: delegate to @{subagent_type} now and pass the artifact handle, "
+            "not raw rows, to keep parent context focused on hypotheses. "
+            f"{delegation_text}"
         ),
     }
 

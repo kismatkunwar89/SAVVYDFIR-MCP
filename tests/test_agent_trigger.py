@@ -45,13 +45,14 @@ class AgentTriggerTests(unittest.TestCase):
 
             self.assertIsNotNone(result)
             self.assertEqual(result["decision"], "allow")
-            self.assertIn("Agent(", result["message"])
-            self.assertIn('subagent_type="evtx-analyst"', result["message"])
+            self.assertIn("@evtx-analyst", result["message"])
+            self.assertIn("artifact handle", result["message"])
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["agent"], "@evtx-analyst")
             self.assertEqual(payload["subagent_type"], "evtx-analyst")
             self.assertEqual(payload["lane_id"], "event_auth")
-            self.assertIn("Agent(", payload["agent_call"])
+            self.assertIn("@evtx-analyst", payload["agent_call"])
+            self.assertIn("Context handle:", payload["prompt"])
             self.assertEqual(payload["tool"], "mcp__savvydfir__summarize_evtx")
             self.assertIn("CSV at:", payload["instruction"])
 
@@ -95,7 +96,7 @@ class AgentTriggerTests(unittest.TestCase):
             self.assertEqual(result["decision"], "allow")
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["agent"], "@timeline-analyst")
-            self.assertIn("Agent(", result["message"])
+            self.assertIn("@timeline-analyst", result["message"])
             self.assertIn("storage handle", payload["instruction"])
             self.assertIn("Summary:", payload["instruction"])
 
@@ -122,7 +123,7 @@ class AgentTriggerTests(unittest.TestCase):
             self.assertIn("2 CRITICAL", payload["instruction"])
             self.assertIn("1 HIGH", payload["instruction"])
 
-    def test_all_specialist_hook_messages_use_agent_call_syntax(self) -> None:
+    def test_all_specialist_hook_messages_use_main_style_delegation(self) -> None:
         cases = {
             "mcp__savvydfir__extract_mft_timeline": "mft-analyst",
             "mcp__savvydfir__summarize_evtx": "evtx-analyst",
@@ -149,10 +150,11 @@ class AgentTriggerTests(unittest.TestCase):
                         trigger_path=str(trigger_path),
                     )
                     self.assertIsNotNone(result)
-                    self.assertIn("Agent(", result["message"])
-                    self.assertIn(f'subagent_type="{subagent_type}"', result["message"])
+                    self.assertIn(f"@{subagent_type}", result["message"])
+                    self.assertIn("artifact handle", result["message"])
                     payload = json.loads(trigger_path.read_text(encoding="utf-8"))
                     self.assertEqual(payload["subagent_type"], subagent_type)
+                    self.assertIn(f"@{subagent_type}", payload["delegation_text"])
 
     def test_zero_hit_sigma_does_not_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
