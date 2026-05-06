@@ -54,6 +54,7 @@ class ReportingHtmlTests(unittest.TestCase):
                     "suggested_next_tools": {"TA0006": ["disk.summarize_evtx"]},
                 },
                 reports_root=tmp_dir,
+                delegate_path=str(Path(tmp_dir) / "no_delegate.json"),
             )
 
             self.assertEqual(result["status"], "ok")
@@ -93,6 +94,7 @@ class ReportingHtmlTests(unittest.TestCase):
                     "suggested_next_tools": {},
                 },
                 reports_root=tmp_dir,
+                delegate_path=str(Path(tmp_dir) / "no_delegate.json"),
             )
 
             self.assertEqual(result["status"], "needs_graph")
