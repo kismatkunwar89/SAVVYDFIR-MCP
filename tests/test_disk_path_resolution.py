@@ -266,6 +266,26 @@ class DiskPathResolutionTests(unittest.TestCase):
                 self.assertEqual(result["input_name"], field)
             self.assertIsNone(runner.last_evtx_dir)
 
+    def test_permission_denied_direct_path_falls_through_to_durable_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            self._init_tools(tmp_dir, "CASE-PERM-FALLBACK")
+            raw = Path(tmp_dir) / "CASE-PERM-FALLBACK" / "artifacts" / "raw" / "evtx"
+            raw.mkdir(parents=True)
+            (raw / "Security.evtx").write_text("evtx", encoding="utf-8")
+
+            original_exists = Path.exists
+
+            def guarded_exists(path: Path) -> bool:
+                if str(path) == "/mnt/evidence/ewf1":
+                    raise PermissionError("fuse denied stat")
+                return original_exists(path)
+
+            with mock.patch.object(Path, "exists", guarded_exists):
+                with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
+                    resolved = disk._resolve_evtx_dir_input("/mnt/evidence/ewf1", None)
+
+            self.assertEqual(resolved, str(raw))
+
     def test_tools_reject_broad_tmp_artifact_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             self._init_tools(tmp_dir, "CASE-TMP-REJECT")
