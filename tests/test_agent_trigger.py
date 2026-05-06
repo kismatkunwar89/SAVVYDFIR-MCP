@@ -44,9 +44,9 @@ class AgentTriggerTests(unittest.TestCase):
             result = agent_trigger.process_event(event, trigger_path=str(trigger_path))
 
             self.assertIsNotNone(result)
-            self.assertEqual(result["decision"], "allow")
-            self.assertIn("@evtx-analyst", result["message"])
-            self.assertIn("artifact handle", result["message"])
+            self.assertEqual(result["decision"], "block")
+            self.assertIn("@evtx-analyst", result["reason"])
+            self.assertIn("Task/subagent", result["reason"])
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["agent"], "@evtx-analyst")
             self.assertEqual(payload["subagent_type"], "evtx-analyst")
@@ -72,7 +72,7 @@ class AgentTriggerTests(unittest.TestCase):
 
             result = agent_trigger.process_event(event, trigger_path=str(trigger_path))
 
-            self.assertEqual(result["decision"], "allow")
+            self.assertEqual(result["decision"], "block")
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["agent"], "@custom-analyst")
             self.assertEqual(payload["subagent_type"], "custom-analyst")
@@ -93,10 +93,10 @@ class AgentTriggerTests(unittest.TestCase):
             result = agent_trigger.process_event(event, trigger_path=str(trigger_path))
 
             self.assertIsNotNone(result)
-            self.assertEqual(result["decision"], "allow")
+            self.assertEqual(result["decision"], "block")
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["agent"], "@timeline-analyst")
-            self.assertIn("@timeline-analyst", result["message"])
+            self.assertIn("@timeline-analyst", result["reason"])
             self.assertIn("storage handle", payload["instruction"])
             self.assertIn("Summary:", payload["instruction"])
 
@@ -116,7 +116,7 @@ class AgentTriggerTests(unittest.TestCase):
 
             result = agent_trigger.process_event(event, trigger_path=str(trigger_path))
 
-            self.assertEqual(result["decision"], "allow")
+            self.assertEqual(result["decision"], "block")
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["agent"], "@sigma-analyst")
             self.assertEqual(payload["subagent_type"], "sigma-analyst")
@@ -150,11 +150,49 @@ class AgentTriggerTests(unittest.TestCase):
                         trigger_path=str(trigger_path),
                     )
                     self.assertIsNotNone(result)
-                    self.assertIn(f"@{subagent_type}", result["message"])
-                    self.assertIn("artifact handle", result["message"])
+                    self.assertEqual(result["decision"], "block")
+                    self.assertIn(f"@{subagent_type}", result["reason"])
+                    self.assertIn("record_analysis_lane", result["reason"])
                     payload = json.loads(trigger_path.read_text(encoding="utf-8"))
                     self.assertEqual(payload["subagent_type"], subagent_type)
                     self.assertIn(f"@{subagent_type}", payload["delegation_text"])
+
+    def test_pending_delegation_blocks_parent_follow_up_until_lane_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            first = agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__summarize_evtx",
+                    {
+                        "status": "success",
+                        "csv_path": "/cases/CASE-1/artifacts/evtx/evtx_timeline.csv",
+                        "total_records": 100,
+                    },
+                ),
+                trigger_path=str(trigger_path),
+            )
+            self.assertEqual(first["decision"], "block")
+
+            follow_up = agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__run_analysis",
+                    {"status": "ok", "rows": []},
+                ),
+                trigger_path=str(trigger_path),
+            )
+            self.assertEqual(follow_up["decision"], "block")
+            self.assertIn("@evtx-analyst", follow_up["reason"])
+
+            lane_record = agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__record_analysis_lane",
+                    {"status": "ok"},
+                ),
+                trigger_path=str(trigger_path),
+            )
+            self.assertIsNone(lane_record)
+            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            self.assertTrue(payload["processed"])
 
     def test_zero_hit_sigma_does_not_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
