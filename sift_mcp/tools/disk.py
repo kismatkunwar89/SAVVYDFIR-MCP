@@ -477,11 +477,39 @@ def _resolved_path_str(path: str) -> str:
         return path
 
 
+def _path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _path_is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _path_is_dir(path: Path) -> bool:
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _any_glob(path: Path, pattern: str) -> bool:
+    try:
+        return any(path.glob(pattern))
+    except OSError:
+        return False
+
+
 def _shared_windows_root_candidates() -> list[Path]:
     """Return common mounted Windows roots that tools may reuse."""
     candidates: list[Path] = []
     for root in (Path("/mnt/disk"),):
-        if root.exists():
+        if _path_exists(root):
             candidates.append(root)
     return candidates
 
@@ -502,14 +530,14 @@ def _candidate_windows_volume_roots(image_path: str) -> list[Path]:
     for shared_root in _shared_windows_root_candidates():
         _add(shared_root)
 
-    if base.exists() and base.is_dir():
-        if (base / "Windows").exists():
+    if _path_is_dir(base):
+        if _path_exists(base / "Windows"):
             _add(base)
-        if (base / "mnt" / "C" / "Windows").exists():
+        if _path_exists(base / "mnt" / "C" / "Windows"):
             _add(base / "mnt" / "C")
 
-    if not candidates and base.exists() and base.is_dir():
-        if (base / "mnt" / "C").exists():
+    if not candidates and _path_is_dir(base):
+        if _path_exists(base / "mnt" / "C"):
             _add(base / "mnt" / "C")
         else:
             _add(base)
@@ -522,7 +550,7 @@ def _resolve_windows_relative_path(image_path: str, *relative_parts: str) -> str
     volume_roots = _candidate_windows_volume_roots(image_path)
     for root in volume_roots:
         candidate = root.joinpath(*relative_parts)
-        if candidate.exists():
+        if _path_exists(candidate):
             return str(candidate)
     if volume_roots:
         return str(volume_roots[0].joinpath(*relative_parts))
@@ -600,9 +628,9 @@ def _resolve_evtx_dir_input(image_path: str, evtx_dir: Optional[str]) -> str:
     if evtx_dir is not None:
         return evtx_dir
     base = Path(image_path)
-    if base.exists() and base.is_file() and base.suffix.lower() == ".evtx":
+    if _path_is_file(base) and base.suffix.lower() == ".evtx":
         return str(base.parent)
-    if base.exists() and base.is_dir() and any(base.glob("*.evtx")):
+    if _path_is_dir(base) and _any_glob(base, "*.evtx"):
         return str(base)
     durable = _durable_raw_artifact_path("evtx")
     if durable:
@@ -616,7 +644,7 @@ def _resolve_registry_hive_dir_input(image_path: str, hive_dir: Optional[str]) -
     if hive_dir is not None:
         return hive_dir
     base = Path(image_path)
-    if base.exists() and base.is_file() and base.name.upper() in {
+    if _path_is_file(base) and base.name.upper() in {
         "SYSTEM",
         "SOFTWARE",
         "SECURITY",
@@ -624,7 +652,7 @@ def _resolve_registry_hive_dir_input(image_path: str, hive_dir: Optional[str]) -
         "NTUSER.DAT",
     }:
         return str(base.parent)
-    if base.exists() and base.is_dir() and any((base / name).exists() for name in ("SYSTEM", "SOFTWARE", "NTUSER.DAT")):
+    if _path_is_dir(base) and any(_path_exists(base / name) for name in ("SYSTEM", "SOFTWARE", "NTUSER.DAT")):
         return str(base)
     durable = _durable_raw_artifact_path("registry")
     if durable:
@@ -638,7 +666,7 @@ def _resolve_amcache_hive_input(image_path: str, hive_path: Optional[str]) -> st
     if hive_path is not None:
         return hive_path
     base = Path(image_path)
-    if base.exists() and base.is_file() and base.name.lower() == "amcache.hve":
+    if _path_is_file(base) and base.name.lower() == "amcache.hve":
         return str(base)
     durable = _durable_raw_artifact_path("amcache")
     if durable:
@@ -652,7 +680,7 @@ def _resolve_prefetch_dir_input(image_path: str, prefetch_dir: Optional[str]) ->
     if prefetch_dir is not None:
         return prefetch_dir
     base = Path(image_path)
-    if base.exists() and base.is_dir() and any(base.glob("*.pf")):
+    if _path_is_dir(base) and _any_glob(base, "*.pf"):
         return str(base)
     durable = _durable_raw_artifact_path("prefetch")
     if durable:
@@ -664,7 +692,7 @@ def _resolve_mft_path_input(image_path: str, mft_path: Optional[str]) -> str:
     if mft_path is not None:
         return mft_path
     base = Path(image_path)
-    if base.exists() and base.is_file() and base.name == "$MFT":
+    if _path_is_file(base) and base.name == "$MFT":
         return str(base)
     durable = _durable_raw_artifact_path("mft")
     if durable:
