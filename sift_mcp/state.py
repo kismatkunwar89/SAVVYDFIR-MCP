@@ -849,6 +849,10 @@ class CaseStateManager:
                     existing.get("related_lane_ids"),
                     candidate.get("related_lane_ids"),
                 )
+                merged["supporting_agents"] = _merge_unique_strings(
+                    existing.get("supporting_agents"),
+                    candidate.get("supporting_agents"),
+                )
                 merged["data_gaps"] = _merge_unique_dicts(
                     existing.get("data_gaps"),
                     candidate.get("data_gaps"),
@@ -1158,6 +1162,7 @@ def _normalize_analysis_lane_record(lane: dict[str, Any]) -> dict[str, Any]:
     normalized.setdefault("legacy_inferred", False)
     normalized.setdefault("phase", "analysis")
     normalized.setdefault("assigned_agent", None)
+    normalized.setdefault("supporting_agents", [])
     normalized.setdefault("summary", "")
     normalized.setdefault("lane_inference_confidence", None)
     normalized.setdefault("execution_ids", [])

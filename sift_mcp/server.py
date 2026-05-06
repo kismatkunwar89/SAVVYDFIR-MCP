@@ -478,7 +478,7 @@ def _replace_transient_path_hint(text: Any, persisted_path: Optional[str]) -> An
         return text
     return re.sub(
         r"/(?:var/)?tmp/savvydfir_[^/\s]+/[^\s]+",
-        persisted_path,
+        lambda _match: persisted_path,
         text,
     )
 
@@ -3054,6 +3054,7 @@ def sigma_hunt(
             "execution_id": execution_id,
             "evidence_kind": "observation",
             "finding_status": "active",
+            "finding_kind": "raw_detector_hit",
             "confidence": confidence,
             "description": description,
             "supporting_indicators": [
@@ -3096,6 +3097,7 @@ def sigma_hunt(
             "execution_id": execution_id,
             "evidence_kind": "observation",
             "finding_status": "active",
+            "finding_kind": "raw_detector_hit",
             "confidence": 0.90,
             "description": summary,
             "supporting_indicators": sorted(technique_set),
@@ -5326,12 +5328,50 @@ def _expected_agent_set() -> set[str]:
     return agents
 
 
+def _mark_state_updated_after_report(case_id: str) -> None:
+    report_json = Path(os.environ.get("OUTPUT_BASE", "./reports")) / case_id / "report.json"
+    if not report_json.exists():
+        return
+    summary = _state_manager.to_summary()
+    flags = dict(summary.get("status_flags") or {})
+    flags["state_updated_after_report"] = True
+    _state_manager.update_triage_state(
+        triage_status=summary.get("triage_status") or "COMPLETE_WITH_GAPS",
+        status_flags=flags,
+    )
+
+
+def _mark_evidence_access_lane(source_tool: str, summary: str) -> None:
+    try:
+        existing = next(
+            (
+                lane for lane in _state_manager.get_analysis_lanes()
+                if lane.get("lane_id") == "evidence_access"
+            ),
+            {},
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        _state_manager.upsert_analysis_lane(
+            "evidence_access",
+            status="COMPLETE",
+            assigned_agent=existing.get("assigned_agent") or "main-agent",
+            supporting_agents=existing.get("supporting_agents") or [],
+            summary="; ".join(
+                part for part in (existing.get("summary"), f"{source_tool}: {summary}") if part
+            ),
+            completed_at=now,
+        )
+    except Exception:
+        pass
+
+
 @mcp.tool()
 def record_analysis_lane(
     case_id: str,
     lane_id: str,
     status: str,
     assigned_agent: Optional[str] = None,
+    supporting_agents: Optional[list[str]] = None,
     execution_ids: Optional[list[str]] = None,
     finding_ids: Optional[list[str]] = None,
     data_gaps: Optional[list[dict[str, Any]]] = None,
@@ -5351,6 +5391,7 @@ def record_analysis_lane(
         normalized_lane = str(lane_id or "").strip()
         normalized_status = str(status or "").strip().upper()
         normalized_agent = str(assigned_agent or "").strip() or None
+        normalized_supporting_agents = _normalize_id_list(supporting_agents)
         if normalized_lane not in _valid_lane_ids():
             return {
                 "status": "error",
@@ -5372,6 +5413,14 @@ def record_analysis_lane(
                 "error": f"Unexpected assigned_agent: {assigned_agent}",
                 "expected_agents": sorted(_expected_agent_set()),
             }
+        unexpected_supporting = sorted(set(normalized_supporting_agents) - _expected_agent_set())
+        if unexpected_supporting:
+            return {
+                "status": "error",
+                "tool": "record_analysis_lane",
+                "error": f"Unexpected supporting_agents: {unexpected_supporting}",
+                "expected_agents": sorted(_expected_agent_set()),
+            }
 
         normalized_execution_ids = _normalize_id_list(execution_ids)
         normalized_finding_ids = _normalize_id_list(finding_ids)
@@ -5388,10 +5437,30 @@ def record_analysis_lane(
             }
 
         now = datetime.now(timezone.utc).isoformat()
+        audit_execution_id = _audit_logger.next_execution_id()
+        command_repr = (
+            f"record_analysis_lane({case_id!r}, lane_id={normalized_lane!r}, "
+            f"status={normalized_status!r}, assigned_agent={normalized_agent!r})"
+        )
+        started_entry = _audit_logger.log_execution(
+            execution_id=audit_execution_id,
+            tool_name="state.record_analysis_lane",
+            parameters={
+                "case_id": case_id,
+                "lane_id": normalized_lane,
+                "status": normalized_status,
+                "assigned_agent": normalized_agent,
+                "supporting_agents": normalized_supporting_agents,
+                "execution_ids": normalized_execution_ids,
+                "finding_ids": normalized_finding_ids,
+            },
+            command_line=command_repr,
+        )
         lane = _state_manager.upsert_analysis_lane(
             normalized_lane,
             status=normalized_status,
             assigned_agent=normalized_agent,
+            supporting_agents=normalized_supporting_agents,
             execution_ids=normalized_execution_ids,
             finding_ids=normalized_finding_ids,
             data_gaps=list(data_gaps or []),
@@ -5402,10 +5471,49 @@ def record_analysis_lane(
             confidence_notes=[str(note) for note in (confidence_notes or [])],
             completed_at=now if normalized_status in {"COMPLETE", "COMPLETE_WITH_GAPS", "FAILED"} else None,
         )
+        completed_entry = _audit_logger.log_result(
+            execution_id=audit_execution_id,
+            exit_code=0,
+            duration=0.0,
+            outputs_summary=f"recorded lane {normalized_lane} as {normalized_status}",
+            finding_ids=normalized_finding_ids,
+            tool_name="state.record_analysis_lane",
+            command_line=command_repr,
+            parameters={
+                "case_id": case_id,
+                "lane_id": normalized_lane,
+                "status": normalized_status,
+                "assigned_agent": normalized_agent,
+                "supporting_agents": normalized_supporting_agents,
+                "execution_ids": normalized_execution_ids,
+                "finding_ids": normalized_finding_ids,
+            },
+        )
+        _record_execution_parity(
+            execution_id=audit_execution_id,
+            tool_name="state.record_analysis_lane",
+            command_line=command_repr,
+            parameters={
+                "case_id": case_id,
+                "lane_id": normalized_lane,
+                "status": normalized_status,
+                "assigned_agent": normalized_agent,
+                "supporting_agents": normalized_supporting_agents,
+                "execution_ids": normalized_execution_ids,
+                "finding_ids": normalized_finding_ids,
+            },
+            duration_seconds=0.0,
+            exit_code=0,
+            outputs_summary=f"recorded lane {normalized_lane} as {normalized_status}",
+            started_entry=started_entry,
+            completed_entry=completed_entry,
+        )
+        _mark_state_updated_after_report(case_id)
         return {
             "status": "ok",
             "tool": "record_analysis_lane",
             "case_id": case_id,
+            "execution_id": audit_execution_id,
             "lane": lane,
         }
     except Exception as exc:
@@ -5443,7 +5551,7 @@ def get_investigation_gates(case_id: str) -> dict[str, Any]:
                 missing_required_lanes.append(lane_id)
                 blocking_reasons.append(f"Required lane {lane_id} is {lane_status}.")
             has_work = bool(lane.get("execution_ids") or lane.get("finding_ids"))
-            if has_work and not lane.get("assigned_agent"):
+            if has_work and not (lane.get("assigned_agent") or lane.get("supporting_agents")):
                 expected = list(EXPECTED_LANE_AGENTS.get(lane_id, ()))
                 inferred_only_lanes.append(
                     {
@@ -5561,7 +5669,7 @@ def coverage_report(case_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def generate_report(case_id: str, response_format: str = "summary") -> dict[str, Any]:
+def generate_report(case_id: str, response_format: str = "summary", allow_partial: bool = False) -> dict[str, Any]:
     """Generate the final investigation report from the case state.
 
     Produces a summary of all findings, unresolved discrepancies,
@@ -5588,8 +5696,11 @@ def generate_report(case_id: str, response_format: str = "summary") -> dict[str,
     _started = _audit_logger.log_execution(
         execution_id=_eid,
         tool_name=_tool,
-        parameters={"case_id": case_id, "response_format": response_format},
-        command_line=f"generate_report({case_id!r}, response_format={response_format!r})",
+        parameters={"case_id": case_id, "response_format": response_format, "allow_partial": allow_partial},
+        command_line=(
+            f"generate_report({case_id!r}, response_format={response_format!r}, "
+            f"allow_partial={allow_partial!r})"
+        ),
     )
     _t0 = _time.monotonic()
     normalized_format = _normalize_response_format(response_format)
@@ -5600,15 +5711,21 @@ def generate_report(case_id: str, response_format: str = "summary") -> dict[str,
             "error": 'response_format must be "summary" or "detailed".',
         }
     try:
+        _state_manager.load(case_id)
         result = generate_report_payload(
             case_id=case_id,
             state_manager=_state_manager,
             sigma_scan_fn=sigma_scan,
             coverage_fn=coverage_report,
+            allow_partial=allow_partial,
         )
         duration = _time.monotonic() - _t0
         exit_code = 0 if result.get("status") == "ok" else 1
-        outputs_summary = f"report generated: {result.get('report_path', 'unknown')}"
+        outputs_summary = (
+            f"report generated: {result.get('report_path', 'unknown')}"
+            if result.get("status") == "ok"
+            else f"report gated: {result.get('status')} {result.get('next_required_tool', '')}"
+        )
         _completed = _audit_logger.log_result(
             execution_id=_eid,
             exit_code=exit_code,
@@ -5616,14 +5733,20 @@ def generate_report(case_id: str, response_format: str = "summary") -> dict[str,
             outputs_summary=outputs_summary,
             finding_ids=[],
             tool_name=_tool,
-            command_line=f"generate_report({case_id!r}, response_format={response_format!r})",
-            parameters={"case_id": case_id, "response_format": response_format},
+            command_line=(
+                f"generate_report({case_id!r}, response_format={response_format!r}, "
+                f"allow_partial={allow_partial!r})"
+            ),
+            parameters={"case_id": case_id, "response_format": response_format, "allow_partial": allow_partial},
         )
         _record_execution_parity(
             execution_id=_eid,
             tool_name=_tool,
-            command_line=f"generate_report({case_id!r}, response_format={response_format!r})",
-            parameters={"case_id": case_id, "response_format": response_format},
+            command_line=(
+                f"generate_report({case_id!r}, response_format={response_format!r}, "
+                f"allow_partial={allow_partial!r})"
+            ),
+            parameters={"case_id": case_id, "response_format": response_format, "allow_partial": allow_partial},
             duration_seconds=duration,
             exit_code=exit_code,
             outputs_summary=outputs_summary,
@@ -5640,6 +5763,13 @@ def generate_report(case_id: str, response_format: str = "summary") -> dict[str,
                 )
             result.setdefault("execution_id", _eid)
             result["response_format"] = normalized_format
+            if result.get("status") == "needs_graph":
+                result.setdefault("gate_blockers", []).append(
+                    "Graph output is missing; call generate_graph(case_id) before final completion."
+                )
+                result.setdefault("gate_recommended_next_actions", []).append(
+                    "generate_graph(case_id)"
+                )
             if (
                 isinstance(result.get("status_flags"), dict)
                 and result["status_flags"].get("graph_missing")
@@ -6012,8 +6142,9 @@ def mount_image(
                         "not required and may fail when FUSE blocks root without allow_other. "
                         "Continue with MCP disk tools that support image/device paths instead "
                         "of manual mount, losetup, or xmount recovery."
-                    ),
+                        ),
                 })
+                _mark_evidence_access_lane("mount_image", f"SleuthKit direct access ready at {device}")
                 return ToolResult(
                     status="ok",
                     tool="mount_image",
@@ -6055,8 +6186,9 @@ def mount_image(
                         "OS mount failed, but SleuthKit can read the evidence directly. "
                         "Continue with MCP disk tools that support image/device paths; do "
                         "not run manual mount, losetup, or xmount recovery."
-                    ),
+                        ),
                 })
+                _mark_evidence_access_lane("mount_image", f"SleuthKit direct access ready at {device}")
                 return ToolResult(
                     status="ok",
                     tool="mount_image",
@@ -6080,6 +6212,7 @@ def mount_image(
 
         data["mount_path"] = disk_mount
         data["mount_status"] = "mounted"
+        _mark_evidence_access_lane("mount_image", f"Mounted filesystem at {disk_mount}")
 
         return ToolResult(
             status="ok", tool="mount_image",
@@ -6189,6 +6322,7 @@ def load_memory(
             data["raw_dump_path"] = str(dump)
             data["file_size"] = dump.stat().st_size
 
+        _mark_evidence_access_lane("load_memory", f"Memory dump ready at {data['raw_dump_path']}")
         return ToolResult(
             status="ok", tool="load_memory",
             message=f"Memory dump ready at {data['raw_dump_path']}",

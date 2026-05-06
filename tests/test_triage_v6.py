@@ -172,6 +172,7 @@ class TriageV6Tests(unittest.TestCase):
                     "suggested_next_tools": {},
                 },
                 reports_root=tmp_dir,
+                allow_partial=True,
             )
             report_json = Path(result["report_json_path"])
             self.assertTrue(report_json.exists())

@@ -33,6 +33,9 @@ class ReportingHtmlTests(unittest.TestCase):
                     "mitre_technique": "T1547.001",
                 }
             )
+            report_dir = Path(tmp_dir) / "CASE-REPORT-OK"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            (report_dir / "graph.json").write_text("{}", encoding="utf-8")
 
             result = generate_report_payload(
                 case_id="CASE-REPORT-OK",
@@ -92,10 +95,34 @@ class ReportingHtmlTests(unittest.TestCase):
                 reports_root=tmp_dir,
             )
 
-            self.assertEqual(result["status"], "error")
-            self.assertIn("sigma_scan", result)
+            self.assertEqual(result["status"], "needs_graph")
+            self.assertEqual(result["next_required_tool"], "generate_graph")
             persisted = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(persisted["status"], "IN_PROGRESS")
+
+    def test_generate_report_payload_refuses_pending_delegate_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state.json"
+            manager = CaseStateManager(str(state_path))
+            manager.load("CASE-DELEGATE")
+            delegate_path = Path(tmp_dir) / "delegate.json"
+            delegate_path.write_text(
+                json.dumps({"processed": False, "subagent_type": "sigma-analyst"}),
+                encoding="utf-8",
+            )
+
+            result = generate_report_payload(
+                case_id="CASE-DELEGATE",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: {"status": "ok"},
+                coverage_fn=lambda case_id: {"covered_tactics": [], "uncovered_tactics": []},
+                reports_root=tmp_dir,
+                delegate_path=str(delegate_path),
+            )
+
+            self.assertEqual(result["status"], "needs_delegate")
+            self.assertEqual(result["next_required_tool"], "record_analysis_lane")
+            self.assertFalse((Path(tmp_dir) / "CASE-DELEGATE" / "report.json").exists())
 
 
 if __name__ == "__main__":
