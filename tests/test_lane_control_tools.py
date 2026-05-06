@@ -240,7 +240,14 @@ class LaneControlToolTests(unittest.TestCase):
                         "suggested_next_tools": {},
                     },
                 ):
-                    with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
+                    with mock.patch.dict(
+                        os.environ,
+                        {
+                            "OUTPUT_BASE": tmp_dir,
+                            "SAVVYDFIR_DELEGATE_PATH": str(Path(tmp_dir) / "no_delegate.json"),
+                        },
+                        clear=False,
+                    ):
                         result = server.generate_report("CASE-GRAPH-GATE")
 
             self.assertEqual(result["status"], "needs_graph")
