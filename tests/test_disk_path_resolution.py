@@ -266,6 +266,80 @@ class DiskPathResolutionTests(unittest.TestCase):
                 self.assertEqual(result["input_name"], field)
             self.assertIsNone(runner.last_evtx_dir)
 
+    def test_tools_reject_broad_tmp_artifact_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            self._init_tools(tmp_dir, "CASE-TMP-REJECT")
+            tmp_registry = Path("/tmp/registry")
+            tmp_amcache = Path("/tmp/amcache")
+            tmp_prefetch = Path("/tmp/Prefetch")
+
+            with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
+                results = [
+                    disk.summarize_evtx(image_path="/tmp/Security.evtx", channel="Security"),
+                    disk.extract_registry_run_keys(image_path="/evidence/image.E01", hive_dir=str(tmp_registry)),
+                    disk.get_amcache(image_path="/evidence/image.E01", hive_path=str(tmp_amcache / "Amcache.hve")),
+                    disk.extract_mft_timeline(image_path="/evidence/image.E01", mft_path="/tmp"),
+                    disk.extract_prefetch(image_path="/evidence/image.E01", prefetch_dir=str(tmp_prefetch)),
+                ]
+
+            for result in results:
+                self.assertEqual(result["status"], "error")
+                self.assertTrue(result["needs_extract_windows_artifacts"])
+                self.assertIn("extract_windows_artifacts", result["recommended_tool_call"])
+
+    def test_durable_raw_paths_are_preferred_for_direct_images(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runner = self._init_tools(tmp_dir, "CASE-RAW-PATH")
+            raw = Path(tmp_dir) / "CASE-RAW-PATH" / "artifacts" / "raw"
+            evtx = raw / "evtx"
+            registry = raw / "registry"
+            amcache = raw / "amcache" / "Amcache.hve"
+            mft = raw / "mft" / "$MFT"
+            prefetch = raw / "prefetch"
+            evtx.mkdir(parents=True)
+            registry.mkdir(parents=True)
+            amcache.parent.mkdir(parents=True)
+            mft.parent.mkdir(parents=True)
+            prefetch.mkdir(parents=True)
+            (evtx / "Security.evtx").write_text("evtx", encoding="utf-8")
+            (registry / "SYSTEM").write_text("hive", encoding="utf-8")
+            amcache.write_text("amcache", encoding="utf-8")
+            mft.write_text("mft", encoding="utf-8")
+            (prefetch / "EVIL.EXE-12345678.pf").write_text("pf", encoding="utf-8")
+
+            with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
+                result = disk.summarize_evtx(image_path="/mnt/evidence/ewf1", channel="Security")
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(runner.last_evtx_dir, str(evtx))
+
+    def test_extract_prefetch_uses_audit_allocator_not_pid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            self._init_tools(tmp_dir, "CASE-PREFETCH-ID")
+            prefetch_dir = Path(tmp_dir) / "Prefetch"
+            prefetch_dir.mkdir()
+            (prefetch_dir / "EVIL.EXE-12345678.pf").write_text("placeholder", encoding="utf-8")
+
+            class _FakePrefetchFile:
+                executable_filename = "EVIL.EXE"
+                run_count = 1
+                number_of_filenames = 0
+
+                def get_last_run_time(self, index: int):
+                    if index == 0:
+                        return datetime(2026, 4, 14, 10, 0, tzinfo=timezone.utc)
+                    raise IndexError
+
+            fake_pyscca = types.SimpleNamespace(open=lambda _: _FakePrefetchFile())
+            with mock.patch.dict(sys.modules, {"pyscca": fake_pyscca}, clear=False):
+                with mock.patch.object(disk, "_prefetch_metadata_from_stat", return_value=None):
+                    with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
+                        result = disk.extract_prefetch(image_path=str(prefetch_dir))
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["execution_id"], "E-001")
+            self.assertNotEqual(result["execution_id"], f"E-{os.getpid()}")
+
 
 if __name__ == "__main__":
     unittest.main()

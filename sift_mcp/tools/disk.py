@@ -34,6 +34,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -529,6 +530,72 @@ def _resolve_windows_relative_path(image_path: str, *relative_parts: str) -> str
     return str(base.joinpath("mnt", "C", *relative_parts))
 
 
+def _raw_artifact_base() -> Path:
+    return Path(os.environ.get("OUTPUT_BASE", "/cases")) / _case_id() / "artifacts" / "raw"
+
+
+def _durable_raw_artifact_path(kind: str) -> Optional[str]:
+    """Return a durable extracted artifact path for *kind* if one exists."""
+    base = _raw_artifact_base()
+    candidates = {
+        "evtx": [base / "evtx"],
+        "registry": [base / "registry"],
+        "amcache": [base / "amcache" / "Amcache.hve"],
+        "prefetch": [base / "prefetch"],
+        "mft": [base / "mft" / "$MFT"],
+    }.get(kind, [])
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _unsafe_runtime_tmp_input(path: str) -> bool:
+    """Reject broad or ad hoc /tmp artifact sources created by manual recovery."""
+    try:
+        resolved = str(Path(path).resolve())
+    except (OSError, RuntimeError, ValueError):
+        resolved = str(path)
+    normalized = resolved.rstrip("/")
+    tmp_exact = {
+        "/tmp",
+        "/tmp/Security.evtx",
+        "/tmp/System.evtx",
+        "/tmp/Microsoft-Windows-Sysmon%4Operational.evtx",
+    }
+    if normalized in tmp_exact:
+        return True
+    return any(
+        normalized == prefix or normalized.startswith(prefix + "/")
+        for prefix in ("/tmp/registry", "/tmp/amcache", "/tmp/Prefetch")
+    )
+
+
+def _unsafe_path_error(
+    tool_name: str,
+    *,
+    input_name: str,
+    resolved_path: str,
+    image_path: str,
+) -> dict[str, Any]:
+    return {
+        **_path_missing_error(
+            tool_name,
+            input_name=input_name,
+            resolved_path=resolved_path,
+            image_path=image_path,
+        ),
+        "error_message": (
+            f"Unsafe transient artifact source rejected for {input_name}: {resolved_path}. "
+            "Use durable /cases/{case_id}/artifacts/raw paths from extract_windows_artifacts."
+        ),
+        "needs_extract_windows_artifacts": True,
+        "recommended_tool_call": (
+            f"extract_windows_artifacts(case_id='{_case_id()}', image_path='{image_path}')"
+        ),
+    }
+
+
 def _resolve_evtx_dir_input(image_path: str, evtx_dir: Optional[str]) -> str:
     if evtx_dir is not None:
         return evtx_dir
@@ -537,6 +604,9 @@ def _resolve_evtx_dir_input(image_path: str, evtx_dir: Optional[str]) -> str:
         return str(base.parent)
     if base.exists() and base.is_dir() and any(base.glob("*.evtx")):
         return str(base)
+    durable = _durable_raw_artifact_path("evtx")
+    if durable:
+        return durable
     return _resolve_windows_relative_path(
         image_path, "Windows", "System32", "winevt", "Logs"
     )
@@ -556,6 +626,9 @@ def _resolve_registry_hive_dir_input(image_path: str, hive_dir: Optional[str]) -
         return str(base.parent)
     if base.exists() and base.is_dir() and any((base / name).exists() for name in ("SYSTEM", "SOFTWARE", "NTUSER.DAT")):
         return str(base)
+    durable = _durable_raw_artifact_path("registry")
+    if durable:
+        return durable
     return _resolve_windows_relative_path(
         image_path, "Windows", "System32", "config"
     )
@@ -567,6 +640,9 @@ def _resolve_amcache_hive_input(image_path: str, hive_path: Optional[str]) -> st
     base = Path(image_path)
     if base.exists() and base.is_file() and base.name.lower() == "amcache.hve":
         return str(base)
+    durable = _durable_raw_artifact_path("amcache")
+    if durable:
+        return durable
     return _resolve_windows_relative_path(
         image_path, "Windows", "appcompat", "Programs", "Amcache.hve"
     )
@@ -578,6 +654,9 @@ def _resolve_prefetch_dir_input(image_path: str, prefetch_dir: Optional[str]) ->
     base = Path(image_path)
     if base.exists() and base.is_dir() and any(base.glob("*.pf")):
         return str(base)
+    durable = _durable_raw_artifact_path("prefetch")
+    if durable:
+        return durable
     return _resolve_windows_relative_path(image_path, "Windows", "Prefetch")
 
 
@@ -587,6 +666,9 @@ def _resolve_mft_path_input(image_path: str, mft_path: Optional[str]) -> str:
     base = Path(image_path)
     if base.exists() and base.is_file() and base.name == "$MFT":
         return str(base)
+    durable = _durable_raw_artifact_path("mft")
+    if durable:
+        return durable
     return _resolve_windows_relative_path(image_path, "$MFT")
 
 
@@ -612,6 +694,10 @@ def _path_missing_error(
         "input_name": input_name,
         "resolved_path": resolved_path,
         "image_path": image_path,
+        "needs_extract_windows_artifacts": True,
+        "recommended_tool_call": (
+            f"extract_windows_artifacts(case_id='{_case_id()}', image_path='{image_path}')"
+        ),
     }
 
 
@@ -1956,6 +2042,13 @@ def extract_prefetch(
 
     prefetch_dir = _resolve_prefetch_dir_input(image_path, prefetch_dir)
     resolved_prefetch_dir = _resolved_path_str(prefetch_dir)
+    if _unsafe_runtime_tmp_input(resolved_prefetch_dir):
+        return _unsafe_path_error(
+            tool,
+            input_name="prefetch_dir",
+            resolved_path=resolved_prefetch_dir,
+            image_path=image_path,
+        )
     if not Path(resolved_prefetch_dir).exists():
         return _path_missing_error(
             tool,
@@ -1971,11 +2064,29 @@ def extract_prefetch(
     # and exposes Prefetch-native run history without relying on Windows-only PECmd.
     records: list[PrefetchRecord] = []
     finding_ids: list[str] = []
-    exec_id = f"E-{os.getpid():05d}"  # must match ^E-\d{{3,}}$ pattern
+    exec_id = _audit.next_execution_id()
+    started_at = time.monotonic()
+    raw_command = f"pyscca {resolved_prefetch_dir}/*.pf"
+    _audit.log_execution(
+        execution_id=exec_id,
+        tool_name=tool,
+        parameters={"prefetch_dir": resolved_prefetch_dir},
+        command_line=raw_command,
+    )
 
     try:
         import pyscca
     except ImportError:
+        _audit.log_result(
+            execution_id=exec_id,
+            exit_code=1,
+            duration=time.monotonic() - started_at,
+            outputs_summary="pyscca not installed",
+            finding_ids=[],
+            tool_name=tool,
+            command_line=raw_command,
+            parameters={"prefetch_dir": resolved_prefetch_dir},
+        )
         return {
             "tool_name": tool,
             "status": "error",
@@ -2074,7 +2185,7 @@ def extract_prefetch(
         "status": "success" if durable_csv else "warning",
         "findings_created": finding_ids,
         "execution_id": exec_id,
-        "raw_command": f"pyscca {prefetch_dir}/*.pf",
+        "raw_command": raw_command,
         "records_count": len(records),
         "csv_path": durable_csv,
         "artifact_persistence": artifact_persistence,
@@ -2090,6 +2201,16 @@ def extract_prefetch(
             )
         ),
     }
+    _audit.log_result(
+        execution_id=exec_id,
+        exit_code=0,
+        duration=time.monotonic() - started_at,
+        outputs_summary=f"parsed {len(records)} prefetch records",
+        finding_ids=finding_ids,
+        tool_name=tool,
+        command_line=raw_command,
+        parameters={"prefetch_dir": resolved_prefetch_dir},
+    )
     if normalized_format == "detailed":
         response["data"] = record_rows
     else:
@@ -2176,6 +2297,13 @@ def get_amcache(
 
     hive_path = _resolve_amcache_hive_input(image_path, hive_path)
     resolved_hive_path = _resolved_path_str(hive_path)
+    if _unsafe_runtime_tmp_input(resolved_hive_path):
+        return _unsafe_path_error(
+            tool,
+            input_name="hive_path",
+            resolved_path=resolved_hive_path,
+            image_path=image_path,
+        )
     if not Path(resolved_hive_path).exists():
         return _path_missing_error(
             tool,
@@ -2417,6 +2545,13 @@ def extract_mft_timeline(
 
     mft_path = _resolve_mft_path_input(image_path, mft_path)
     resolved_mft_path = _resolved_path_str(mft_path)
+    if _unsafe_runtime_tmp_input(resolved_mft_path):
+        return _unsafe_path_error(
+            tool,
+            input_name="mft_path",
+            resolved_path=resolved_mft_path,
+            image_path=image_path,
+        )
     if not Path(resolved_mft_path).exists():
         return _path_missing_error(
             tool,
@@ -2854,6 +2989,13 @@ def summarize_evtx(
 
     evtx_dir = _resolve_evtx_dir_input(image_path, evtx_dir)
     resolved_evtx_dir = _resolved_path_str(evtx_dir)
+    if _unsafe_runtime_tmp_input(resolved_evtx_dir):
+        return _unsafe_path_error(
+            tool,
+            input_name="evtx_dir",
+            resolved_path=resolved_evtx_dir,
+            image_path=image_path,
+        )
     if not Path(resolved_evtx_dir).exists():
         return _path_missing_error(
             tool,
@@ -3285,6 +3427,13 @@ def extract_registry_run_keys(
     if not preflight.get("ok"):
         return _artifact_preflight_error(tool_name=tool, preflight=preflight)
     resolved_hive_dir = _resolved_path_str(hive_dir)
+    if _unsafe_runtime_tmp_input(resolved_hive_dir):
+        return _unsafe_path_error(
+            tool,
+            input_name="hive_dir",
+            resolved_path=resolved_hive_dir,
+            image_path=image_path,
+        )
     if not Path(resolved_hive_dir).exists():
         return _path_missing_error(
             tool,

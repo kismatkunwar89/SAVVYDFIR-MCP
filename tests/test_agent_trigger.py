@@ -45,8 +45,13 @@ class AgentTriggerTests(unittest.TestCase):
 
             self.assertIsNotNone(result)
             self.assertEqual(result["decision"], "allow")
+            self.assertIn("Agent(", result["message"])
+            self.assertIn('subagent_type="evtx-analyst"', result["message"])
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["agent"], "@evtx-analyst")
+            self.assertEqual(payload["subagent_type"], "evtx-analyst")
+            self.assertEqual(payload["lane_id"], "event_auth")
+            self.assertIn("Agent(", payload["agent_call"])
             self.assertEqual(payload["tool"], "mcp__savvydfir__summarize_evtx")
             self.assertIn("CSV at:", payload["instruction"])
 
@@ -69,6 +74,7 @@ class AgentTriggerTests(unittest.TestCase):
             self.assertEqual(result["decision"], "allow")
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["agent"], "@custom-analyst")
+            self.assertEqual(payload["subagent_type"], "custom-analyst")
             self.assertIn("Use the metadata-driven path.", payload["instruction"])
 
     def test_build_timeline_storage_dispatches_to_timeline_analyst(self) -> None:
@@ -89,6 +95,7 @@ class AgentTriggerTests(unittest.TestCase):
             self.assertEqual(result["decision"], "allow")
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["agent"], "@timeline-analyst")
+            self.assertIn("Agent(", result["message"])
             self.assertIn("storage handle", payload["instruction"])
             self.assertIn("Summary:", payload["instruction"])
 
@@ -111,8 +118,41 @@ class AgentTriggerTests(unittest.TestCase):
             self.assertEqual(result["decision"], "allow")
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["agent"], "@sigma-analyst")
+            self.assertEqual(payload["subagent_type"], "sigma-analyst")
             self.assertIn("2 CRITICAL", payload["instruction"])
             self.assertIn("1 HIGH", payload["instruction"])
+
+    def test_all_specialist_hook_messages_use_agent_call_syntax(self) -> None:
+        cases = {
+            "mcp__savvydfir__extract_mft_timeline": "mft-analyst",
+            "mcp__savvydfir__summarize_evtx": "evtx-analyst",
+            "mcp__savvydfir__extract_registry_run_keys": "registry-analyst",
+            "mcp__savvydfir__get_amcache": "amcache-analyst",
+            "mcp__savvydfir__extract_prefetch": "prefetch-analyst",
+            "mcp__savvydfir__detect_injection": "memory-analyst",
+            "mcp__savvydfir__sigma_hunt": "sigma-analyst",
+            "mcp__savvydfir__build_timeline": "timeline-analyst",
+        }
+        for tool_name, subagent_type in cases.items():
+            with self.subTest(tool_name=tool_name):
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    trigger_path = Path(tmp_dir) / "delegate.json"
+                    result = agent_trigger.process_event(
+                        self._nested_event(
+                            tool_name,
+                            {
+                                "status": "success",
+                                "csv_path": f"/cases/CASE-1/artifacts/{subagent_type}.csv",
+                                "total_records": 1,
+                            },
+                        ),
+                        trigger_path=str(trigger_path),
+                    )
+                    self.assertIsNotNone(result)
+                    self.assertIn("Agent(", result["message"])
+                    self.assertIn(f'subagent_type="{subagent_type}"', result["message"])
+                    payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+                    self.assertEqual(payload["subagent_type"], subagent_type)
 
     def test_zero_hit_sigma_does_not_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

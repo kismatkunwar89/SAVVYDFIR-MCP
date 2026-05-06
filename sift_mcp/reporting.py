@@ -802,6 +802,9 @@ def generate_report_payload(
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / "report.html"
     report_json_path = report_dir / "report.json"
+    graph_html_path = report_dir / "graph.html"
+    graph_json_path = report_dir / "graph.json"
+    graph_missing = not (graph_html_path.exists() or graph_json_path.exists())
 
     status_breakdown = _count_by_key(findings, "finding_status")
     evidence_kind_breakdown = _count_by_key(findings, "evidence_kind")
@@ -819,6 +822,18 @@ def generate_report_payload(
     analysis_lanes = validation["analysis_lanes"]
     orchestration_warnings = validation["orchestration_warnings"]
     unresolved = pre_summary.get("unresolved_discrepancies", 0)
+    if graph_missing:
+        graph_gap = {
+            "artifact_family": "graph",
+            "classification": "graph_missing",
+            "reason": "Final report exists without graph.html or graph.json. Call generate_graph(case_id) before treating the case as fully complete.",
+            "lane_id": "timeline_correlation",
+            "next_required_tool": "generate_graph",
+        }
+        data_gaps = _merge_warning_lists(data_gaps, [graph_gap])
+        status_flags = dict(status_flags)
+        status_flags["graph_missing"] = True
+        triage_status = "COMPLETE_WITH_GAPS"
 
     payload = {
         "status": "ok",
@@ -842,6 +857,9 @@ def generate_report_payload(
         "evidence_kind_breakdown": evidence_kind_breakdown,
         "report_path": str(report_path),
         "report_json_path": str(report_json_path),
+        "graph_path": str(graph_html_path) if graph_html_path.exists() else None,
+        "graph_json_path": str(graph_json_path) if graph_json_path.exists() else None,
+        "next_required_tool": "generate_graph" if graph_missing else None,
     }
     payload["top_confirmed_findings"] = [
         dict(finding)

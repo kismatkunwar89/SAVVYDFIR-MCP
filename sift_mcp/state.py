@@ -179,9 +179,9 @@ class CaseStateManager:
     def add_finding(self, finding: dict[str, Any]) -> str:
         """Append *finding* to the findings list and persist.
 
-        If *finding* does not already contain a ``"finding_id"`` key, one is
-        allocated via :py:meth:`generate_finding_id`.  A
-        ``"created_at"`` timestamp is injected if absent.
+        New persisted finding IDs are always allocated by this manager after
+        semantic de-duplication. Incoming IDs are treated as transient model or
+        import values and are not trusted for new records.
 
         Parameters
         ----------
@@ -226,8 +226,13 @@ class CaseStateManager:
                         self._save_locked()
                     return str(existing.get("finding_id", ""))
 
-            if not original.get("finding_id") or finding.get("finding_id") == "F-000":
-                finding["finding_id"] = self.generate_finding_id()
+            legacy_finding_id = str(finding.get("finding_id") or "").strip()
+            if legacy_finding_id and legacy_finding_id != "F-000":
+                support_inputs = dict(finding.get("confidence_support_inputs") or {})
+                support_inputs.setdefault("incoming_finding_id", legacy_finding_id)
+                finding["confidence_support_inputs"] = support_inputs
+            finding["finding_id"] = self.generate_finding_id()
+
             if not original.get("execution_id") or finding.get("execution_id") == "E-000":
                 finding["execution_id"] = self.generate_execution_id()
                 support_inputs = dict(finding.get("confidence_support_inputs") or {})
@@ -610,10 +615,7 @@ class CaseStateManager:
         """
         with self._lock:
             self._assert_loaded()
-            self._state["_finding_counter"] = (
-                self._state.get("_finding_counter", 0) + 1
-            )
-            return f"F-{self._state['_finding_counter']:03d}"
+            return self._allocate_finding_id_locked()
 
     def generate_execution_id(self) -> str:
         """Allocate and return the next monotonic execution ID.
@@ -710,6 +712,19 @@ class CaseStateManager:
             return {
                 "case_id": self._state.get("case_id"),
                 "status": self._state.get("status", "IN_PROGRESS"),
+                "triage_status": self._state.get("triage_status", "IN_PROGRESS"),
+                "status_flags": dict(self._state.get("status_flags", {})),
+                "analysis_lanes": [
+                    dict(lane) for lane in self._state.get("analysis_lanes", [])
+                ],
+                "actionable_leads": list(self._state.get("actionable_leads", [])),
+                "artifact_coverage": dict(self._state.get("artifact_coverage", {})),
+                "anti_forensics_warnings": list(
+                    self._state.get("anti_forensics_warnings", [])
+                ),
+                "data_gaps": list(self._state.get("data_gaps", [])),
+                "migration_warnings": list(self._state.get("migration_warnings", [])),
+                "enabled_detectors": self._state.get("enabled_detectors"),
                 "findings_count": len(findings),
                 "executions_count": len(self._state.get("executions", [])),
                 "confirmed_count": status_counts.get("CONFIRMED", 0),
@@ -770,6 +785,108 @@ class CaseStateManager:
             self._assert_loaded()
             self._state["status"] = status
             self._save_locked()
+
+    def update_triage_state(
+        self,
+        *,
+        triage_status: str,
+        status_flags: Optional[dict[str, Any]] = None,
+        analysis_lanes: Optional[list[dict[str, Any]]] = None,
+        actionable_leads: Optional[list[dict[str, Any]]] = None,
+        artifact_coverage: Optional[dict[str, Any]] = None,
+        anti_forensics_warnings: Optional[list[dict[str, Any]]] = None,
+        data_gaps: Optional[list[dict[str, Any]]] = None,
+    ) -> None:
+        """Persist additive triage/reporting fields without changing old schemas."""
+        with self._lock:
+            self._assert_loaded()
+            self._state["triage_status"] = triage_status
+            if status_flags is not None:
+                self._state["status_flags"] = dict(status_flags)
+            if analysis_lanes is not None:
+                self._state["analysis_lanes"] = [dict(lane) for lane in analysis_lanes]
+            if actionable_leads is not None:
+                self._state["actionable_leads"] = list(actionable_leads)
+            if artifact_coverage is not None:
+                self._state["artifact_coverage"] = dict(artifact_coverage)
+            if anti_forensics_warnings is not None:
+                self._state["anti_forensics_warnings"] = list(anti_forensics_warnings)
+            if data_gaps is not None:
+                self._state["data_gaps"] = list(data_gaps)
+            self._save_locked()
+
+    def get_analysis_lanes(self) -> list[dict[str, Any]]:
+        """Return persisted analysis-lane records as shallow copies."""
+        with self._lock:
+            self._assert_loaded()
+            return [dict(lane) for lane in self._state.get("analysis_lanes", [])]
+
+    def upsert_analysis_lane(self, lane_id: str, **updates: Any) -> dict[str, Any]:
+        """Create or update one analysis lane and persist it."""
+        with self._lock:
+            self._assert_loaded()
+            lanes = self._state.setdefault("analysis_lanes", [])
+            candidate = _normalize_analysis_lane_record(
+                {
+                    **updates,
+                    "lane_id": lane_id,
+                }
+            )
+            for index, existing in enumerate(lanes):
+                if not isinstance(existing, dict) or existing.get("lane_id") != lane_id:
+                    continue
+                merged = dict(existing)
+                merged.update(candidate)
+                merged["execution_ids"] = _merge_unique_strings(
+                    existing.get("execution_ids"),
+                    candidate.get("execution_ids"),
+                )
+                merged["finding_ids"] = _merge_unique_strings(
+                    existing.get("finding_ids"),
+                    candidate.get("finding_ids"),
+                )
+                merged["related_lane_ids"] = _merge_unique_strings(
+                    existing.get("related_lane_ids"),
+                    candidate.get("related_lane_ids"),
+                )
+                merged["data_gaps"] = _merge_unique_dicts(
+                    existing.get("data_gaps"),
+                    candidate.get("data_gaps"),
+                    key_fields=("artifact_family", "classification", "reason"),
+                )
+                merged["anti_forensics_warnings"] = _merge_unique_dicts(
+                    existing.get("anti_forensics_warnings"),
+                    candidate.get("anti_forensics_warnings"),
+                    key_fields=("type", "message", "description"),
+                )
+                merged["next_pivots"] = _merge_unique_dicts(
+                    existing.get("next_pivots"),
+                    candidate.get("next_pivots"),
+                    key_fields=("tool", "human_readable"),
+                )
+                normalized = _normalize_analysis_lane_record(merged)
+                lanes[index] = normalized
+                self._save_locked()
+                return dict(normalized)
+            lanes.append(candidate)
+            self._save_locked()
+            return dict(candidate)
+
+    def set_enabled_detectors(self, enabled_detectors: Optional[list[str]]) -> None:
+        """Persist the manifest detector allow-list using additive case config."""
+        with self._lock:
+            self._assert_loaded()
+            self._state["enabled_detectors"] = (
+                None if enabled_detectors is None else list(enabled_detectors)
+            )
+            self._save_locked()
+
+    def get_enabled_detectors(self) -> Optional[list[str]]:
+        """Return the configured detector allow-list, if the manifest provided one."""
+        with self._lock:
+            self._assert_loaded()
+            value = self._state.get("enabled_detectors")
+            return list(value) if isinstance(value, list) else None
 
     def add_open_question(self, question: str) -> None:
         """Append an open question / limitation to the state and persist.
@@ -848,8 +965,24 @@ class CaseStateManager:
             self._state["cached_artifacts"] = {}
             dirty = True
 
+        for key, value in {
+            "triage_status": "IN_PROGRESS",
+            "status_flags": {},
+            "analysis_lanes": [],
+            "actionable_leads": [],
+            "artifact_coverage": {},
+            "anti_forensics_warnings": [],
+            "data_gaps": [],
+            "migration_warnings": [],
+            "enabled_detectors": None,
+        }.items():
+            if key not in self._state:
+                self._state[key] = value.copy() if isinstance(value, (dict, list)) else value
+                dirty = True
+
         findings = self._state.get("findings", [])
         if isinstance(findings, list):
+            seen_finding_ids: set[str] = set()
             for index, finding in enumerate(findings):
                 if not isinstance(finding, dict):
                     continue
@@ -860,6 +993,23 @@ class CaseStateManager:
                     fallback_execution_id="E-000",
                     fallback_iteration=1,
                 )
+                finding_id = str(normalized.get("finding_id") or "").strip()
+                if not finding_id or finding_id == "F-000" or finding_id in seen_finding_ids:
+                    replacement_id = self._allocate_finding_id_locked()
+                    if finding_id and finding_id != "F-000":
+                        normalized["legacy_finding_id"] = finding_id
+                    normalized["finding_id"] = replacement_id
+                    self._state.setdefault("migration_warnings", []).append(
+                        {
+                            "type": "finding_id_reassigned",
+                            "legacy_finding_id": finding_id or None,
+                            "new_finding_id": replacement_id,
+                            "reason": "missing, placeholder, or duplicate finding_id",
+                        }
+                    )
+                    dirty = True
+                seen_finding_ids.add(str(normalized.get("finding_id") or ""))
+                self._sync_finding_counter_locked(str(normalized.get("finding_id") or ""))
                 if normalized != finding:
                     findings[index] = normalized
                     dirty = True
@@ -903,6 +1053,23 @@ class CaseStateManager:
         current = int(self._state.get("_execution_counter", 0) or 0)
         if numeric > current:
             self._state["_execution_counter"] = numeric
+
+    def _allocate_finding_id_locked(self) -> str:
+        self._state["_finding_counter"] = (
+            int(self._state.get("_finding_counter", 0) or 0) + 1
+        )
+        return f"F-{self._state['_finding_counter']:03d}"
+
+    def _sync_finding_counter_locked(self, finding_id: str) -> None:
+        if not finding_id.startswith("F-"):
+            return
+        try:
+            numeric = int(finding_id[2:])
+        except ValueError:
+            return
+        current = int(self._state.get("_finding_counter", 0) or 0)
+        if numeric > current:
+            self._state["_finding_counter"] = numeric
 
 
 # ---------------------------------------------------------------------------
@@ -983,6 +1150,27 @@ def _normalize_execution_record(
     return Execution(**normalized).model_dump(mode="json")
 
 
+def _normalize_analysis_lane_record(lane: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(lane)
+    normalized.setdefault("title", str(normalized.get("lane_id") or "Unknown").replace("_", " ").title())
+    normalized.setdefault("status", "PENDING")
+    normalized.setdefault("required", True)
+    normalized.setdefault("legacy_inferred", False)
+    normalized.setdefault("phase", "analysis")
+    normalized.setdefault("assigned_agent", None)
+    normalized.setdefault("summary", "")
+    normalized.setdefault("lane_inference_confidence", None)
+    normalized.setdefault("execution_ids", [])
+    normalized.setdefault("finding_ids", [])
+    normalized.setdefault("related_lane_ids", [])
+    normalized.setdefault("data_gaps", [])
+    normalized.setdefault("anti_forensics_warnings", [])
+    normalized.setdefault("next_pivots", [])
+    normalized.setdefault("started_at", None)
+    normalized.setdefault("completed_at", None)
+    return normalized
+
+
 def _new_state(case_id: str) -> dict[str, Any]:
     """Return a fresh state dict for a new case.
 
@@ -1000,6 +1188,15 @@ def _new_state(case_id: str) -> dict[str, Any]:
     return {
         "case_id": case_id,
         "status": "IN_PROGRESS",
+        "triage_status": "IN_PROGRESS",
+        "status_flags": {},
+        "analysis_lanes": [],
+        "actionable_leads": [],
+        "artifact_coverage": {},
+        "anti_forensics_warnings": [],
+        "data_gaps": [],
+        "migration_warnings": [],
+        "enabled_detectors": None,
         "created_at": now,
         "updated_at": now,
         # ID counters — persisted so they survive server restarts.
