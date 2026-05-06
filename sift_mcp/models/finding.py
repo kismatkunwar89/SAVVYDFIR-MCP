@@ -181,6 +181,13 @@ class Finding(BaseModel):
         default=FindingStatus.ACTIVE,
         description="Lifecycle status of the finding.",
     )
+    finding_kind: Literal["validated", "raw_detector_hit"] = Field(
+        default="validated",
+        description=(
+            "Whether this record is an analyst/reportable finding or a raw "
+            "detector observation that still needs specialist validation."
+        ),
+    )
     confidence: float = Field(
         ...,
         ge=0.0,

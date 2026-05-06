@@ -243,9 +243,41 @@ class LaneControlToolTests(unittest.TestCase):
                     with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp_dir}, clear=False):
                         result = server.generate_report("CASE-GRAPH-GATE")
 
-            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["status"], "needs_graph")
             self.assertEqual(result["next_required_tool"], "generate_graph")
-            self.assertTrue(result["gate_blockers"])
+            self.assertTrue(
+                any("generate_graph" in action for action in result["gate_recommended_next_actions"])
+            )
+
+    def test_record_analysis_lane_supporting_agents_and_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server = _load_server_for_test(Path(tmp_dir))
+            server._state_manager.load("CASE-MULTI-LANE")
+            server._state_manager.add_execution(
+                {
+                    "case_id": "CASE-MULTI-LANE",
+                    "execution_id": "E-001",
+                    "iteration": 1,
+                    "tool_name": "disk.extract_prefetch",
+                    "command_line": "extract_prefetch()",
+                }
+            )
+
+            result = server.record_analysis_lane(
+                case_id="CASE-MULTI-LANE",
+                lane_id="disk_execution_persistence",
+                status="COMPLETE",
+                assigned_agent="prefetch-analyst",
+                supporting_agents=["registry-analyst", "amcache-analyst"],
+                execution_ids=["E-001"],
+                summary="Prefetch, registry, and Amcache reviewed together.",
+            )
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["lane"]["assigned_agent"], "prefetch-analyst")
+            self.assertIn("registry-analyst", result["lane"]["supporting_agents"])
+            audit_text = (Path(tmp_dir) / "audit.jsonl").read_text(encoding="utf-8")
+            self.assertIn("state.record_analysis_lane", audit_text)
 
 
 if __name__ == "__main__":

@@ -105,6 +105,7 @@ class LaneV7Tests(unittest.TestCase):
                     "suggested_next_tools": {},
                 },
                 reports_root=tmp_dir,
+                allow_partial=True,
             )
 
             anti_lane = next(
@@ -151,6 +152,7 @@ class LaneV7Tests(unittest.TestCase):
                     "suggested_next_tools": {},
                 },
                 reports_root=tmp_dir,
+                allow_partial=True,
             )
 
             self.assertEqual(result["triage_status"], "COMPLETE_WITH_GAPS")
@@ -189,6 +191,7 @@ class LaneV7Tests(unittest.TestCase):
                     "suggested_next_tools": {},
                 },
                 reports_root=tmp_dir,
+                allow_partial=True,
             )
 
             memory_lane = next(
@@ -238,6 +241,7 @@ class LaneV7Tests(unittest.TestCase):
                     "suggested_next_tools": {},
                 },
                 reports_root=tmp_dir,
+                allow_partial=True,
             )
 
             warnings = result["orchestration_warnings"]
@@ -287,6 +291,7 @@ class LaneV7Tests(unittest.TestCase):
                     "suggested_next_tools": {},
                 },
                 reports_root=tmp_dir,
+                allow_partial=True,
             )
 
             self.assertEqual(result["triage_status"], "COMPLETE_WITH_GAPS")
@@ -371,6 +376,7 @@ class LaneV7Tests(unittest.TestCase):
                     "suggested_next_tools": {},
                 },
                 reports_root=tmp_dir,
+                allow_partial=True,
             )
 
             self.assertEqual(result["triage_status"], "TRIAGE_COMPLETE")
@@ -384,6 +390,120 @@ class LaneV7Tests(unittest.TestCase):
                     for gap in result["data_gaps"]
                 )
             )
+
+    def test_sigma_lane_can_own_finding_driven_anti_forensics_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            manager.load("CASE-V72-ANTI")
+            manager.upsert_analysis_lane(
+                "timeline_correlation",
+                status="COMPLETE",
+                required=True,
+                assigned_agent="sigma-analyst",
+                execution_ids=["E-001"],
+            )
+            manager.add_execution(
+                {
+                    "case_id": "CASE-V72-ANTI",
+                    "execution_id": "E-001",
+                    "iteration": 1,
+                    "tool_name": "detection.sigma_hunt",
+                    "command_line": "sigma_hunt()",
+                }
+            )
+            manager.add_finding(
+                {
+                    "case_id": "CASE-V72-ANTI",
+                    "finding_type": "anti_forensics_recovery",
+                    "artifact_type": "disk",
+                    "artifact_path": "/cases/CASE-V72-ANTI/artifacts/evtx/System.evtx",
+                    "tool_name": "detection.sigma_hunt",
+                    "execution_id": "E-001",
+                    "iteration": 1,
+                    "evidence_kind": "observation",
+                    "finding_status": "ACTIVE",
+                    "confidence": 0.8,
+                    "description": "Security log clear anti-forensics evidence requires recovery.",
+                }
+            )
+
+            result = generate_report_payload(
+                case_id="CASE-V72-ANTI",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: {
+                    "status": "ok",
+                    "total_hits": 0,
+                    "critical_count": 0,
+                    "high_count": 0,
+                    "summary_markdown": "No anomalies detected.",
+                    "actionable_leads": [],
+                    "anti_forensics_warnings": [],
+                    "data_gaps": [],
+                },
+                coverage_fn=lambda case_id: {
+                    "covered_tactics": [],
+                    "uncovered_tactics": [],
+                    "coverage_percent": 0.0,
+                    "suggested_next_tools": {},
+                },
+                reports_root=tmp_dir,
+                allow_partial=True,
+            )
+
+            anti_lane = next(
+                lane for lane in result["analysis_lanes"]
+                if lane["lane_id"] == "anti_forensics_recovery"
+            )
+            self.assertEqual(anti_lane["assigned_agent"], "sigma-analyst")
+            self.assertIn("evtx-analyst", anti_lane["supporting_agents"])
+
+    def test_raw_detector_hits_are_not_top_active_leads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            manager.load("CASE-V72-RAW")
+            manager.add_finding(
+                {
+                    "case_id": "CASE-V72-RAW",
+                    "finding_type": "threat_detection",
+                    "artifact_type": "disk",
+                    "artifact_path": "/cases/CASE-V72-RAW/artifacts/evtx/Security.evtx",
+                    "tool_name": "detection.sigma_hunt",
+                    "execution_id": "E-001",
+                    "iteration": 1,
+                    "evidence_kind": "observation",
+                    "finding_status": "ACTIVE",
+                    "finding_kind": "raw_detector_hit",
+                    "confidence": 0.95,
+                    "description": "Raw Sigma detector hit requiring specialist validation.",
+                }
+            )
+
+            result = generate_report_payload(
+                case_id="CASE-V72-RAW",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: {
+                    "status": "ok",
+                    "total_hits": 0,
+                    "critical_count": 0,
+                    "high_count": 0,
+                    "summary_markdown": "No anomalies detected.",
+                    "actionable_leads": [],
+                    "anti_forensics_warnings": [],
+                    "data_gaps": [],
+                },
+                coverage_fn=lambda case_id: {
+                    "covered_tactics": [],
+                    "uncovered_tactics": [],
+                    "coverage_percent": 0.0,
+                    "suggested_next_tools": {},
+                },
+                reports_root=tmp_dir,
+                allow_partial=True,
+            )
+
+            self.assertEqual(result["finding_quality_summary"]["raw_detector_hits"], 1)
+            self.assertEqual(result["finding_quality_summary"]["reportable_findings"], 0)
+            self.assertEqual(result["top_active_leads"], [])
 
 
 if __name__ == "__main__":

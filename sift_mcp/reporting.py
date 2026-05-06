@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import html
 import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -31,6 +33,11 @@ def _short_description(value: Any, limit: int = 140) -> str:
 
 
 def _rank_findings(findings: list[dict[str, Any]], *, limit: int = 25) -> list[dict[str, Any]]:
+    findings = [
+        finding for finding in findings
+        if str(finding.get("finding_kind") or "validated").lower() != "raw_detector_hit"
+    ]
+
     def _sort_key(finding: dict[str, Any]) -> tuple[int, float, str]:
         status = _status_label(finding.get("finding_status"))
         precedence = _STATUS_PRECEDENCE.get(status, 1)
@@ -67,10 +74,20 @@ def _count_by_key(
 def _finding_quality_summary(findings: list[dict[str, Any]]) -> dict[str, Any]:
     """Clarify raw finding counts versus reportable investigation claims."""
     status_breakdown = _count_by_key(findings, "finding_status")
+    kind_breakdown = _count_by_key(findings, "finding_kind")
     reportable_statuses = {"CONFIRMED", "HYPOTHESIS", "ACTIVE"}
-    reportable_count = sum(status_breakdown.get(status, 0) for status in reportable_statuses)
+    raw_detector_hits = kind_breakdown.get("RAW_DETECTOR_HIT", 0)
+    reportable_count = sum(
+        1
+        for finding in findings
+        if (
+            _status_label(finding.get("finding_status")) in reportable_statuses
+            and str(finding.get("finding_kind") or "validated").lower() != "raw_detector_hit"
+        )
+    )
     return {
         "raw_persisted_findings": len(findings),
+        "raw_detector_hits": raw_detector_hits,
         "reportable_findings": reportable_count,
         "confirmed_findings": status_breakdown.get("CONFIRMED", 0),
         "active_or_hypothesis_findings": (
@@ -79,8 +96,10 @@ def _finding_quality_summary(findings: list[dict[str, Any]]) -> dict[str, Any]:
         "rejected_findings": status_breakdown.get("REJECTED", 0),
         "semantics": (
             "findings_count is the raw persisted finding-record count. "
-            "It is not a de-duplicated incident count; use reportable_findings "
-            "and status_breakdown for investigation quality."
+            "It is not a de-duplicated incident count. Sigma and other detector "
+            "observations can be stored as raw_detector_hit records; use "
+            "reportable_findings, raw_detector_hits, and status_breakdown for "
+            "investigation quality."
         ),
     }
 
@@ -159,14 +178,18 @@ def _render_json_items(items: list[dict[str, Any]]) -> str:
 
 def _render_lane_rows(lanes: list[dict[str, Any]]) -> str:
     if not lanes:
-        return "<tr><td colspan='6'>No analysis lanes recorded.</td></tr>"
+        return "<tr><td colspan='7'>No analysis lanes recorded.</td></tr>"
     rows: list[str] = []
     for lane in lanes:
+        agents = [str(lane.get("assigned_agent") or "")]
+        agents.extend(str(agent) for agent in (lane.get("supporting_agents") or []))
+        agent_text = ", ".join(agent for agent in agents if agent)
         rows.append(
             "<tr>"
             f"<td>{html.escape(str(lane.get('lane_id') or ''))}</td>"
             f"<td>{html.escape(str(lane.get('status') or ''))}</td>"
             f"<td>{'yes' if lane.get('required') else 'no'}</td>"
+            f"<td>{html.escape(agent_text or 'unowned')}</td>"
             f"<td>{len(lane.get('execution_ids', []) or [])}</td>"
             f"<td>{len(lane.get('finding_ids', []) or [])}</td>"
             f"<td>{html.escape(_short_description(lane.get('summary') or '', 180))}</td>"
@@ -236,6 +259,7 @@ def _lane_template(lane_id: str, *, legacy_inferred: bool = False) -> dict[str, 
         "legacy_inferred": legacy_inferred,
         "phase": spec.get("phase", "analysis"),
         "assigned_agent": None,
+        "supporting_agents": [],
         "summary": "",
         "lane_inference_confidence": "low" if legacy_inferred else None,
         "execution_ids": [],
@@ -281,13 +305,13 @@ def _infer_lane_from_tool_name(tool_name: Any) -> str | None:
 
 
 def _infer_lane_from_finding(finding: dict[str, Any]) -> tuple[str | None, str | None]:
-    lane_id = _infer_lane_from_tool_name(finding.get("tool_name"))
-    if lane_id:
-        return lane_id, "high"
     finding_type = str(finding.get("finding_type") or "").lower()
     description = str(finding.get("description") or "").lower()
     if finding_type == "anti_forensics_recovery" or any(token in description for token in ("shadow cop", "log clear", "empty log", "wiped")):
         return "anti_forensics_recovery", "medium"
+    lane_id = _infer_lane_from_tool_name(finding.get("tool_name"))
+    if lane_id:
+        return lane_id, "high"
     if any(token in description for token in ("scheduled task", "services.xml", "gpo", "run key", "timestomp")):
         return "disk_execution_persistence", "medium"
     if any(token in description for token in ("winrm", "lateral movement", "connection", "c2", "netscan")):
@@ -349,6 +373,10 @@ def _lane_has_work(lane: dict[str, Any]) -> bool:
     return bool(lane.get("execution_ids") or lane.get("finding_ids"))
 
 
+def _lane_owned(lane: dict[str, Any]) -> bool:
+    return bool(lane.get("assigned_agent") or lane.get("supporting_agents"))
+
+
 def build_orchestration_warnings(analysis_lanes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Warn when required lanes are complete only by inference."""
     warnings: list[dict[str, Any]] = []
@@ -356,7 +384,7 @@ def build_orchestration_warnings(analysis_lanes: list[dict[str, Any]]) -> list[d
         lane_id = str(lane.get("lane_id") or "")
         if not lane.get("required"):
             continue
-        if lane.get("assigned_agent"):
+        if _lane_owned(lane):
             continue
         if str(lane.get("status") or "") in {"PENDING", "IN_PROGRESS", "FAILED"}:
             continue
@@ -384,7 +412,7 @@ def _validate_subagent_lane_ids(
     persisted_finding_ids: set[str],
 ) -> list[dict[str, Any]]:
     """Return fail-closed data gaps for subagent lane IDs absent from state."""
-    if not lane.get("assigned_agent"):
+    if not _lane_owned(lane):
         return []
 
     execution_ids = {
@@ -432,6 +460,7 @@ def _synthesize_analysis_lanes(
                 continue
             merged = _lane_template(lane_id, legacy_inferred=bool(lane.get("legacy_inferred")))
             merged.update(dict(lane))
+            merged.setdefault("supporting_agents", [])
             lanes[lane_id] = merged
     else:
         for lane_id in _LANE_SPECS:
@@ -460,6 +489,25 @@ def _synthesize_analysis_lanes(
             lane["lane_inference_confidence"] = confidence
         if lane["status"] in {"PENDING", "UNKNOWN"}:
             lane["status"] = "COMPLETE"
+
+    anti_lane = lanes.get("anti_forensics_recovery")
+    sigma_owned_lane = next(
+        (
+            lane for lane in lanes.values()
+            if lane.get("assigned_agent") == "sigma-analyst"
+            or "sigma-analyst" in (lane.get("supporting_agents") or [])
+        ),
+        None,
+    )
+    if anti_lane and _lane_has_work(anti_lane) and not _lane_owned(anti_lane) and sigma_owned_lane:
+        anti_lane["assigned_agent"] = "sigma-analyst"
+        anti_lane["supporting_agents"] = sorted(
+            set((anti_lane.get("supporting_agents") or []) + ["evtx-analyst"])
+        )
+        anti_lane["summary"] = anti_lane.get("summary") or (
+            "Anti-forensics findings were produced during Sigma/event analysis; "
+            "ownership derived from the recorded sigma-analyst lane."
+        )
 
     return [lanes[lane_id] for lane_id in _LANE_SPECS if lane_id in lanes]
 
@@ -734,7 +782,7 @@ def render_report_html(payload: dict[str, Any]) -> str:
     <h2>Analysis Lanes</h2>
     <table>
       <thead>
-        <tr><th>Lane</th><th>Status</th><th>Required</th><th>Executions</th><th>Findings</th><th>Summary</th></tr>
+        <tr><th>Lane</th><th>Status</th><th>Required</th><th>Agents</th><th>Executions</th><th>Findings</th><th>Summary</th></tr>
       </thead>
       <tbody>
         {_render_lane_rows(analysis_lanes)}
@@ -803,8 +851,56 @@ def generate_report_payload(
     sigma_scan_fn: Callable[[str], dict[str, Any]],
     coverage_fn: Callable[[str], dict[str, Any]],
     reports_root: str = "./reports",
+    allow_partial: bool = False,
+    delegate_path: str | None = None,
 ) -> dict[str, Any]:
     """Build the final report payload, write HTML, and then mark the case complete."""
+    report_dir = (Path(reports_root) / case_id).resolve()
+    report_path = report_dir / "report.html"
+    report_json_path = report_dir / "report.json"
+    graph_html_path = report_dir / "graph.html"
+    graph_json_path = report_dir / "graph.json"
+
+    delegate_file = Path(
+        delegate_path
+        or os.environ.get("SAVVYDFIR_DELEGATE_PATH")
+        or "/tmp/savvydfir_delegate.json"
+    )
+    if delegate_file.exists():
+        try:
+            pending_delegate = json.loads(delegate_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pending_delegate = {"path": str(delegate_file), "error": "unreadable delegate file"}
+        if isinstance(pending_delegate, dict) and pending_delegate.get("processed") is False and not allow_partial:
+            return {
+                "status": "needs_delegate",
+                "tool": "generate_report",
+                "case_id": case_id,
+                "reason": "A specialist delegate is pending; final report files were not written.",
+                "pending_delegate": pending_delegate,
+                "next_required_tool": "record_analysis_lane",
+                "report_path": str(report_path),
+                "report_json_path": str(report_json_path),
+            }
+
+    graph_missing = not (graph_html_path.exists() or graph_json_path.exists())
+    if graph_missing and not allow_partial:
+        return {
+            "status": "needs_graph",
+            "tool": "generate_report",
+            "case_id": case_id,
+            "reason": "Graph output is required before final report files are written.",
+            "next_required_tool": "generate_graph",
+            "recommended_call": {
+                "tool": "generate_graph",
+                "arguments": {"case_id": case_id},
+            },
+            "report_path": str(report_path),
+            "report_json_path": str(report_json_path),
+            "graph_path": str(graph_html_path),
+            "graph_json_path": str(graph_json_path),
+        }
+
     sigma_result = sigma_scan_fn(case_id)
     if sigma_result.get("status") == "error":
         return {
@@ -826,17 +922,13 @@ def generate_report_payload(
 
     findings = state_manager.get_findings()
     pre_summary = state_manager.to_summary()
-    report_dir = (Path(reports_root) / case_id).resolve()
     report_dir.mkdir(parents=True, exist_ok=True)
-    report_path = report_dir / "report.html"
-    report_json_path = report_dir / "report.json"
-    graph_html_path = report_dir / "graph.html"
-    graph_json_path = report_dir / "graph.json"
-    graph_missing = not (graph_html_path.exists() or graph_json_path.exists())
 
     status_breakdown = _count_by_key(findings, "finding_status")
     evidence_kind_breakdown = _count_by_key(findings, "evidence_kind")
+    finding_kind_breakdown = _count_by_key(findings, "finding_kind")
     finding_quality = _finding_quality_summary(findings)
+    report_generated_at = datetime.now(timezone.utc).isoformat()
 
     actionable_leads = list(sigma_result.get("actionable_leads", []))
     validation = validate_report(
@@ -884,7 +976,9 @@ def generate_report_payload(
         "top_findings": _rank_findings(findings),
         "status_breakdown": status_breakdown,
         "evidence_kind_breakdown": evidence_kind_breakdown,
+        "finding_kind_breakdown": finding_kind_breakdown,
         "finding_quality_summary": finding_quality,
+        "report_generated_at": report_generated_at,
         "report_path": str(report_path),
         "report_json_path": str(report_json_path),
         "graph_path": str(graph_html_path) if graph_html_path.exists() else None,
@@ -900,6 +994,7 @@ def generate_report_payload(
         dict(finding)
         for finding in payload["top_findings"]
         if _status_label(finding.get("finding_status")) in {"HYPOTHESIS", "ACTIVE", "OBSERVATION"}
+        and str(finding.get("finding_kind") or "validated").lower() != "raw_detector_hit"
     ][:10]
 
     state_manager.update_triage_state(
