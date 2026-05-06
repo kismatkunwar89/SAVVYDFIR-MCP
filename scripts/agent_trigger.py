@@ -91,6 +91,12 @@ ERROR_PATTERNS: dict[str, str] = {
 }
 
 DEFAULT_TRIGGER_PATH = "/tmp/savvydfir_delegate.json"
+DELEGATION_BYPASS_TOOLS = {
+    "mcp__savvydfir__read_state",
+    "mcp__savvydfir__record_analysis_lane",
+    "read_state",
+    "record_analysis_lane",
+}
 
 
 def _parse_result_payload(tool_result: Any) -> tuple[dict[str, Any], str]:
@@ -283,11 +289,62 @@ def _write_trigger(trigger: dict[str, Any], trigger_path: Optional[str] = None) 
         pass  # Trigger file is advisory — failure must not block the hook
 
 
+def _read_pending_trigger(trigger_path: Optional[str] = None) -> Optional[dict[str, Any]]:
+    try:
+        path = Path(trigger_path or os.environ.get(
+            "SAVVYDFIR_DELEGATE_PATH", DEFAULT_TRIGGER_PATH))
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and not payload.get("processed"):
+            return payload
+    except (OSError, IOError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def _mark_trigger_processed(trigger_path: Optional[str] = None) -> None:
+    try:
+        path = Path(trigger_path or os.environ.get(
+            "SAVVYDFIR_DELEGATE_PATH", DEFAULT_TRIGGER_PATH))
+        if not path.exists():
+            return
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return
+        payload["processed"] = True
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except (OSError, IOError, json.JSONDecodeError):
+        pass
+
+
+def _delegation_block_reason(trigger: dict[str, Any]) -> str:
+    subagent_type = str(trigger.get("subagent_type") or "specialist")
+    lane_id = str(trigger.get("lane_id") or "analysis")
+    description = str(trigger.get("description") or f"Analyze {lane_id} lane")
+    prompt = str(trigger.get("prompt") or "")
+    agent_call = str(trigger.get("delegation_text") or trigger.get("agent_call") or "")
+    return (
+        "SPECIALIST DELEGATION REQUIRED BEFORE CONTINUING. "
+        f"Start @{subagent_type} now for lane_id={lane_id!r}; do not run parent "
+        "run_analysis or proceed to more artifact collection until the specialist "
+        "returns and record_analysis_lane validates the lane. "
+        "Use the Task/subagent tool if available with: "
+        f"subagent_type={subagent_type!r}, description={description!r}, prompt={prompt!r}. "
+        f"Main-style fallback text: {agent_call}"
+    )
+
+
 def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) -> Optional[dict[str, Any]]:
     """Process one PostToolUse event and return a hook response dict or None."""
     tool_name, result_data, raw_text = _extract_event_payload(event)
 
     if not tool_name:
+        return None
+
+    if tool_name in DELEGATION_BYPASS_TOOLS:
+        if str(result_data.get("status") or "").lower() in {"ok", "success"}:
+            _mark_trigger_processed(trigger_path=trigger_path)
         return None
 
     block_reason = _detect_block_reason(result_data, raw_text)
@@ -296,6 +353,12 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
 
     dispatch = _resolve_dispatch(tool_name, result_data)
     if dispatch is None:
+        pending = _read_pending_trigger(trigger_path=trigger_path)
+        if pending:
+            return {
+                "decision": "block",
+                "reason": _delegation_block_reason(pending),
+            }
         return None
 
     subagent_type, lane_id, base_instruction = dispatch
@@ -337,13 +400,8 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
     _write_trigger(trigger, trigger_path=trigger_path)
 
     return {
-        "decision": "allow",
-        "message": (
-            f"SAVVYDFIR HOOK: {tool_name} completed. "
-            f"MANDATORY: delegate to @{subagent_type} now and pass the artifact handle, "
-            "not raw rows, to keep parent context focused on hypotheses. "
-            f"{delegation_text}"
-        ),
+        "decision": "block",
+        "reason": _delegation_block_reason(trigger),
     }
 
 
