@@ -62,6 +62,7 @@ class ReportingHtmlTests(unittest.TestCase):
 
             html_text = report_path.read_text(encoding="utf-8")
             self.assertIn("Executive Summary", html_text)
+            self.assertIn("Analysis Lanes", html_text)
             self.assertIn("ATT&amp;CK Coverage", html_text)
             self.assertIn("Sigma Anomaly Summary", html_text)
             self.assertIn("Top Confirmed Findings", html_text)

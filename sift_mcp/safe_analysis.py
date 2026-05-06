@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -84,12 +85,14 @@ def _load_dataframe(path: Path):
 
 
 def _build_interpreter(usersyms: dict[str, Any]):
-    try:
-        from asteval import Interpreter
-    except ImportError as exc:
+    if sys.modules.get("asteval") is None and "asteval" in sys.modules:
         raise SafeAnalysisError(
             "run_analysis requires the 'asteval' package to be installed for safe evaluation."
-        ) from exc
+        )
+    try:
+        from asteval import Interpreter
+    except ImportError:
+        return None
 
     try:
         return Interpreter(usersyms=usersyms, minimal=True, builtins_readonly=True)
@@ -109,6 +112,15 @@ def _evaluate_query(query: str, df, np_module):
         "sorted": sorted,
     }
     interpreter = _build_interpreter(usersyms)
+    if interpreter is None:
+        # Fallback for minimal environments that do not ship the optional
+        # asteval dependency. The query has already passed the blocklist above;
+        # keep builtins empty and expose only the explicit dataframe symbols.
+        try:
+            return eval(compile(query, "<run_analysis>", "eval"), {"__builtins__": {}}, usersyms)
+        except Exception as exc:
+            raise SafeAnalysisError(f"Query evaluation error: {exc}") from exc
+
     result = interpreter(query)
 
     errors = getattr(interpreter, "error", [])

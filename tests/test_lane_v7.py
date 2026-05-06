@@ -286,6 +286,9 @@ class LaneV7Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
             manager.load("CASE-V71-OK")
+            report_dir = Path(tmp_dir) / "CASE-V71-OK"
+            report_dir.mkdir(parents=True)
+            (report_dir / "graph.html").write_text("<html>graph</html>", encoding="utf-8")
             manager.add_execution(
                 {
                     "case_id": "CASE-V71-OK",

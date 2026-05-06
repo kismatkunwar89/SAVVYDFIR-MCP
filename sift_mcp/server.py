@@ -57,6 +57,7 @@ from sift_mcp.tools.yara import scan_memory as _scan_memory
 from sift_mcp.tools.yara import scan_files as _scan_files
 from sift_mcp.tools.timeline import query_timeline as _query_timeline
 from sift_mcp.tools.timeline import build_timeline as _build_timeline
+from sift_mcp.tools.disk import DFIR_BATCH_PATHS
 from sift_mcp.tools.disk import extract_registry_run_keys as _extract_registry_run_keys
 from sift_mcp.tools.disk import summarize_evtx as _summarize_evtx
 from sift_mcp.tools.disk import list_deleted_files as _list_deleted_files
@@ -77,6 +78,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -84,13 +86,18 @@ from typing import Any, Optional
 
 from fastmcp import FastMCP
 
+from sift_mcp.detectors import normalize_enabled_detectors, run_two_phase_scan
 from sift_mcp.models.sigma import (
     AnalysisResult,
     ArtifactHit,
     SigmaScanResult,
     ToolResult,
 )
-from sift_mcp.reporting import generate_report_payload
+from sift_mcp.reporting import (
+    EXPECTED_LANE_AGENTS,
+    classify_missing_artifact_record,
+    generate_report_payload,
+)
 from sift_mcp.safe_analysis import SafeAnalysisError, run_safe_analysis
 from sift_mcp.semantics import compute_coverage_from_findings
 from sift_mcp.tool_catalog import group_tool_catalog
@@ -4764,9 +4771,39 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
         case_id = manifest.get("case_id", "UNKNOWN")
         mode = manifest.get("mode", "blind")
         known_iocs = manifest.get("known_iocs", [])
+        enabled_detectors_raw = manifest.get("enabled_detectors")
+        enabled_detectors = (
+            None
+            if enabled_detectors_raw is None
+            else sorted(normalize_enabled_detectors(enabled_detectors_raw))
+        )
 
         # Initialise case state
         _state_manager.load(case_id)
+        _state_manager.set_status("IN_PROGRESS")
+        _state_manager.update_triage_state(triage_status="IN_PROGRESS")
+        _state_manager.set_enabled_detectors(enabled_detectors)
+        _state_manager.upsert_analysis_lane(
+            "evidence_access",
+            title="Evidence Access",
+            phase="phase0",
+            required=False,
+            status="PENDING",
+        )
+        for lane_id, title in (
+            ("memory", "Memory Analyst"),
+            ("disk_execution_persistence", "Disk Execution and Persistence"),
+            ("event_auth", "Event Log and Auth"),
+            ("anti_forensics_recovery", "Anti-Forensics and Recovery"),
+            ("timeline_correlation", "Timeline and Correlation"),
+        ):
+            _state_manager.upsert_analysis_lane(
+                lane_id,
+                title=title,
+                phase="analysis",
+                required=True,
+                status="PENDING",
+            )
 
         result: dict[str, Any] = {
             "status": "ok",
@@ -4776,6 +4813,35 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
             "disk_images": manifest.get("disk_images", []),
             "memory_dumps": manifest.get("memory_dumps", []),
             "max_iterations": manifest.get("max_iterations", 4),
+            "enabled_detectors": enabled_detectors,
+            "next_required_tools": [
+                {
+                    "tool": "environment_preflight",
+                    "arguments": {"case_id": case_id},
+                    "reason": "Confirm runtime dependencies and durable artifact storage before triage.",
+                },
+                *[
+                    {
+                        "tool": "mount_image",
+                        "arguments": {"image_path": str(image_path)},
+                        "reason": "Expose disk evidence before disk artifact collection.",
+                    }
+                    for image_path in manifest.get("disk_images", [])
+                ],
+                *[
+                    {
+                        "tool": "load_memory",
+                        "arguments": {"dump_path": str(dump_path)},
+                        "reason": "Load memory evidence before memory artifact collection.",
+                    }
+                    for dump_path in manifest.get("memory_dumps", [])
+                ],
+            ],
+            "do_not_start_artifact_collection_until": [
+                "environment_preflight has completed or returned only documented warnings",
+                "each disk image has a mount_image result or a classified access gap",
+                "each memory dump has a load_memory result or a classified access gap",
+            ],
         }
 
         # Only include IOCs in seeded mode
@@ -4786,6 +4852,613 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
 
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "start_investigation"}
+
+
+@mcp.tool()
+def environment_preflight(case_id: Optional[str] = None) -> dict[str, Any]:
+    """Check runtime dependencies and durable artifact storage before triage.
+
+    This is a lightweight readiness check. It does not touch evidence content,
+    hash large files, or block incident response, but it surfaces missing tools
+    and writable artifact-path problems before expensive extraction starts.
+    """
+    checks: list[dict[str, Any]] = []
+
+    def _add(name: str, ok: bool, **extra: Any) -> None:
+        item = {"name": name, "ok": bool(ok)}
+        item.update(extra)
+        checks.append(item)
+
+    output_base = Path(os.environ.get("OUTPUT_BASE", "/cases"))
+    target_case = str(case_id or _state_manager.case_id or "PRECHECK")
+    output_probe_dir = output_base / target_case / "artifacts" / ".preflight"
+    try:
+        output_probe_dir.mkdir(parents=True, exist_ok=True)
+        probe = tempfile.NamedTemporaryFile(
+            dir=str(output_probe_dir),
+            prefix=".savvydfir_preflight_",
+            delete=False,
+        )
+        probe.write(b"ok")
+        probe.close()
+        Path(probe.name).unlink(missing_ok=True)
+        _add("artifact_storage_writable", True, path=str(output_probe_dir))
+    except OSError as exc:
+        _add(
+            "artifact_storage_writable",
+            False,
+            path=str(output_probe_dir),
+            error=str(exc),
+            fix_hint=f"Ensure OUTPUT_BASE ({output_base}) is writable by the MCP user.",
+        )
+
+    for binary in ("ewfmount", "mmls", "fls", "icat", "dotnet"):
+        resolved = shutil.which(binary)
+        _add(f"binary:{binary}", bool(resolved), path=resolved)
+
+    eztool_candidates = {
+        "EvtxECmd": ("/usr/local/bin/EvtxECmd", "/opt/zimmermantools/EvtxeCmd/EvtxECmd.dll"),
+        "MFTECmd": ("/usr/local/bin/MFTECmd", "/opt/zimmermantools/MFTECmd.dll"),
+        "AmcacheParser": ("/usr/local/bin/AmcacheParser", "/opt/zimmermantools/AmcacheParser.dll"),
+        "RECmd": ("/usr/local/bin/RECmd", "/opt/zimmermantools/RECmd/RECmd.dll"),
+    }
+    for name, candidates in eztool_candidates.items():
+        existing = next((path for path in candidates if Path(path).exists() or shutil.which(path)), None)
+        _add(f"eztool:{name}", bool(existing), path=existing, candidates=list(candidates))
+
+    dfir_batch = next((path for path in DFIR_BATCH_PATHS if Path(path).exists()), None)
+    _add(
+        "recmd_batch:DFIRBatch.reb",
+        bool(dfir_batch),
+        path=dfir_batch,
+        candidates=list(DFIR_BATCH_PATHS),
+        fix_hint=(
+            None
+            if dfir_batch
+            else "Install/copy DFIRBatch.reb or call extract_registry_run_keys(use_batch=False)."
+        ),
+    )
+
+    missing = [check for check in checks if not check["ok"]]
+    return {
+        "status": "ok" if not missing else "warning",
+        "tool": "environment_preflight",
+        "case_id": case_id,
+        "checks": checks,
+        "missing": missing,
+        "recommended_next_actions": [
+            str(check.get("fix_hint") or f"Review missing dependency: {check['name']}")
+            for check in missing
+        ],
+    }
+
+
+_RAW_ARTIFACT_FAMILIES = {"evtx", "registry", "amcache", "prefetch", "mft"}
+
+
+def _normalize_artifact_families(families: Optional[Any]) -> set[str]:
+    """Normalize MCP list/string family input for raw Windows extraction."""
+    if families is None:
+        return set(_RAW_ARTIFACT_FAMILIES)
+    if isinstance(families, str):
+        values = [part.strip().lower() for part in families.split(",")]
+    else:
+        values = [str(part).strip().lower() for part in families]
+    normalized = {value for value in values if value}
+    if not normalized:
+        raise ValueError("families must be omitted/null or a non-empty allow-list.")
+    unknown = normalized - _RAW_ARTIFACT_FAMILIES
+    if unknown:
+        raise ValueError(
+            f"Unknown artifact families: {sorted(unknown)}. "
+            f"Valid families: {sorted(_RAW_ARTIFACT_FAMILIES)}"
+        )
+    return normalized
+
+
+def _parse_fls_record(line: str) -> Optional[tuple[str, str]]:
+    """Parse one SleuthKit fls line into (metadata_address, path)."""
+    text = line.strip()
+    if not text:
+        return None
+    text = text.lstrip("+").strip()
+    match = re.match(r"^[rd]/[rd]\s+(?P<meta>[^:]+):\s+(?P<path>.+)$", text)
+    if not match:
+        return None
+    return match.group("meta").strip(), match.group("path").strip()
+
+
+def _raw_artifact_target(
+    *,
+    raw_base: Path,
+    family: str,
+    source_path: str,
+) -> Path:
+    """Return the durable output path for an extracted raw artifact."""
+    source_name = Path(source_path.replace("\\", "/")).name or source_path.strip("$")
+    safe_name = re.sub(r"[^A-Za-z0-9.$%_ -]+", "_", source_name).strip(" .") or "artifact"
+    normalized = source_path.replace("\\", "/")
+    if family == "registry" and "/Users/" in normalized and safe_name.upper() == "NTUSER.DAT":
+        parts = [part for part in normalized.split("/") if part]
+        try:
+            user = parts[parts.index("Users") + 1]
+            safe_name = f"{re.sub(r'[^A-Za-z0-9._-]+', '_', user)}_NTUSER.DAT"
+        except (ValueError, IndexError):
+            pass
+    if family == "mft":
+        safe_name = "$MFT"
+    return raw_base / family / safe_name
+
+
+def _classify_raw_artifact(path_text: str, selected: set[str]) -> Optional[str]:
+    """Classify an fls path into one requested raw artifact family."""
+    normalized = path_text.replace("\\", "/").strip()
+    lower = normalized.lower()
+    basename = Path(normalized).name.lower()
+
+    if "evtx" in selected and lower.endswith(".evtx") and "windows/system32/winevt/logs/" in lower:
+        return "evtx"
+    if "registry" in selected:
+        if lower.endswith("windows/system32/config/system") or lower.endswith("windows/system32/config/software"):
+            return "registry"
+        if lower.endswith("windows/system32/config/security") or lower.endswith("windows/system32/config/sam"):
+            return "registry"
+        if lower.endswith("windows/system32/config/default") or lower.endswith("/ntuser.dat"):
+            return "registry"
+    if "amcache" in selected and basename in {"amcache.hve", "amcache.hve.log1", "amcache.hve.log2"}:
+        if "windows/appcompat/programs/" in lower:
+            return "amcache"
+    if "prefetch" in selected and lower.endswith(".pf") and "windows/prefetch/" in lower:
+        return "prefetch"
+    if "mft" in selected and basename == "$mft":
+        return "mft"
+    return None
+
+
+def _run_tsk_command(args: list[str], *, timeout: int = 300) -> subprocess.CompletedProcess:
+    return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+
+
+@mcp.tool()
+def extract_windows_artifacts(
+    case_id: str,
+    image_path: str,
+    families: Optional[Any] = None,
+    tsk_device_path: Optional[str] = None,
+    partition_offset_sectors: Optional[int] = None,
+) -> dict[str, Any]:
+    """Extract core Windows artifacts from a direct TSK-readable image.
+
+    This is the sanctioned fallback for ``mount_image`` results that expose
+    ``tsk_direct`` access instead of a mounted Windows root. It writes only
+    durable analyst-facing files under ``/cases/{case_id}/artifacts/raw`` and
+    returns those paths for downstream MCP parsers.
+    """
+    tool = "disk.extract_windows_artifacts"
+    started_at = None
+    execution_id = _audit_logger.next_execution_id()
+    selected = _normalize_artifact_families(families)
+    device = str(tsk_device_path or image_path)
+    safe_case_id = re.sub(r"[^A-Za-z0-9._-]+", "_", str(case_id)).strip("._") or "UNKNOWN"
+    raw_base = Path(os.environ.get("OUTPUT_BASE", "/cases")) / safe_case_id / "artifacts" / "raw"
+    offset_args: list[str] = []
+    if partition_offset_sectors is not None:
+        offset_args = ["-o", str(int(partition_offset_sectors))]
+    command_line = " ".join(["fls", "-r", "-p", *offset_args, device])
+
+    try:
+        started_at = time.monotonic()
+        _audit_logger.log_execution(
+            execution_id=execution_id,
+            tool_name=tool,
+            parameters={
+                "case_id": case_id,
+                "image_path": image_path,
+                "families": sorted(selected),
+                "tsk_device_path": tsk_device_path,
+                "partition_offset_sectors": partition_offset_sectors,
+            },
+            command_line=command_line,
+        )
+        if not Path(device).exists():
+            raise FileNotFoundError(f"TSK device/image path does not exist: {device}")
+
+        raw_base.mkdir(parents=True, exist_ok=True)
+        fls_args = ["fls", "-r", "-p", *offset_args, device]
+        fls_result = _run_tsk_command(fls_args, timeout=300)
+        if fls_result.returncode != 0 and "-p" in fls_args:
+            fls_args = ["fls", "-r", *offset_args, device]
+            command_line = " ".join(fls_args)
+            fls_result = _run_tsk_command(fls_args, timeout=300)
+        if fls_result.returncode != 0:
+            duration = time.monotonic() - float(started_at)
+            _audit_logger.log_result(
+                execution_id=execution_id,
+                exit_code=1,
+                duration=duration,
+                outputs_summary="fls failed while listing image contents",
+                finding_ids=[],
+                tool_name=tool,
+                command_line=command_line,
+                parameters={
+                    "case_id": case_id,
+                    "image_path": image_path,
+                    "families": sorted(selected),
+                    "tsk_device_path": tsk_device_path,
+                    "partition_offset_sectors": partition_offset_sectors,
+                },
+            )
+            return {
+                "status": "error",
+                "tool": tool,
+                "execution_id": execution_id,
+                "error": "fls failed while listing image contents",
+                "stderr": fls_result.stderr[-1000:],
+                "raw_command": command_line,
+            }
+
+        extracted: dict[str, list[str]] = {family: [] for family in sorted(selected)}
+        data_gaps: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        seen_targets: set[str] = set()
+
+        for raw_line in fls_result.stdout.splitlines():
+            parsed = _parse_fls_record(raw_line)
+            if parsed is None:
+                continue
+            meta_addr, source_path = parsed
+            family = _classify_raw_artifact(source_path, selected)
+            if family is None:
+                continue
+            target = _raw_artifact_target(raw_base=raw_base, family=family, source_path=source_path)
+            if str(target) in seen_targets:
+                continue
+            seen_targets.add(str(target))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            icat_args = ["icat", *offset_args, device, meta_addr]
+            icat_result = subprocess.run(icat_args, capture_output=True, timeout=300)
+            if icat_result.returncode != 0:
+                failures.append(
+                    {
+                        "family": family,
+                        "source_path": source_path,
+                        "meta_addr": meta_addr,
+                        "stderr": icat_result.stderr.decode("utf-8", errors="replace")[-500:],
+                    }
+                )
+                continue
+            target.write_bytes(icat_result.stdout)
+            extracted.setdefault(family, []).append(str(target))
+
+        for family in sorted(selected):
+            if not extracted.get(family):
+                data_gaps.append(
+                    {
+                        "artifact_family": family,
+                        "classification": "not_found",
+                        "reason": f"No {family} artifacts were found by SleuthKit extraction.",
+                        "lane_id": (
+                            "event_auth" if family == "evtx"
+                            else "timeline_correlation" if family == "mft"
+                            else "disk_execution_persistence"
+                        ),
+                    }
+                )
+
+        evtx_dir = raw_base / "evtx"
+        registry_dir = raw_base / "registry"
+        amcache_hive = raw_base / "amcache" / "Amcache.hve"
+        prefetch_dir = raw_base / "prefetch"
+        mft_path = raw_base / "mft" / "$MFT"
+        response = {
+            "status": "success" if not data_gaps and not failures else "warning",
+            "tool": tool,
+            "tool_name": tool,
+            "case_id": case_id,
+            "execution_id": execution_id,
+            "image_path": image_path,
+            "tsk_device_path": device,
+            "partition_offset_sectors": partition_offset_sectors,
+            "families": sorted(selected),
+            "raw_artifact_root": str(raw_base),
+            "export_dir": str(raw_base),
+            "extracted": extracted,
+            "evtx_dir": str(evtx_dir) if extracted.get("evtx") else None,
+            "registry_dir": str(registry_dir) if extracted.get("registry") else None,
+            "amcache_hive": str(amcache_hive) if amcache_hive.exists() else None,
+            "prefetch_dir": str(prefetch_dir) if extracted.get("prefetch") else None,
+            "mft_path": str(mft_path) if mft_path.exists() else None,
+            "data_gaps": data_gaps,
+            "failures": failures,
+            "raw_command": command_line,
+        }
+        duration = time.monotonic() - float(started_at)
+        _audit_logger.log_result(
+            execution_id=execution_id,
+            exit_code=0 if response["status"] in {"success", "warning"} else 1,
+            duration=duration,
+            outputs_summary=(
+                f"extracted {sum(len(paths) for paths in extracted.values())} raw Windows artifacts"
+            ),
+            finding_ids=[],
+            tool_name=tool,
+            command_line=command_line,
+            parameters={
+                "case_id": case_id,
+                "image_path": image_path,
+                "families": sorted(selected),
+                "tsk_device_path": tsk_device_path,
+                "partition_offset_sectors": partition_offset_sectors,
+            },
+        )
+        return _finalize_tool_response(tool, response)
+    except Exception as exc:
+        duration = 0.0
+        if started_at is not None:
+            duration = time.monotonic() - float(started_at)
+        _audit_logger.log_result(
+            execution_id=execution_id,
+            exit_code=1,
+            duration=duration,
+            outputs_summary=f"error: {exc}",
+            finding_ids=[],
+            tool_name=tool,
+            command_line=command_line,
+            parameters={
+                "case_id": case_id,
+                "image_path": image_path,
+                "families": sorted(selected) if "selected" in locals() else families,
+                "tsk_device_path": tsk_device_path,
+                "partition_offset_sectors": partition_offset_sectors,
+            },
+        )
+        return {
+            "status": "error",
+            "tool": tool,
+            "execution_id": execution_id,
+            "error": str(exc),
+            "raw_command": command_line,
+        }
+
+
+@mcp.tool()
+def classify_missing_artifact(
+    artifact_family: str,
+    *,
+    is_mandatory: bool,
+    exists: Optional[bool] = None,
+    parser_succeeded: Optional[bool] = None,
+    record_count: Optional[int] = None,
+    file_size_bytes: Optional[int] = None,
+    corroborating_signals: Optional[list[str]] = None,
+    reason: Optional[str] = None,
+    lane_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Classify a missing/empty artifact for honest lane and report gating."""
+    classification = classify_missing_artifact_record(
+        artifact_family=artifact_family,
+        is_mandatory=is_mandatory,
+        exists=exists,
+        parser_succeeded=parser_succeeded,
+        record_count=record_count,
+        file_size_bytes=file_size_bytes,
+        corroborating_signals=corroborating_signals,
+        reason=reason,
+        lane_id=lane_id,
+    )
+    return {
+        "status": "ok",
+        "tool": "disk.classify_missing_artifact",
+        "classification": classification,
+    }
+
+
+_LANE_STATUSES = {
+    "PENDING",
+    "IN_PROGRESS",
+    "COMPLETE",
+    "COMPLETE_WITH_GAPS",
+    "FAILED",
+}
+
+
+def _valid_lane_ids() -> set[str]:
+    return {
+        "evidence_access",
+        "memory",
+        "disk_execution_persistence",
+        "event_auth",
+        "anti_forensics_recovery",
+        "timeline_correlation",
+    }
+
+
+def _normalize_id_list(values: Optional[list[str]]) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _state_id_sets() -> tuple[set[str], set[str]]:
+    execution_ids = {
+        str(execution.get("execution_id") or "").strip()
+        for execution in _state_manager.get_executions()
+        if str(execution.get("execution_id") or "").strip()
+    }
+    finding_ids = {
+        str(finding.get("finding_id") or "").strip()
+        for finding in _state_manager.get_findings()
+        if str(finding.get("finding_id") or "").strip()
+    }
+    return execution_ids, finding_ids
+
+
+def _expected_agent_set() -> set[str]:
+    agents = {"main-agent"}
+    for lane_agents in EXPECTED_LANE_AGENTS.values():
+        agents.update(lane_agents)
+    return agents
+
+
+@mcp.tool()
+def record_analysis_lane(
+    case_id: str,
+    lane_id: str,
+    status: str,
+    assigned_agent: Optional[str] = None,
+    execution_ids: Optional[list[str]] = None,
+    finding_ids: Optional[list[str]] = None,
+    data_gaps: Optional[list[dict[str, Any]]] = None,
+    anti_forensics_warnings: Optional[list[dict[str, Any]]] = None,
+    unresolved_discrepancies: Optional[list[dict[str, Any]]] = None,
+    next_pivots: Optional[list[dict[str, Any]]] = None,
+    summary: str = "",
+    confidence_notes: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Record and validate specialist lane completion.
+
+    Subagents and the parent agent use this as the only trusted lane writeback.
+    Supplied execution/finding IDs must already exist in persisted state.
+    """
+    try:
+        _state_manager.load(case_id)
+        normalized_lane = str(lane_id or "").strip()
+        normalized_status = str(status or "").strip().upper()
+        normalized_agent = str(assigned_agent or "").strip() or None
+        if normalized_lane not in _valid_lane_ids():
+            return {
+                "status": "error",
+                "tool": "record_analysis_lane",
+                "error": f"Unknown lane_id: {lane_id}",
+                "valid_lane_ids": sorted(_valid_lane_ids()),
+            }
+        if normalized_status not in _LANE_STATUSES:
+            return {
+                "status": "error",
+                "tool": "record_analysis_lane",
+                "error": f"Invalid lane status: {status}",
+                "valid_statuses": sorted(_LANE_STATUSES),
+            }
+        if normalized_agent and normalized_agent not in _expected_agent_set():
+            return {
+                "status": "error",
+                "tool": "record_analysis_lane",
+                "error": f"Unexpected assigned_agent: {assigned_agent}",
+                "expected_agents": sorted(_expected_agent_set()),
+            }
+
+        normalized_execution_ids = _normalize_id_list(execution_ids)
+        normalized_finding_ids = _normalize_id_list(finding_ids)
+        persisted_execution_ids, persisted_finding_ids = _state_id_sets()
+        missing_execution_ids = sorted(set(normalized_execution_ids) - persisted_execution_ids)
+        missing_finding_ids = sorted(set(normalized_finding_ids) - persisted_finding_ids)
+        if missing_execution_ids or missing_finding_ids:
+            return {
+                "status": "error",
+                "tool": "record_analysis_lane",
+                "error": "Lane references IDs that are not present in persisted state.",
+                "missing_execution_ids": missing_execution_ids,
+                "missing_finding_ids": missing_finding_ids,
+            }
+
+        now = datetime.now(timezone.utc).isoformat()
+        lane = _state_manager.upsert_analysis_lane(
+            normalized_lane,
+            status=normalized_status,
+            assigned_agent=normalized_agent,
+            execution_ids=normalized_execution_ids,
+            finding_ids=normalized_finding_ids,
+            data_gaps=list(data_gaps or []),
+            anti_forensics_warnings=list(anti_forensics_warnings or []),
+            unresolved_discrepancies=list(unresolved_discrepancies or []),
+            next_pivots=list(next_pivots or []),
+            summary=str(summary or ""),
+            confidence_notes=[str(note) for note in (confidence_notes or [])],
+            completed_at=now if normalized_status in {"COMPLETE", "COMPLETE_WITH_GAPS", "FAILED"} else None,
+        )
+        return {
+            "status": "ok",
+            "tool": "record_analysis_lane",
+            "case_id": case_id,
+            "lane": lane,
+        }
+    except Exception as exc:
+        return {"status": "error", "tool": "record_analysis_lane", "error": str(exc)}
+
+
+@mcp.tool()
+def get_investigation_gates(case_id: str) -> dict[str, Any]:
+    """Return lane readiness and specialist-review gaps before reporting."""
+    try:
+        _state_manager.load(case_id)
+        lanes = _state_manager.get_analysis_lanes()
+        lane_by_id = {
+            str(lane.get("lane_id") or ""): dict(lane)
+            for lane in lanes
+            if isinstance(lane, dict)
+        }
+        blocking_reasons: list[str] = []
+        recommended_next_actions: list[str] = []
+        inferred_only_lanes: list[dict[str, Any]] = []
+        missing_required_lanes: list[str] = []
+        missing_specialists: dict[str, list[str]] = {}
+
+        for lane_id in sorted(_valid_lane_ids()):
+            lane = lane_by_id.get(lane_id)
+            if not lane:
+                if lane_id != "evidence_access":
+                    missing_required_lanes.append(lane_id)
+                    blocking_reasons.append(f"Required lane {lane_id} is missing from state.")
+                continue
+            if not lane.get("required"):
+                continue
+            lane_status = str(lane.get("status") or "PENDING")
+            if lane_status in {"PENDING", "IN_PROGRESS", "FAILED"}:
+                missing_required_lanes.append(lane_id)
+                blocking_reasons.append(f"Required lane {lane_id} is {lane_status}.")
+            has_work = bool(lane.get("execution_ids") or lane.get("finding_ids"))
+            if has_work and not lane.get("assigned_agent"):
+                expected = list(EXPECTED_LANE_AGENTS.get(lane_id, ()))
+                inferred_only_lanes.append(
+                    {
+                        "lane_id": lane_id,
+                        "status": lane_status,
+                        "expected_agents": expected,
+                        "execution_ids": lane.get("execution_ids", []),
+                        "finding_ids": lane.get("finding_ids", []),
+                    }
+                )
+                if expected:
+                    missing_specialists[lane_id] = expected
+                    recommended_next_actions.append(
+                        f"Spawn one of {expected} or record main-agent coverage with record_analysis_lane for {lane_id}."
+                    )
+
+        report_ready = not blocking_reasons and not missing_specialists
+        if not report_ready and not recommended_next_actions:
+            recommended_next_actions.append(
+                "Complete or explicitly gap required lanes before final reporting."
+            )
+        return {
+            "status": "ok",
+            "tool": "get_investigation_gates",
+            "case_id": case_id,
+            "report_ready": report_ready,
+            "blocking_reasons": blocking_reasons,
+            "missing_required_lanes": missing_required_lanes,
+            "inferred_only_lanes": inferred_only_lanes,
+            "missing_specialists": missing_specialists,
+            "recommended_next_actions": recommended_next_actions,
+            "analysis_lanes": lanes,
+        }
+    except Exception as exc:
+        return {"status": "error", "tool": "get_investigation_gates", "error": str(exc)}
 
 
 @mcp.tool()
@@ -4938,8 +5611,26 @@ def generate_report(case_id: str, response_format: str = "summary") -> dict[str,
             completed_entry=_completed,
         )
         if isinstance(result, dict):
+            gates = get_investigation_gates(case_id)
+            result["investigation_gates"] = gates
+            if gates.get("status") == "ok":
+                result["gate_blockers"] = gates.get("blocking_reasons", [])
+                result["gate_recommended_next_actions"] = gates.get(
+                    "recommended_next_actions", []
+                )
             result.setdefault("execution_id", _eid)
             result["response_format"] = normalized_format
+            if (
+                isinstance(result.get("status_flags"), dict)
+                and result["status_flags"].get("graph_missing")
+            ):
+                result["next_required_tool"] = "generate_graph"
+                result.setdefault("gate_blockers", []).append(
+                    "Graph output is missing; call generate_graph(case_id) before final completion."
+                )
+                result.setdefault("gate_recommended_next_actions", []).append(
+                    "generate_graph(case_id)"
+                )
             if normalized_format == "summary":
                 result = {
                     "status": result.get("status"),
@@ -4950,6 +5641,12 @@ def generate_report(case_id: str, response_format: str = "summary") -> dict[str,
                     "findings_count": result.get("findings_count"),
                     "unresolved_count": result.get("unresolved_count"),
                     "report_path": result.get("report_path"),
+                    "report_json_path": result.get("report_json_path"),
+                    "next_required_tool": result.get("next_required_tool"),
+                    "gate_blockers": result.get("gate_blockers", []),
+                    "gate_recommended_next_actions": result.get(
+                        "gate_recommended_next_actions", []
+                    ),
                     "top_confirmed_findings": [
                         _summarize_report_finding(finding)
                         for finding in result.get("top_confirmed_findings", [])[:5]
@@ -5002,8 +5699,9 @@ def mount_image(
 ) -> dict[str, Any]:
     """Mount a disk image (E01 or raw) for analysis.
 
-    For E01 images: runs ewfmount then mounts the partition read-only.
-    For raw/dd images: mounts partition directly.
+    For E01 images: runs ewfmount, then either exposes the image for
+    SleuthKit-direct access or mounts the partition read-only.
+    For raw/dd images: mounts partition directly when the OS can do so.
     Automatically detects partition offset via mmls.
 
     Parameters
@@ -5044,11 +5742,70 @@ def mount_image(
         data: dict[str, Any] = {"image_path": str(image)}
         ewf_device = None
 
-        # --- Pre-flight: detect existing mounts ---
-        mount_check = _sp.run(["mount"], capture_output=True, text=True)
-        mounts = mount_check.stdout
+        def _mounts_text() -> str:
+            return _sp.run(["mount"], capture_output=True, text=True).stdout
 
-        if disk_mount in mounts:
+        def _path_is_mount(path_text: str, mounts_text: str) -> bool:
+            return any(f" on {path_text} " in line for line in mounts_text.splitlines())
+
+        def _probe_device(device_path: str) -> tuple[bool, str]:
+            proc = _sp.run(
+                ["/usr/bin/mmls", device_path],
+                capture_output=True, text=True, timeout=30
+            )
+            output = "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+            return proc.returncode == 0, output.strip()
+
+        def _unmount_path(path_text: str) -> dict[str, Any]:
+            attempts: list[dict[str, Any]] = []
+            for cmd in (
+                ["/usr/bin/fusermount", "-u", path_text],
+                ["/usr/bin/fusermount3", "-u", path_text],
+                ["/usr/bin/umount", path_text],
+                ["/usr/bin/sudo", "-n", "/usr/bin/fusermount", "-u", path_text],
+                ["/usr/bin/sudo", "-n", "/usr/bin/umount", path_text],
+            ):
+                if not Path(cmd[0]).exists():
+                    continue
+                proc = _sp.run(cmd, capture_output=True, text=True, timeout=30)
+                attempts.append({
+                    "command": " ".join(cmd),
+                    "returncode": proc.returncode,
+                    "stderr": proc.stderr.strip(),
+                })
+                if proc.returncode == 0:
+                    return {"status": "ok", "attempts": attempts}
+            return {"status": "error", "attempts": attempts}
+
+        def _sector0_filesystem(device_path: str) -> Optional[str]:
+            proc = _sp.run(
+                ["/usr/bin/dd", f"if={device_path}", "bs=512", "count=1", "status=none"],
+                capture_output=True, timeout=10
+            )
+            if proc.returncode != 0 or len(proc.stdout) < 90:
+                return None
+            sector = proc.stdout
+            if sector[3:11] == b"NTFS    ":
+                return "ntfs"
+            if sector[3:11] == b"EXFAT   ":
+                return "exfat"
+            if sector[54:62].startswith(b"FAT") or sector[82:90].startswith(b"FAT"):
+                return "fat"
+            return None
+
+        def _tsk_direct_access(device_path: str, offset_value: Optional[int]) -> tuple[bool, str]:
+            cmd = ["/usr/bin/fls"]
+            if offset_value is not None:
+                cmd.extend(["-o", str(offset_value)])
+            cmd.append(device_path)
+            proc = _sp.run(cmd, capture_output=True, text=True, timeout=30)
+            output = "\n".join(part for part in (proc.stdout, proc.stderr) if part)
+            return proc.returncode == 0, output.strip()
+
+        # --- Pre-flight: detect existing mounts ---
+        mounts = _mounts_text()
+
+        if _path_is_mount(disk_mount, mounts):
             # Already fully mounted — return immediately, skip all steps
             return ToolResult(
                 status="ok", tool="mount_image",
@@ -5057,15 +5814,49 @@ def mount_image(
                       "mount_status": "already_mounted", "already_mounted": True},
             ).model_dump()
 
-        if mount_point in mounts or _os.path.exists(f"{mount_point}/ewf1"):
-            # ewfmount already done, skip to partition mount
-            ewf_device = f"{mount_point}/ewf1"
-            data["ewf_device"] = ewf_device
-            data["ewfmount_status"] = "already_mounted"
-        else:
-            # --- Determine image type ---
-            is_e01 = image.suffix.lower() in (".e01", ".ex01", ".s01")
+        is_e01 = image.suffix.lower() in (".e01", ".ex01", ".s01")
+        existing_ewf = f"{mount_point}/ewf1"
 
+        if is_e01 and (_path_is_mount(mount_point, mounts) or _os.path.exists(existing_ewf)):
+            accessible, probe_output = _probe_device(existing_ewf)
+            if not accessible:
+                # Single-partition E01 images expose an NTFS stream directly:
+                # mmls may fail, but SleuthKit tools can still read the image.
+                accessible, probe_output = _tsk_direct_access(existing_ewf, 0)
+                if accessible:
+                    data["ewf_access_mode"] = "sleuthkit_direct"
+            if accessible:
+                # ewfmount already done and readable, skip to partition mount.
+                ewf_device = existing_ewf
+                data["ewf_device"] = ewf_device
+                data["ewfmount_status"] = "already_mounted"
+            else:
+                # Stale or inaccessible FUSE EWF mount. Recover here so the
+                # agent does not improvise raw mmls/losetup/mount commands.
+                data["stale_ewf_device"] = existing_ewf
+                data["stale_ewf_probe"] = probe_output
+                unmount_result = _unmount_path(mount_point)
+                data["stale_ewf_unmount"] = unmount_result
+                if unmount_result.get("status") != "ok":
+                    return ToolResult(
+                        status="error",
+                        tool="mount_image",
+                        error=(
+                            f"Existing EWF FUSE mount at {mount_point} is inaccessible "
+                            "and could not be unmounted automatically."
+                        ),
+                        data={
+                            **data,
+                            "next_step": (
+                                "Restart the MCP server/session under the user that owns "
+                                "the stale FUSE mount, then rerun mount_image. Do not run "
+                                "mmls, losetup, or mount manually against stale ewf1."
+                            ),
+                        },
+                    ).model_dump()
+                mounts = _mounts_text()
+
+        if ewf_device is None:
             if is_e01:
                 # Step 1: ewfmount
                 Path(mount_point).mkdir(parents=True, exist_ok=True)
@@ -5074,7 +5865,7 @@ def mount_image(
                     capture_output=True, text=True, timeout=120
                 )
                 if proc.returncode != 0:
-                    # Try with nonempty flag if directory has stale FUSE mount
+                    # Try with nonempty flag if directory has stale contents
                     if "not empty" in proc.stderr or "nonempty" in proc.stderr:
                         proc = _sp.run(
                             ["/usr/bin/ewfmount", "-X", "nonempty",
@@ -5086,11 +5877,17 @@ def mount_image(
                             status="error", tool="mount_image",
                             error=f"ewfmount failed: {proc.stderr}",
                             data={
-                                "hint": f"Try: umount {mount_point} then retry, or use -X nonempty flag"},
+                                **data,
+                                "next_step": (
+                                    "mount_image could not expose the EWF image. "
+                                    "Do not fall back to manual mmls/losetup/mount commands; "
+                                    "surface this MCP error to the operator."
+                                ),
+                            },
                         ).model_dump()
+                data["ewfmount_status"] = "mounted"
 
         # Set device path based on ewf or raw
-        is_e01 = image.suffix.lower() in (".e01", ".ex01", ".s01")
         if is_e01 or ewf_device:
             ewf_device = ewf_device or f"{mount_point}/ewf1"
             data["ewf_device"] = ewf_device
@@ -5104,6 +5901,24 @@ def mount_image(
             ["/usr/bin/mmls", device],
             capture_output=True, text=True, timeout=60
         )
+        if proc.returncode != 0 and "permission denied" in (proc.stdout + proc.stderr).lower():
+            return ToolResult(
+                status="error",
+                tool="mount_image",
+                error=(
+                    f"Cannot read exposed image device {device}: permission denied. "
+                    "The EWF FUSE mount is likely stale or owned by a different user."
+                ),
+                data={
+                    **data,
+                    "mmls_stdout": proc.stdout,
+                    "mmls_stderr": proc.stderr,
+                    "next_step": (
+                        "Rerun mount_image from a fresh MCP session after clearing stale mounts. "
+                        "Do not use manual mmls, losetup, or mount commands against this device."
+                    ),
+                },
+            ).model_dump()
         offset = None
         max_length = 0
         if proc.returncode == 0:
@@ -5147,8 +5962,45 @@ def mount_image(
         else:
             data["offset_source"] = "mmls"
 
+        sector0_fs = _sector0_filesystem(device)
+        if sector0_fs and data.get("offset_source") == "default (GPT assumed)":
+            offset = 0
+            data["offset_source"] = f"sector0 filesystem signature ({sector0_fs})"
+
         data["partition_offset_sectors"] = offset
         data["partition_offset_bytes"] = offset * 512
+
+        tsk_direct_ok = False
+        tsk_probe = ""
+        if is_e01:
+            tsk_direct_ok, tsk_probe = _tsk_direct_access(device, offset)
+            if tsk_direct_ok:
+                probe_lines = tsk_probe.splitlines()
+                data.update({
+                    "mount_path": device,
+                    "mount_status": "tsk_direct",
+                    "access_mode": "sleuthkit_direct",
+                    "filesystem": sector0_fs,
+                    "tsk_device_path": device,
+                    "tsk_probe_sample": probe_lines[:10],
+                    "next_tools": {
+                        "device_path": device,
+                        "partition_offset_sectors": offset,
+                    },
+                    "note": (
+                        "SleuthKit can read the exposed EWF device directly; OS mounting is "
+                        "not required and may fail when FUSE blocks root without allow_other. "
+                        "Continue with MCP disk tools that support image/device paths instead "
+                        "of manual mount, losetup, or xmount recovery."
+                    ),
+                })
+                return ToolResult(
+                    status="ok",
+                    tool="mount_image",
+                    message=f"Image available for SleuthKit direct access at {device}",
+                    data=data,
+                    duration_seconds=round(_time.monotonic() - _start, 3),
+                ).model_dump()
 
         # Step 3: Mount partition read-only
         Path(disk_mount).mkdir(parents=True, exist_ok=True)
@@ -5159,12 +6011,51 @@ def mount_image(
             mount_cmd = ["/usr/bin/mount", "-o",
                          f"ro,loop,offset={offset * 512}", device, disk_mount]
 
-        proc = _sp.run(mount_cmd, capture_output=True, text=True, timeout=60)
+        run_mount_cmd = list(mount_cmd)
+        if hasattr(_os, "geteuid") and _os.geteuid() != 0 and Path("/usr/bin/sudo").exists():
+            run_mount_cmd = ["/usr/bin/sudo", "-n", *mount_cmd]
+
+        proc = _sp.run(run_mount_cmd, capture_output=True, text=True, timeout=60)
         if proc.returncode != 0:
+            fallback_ok, fallback_probe = _tsk_direct_access(device, offset)
+            if fallback_ok:
+                data.update({
+                    "mount_path": device,
+                    "mount_status": "tsk_direct",
+                    "access_mode": "sleuthkit_direct",
+                    "filesystem": sector0_fs,
+                    "tsk_device_path": device,
+                    "tsk_probe_sample": fallback_probe.splitlines()[:10],
+                    "os_mount_error": proc.stderr.strip(),
+                    "next_tools": {
+                        "device_path": device,
+                        "partition_offset_sectors": offset,
+                    },
+                    "note": (
+                        "OS mount failed, but SleuthKit can read the evidence directly. "
+                        "Continue with MCP disk tools that support image/device paths; do "
+                        "not run manual mount, losetup, or xmount recovery."
+                    ),
+                })
+                return ToolResult(
+                    status="ok",
+                    tool="mount_image",
+                    message=f"OS mount unavailable; image available for SleuthKit direct access at {device}",
+                    data=data,
+                    duration_seconds=round(_time.monotonic() - _start, 3),
+                ).model_dump()
             return ToolResult(
                 status="error", tool="mount_image",
                 error=f"mount failed: {proc.stderr}",
-                data={"hint": f"Run manually: {' '.join(mount_cmd)}"},
+                data={
+                    **data,
+                    "mount_command": run_mount_cmd,
+                    "next_step": (
+                        "mount_image could not mount the detected partition. "
+                        "Do not run the command manually during autonomous triage; "
+                        "surface this MCP error and preserve the state for debugging."
+                    ),
+                },
             ).model_dump()
 
         data["mount_path"] = disk_mount
@@ -5703,21 +6594,12 @@ def sigma_scan(case_id: str) -> dict[str, Any]:
     try:
         _state_manager.load(case_id)
         all_findings = _state_manager.get_findings()
-
-        all_hits: list[ArtifactHit] = []
-        detectors_run: list[str] = []
-
-        # Run each detector
-        for name, func in [
-            ("process_anomaly", _detect_process_anomalies),
-            ("network_anomaly", _detect_network_anomalies),
-            ("mft_timestomp", _detect_mft_anomalies),
-            ("evtx_anomaly", _detect_evtx_anomalies),
-            ("persistence_anomaly", _detect_persistence_anomalies),
-        ]:
-            detectors_run.append(name)
-            hits = func(all_findings)
-            all_hits.extend(hits)
+        scan = run_two_phase_scan(
+            all_findings,
+            enabled_detectors=_state_manager.get_enabled_detectors(),
+        )
+        all_hits: list[ArtifactHit] = scan["hits"]
+        detectors_run: list[str] = scan["detectors_run"]
 
         critical = sum(1 for h in all_hits if h.severity == "CRITICAL")
         high = sum(1 for h in all_hits if h.severity == "HIGH")
@@ -5729,7 +6611,23 @@ def sigma_scan(case_id: str) -> dict[str, Any]:
             critical_count=critical,
             high_count=high,
             detectors_run=detectors_run,
+            detector_warnings=scan["detector_warnings"],
+            detector_timings=scan["detector_timings"],
+            actionable_leads=scan["actionable_leads"],
+            anti_forensics_warnings=scan["anti_forensics_warnings"],
+            data_gaps=scan["data_gaps"],
             summary_markdown=_hits_to_markdown(all_hits),
+        )
+        _state_manager.update_triage_state(
+            triage_status="IN_PROGRESS",
+            status_flags={
+                "open_leads": bool(scan["actionable_leads"]),
+                "anti_forensics_warning": bool(scan["anti_forensics_warnings"]),
+                "unresolved_discrepancy": bool(_state_manager.get_unresolved_discrepancies()),
+            },
+            actionable_leads=scan["actionable_leads"],
+            anti_forensics_warnings=scan["anti_forensics_warnings"],
+            data_gaps=scan["data_gaps"],
         )
 
         payload = result.model_dump()

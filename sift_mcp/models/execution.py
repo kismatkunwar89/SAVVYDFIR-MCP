@@ -12,7 +12,6 @@ execution IDs.
 
 from __future__ import annotations
 
-import threading
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
@@ -25,30 +24,6 @@ _RAW_EVIDENCE_REF_ROLES = {"input", "output", "derived", "handle"}
 
 # ---------------------------------------------------------------------------
 # Auto-incrementing ID counter (thread-safe)
-# ---------------------------------------------------------------------------
-
-
-class _ExecutionIDCounter:
-    """Thread-safe, process-lifetime counter for generating E-NNN IDs."""
-
-    _lock = threading.Lock()
-    _value: int = 0
-
-    @classmethod
-    def next(cls) -> str:
-        with cls._lock:
-            cls._value += 1
-            return f"E-{cls._value:03d}"
-
-    @classmethod
-    def reset(cls, value: int = 0) -> None:
-        """Reset counter (test use only)."""
-        with cls._lock:
-            cls._value = value
-
-
-# ---------------------------------------------------------------------------
-# Correction event
 # ---------------------------------------------------------------------------
 
 
@@ -177,8 +152,8 @@ class Execution(BaseModel):
                                investigation.
     """
 
-    execution_id: str = Field(
-        default_factory=_ExecutionIDCounter.next,
+    execution_id: Optional[str] = Field(
+        default=None,
         pattern=r"^E-\d{3,}$",
         description="Auto-generated sequential ID: E-001, E-002, …",
     )
@@ -285,10 +260,10 @@ class Execution(BaseModel):
 
     @field_validator("execution_id", mode="before")
     @classmethod
-    def _coerce_auto_id(cls, v: object) -> str:
-        """Allow callers to pass None/empty to trigger auto-generation."""
+    def _coerce_auto_id(cls, v: object) -> Optional[str]:
+        """Normalize supplied IDs without allocating process-local IDs."""
         if not v:
-            return _ExecutionIDCounter.next()
+            return None
         return str(v)
 
     @field_validator("finding_ids_generated", mode="before")

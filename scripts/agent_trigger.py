@@ -9,62 +9,76 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-# Map MCP tool -> agent + default instruction
-TOOL_AGENT_MAP: dict[str, tuple[str, str]] = {
+# Map MCP tool -> subagent type + lane + default instruction
+TOOL_AGENT_MAP: dict[str, tuple[str, str, str]] = {
     "mcp__savvydfir__extract_mft_timeline": (
-        "@mft-analyst",
+        "mft-analyst",
+        "timeline_correlation",
         "Analyze the MFT CSV for timestomping, attacker file drops, sequential entry clusters, and staging artifacts.",
     ),
     "mcp__savvydfir__summarize_evtx": (
-        "@evtx-analyst",
+        "evtx-analyst",
+        "event_auth",
         "Analyze the EVTX CSV for auth anomalies, lateral movement, NTLM attacks, persistence, and log clearing.",
     ),
     "mcp__savvydfir__extract_registry_run_keys": (
-        "@registry-analyst",
+        "registry-analyst",
+        "disk_execution_persistence",
         "Analyze the registry CSV for ASEP persistence, fileless malware, LSA packages, and credential theft.",
     ),
     "mcp__savvydfir__get_amcache": (
-        "@amcache-analyst",
+        "amcache-analyst",
+        "disk_execution_persistence",
         "Analyze the Amcache CSV for renamed malware (SHA-1), loose executables, and BYOVD drivers.",
     ),
     "mcp__savvydfir__extract_prefetch": (
-        "@prefetch-analyst",
+        "prefetch-analyst",
+        "disk_execution_persistence",
         "Analyze prefetch records for multi-path execution, SysWOW64 LOLBins, and orphaned .pf files.",
     ),
     "mcp__savvydfir__detect_injection": (
-        "@memory-analyst",
+        "memory-analyst",
+        "memory",
         "Analyze memory injection findings for confirmed code injection, DKOM hidden processes, and C2 indicators.",
     ),
     "mcp__savvydfir__list_dlls": (
-        "@memory-analyst",
+        "memory-analyst",
+        "memory",
         "Analyze loaded DLLs for unsigned modules, DLLs from staging paths, and unexpected network capability.",
     ),
     "mcp__savvydfir__sigma_hunt": (
-        "@sigma-analyst",
+        "sigma-analyst",
+        "timeline_correlation",
         "Analyze the Sigma rule hits: triage false positives, confirm ATT&CK techniques, and cross-reference with existing findings.",
     ),
     "mcp__savvydfir__analyze_vss": (
-        "@evtx-analyst",
+        "evtx-analyst",
+        "anti_forensics_recovery",
         "Analyze VSS shadow copy inventory and recover pre-incident logs when available.",
     ),
     "mcp__savvydfir__extract_pca": (
-        "@prefetch-analyst",
+        "prefetch-analyst",
+        "disk_execution_persistence",
         "Analyze PCA execution artifacts and correlate them with Amcache and Prefetch.",
     ),
     "mcp__savvydfir__extract_shimcache": (
-        "@registry-analyst",
+        "registry-analyst",
+        "disk_execution_persistence",
         "Analyze ShimCache entries, corroborate with Amcache/Prefetch, and flag suspicious execution paths.",
     ),
     "mcp__savvydfir__extract_srum": (
-        "@srum-analyst",
+        "srum-analyst",
+        "timeline_correlation",
         "Analyze SRUM network usage, quantify exfiltration volume, and flag deleted or unresolved applications.",
     ),
     "mcp__savvydfir__build_timeline": (
-        "@timeline-analyst",
+        "timeline-analyst",
+        "timeline_correlation",
         "Use the storage handle to run narrow timeline pivots around attacker time windows, execution paths, and cleanup activity.",
     ),
     "mcp__savvydfir__query_timeline": (
-        "@timeline-analyst",
+        "timeline-analyst",
+        "timeline_correlation",
         "Review the bounded timeline slice, identify the strongest pivots, and refine the next query window.",
     ),
 }
@@ -149,12 +163,35 @@ def _detect_block_reason(result_data: dict[str, Any], raw_text: str) -> Optional
     return None
 
 
-def _resolve_dispatch(tool_name: str, result_data: dict[str, Any]) -> Optional[tuple[str, str]]:
-    """Return (agent, instruction) when this tool result requires delegation."""
+def _normalize_subagent_type(agent: str) -> str:
+    """Return the Agent() subagent_type without legacy @ prose prefix."""
+    return str(agent or "").strip().lstrip("@")
+
+
+def _lane_for_agent(subagent_type: str) -> str:
+    """Best-effort lane mapping for metadata-driven agent requests."""
+    if subagent_type in {"memory-analyst"}:
+        return "memory"
+    if subagent_type in {"evtx-analyst"}:
+        return "event_auth"
+    if subagent_type in {"registry-analyst", "amcache-analyst", "prefetch-analyst"}:
+        return "disk_execution_persistence"
+    if subagent_type in {"sigma-analyst", "timeline-analyst", "mft-analyst", "srum-analyst"}:
+        return "timeline_correlation"
+    return "timeline_correlation"
+
+
+def _resolve_dispatch(tool_name: str, result_data: dict[str, Any]) -> Optional[tuple[str, str, str]]:
+    """Return (subagent_type, lane_id, instruction) when delegation is required."""
     requires_agent = result_data.get("requires_agent")
     agent_instruction = result_data.get("agent_instruction")
     if isinstance(requires_agent, str) and requires_agent.strip():
-        return requires_agent.strip(), str(agent_instruction or "Review the tool output.")
+        subagent_type = _normalize_subagent_type(requires_agent)
+        return (
+            subagent_type,
+            _lane_for_agent(subagent_type),
+            str(agent_instruction or "Review the tool output."),
+        )
 
     if tool_name in ("sigma_scan", "mcp__savvydfir__sigma_scan"):
         total_hits = int(result_data.get("total_hits", 0) or 0)
@@ -163,7 +200,8 @@ def _resolve_dispatch(tool_name: str, result_data: dict[str, Any]) -> Optional[t
         critical = int(result_data.get("critical_count", 0) or 0)
         high = int(result_data.get("high_count", 0) or 0)
         return (
-            "@sigma-analyst",
+            "sigma-analyst",
+            "timeline_correlation",
             (
                 f"Review sigma_scan results immediately. Prioritize {critical} CRITICAL "
                 f"and {high} HIGH anomalies first, then pivot using summary_markdown."
@@ -200,6 +238,46 @@ def _augment_instruction(instruction: str, result_data: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def _source_artifact_path(result_data: dict[str, Any]) -> Optional[str]:
+    """Return the most specific durable artifact path surfaced by a tool result."""
+    for key in (
+        "csv_path",
+        "storage_path",
+        "report_json_path",
+        "export_dir",
+        "evtx_dir",
+        "registry_dir",
+        "amcache_hive",
+        "prefetch_dir",
+        "mft_path",
+        "artifact_path",
+        "resolved_path",
+    ):
+        value = result_data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _agent_description(subagent_type: str, lane_id: str, tool_name: str) -> str:
+    return f"Analyze {lane_id} lane after {tool_name}"
+
+
+def _agent_call_text(
+    *,
+    subagent_type: str,
+    description: str,
+    prompt: str,
+) -> str:
+    return (
+        "Agent("
+        f"subagent_type={json.dumps(subagent_type)}, "
+        f"description={json.dumps(description)}, "
+        f"prompt={json.dumps(prompt)}"
+        ")"
+    )
+
+
 def _write_trigger(trigger: dict[str, Any], trigger_path: Optional[str] = None) -> None:
     try:
         path = Path(trigger_path or os.environ.get(
@@ -225,11 +303,33 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
     if dispatch is None:
         return None
 
-    agent, base_instruction = dispatch
+    subagent_type, lane_id, base_instruction = dispatch
     instruction = _augment_instruction(base_instruction, result_data)
+    source_path = _source_artifact_path(result_data)
+    description = _agent_description(subagent_type, lane_id, tool_name)
+    prompt = (
+        f"Read the current SAVVYDFIR case state, own lane_id={lane_id!r}, and review "
+        f"the source artifact produced by {tool_name}. {instruction} "
+        "Return JSON with lane_id, status, assigned_agent, execution_ids, finding_ids, "
+        "data_gaps, anti_forensics_warnings, unresolved_discrepancies, next_pivots, "
+        "summary, and confidence_notes. Call record_analysis_lane with those validated IDs."
+    )
+    if source_path:
+        prompt += f" Source artifact path: {source_path}."
+    agent_call = _agent_call_text(
+        subagent_type=subagent_type,
+        description=description,
+        prompt=prompt,
+    )
 
     trigger = {
-        "agent": agent,
+        "agent": f"@{subagent_type}",
+        "subagent_type": subagent_type,
+        "description": description,
+        "prompt": prompt,
+        "lane_id": lane_id,
+        "source_artifact_path": source_path,
+        "agent_call": agent_call,
         "tool": tool_name,
         "instruction": instruction,
         "csv_path": result_data.get("csv_path"),
@@ -242,7 +342,8 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
         "decision": "allow",
         "message": (
             f"SAVVYDFIR HOOK: {tool_name} completed. "
-            f"MANDATORY: invoke {agent} before proceeding. Instruction: {instruction}"
+            "MANDATORY: spawn the specialist subagent before proceeding. "
+            f"Use this exact call shape: {agent_call}"
         ),
     }
 

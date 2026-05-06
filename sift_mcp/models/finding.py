@@ -13,7 +13,6 @@ state of each finding and MUST be updated as the investigation progresses.
 
 from __future__ import annotations
 
-import threading
 from datetime import datetime, timezone
 from enum import Enum
 import re
@@ -83,30 +82,6 @@ class FindingStatus(str, Enum):
 # ---------------------------------------------------------------------------
 
 
-class _FindingIDCounter:
-    """Thread-safe, process-lifetime counter for generating F-NNN IDs."""
-
-    _lock = threading.Lock()
-    _value: int = 0
-
-    @classmethod
-    def next(cls) -> str:
-        with cls._lock:
-            cls._value += 1
-            return f"F-{cls._value:03d}"
-
-    @classmethod
-    def reset(cls, value: int = 0) -> None:
-        """Reset counter (test use only)."""
-        with cls._lock:
-            cls._value = value
-
-
-# ---------------------------------------------------------------------------
-# Finding model
-# ---------------------------------------------------------------------------
-
-
 class Finding(BaseModel):
     """A single forensic finding with full provenance.
 
@@ -150,8 +125,8 @@ class Finding(BaseModel):
         updated_at:           UTC timestamp of the most recent modification.
     """
 
-    finding_id: str = Field(
-        default_factory=_FindingIDCounter.next,
+    finding_id: Optional[str] = Field(
+        default=None,
         pattern=r"^F-\d{3,}$",
         description="Auto-generated sequential ID: F-001, F-002, …",
     )
@@ -316,10 +291,10 @@ class Finding(BaseModel):
 
     @field_validator("finding_id", mode="before")
     @classmethod
-    def _coerce_auto_id(cls, v: object) -> str:
-        """Allow callers to pass None/empty to trigger auto-generation."""
+    def _coerce_auto_id(cls, v: object) -> Optional[str]:
+        """Normalize supplied IDs without allocating process-local IDs."""
         if not v:
-            return _FindingIDCounter.next()
+            return None
         return str(v)
 
     @field_validator("mitre_tactic")
