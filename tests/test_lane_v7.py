@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from sift_mcp.reporting import (
+    EXPECTED_LANE_AGENTS,
     classify_missing_artifact_record,
     generate_report_payload,
 )
@@ -10,6 +11,27 @@ from sift_mcp.state import CaseStateManager
 
 
 class LaneV7Tests(unittest.TestCase):
+    def test_expected_lane_agents_cover_all_configured_specialists(self) -> None:
+        expected_agents = {
+            agent
+            for agents in EXPECTED_LANE_AGENTS.values()
+            for agent in agents
+        }
+        for required_agent in {
+            "amcache-analyst",
+            "browser-analyst",
+            "corroboration-analyst",
+            "evtx-analyst",
+            "memory-analyst",
+            "mft-analyst",
+            "prefetch-analyst",
+            "registry-analyst",
+            "sigma-analyst",
+            "srum-analyst",
+            "timeline-analyst",
+        }:
+            self.assertIn(required_agent, expected_agents)
+
     def test_classify_missing_artifact_splits_empty_from_wiped(self) -> None:
         empty = classify_missing_artifact_record(
             artifact_family="Security.evtx",
@@ -352,6 +374,9 @@ class LaneV7Tests(unittest.TestCase):
             )
 
             self.assertEqual(result["triage_status"], "TRIAGE_COMPLETE")
+            self.assertEqual(result["finding_quality_summary"]["raw_persisted_findings"], 1)
+            self.assertEqual(result["finding_quality_summary"]["reportable_findings"], 1)
+            self.assertIn("not a de-duplicated incident count", result["finding_quality_summary"]["semantics"])
             self.assertFalse(result["status_flags"]["specialist_lanes_inferred"])
             self.assertFalse(
                 any(
