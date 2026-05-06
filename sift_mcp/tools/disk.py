@@ -476,6 +476,145 @@ def _resolved_path_str(path: str) -> str:
         return path
 
 
+def _shared_windows_root_candidates() -> list[Path]:
+    """Return common mounted Windows roots that tools may reuse."""
+    candidates: list[Path] = []
+    for root in (Path("/mnt/disk"),):
+        if root.exists():
+            candidates.append(root)
+    return candidates
+
+
+def _candidate_windows_volume_roots(image_path: str) -> list[Path]:
+    """Return possible Windows volume roots for mounted-evidence lookups."""
+    base = Path(image_path)
+    candidates: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Path) -> None:
+        text = str(path)
+        if text in seen:
+            return
+        seen.add(text)
+        candidates.append(path)
+
+    for shared_root in _shared_windows_root_candidates():
+        _add(shared_root)
+
+    if base.exists() and base.is_dir():
+        if (base / "Windows").exists():
+            _add(base)
+        if (base / "mnt" / "C" / "Windows").exists():
+            _add(base / "mnt" / "C")
+
+    if not candidates and base.exists() and base.is_dir():
+        if (base / "mnt" / "C").exists():
+            _add(base / "mnt" / "C")
+        else:
+            _add(base)
+
+    return candidates
+
+
+def _resolve_windows_relative_path(image_path: str, *relative_parts: str) -> str:
+    """Resolve a Windows-relative artifact path from a mounted/root image path."""
+    volume_roots = _candidate_windows_volume_roots(image_path)
+    for root in volume_roots:
+        candidate = root.joinpath(*relative_parts)
+        if candidate.exists():
+            return str(candidate)
+    if volume_roots:
+        return str(volume_roots[0].joinpath(*relative_parts))
+    base = Path(image_path)
+    return str(base.joinpath("mnt", "C", *relative_parts))
+
+
+def _resolve_evtx_dir_input(image_path: str, evtx_dir: Optional[str]) -> str:
+    if evtx_dir is not None:
+        return evtx_dir
+    base = Path(image_path)
+    if base.exists() and base.is_file() and base.suffix.lower() == ".evtx":
+        return str(base.parent)
+    if base.exists() and base.is_dir() and any(base.glob("*.evtx")):
+        return str(base)
+    return _resolve_windows_relative_path(
+        image_path, "Windows", "System32", "winevt", "Logs"
+    )
+
+
+def _resolve_registry_hive_dir_input(image_path: str, hive_dir: Optional[str]) -> str:
+    if hive_dir is not None:
+        return hive_dir
+    base = Path(image_path)
+    if base.exists() and base.is_file() and base.name.upper() in {
+        "SYSTEM",
+        "SOFTWARE",
+        "SECURITY",
+        "SAM",
+        "NTUSER.DAT",
+    }:
+        return str(base.parent)
+    if base.exists() and base.is_dir() and any((base / name).exists() for name in ("SYSTEM", "SOFTWARE", "NTUSER.DAT")):
+        return str(base)
+    return _resolve_windows_relative_path(
+        image_path, "Windows", "System32", "config"
+    )
+
+
+def _resolve_amcache_hive_input(image_path: str, hive_path: Optional[str]) -> str:
+    if hive_path is not None:
+        return hive_path
+    base = Path(image_path)
+    if base.exists() and base.is_file() and base.name.lower() == "amcache.hve":
+        return str(base)
+    return _resolve_windows_relative_path(
+        image_path, "Windows", "appcompat", "Programs", "Amcache.hve"
+    )
+
+
+def _resolve_prefetch_dir_input(image_path: str, prefetch_dir: Optional[str]) -> str:
+    if prefetch_dir is not None:
+        return prefetch_dir
+    base = Path(image_path)
+    if base.exists() and base.is_dir() and any(base.glob("*.pf")):
+        return str(base)
+    return _resolve_windows_relative_path(image_path, "Windows", "Prefetch")
+
+
+def _resolve_mft_path_input(image_path: str, mft_path: Optional[str]) -> str:
+    if mft_path is not None:
+        return mft_path
+    base = Path(image_path)
+    if base.exists() and base.is_file() and base.name == "$MFT":
+        return str(base)
+    return _resolve_windows_relative_path(image_path, "$MFT")
+
+
+def _path_missing_error(
+    tool_name: str,
+    *,
+    input_name: str,
+    resolved_path: str,
+    image_path: str,
+) -> dict[str, Any]:
+    """Return a standardised error when an inferred artifact path does not exist."""
+    return {
+        "tool_name": tool_name,
+        "status": "error",
+        "error_message": (
+            f"Resolved {input_name} does not exist: {resolved_path}. "
+            "Provide the artifact path explicitly or mount the Windows volume root first."
+        ),
+        "data": [],
+        "findings_created": [],
+        "execution_id": None,
+        "raw_command": None,
+        "input_name": input_name,
+        "resolved_path": resolved_path,
+        "image_path": image_path,
+    }
+
+
 def _dt_to_iso(value: Optional[datetime]) -> Optional[str]:
     if value is None:
         return None
@@ -554,7 +693,8 @@ def _prefetch_mft_candidate_path(row: dict[str, str]) -> str:
     file_name = str(row.get("FileName") or "").strip()
     parent_path = str(row.get("ParentPath") or row.get("FilePath") or "").strip()
     if parent_path and file_name:
-        return f"{parent_path.rstrip('/\\\\')}/{file_name}"
+        trimmed_parent = parent_path.rstrip("/\\")
+        return f"{trimmed_parent}/{file_name}"
     return file_name or parent_path
 
 
@@ -1814,17 +1954,15 @@ def extract_prefetch(
         return _not_initialised(tool)
     normalized_format = _normalize_response_format(response_format)
 
-    # Derive default prefetch directory from image path
-    if prefetch_dir is None:
-        base = Path(image_path)
-        # Detect if image_path IS the mounted filesystem (e.g. /mnt/disk)
-        if (base / "Windows" / "Prefetch").exists():
-            prefetch_dir = str(base / "Windows" / "Prefetch")
-        elif (base / "Windows").exists():
-            prefetch_dir = str(base / "Windows" / "Prefetch")
-        else:
-            # Legacy convention: <case_dir>/evidence/mnt/C/Windows/Prefetch
-            prefetch_dir = str(base / "mnt" / "C" / "Windows" / "Prefetch")
+    prefetch_dir = _resolve_prefetch_dir_input(image_path, prefetch_dir)
+    resolved_prefetch_dir = _resolved_path_str(prefetch_dir)
+    if not Path(resolved_prefetch_dir).exists():
+        return _path_missing_error(
+            tool,
+            input_name="prefetch_dir",
+            resolved_path=resolved_prefetch_dir,
+            image_path=image_path,
+        )
     preflight = _preflight_artifact_persistence("prefetch", "prefetch.csv")
     if not preflight.get("ok"):
         return _artifact_preflight_error(tool_name=tool, preflight=preflight)
@@ -1845,7 +1983,7 @@ def extract_prefetch(
             "data": [], "findings_created": [], "records_count": 0,
         }
 
-    pf_files = sorted(Path(prefetch_dir).glob("*.pf"))
+    pf_files = sorted(Path(resolved_prefetch_dir).glob("*.pf"))
     if max_entries > 0:
         pf_files = pf_files[:max_entries]
 
@@ -1898,7 +2036,7 @@ def extract_prefetch(
             case_id=_case_id(),
             finding_type="other",
             artifact_type="disk",
-            artifact_path=prefetch_dir,
+            artifact_path=resolved_prefetch_dir,
             tool_name=tool,
             execution_id=exec_id,
             iteration=_current_iteration(),
@@ -1906,7 +2044,7 @@ def extract_prefetch(
             finding_status=FindingStatus.ACTIVE,
             confidence=0.95,
             description=(
-                f"Prefetch: parsed {len(records)} .pf files from {prefetch_dir}. "
+                f"Prefetch: parsed {len(records)} .pf files from {resolved_prefetch_dir}. "
                 f"Binaries executed range: {first_runs[0].executable_name if first_runs else 'unknown'} "
                 f"to {first_runs[-1].executable_name if first_runs else 'unknown'}. "
                 "Use run_analysis() to identify suspicious execution patterns."
@@ -2036,14 +2174,15 @@ def get_amcache(
             "raw_command": None,
         }
 
-    if hive_path is None:
-        base = Path(image_path)
-        _amcache = base / "Windows" / "appcompat" / "Programs" / "Amcache.hve"
-        if _amcache.exists():
-            hive_path = str(_amcache)
-        else:
-            hive_path = str(base / "mnt" / "C" / "Windows" /
-                            "appcompat" / "Programs" / "Amcache.hve")
+    hive_path = _resolve_amcache_hive_input(image_path, hive_path)
+    resolved_hive_path = _resolved_path_str(hive_path)
+    if not Path(resolved_hive_path).exists():
+        return _path_missing_error(
+            tool,
+            input_name="hive_path",
+            resolved_path=resolved_hive_path,
+            image_path=image_path,
+        )
     preflight = _preflight_artifact_persistence(
         "amcache",
         "amcache_UnassociatedFileEntries.csv",
@@ -2059,7 +2198,7 @@ def get_amcache(
 
         try:
             result = _ez_runner.run_amcacheparser(
-                hive_path=hive_path,
+                hive_path=resolved_hive_path,
                 csv_dir=tmp_dir,
                 csv_filename=csv_filename,
                 tool_name=tool,
@@ -2276,18 +2415,19 @@ def extract_mft_timeline(
             "raw_command": None,
         }
 
-    if mft_path is None:
-        base = Path(image_path)
-        _mft = base / "$MFT"
-        if _mft.exists():
-            mft_path = str(_mft)
-        else:
-            mft_path = str(base / "mnt" / "C" / "$MFT")
+    mft_path = _resolve_mft_path_input(image_path, mft_path)
+    resolved_mft_path = _resolved_path_str(mft_path)
+    if not Path(resolved_mft_path).exists():
+        return _path_missing_error(
+            tool,
+            input_name="mft_path",
+            resolved_path=resolved_mft_path,
+            image_path=image_path,
+        )
     preflight = _preflight_artifact_persistence("mft", "mft_timeline.csv")
     if not preflight.get("ok"):
         return _artifact_preflight_error(tool_name=tool, preflight=preflight)
 
-    resolved_mft_path = _resolved_path_str(mft_path)
     cache_key = build_cache_key(tool, {"mft_path": resolved_mft_path})
     cached = get_valid_cached_artifact(
         _state,
@@ -2365,7 +2505,7 @@ def extract_mft_timeline(
 
         try:
             result = _ez_runner.run_mftecmd(
-                mft_path=mft_path,
+                mft_path=resolved_mft_path,
                 csv_dir=tmp_dir,
                 csv_filename=csv_filename,
                 tool_name=tool,
@@ -2398,7 +2538,7 @@ def extract_mft_timeline(
 
     records, finding_ids, timestomping_candidates = _build_mft_records(
         rows,
-        mft_path=mft_path,
+        mft_path=resolved_mft_path,
         tool=tool,
         execution_id=result.execution_id,
         create_findings=True,
@@ -2712,14 +2852,15 @@ def summarize_evtx(
             "raw_command": None,
         }
 
-    if evtx_dir is None:
-        base = Path(image_path)
-        _evtx = base / "Windows" / "System32" / "winevt" / "Logs"
-        if _evtx.exists():
-            evtx_dir = str(_evtx)
-        else:
-            evtx_dir = str(base / "mnt" / "C" / "Windows" /
-                           "System32" / "winevt" / "Logs")
+    evtx_dir = _resolve_evtx_dir_input(image_path, evtx_dir)
+    resolved_evtx_dir = _resolved_path_str(evtx_dir)
+    if not Path(resolved_evtx_dir).exists():
+        return _path_missing_error(
+            tool,
+            input_name="evtx_dir",
+            resolved_path=resolved_evtx_dir,
+            image_path=image_path,
+        )
     preflight = _preflight_artifact_persistence("evtx", "evtx_timeline.csv")
     if not preflight.get("ok"):
         return _artifact_preflight_error(tool_name=tool, preflight=preflight)
@@ -2747,7 +2888,7 @@ def summarize_evtx(
     # findings grow) from busting the cache and re-running EvtxECmd 30×.
     caller_specified_eids = event_ids is not None
     cache_base_params = {
-        "evtx_dir": _resolved_path_str(evtx_dir),
+        "evtx_dir": resolved_evtx_dir,
         "channel": channel or "",
         "start_date": start_date or "",
         "end_date": end_date or "",
@@ -2869,7 +3010,7 @@ def summarize_evtx(
         # Pass event_ids=[] explicitly to disable filtering.
         try:
             result = _ez_runner.run_evtxecmd(
-                evtx_dir=evtx_dir,
+                evtx_dir=resolved_evtx_dir,
                 csv_dir=tmp_dir,
                 csv_filename=csv_filename,
                 start_date=start_date,
@@ -3138,19 +3279,19 @@ def extract_registry_run_keys(
             "raw_command": None,
         }
 
-    if hive_dir is None:
-        base = Path(image_path)
-        _config = base / "Windows" / "System32" / "config"
-        if _config.exists():
-            hive_dir = str(_config)
-        else:
-            hive_dir = str(base / "mnt" / "C" / "Windows" /
-                           "System32" / "config")
+    hive_dir = _resolve_registry_hive_dir_input(image_path, hive_dir)
     preflight = _preflight_artifact_persistence("registry", "registry_combined.csv")
     suppressed_preflight = _preflight_artifact_persistence("registry", "registry_suppressed.csv")
     if not preflight.get("ok"):
         return _artifact_preflight_error(tool_name=tool, preflight=preflight)
     resolved_hive_dir = _resolved_path_str(hive_dir)
+    if not Path(resolved_hive_dir).exists():
+        return _path_missing_error(
+            tool,
+            input_name="hive_dir",
+            resolved_path=resolved_hive_dir,
+            image_path=image_path,
+        )
 
     # Resolve DFIRBatch file path
     batch_file_used: Optional[str] = None
@@ -3171,12 +3312,15 @@ def extract_registry_run_keys(
     user_hives_found: list[str] = []
 
     # Discover user NTUSER.DAT hives
-    base = Path(image_path)
-    for users_root in [
-        base / "Users",
-        base / "mnt" / "C" / "Users",
-        base / "Documents and Settings",
-    ]:
+    user_roots: list[Path] = []
+    seen_user_roots: set[str] = set()
+    for volume_root in _candidate_windows_volume_roots(image_path):
+        for users_root in (volume_root / "Users", volume_root / "Documents and Settings"):
+            text = str(users_root)
+            if text not in seen_user_roots:
+                seen_user_roots.add(text)
+                user_roots.append(users_root)
+    for users_root in user_roots:
         if users_root.exists() and users_root.is_dir():
             for user_dir in users_root.iterdir():
                 if user_dir.is_dir() and user_dir.name not in ("Public", "Default", "Default User", "All Users"):
@@ -3308,7 +3452,7 @@ def extract_registry_run_keys(
 
         try:
             result = _ez_runner.run_recmd(
-                hive_dir=hive_dir,
+                hive_dir=resolved_hive_dir,
                 csv_dir=tmp_dir,
                 csv_filename=csv_filename,
                 batch_file=batch_file_used,
