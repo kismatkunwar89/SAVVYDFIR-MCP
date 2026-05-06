@@ -45,6 +45,40 @@ class LaneControlToolTests(unittest.TestCase):
             self.assertIn("do_not_start_artifact_collection_until", result)
             self.assertNotIn("known_iocs", result)
 
+    def test_start_investigation_warns_when_case_state_already_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server = _load_server_for_test(Path(tmp_dir))
+            server._state_manager.load("CASE-REUSE")
+            server._state_manager.add_execution(
+                {
+                    "case_id": "CASE-REUSE",
+                    "execution_id": "E-001",
+                    "iteration": 1,
+                    "tool_name": "memory.list_processes",
+                    "command_line": "list_processes()",
+                }
+            )
+            manifest = Path(tmp_dir) / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "case_id": "CASE-REUSE",
+                        "mode": "blind",
+                        "disk_images": [],
+                        "memory_dumps": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = server.start_investigation(str(manifest))
+
+            self.assertEqual(result["status"], "ok")
+            self.assertTrue(result["existing_case_state_detected"])
+            self.assertEqual(result["existing_case_counts"]["executions_count"], 1)
+            self.assertIn("case_reuse_warning", result)
+            self.assertIn("finding_count_accuracy_note", result)
+
     def test_environment_preflight_reports_dependency_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             server = _load_server_for_test(Path(tmp_dir))
@@ -166,7 +200,7 @@ class LaneControlToolTests(unittest.TestCase):
             for key in ("evtx_dir", "registry_dir", "amcache_hive", "prefetch_dir", "mft_path"):
                 self.assertIsNotNone(result[key])
                 self.assertTrue(str(result[key]).startswith(str(Path(tmp_dir) / "CASE-RAW" / "artifacts" / "raw")))
-                self.assertIn("/artifacts/raw/", str(result[key]))
+                self.assertIn("/artifacts/raw/", str(result[key]).replace("\\", "/"))
             self.assertFalse(result["data_gaps"])
 
     def test_generate_report_surfaces_graph_missing_and_gate_blockers(self) -> None:

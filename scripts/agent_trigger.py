@@ -174,7 +174,7 @@ def _lane_for_agent(subagent_type: str) -> str:
         return "memory"
     if subagent_type in {"evtx-analyst"}:
         return "event_auth"
-    if subagent_type in {"registry-analyst", "amcache-analyst", "prefetch-analyst"}:
+    if subagent_type in {"registry-analyst", "amcache-analyst", "prefetch-analyst", "browser-analyst"}:
         return "disk_execution_persistence"
     if subagent_type in {"sigma-analyst", "timeline-analyst", "mft-analyst", "srum-analyst"}:
         return "timeline_correlation"

@@ -64,6 +64,27 @@ def _count_by_key(
     return counts
 
 
+def _finding_quality_summary(findings: list[dict[str, Any]]) -> dict[str, Any]:
+    """Clarify raw finding counts versus reportable investigation claims."""
+    status_breakdown = _count_by_key(findings, "finding_status")
+    reportable_statuses = {"CONFIRMED", "HYPOTHESIS", "ACTIVE"}
+    reportable_count = sum(status_breakdown.get(status, 0) for status in reportable_statuses)
+    return {
+        "raw_persisted_findings": len(findings),
+        "reportable_findings": reportable_count,
+        "confirmed_findings": status_breakdown.get("CONFIRMED", 0),
+        "active_or_hypothesis_findings": (
+            status_breakdown.get("ACTIVE", 0) + status_breakdown.get("HYPOTHESIS", 0)
+        ),
+        "rejected_findings": status_breakdown.get("REJECTED", 0),
+        "semantics": (
+            "findings_count is the raw persisted finding-record count. "
+            "It is not a de-duplicated incident count; use reportable_findings "
+            "and status_breakdown for investigation quality."
+        ),
+    }
+
+
 def _render_findings_rows(findings: list[dict[str, Any]]) -> str:
     rows: list[str] = []
     for finding in findings:
@@ -169,11 +190,18 @@ EXPECTED_LANE_AGENTS: dict[str, tuple[str, ...]] = {
         "registry-analyst",
         "prefetch-analyst",
         "amcache-analyst",
+        "browser-analyst",
     ),
     "event_auth": ("evtx-analyst",),
-    "anti_forensics_recovery": ("sigma-analyst",),
+    "anti_forensics_recovery": (
+        "evtx-analyst",
+        "sigma-analyst",
+        "timeline-analyst",
+    ),
     "timeline_correlation": (
         "mft-analyst",
+        "sigma-analyst",
+        "srum-analyst",
         "timeline-analyst",
         "corroboration-analyst",
     ),
@@ -808,6 +836,7 @@ def generate_report_payload(
 
     status_breakdown = _count_by_key(findings, "finding_status")
     evidence_kind_breakdown = _count_by_key(findings, "evidence_kind")
+    finding_quality = _finding_quality_summary(findings)
 
     actionable_leads = list(sigma_result.get("actionable_leads", []))
     validation = validate_report(
@@ -855,6 +884,7 @@ def generate_report_payload(
         "top_findings": _rank_findings(findings),
         "status_breakdown": status_breakdown,
         "evidence_kind_breakdown": evidence_kind_breakdown,
+        "finding_quality_summary": finding_quality,
         "report_path": str(report_path),
         "report_json_path": str(report_json_path),
         "graph_path": str(graph_html_path) if graph_html_path.exists() else None,

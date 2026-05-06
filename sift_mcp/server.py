@@ -4780,6 +4780,13 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
 
         # Initialise case state
         _state_manager.load(case_id)
+        existing_summary = _state_manager.to_summary()
+        existing_case_counts = {
+            "findings_count": int(existing_summary.get("findings_count", 0) or 0),
+            "executions_count": int(existing_summary.get("executions_count", 0) or 0),
+            "unresolved_discrepancies": int(existing_summary.get("unresolved_discrepancies", 0) or 0),
+        }
+        existing_case_state_detected = any(existing_case_counts.values())
         _state_manager.set_status("IN_PROGRESS")
         _state_manager.update_triage_state(triage_status="IN_PROGRESS")
         _state_manager.set_enabled_detectors(enabled_detectors)
@@ -4842,7 +4849,20 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
                 "each disk image has a mount_image result or a classified access gap",
                 "each memory dump has a load_memory result or a classified access gap",
             ],
+            "existing_case_state_detected": existing_case_state_detected,
+            "existing_case_counts": existing_case_counts,
         }
+        if existing_case_state_detected:
+            result["case_reuse_warning"] = (
+                "Existing persisted state was found for this case_id. New findings "
+                "will append to prior findings unless the operator archives/clears "
+                "analysis/state.json and audit.jsonl before rerun."
+            )
+            result["finding_count_accuracy_note"] = (
+                "Finding totals from this run may include prior executions; compare "
+                "new execution IDs and report finding_quality_summary before using "
+                "the count as an investigation-quality metric."
+            )
 
         # Only include IOCs in seeded mode
         if mode == "seeded" and known_iocs:

@@ -12,7 +12,7 @@ This workflow is an investigation loop, not a checklist. The parent agent keeps 
 ## Non-Negotiables
 - Use MCP tools for forensic work. Shell fallback is only for classifying a tool gap.
 - Keep large artifacts out of parent context. EVTX, MFT, Registry, Amcache, Prefetch, and timeline data must be delegated by handle (`csv_path`, `storage_path`, or raw artifact directory).
-- Delegate immediately after large artifact tools: `@mft-analyst`, `@evtx-analyst`, `@registry-analyst`, `@prefetch-analyst`, `@amcache-analyst`, `@timeline-analyst`, `@corroboration-analyst`.
+- Delegate immediately after large artifact tools: `@mft-analyst`, `@evtx-analyst`, `@registry-analyst`, `@prefetch-analyst`, `@amcache-analyst`, `@sigma-analyst`, `@srum-analyst`, `@browser-analyst`, `@timeline-analyst`, `@corroboration-analyst`.
 - After a specialist returns, the parent calls `record_analysis_lane(...)` with validated execution and finding IDs. If a subagent is unavailable, the parent may record `assigned_agent="main-agent"` with an explicit reason.
 - If a parser returns `needs_extract_windows_artifacts=true`, call `extract_windows_artifacts(...)` and rerun the parser on the durable `/cases/<case_id>/artifacts/raw/...` path.
 - If `artifact_persistence.status="transient"` but `csv_path` exists, the CSV is still the data handle. Delegate on the handle; do not manually extract with `icat` or direct `dotnet`.
@@ -69,6 +69,9 @@ Group B - run one at a time or in small safe batches:
 5. `extract_mft_timeline(image_path)` -> delegate to `@mft-analyst`
 6. `summarize_evtx(image_path, channel="Security")` -> delegate to `@evtx-analyst`
 7. `extract_registry_run_keys(image_path)` -> delegate to `@registry-analyst`
+8. `get_amcache(image_path)` -> delegate to `@amcache-analyst`
+9. `extract_prefetch(image_path)` -> delegate to `@prefetch-analyst`
+10. `extract_srum(image_path)` when SRUM exists or exfil volume matters -> delegate to `@srum-analyst`
 
 Use durable handles as context:
 
@@ -87,13 +90,39 @@ Analyze EVTX CSV handles for <case_id>. Prioritize 1102/104 log clearing, 4648 t
 Analyze Registry, Amcache, Prefetch, ShimCache, and PCA handles for <case_id>. Confirm persistence, service installs, Run keys, execution inventory, suspicious hashes, and missing-artifact gaps. Return the Specialist Contract with lane_id="disk_execution_persistence".
 ```
 
+```text
+@amcache-analyst
+Analyze the Amcache handle for <case_id>. Corroborate execution inventory, renamed binaries, first-run timestamps, SHA-1s, and missing binary gaps. Return the Specialist Contract with lane_id="disk_execution_persistence".
+```
+
+```text
+@prefetch-analyst
+Analyze Prefetch/PCA handles for <case_id>. Corroborate execution count, run times, multi-path execution, orphaned PF files, and deleted binaries. Return the Specialist Contract with lane_id="disk_execution_persistence".
+```
+
+```text
+@srum-analyst
+Analyze SRUM handles for <case_id>. Quantify network usage by application, spot deleted or unresolved executables, and support exfiltration/lateral-movement hypotheses. Return the Specialist Contract with lane_id="timeline_correlation".
+```
+
+```text
+@browser-analyst
+Analyze browser artifacts only when collected or relevant to the hypothesis. Look for download/referrer history, suspicious extensions, sync artifacts, and initial-access pivots. Return the Specialist Contract with lane_id="disk_execution_persistence".
+```
+
 Gate: major artifact lanes are either specialist-owned or explicitly recorded by the parent with a data gap.
 
 ## Phase 3: Detection and Corroboration
 1. `sigma_scan(case_id)` and/or `sigma_hunt(...)`
 2. Review CRITICAL/HIGH hits first and follow `pivot_suggestion`
 3. `compare_disk_and_memory(case_id)`
-4. Delegate to `@corroboration-analyst`
+4. Delegate Sigma results to `@sigma-analyst` when there are hits, log/data gaps, or anti-forensics context to adjudicate
+5. Delegate to `@corroboration-analyst`
+
+```text
+@sigma-analyst
+Analyze Sigma results for <case_id>. Triage false positives, explain zero-hit limitations when evidence was wiped, map confirmed detections to ATT&CK, and return the Specialist Contract with lane_id="timeline_correlation".
+```
 
 ```text
 @corroboration-analyst
