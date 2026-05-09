@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -92,6 +93,14 @@ ERROR_PATTERNS: dict[str, str] = {
 
 DEFAULT_TRIGGER_PATH = "/tmp/savvydfir_delegate.json"
 SAVVYDFIR_TOOL_PREFIXES = ("mcp__savvydfir__", "savvydfir__")
+REPORT_GATE_TOOLS = {"generate_report", "mcp__savvydfir__generate_report"}
+try:
+    _trigger_age_raw = int(
+        os.environ.get("SAVVYDFIR_TRIGGER_MAX_AGE_SECONDS", "21600") or "21600"
+    )
+except ValueError:
+    _trigger_age_raw = 21600
+TRIGGER_MAX_AGE_SECONDS = max(0, _trigger_age_raw)
 DELEGATION_BYPASS_TOOLS = {
     # Lane control — unblocks the pending delegate
     "mcp__savvydfir__read_state",
@@ -142,6 +151,86 @@ def _is_savvydfir_tool(tool_name: str) -> bool:
     if any(name in TOOL_AGENT_MAP for name in candidates):
         return True
     return any(name in DELEGATION_BYPASS_TOOLS for name in candidates)
+
+
+def _is_report_gate_tool(tool_name: str) -> bool:
+    return any(name in REPORT_GATE_TOOLS for name in _candidate_tool_names(tool_name))
+
+
+def _event_input_dicts(event: dict[str, Any]) -> list[dict[str, Any]]:
+    inputs: list[dict[str, Any]] = []
+    for key in ("tool_input", "toolInput", "input"):
+        maybe = event.get(key)
+        if isinstance(maybe, dict):
+            inputs.append(maybe)
+    return inputs
+
+
+def _event_case_id(event: dict[str, Any], result_data: dict[str, Any]) -> str:
+    for payload in _event_input_dicts(event):
+        case_id = payload.get("case_id")
+        if case_id is not None and str(case_id).strip():
+            return str(case_id).strip()
+    case_id = result_data.get("case_id")
+    if case_id is not None and str(case_id).strip():
+        return str(case_id).strip()
+    lane = result_data.get("lane")
+    if isinstance(lane, dict):
+        nested_case_id = lane.get("case_id")
+        if nested_case_id is not None and str(nested_case_id).strip():
+            return str(nested_case_id).strip()
+    return ""
+
+
+def _event_context(event: dict[str, Any], result_data: dict[str, Any]) -> dict[str, str]:
+    session_id = str(event.get("session_id") or event.get("sessionId") or "").strip()
+    cwd = str(event.get("cwd") or "").strip()
+    case_id = _event_case_id(event, result_data)
+    return {
+        "session_id": session_id,
+        "cwd": cwd,
+        "case_id": case_id,
+    }
+
+
+def _parse_iso8601(value: Any) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _trigger_is_stale(trigger: dict[str, Any]) -> bool:
+    if TRIGGER_MAX_AGE_SECONDS <= 0:
+        return False
+    created_at = _parse_iso8601(trigger.get("created_at"))
+    if created_at is None:
+        return False
+    age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
+    return age_seconds > TRIGGER_MAX_AGE_SECONDS
+
+
+def _pending_matches_context(trigger: dict[str, Any], context: dict[str, str]) -> bool:
+    if not isinstance(trigger, dict):
+        return False
+    if trigger.get("processed"):
+        return False
+    if _trigger_is_stale(trigger):
+        return False
+    for key in ("case_id", "session_id", "cwd"):
+        trigger_value = str(trigger.get(key) or "").strip()
+        context_value = str(context.get(key) or "").strip()
+        if trigger_value and context_value and trigger_value != context_value:
+            return False
+    return True
 
 
 def _parse_result_payload(tool_result: Any) -> tuple[dict[str, Any], str]:
@@ -371,12 +460,10 @@ def _recorded_lane_id_from_event(
     event: dict[str, Any], result_data: dict[str, Any]
 ) -> str:
     """Resolve lane_id from hook event (tool input) or tool result payload."""
-    for key in ("tool_input", "toolInput", "input"):
-        inp = event.get(key)
-        if isinstance(inp, dict):
-            lane = inp.get("lane_id")
-            if lane is not None and str(lane).strip():
-                return str(lane).strip()
+    for payload in _event_input_dicts(event):
+        lane = payload.get("lane_id")
+        if lane is not None and str(lane).strip():
+            return str(lane).strip()
     lane_value = result_data.get("lane_id")
     if lane_value is not None and str(lane_value).strip():
         return str(lane_value).strip()
@@ -386,6 +473,21 @@ def _recorded_lane_id_from_event(
         if nested_lane is not None and str(nested_lane).strip():
             return str(nested_lane).strip()
     return ""
+
+
+def _pending_requires_hard_block(
+    trigger: dict[str, Any], tool_name: str, result_data: dict[str, Any]
+) -> bool:
+    if _is_report_gate_tool(tool_name):
+        return True
+    pending_lane = str(trigger.get("lane_id") or "").strip()
+    if not pending_lane:
+        return False
+    dispatch = _resolve_dispatch(tool_name, result_data)
+    if dispatch is None:
+        return False
+    _, lane_id, _ = dispatch
+    return lane_id == pending_lane
 
 
 def _delegation_block_reason(trigger: dict[str, Any]) -> str:
@@ -431,13 +533,18 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
     if not tool_name:
         return None
 
+    context = _event_context(event, result_data)
     pending = _read_pending_trigger(trigger_path=trigger_path)
+    if pending and not _pending_matches_context(pending, context):
+        _mark_trigger_processed(trigger_path=trigger_path)
+        pending = None
 
-    if tool_name in DELEGATION_BYPASS_TOOLS:
+    candidate_names = set(_candidate_tool_names(tool_name))
+    if any(name in DELEGATION_BYPASS_TOOLS for name in candidate_names):
         status_ok = str(result_data.get("status") or "").lower() in {"ok", "success"}
-        if status_ok and tool_name in (
-            "mcp__savvydfir__record_analysis_lane",
-            "record_analysis_lane",
+        if status_ok and any(
+            name in {"mcp__savvydfir__record_analysis_lane", "record_analysis_lane"}
+            for name in candidate_names
         ):
             if pending:
                 recorded_lane = _recorded_lane_id_from_event(event, result_data)
@@ -447,10 +554,12 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
         return None
 
     if pending and _is_savvydfir_tool(tool_name):
-        return {
-            "decision": "block",
-            "reason": _delegation_block_reason(pending),
-        }
+        if _pending_requires_hard_block(pending, tool_name, result_data):
+            return {
+                "decision": "block",
+                "reason": _delegation_block_reason(pending),
+            }
+        return None
 
     block_reason = _detect_block_reason(result_data, raw_text)
     if block_reason:
@@ -494,6 +603,10 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
         "instruction": instruction,
         "csv_path": result_data.get("csv_path"),
         "storage_path": result_data.get("storage_path"),
+        "case_id": context.get("case_id") or "",
+        "session_id": context.get("session_id") or "",
+        "cwd": context.get("cwd") or "",
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "processed": False,
     }
     _write_trigger(trigger, trigger_path=trigger_path)

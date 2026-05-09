@@ -97,6 +97,7 @@ from sift_mcp.reporting import (
     EXPECTED_LANE_AGENTS,
     classify_missing_artifact_record,
     generate_report_payload,
+    refresh_report_graph_flags,
 )
 from sift_mcp.safe_analysis import SafeAnalysisError, run_safe_analysis
 from sift_mcp.semantics import compute_coverage_from_findings
@@ -2131,6 +2132,30 @@ def generate_graph(
     dict
         status, graph_html_path, graph_json_path, node_count, edge_count.
     """
+    import re
+    import time as _time
+
+    _tool = "graph.generate_graph"
+    _eid = _audit_logger.next_execution_id()
+    _params = {
+        "case_id": case_id,
+        "state_path": state_path,
+        "audit_path": audit_path,
+        "output_path": output_path,
+    }
+    _cmd_repr = (
+        f"generate_graph({case_id!r}, state_path={state_path!r}, "
+        f"audit_path={audit_path!r}, output_path={output_path!r})"
+    )
+    _started = _audit_logger.log_execution(
+        execution_id=_eid,
+        tool_name=_tool,
+        parameters=_params,
+        command_line=_cmd_repr,
+    )
+    _t0 = _time.monotonic()
+    result: dict[str, Any]
+
     # Resolve paths — respect per-host analysis dir set by run_investigation.py
     analysis_dir = _ANALYSIS_DIR
     reports_dir = Path("./reports").resolve()
@@ -2156,73 +2181,114 @@ def generate_graph(
         graph_script = Path("./scripts/investigation_graph.py").resolve()
 
     if not graph_script.exists():
-        return {
+        result = {
             "status": "error",
             "error": (
                 f"investigation_graph.py not found at {graph_script}. "
                 "Ensure scripts/investigation_graph.py exists in the project root."
             ),
         }
+    else:
+        # Ensure output directory exists
+        try:
+            resolved_output.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            result = {"status": "error", "error": f"Cannot create output directory: {exc}"}
+        else:
+            cmd = [
+                sys.executable,
+                str(graph_script),
+                "--state", str(resolved_state),
+                "--audit", str(resolved_audit),
+                "--output", str(resolved_output),
+            ]
 
-    # Ensure output directory exists
-    try:
-        resolved_output.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        return {"status": "error", "error": f"Cannot create output directory: {exc}"}
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=120,
+                    shell=False,
+                )
+            except subprocess.TimeoutExpired:
+                result = {"status": "error", "error": "generate_graph timed out (120 s)"}
+            except Exception as exc:
+                result = {
+                    "status": "error",
+                    "error": f"Failed to run investigation_graph.py: {exc}",
+                }
+            else:
+                if proc.returncode != 0:
+                    result = {
+                        "status": "error",
+                        "error": f"investigation_graph.py exited {proc.returncode}",
+                        "stderr": proc.stderr[:2000],
+                    }
+                else:
+                    # Parse node/edge counts from stdout
+                    node_count = 0
+                    edge_count = 0
+                    for line in proc.stdout.splitlines():
+                        m = re.search(r"nodes:\s*(\d+)", line)
+                        if m:
+                            node_count = int(m.group(1))
+                        m = re.search(r"edges:\s*(\d+)", line)
+                        if m:
+                            edge_count = int(m.group(1))
 
-    cmd = [
-        sys.executable,
-        str(graph_script),
-        "--state", str(resolved_state),
-        "--audit", str(resolved_audit),
-        "--output", str(resolved_output),
-    ]
+                    graph_json_path = str(resolved_output.with_name("graph.json"))
 
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=120,
-            shell=False,
+                    result = {
+                        "status": "ok",
+                        "case_id": case_id,
+                        "graph_html_path": str(resolved_output),
+                        "graph_json_path": graph_json_path,
+                        "node_count": node_count,
+                        "edge_count": edge_count,
+                        "stdout": proc.stdout[-1000:],
+                    }
+                    _refresh = refresh_report_graph_flags(
+                        case_id=case_id,
+                        reports_root=str(reports_dir),
+                    )
+                    result["report_refresh"] = _refresh
+
+    duration = _time.monotonic() - _t0
+    exit_code = 0 if result.get("status") == "ok" else 1
+    if result.get("status") == "ok":
+        outputs_summary = (
+            f"graph ok: nodes={result.get('node_count', 0)} "
+            f"edges={result.get('edge_count', 0)}"
         )
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "error": "generate_graph timed out (120 s)"}
-    except Exception as exc:
-        return {"status": "error", "error": f"Failed to run investigation_graph.py: {exc}"}
+    else:
+        outputs_summary = f"error: {result.get('error', 'unknown')}"
 
-    if proc.returncode != 0:
-        return {
-            "status": "error",
-            "error": f"investigation_graph.py exited {proc.returncode}",
-            "stderr": proc.stderr[:2000],
-        }
-
-    # Parse node/edge counts from stdout
-    node_count = 0
-    edge_count = 0
-    for line in proc.stdout.splitlines():
-        import re
-        m = re.search(r"nodes:\s*(\d+)", line)
-        if m:
-            node_count = int(m.group(1))
-        m = re.search(r"edges:\s*(\d+)", line)
-        if m:
-            edge_count = int(m.group(1))
-
-    graph_json_path = str(resolved_output.with_name("graph.json"))
-
-    return {
-        "status": "ok",
-        "case_id": case_id,
-        "graph_html_path": str(resolved_output),
-        "graph_json_path": graph_json_path,
-        "node_count": node_count,
-        "edge_count": edge_count,
-        "stdout": proc.stdout[-1000:],  # Last 1000 chars of progress output
-    }
+    _completed = _audit_logger.log_result(
+        execution_id=_eid,
+        exit_code=exit_code,
+        duration=duration,
+        outputs_summary=outputs_summary,
+        finding_ids=[],
+        tool_name=_tool,
+        command_line=_cmd_repr,
+        parameters=_params,
+    )
+    _record_execution_parity(
+        execution_id=_eid,
+        tool_name=_tool,
+        command_line=_cmd_repr,
+        parameters=_params,
+        duration_seconds=duration,
+        exit_code=exit_code,
+        outputs_summary=outputs_summary,
+        started_entry=_started,
+        completed_entry=_completed,
+    )
+    result.setdefault("execution_id", _eid)
+    return _finalize_tool_response(_tool, result)
 
 
 @mcp.tool()
@@ -5328,6 +5394,55 @@ def _expected_agent_set() -> set[str]:
     return agents
 
 
+def _event_auth_evidence_exists(
+    execution_ids: list[str],
+    finding_ids: list[str],
+) -> bool:
+    summarize_tool_names = {
+        "disk.summarize_evtx",
+        "mcp__savvydfir__summarize_evtx",
+        "summarize_evtx",
+    }
+    executions = _state_manager.get_executions()
+    findings = _state_manager.get_findings()
+    execution_by_id = {
+        str(execution.get("execution_id") or "").strip(): execution
+        for execution in executions
+        if str(execution.get("execution_id") or "").strip()
+    }
+    finding_by_id = {
+        str(finding.get("finding_id") or "").strip(): finding
+        for finding in findings
+        if str(finding.get("finding_id") or "").strip()
+    }
+
+    for execution_id in execution_ids:
+        execution = execution_by_id.get(str(execution_id).strip())
+        if not isinstance(execution, dict):
+            continue
+        tool_name = str(execution.get("tool_name") or "").strip()
+        if tool_name in summarize_tool_names:
+            return True
+
+    for finding_id in finding_ids:
+        finding = finding_by_id.get(str(finding_id).strip())
+        if not isinstance(finding, dict):
+            continue
+        tool_name = str(finding.get("tool_name") or "").strip()
+        if tool_name in summarize_tool_names:
+            return True
+
+    for execution in executions:
+        tool_name = str(execution.get("tool_name") or "").strip()
+        if tool_name in summarize_tool_names:
+            return True
+    for finding in findings:
+        tool_name = str(finding.get("tool_name") or "").strip()
+        if tool_name in summarize_tool_names:
+            return True
+    return False
+
+
 def _mark_state_updated_after_report(case_id: str) -> None:
     report_json = Path(os.environ.get("OUTPUT_BASE", "./reports")) / case_id / "report.json"
     if not report_json.exists():
@@ -5434,6 +5549,23 @@ def record_analysis_lane(
                 "error": "Lane references IDs that are not present in persisted state.",
                 "missing_execution_ids": missing_execution_ids,
                 "missing_finding_ids": missing_finding_ids,
+            }
+        if (
+            normalized_lane == "event_auth"
+            and normalized_status in {"COMPLETE", "COMPLETE_WITH_GAPS"}
+            and not _event_auth_evidence_exists(
+                normalized_execution_ids, normalized_finding_ids
+            )
+        ):
+            return {
+                "status": "error",
+                "tool": "record_analysis_lane",
+                "error": (
+                    "event_auth cannot be marked COMPLETE/COMPLETE_WITH_GAPS "
+                    "before EVTX evidence is collected."
+                ),
+                "next_required_tool": "summarize_evtx",
+                "required_tool_name": "disk.summarize_evtx",
             }
 
         now = datetime.now(timezone.utc).isoformat()
@@ -6772,13 +6904,17 @@ def sigma_scan(case_id: str) -> dict[str, Any]:
             data_gaps=scan["data_gaps"],
             summary_markdown=_hits_to_markdown(all_hits),
         )
+        _prior_flags = dict(_state_manager.to_summary().get("status_flags") or {})
+        _unresolved_n = len(_state_manager.get_unresolved_discrepancies())
+        _merged_flags = {
+            **_prior_flags,
+            "open_leads": bool(scan["actionable_leads"]),
+            "anti_forensics_warning": bool(scan["anti_forensics_warnings"]),
+            "unresolved_discrepancy": _unresolved_n > 0,
+        }
         _state_manager.update_triage_state(
             triage_status="IN_PROGRESS",
-            status_flags={
-                "open_leads": bool(scan["actionable_leads"]),
-                "anti_forensics_warning": bool(scan["anti_forensics_warnings"]),
-                "unresolved_discrepancy": bool(_state_manager.get_unresolved_discrepancies()),
-            },
+            status_flags=_merged_flags,
             actionable_leads=scan["actionable_leads"],
             anti_forensics_warnings=scan["anti_forensics_warnings"],
             data_gaps=scan["data_gaps"],
