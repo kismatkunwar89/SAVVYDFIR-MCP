@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,8 +17,14 @@ SPEC.loader.exec_module(agent_trigger)
 
 
 class AgentTriggerTests(unittest.TestCase):
-    def _nested_event(self, tool_name: str, payload: dict) -> dict:
-        return {
+    def _nested_event(
+        self,
+        tool_name: str,
+        payload: dict,
+        *,
+        tool_input: Optional[dict[str, Any]] = None,
+    ) -> dict:
+        ev: dict = {
             "tool_name": tool_name,
             "tool_result": {
                 "content": [
@@ -28,6 +35,9 @@ class AgentTriggerTests(unittest.TestCase):
                 ]
             },
         }
+        if tool_input is not None:
+            ev["tool_input"] = tool_input
+        return ev
 
     def test_namespaced_evtx_payload_dispatches_and_writes_trigger(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -46,7 +56,10 @@ class AgentTriggerTests(unittest.TestCase):
             self.assertIsNotNone(result)
             self.assertEqual(result["decision"], "block")
             self.assertIn("@evtx-analyst", result["reason"])
-            self.assertIn("Task/subagent", result["reason"])
+            self.assertIn("Task SYNCHRONOUSLY", result["reason"])
+            self.assertIn("PATH B", result["reason"])
+            self.assertIn("main-agent", result["reason"])
+            self.assertIn("record_analysis_lane", result["reason"])
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["agent"], "@evtx-analyst")
             self.assertEqual(payload["subagent_type"], "evtx-analyst")
@@ -55,6 +68,28 @@ class AgentTriggerTests(unittest.TestCase):
             self.assertIn("Context handle:", payload["prompt"])
             self.assertEqual(payload["tool"], "mcp__savvydfir__summarize_evtx")
             self.assertIn("CSV at:", payload["instruction"])
+
+    def test_bare_evtx_payload_dispatches_and_writes_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            event = self._nested_event(
+                "summarize_evtx",
+                {
+                    "status": "success",
+                    "csv_path": "/cases/CASE-1/artifacts/evtx/evtx_timeline.csv",
+                    "total_records": 120,
+                },
+            )
+
+            result = agent_trigger.process_event(event, trigger_path=str(trigger_path))
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["decision"], "block")
+            self.assertIn("@evtx-analyst", result["reason"])
+            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["subagent_type"], "evtx-analyst")
+            self.assertEqual(payload["lane_id"], "event_auth")
+            self.assertEqual(payload["tool"], "summarize_evtx")
 
     def test_requires_agent_metadata_takes_precedence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -186,13 +221,117 @@ class AgentTriggerTests(unittest.TestCase):
             lane_record = agent_trigger.process_event(
                 self._nested_event(
                     "mcp__savvydfir__record_analysis_lane",
-                    {"status": "ok"},
+                    {"status": "ok", "lane_id": "event_auth"},
+                    tool_input={"lane_id": "event_auth"},
                 ),
                 trigger_path=str(trigger_path),
             )
             self.assertIsNone(lane_record)
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertTrue(payload["processed"])
+
+    def test_pending_delegation_does_not_block_unrelated_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__summarize_evtx",
+                    {
+                        "status": "success",
+                        "csv_path": "/cases/CASE-1/artifacts/evtx/evtx_timeline.csv",
+                        "total_records": 100,
+                    },
+                ),
+                trigger_path=str(trigger_path),
+            )
+
+            unrelated = agent_trigger.process_event(
+                self._nested_event(
+                    "WebFetch",
+                    {"status": "ok", "url": "https://example.com"},
+                ),
+                trigger_path=str(trigger_path),
+            )
+            self.assertIsNone(unrelated)
+            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            self.assertFalse(payload["processed"])
+
+    def test_lane_match_strict_clears_trigger_when_lane_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__summarize_evtx",
+                    {
+                        "status": "success",
+                        "csv_path": "/cases/CASE-1/artifacts/evtx/evtx_timeline.csv",
+                        "total_records": 100,
+                    },
+                ),
+                trigger_path=str(trigger_path),
+            )
+            agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__record_analysis_lane",
+                    {"status": "ok", "lane_id": "event_auth"},
+                    tool_input={"lane_id": "event_auth"},
+                ),
+                trigger_path=str(trigger_path),
+            )
+            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            self.assertTrue(payload["processed"])
+
+    def test_lane_match_uses_nested_lane_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__summarize_evtx",
+                    {
+                        "status": "success",
+                        "csv_path": "/cases/CASE-1/artifacts/evtx/evtx_timeline.csv",
+                        "total_records": 100,
+                    },
+                ),
+                trigger_path=str(trigger_path),
+            )
+            agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__record_analysis_lane",
+                    {
+                        "status": "ok",
+                        "lane": {"lane_id": "event_auth"},
+                    },
+                ),
+                trigger_path=str(trigger_path),
+            )
+            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            self.assertTrue(payload["processed"])
+
+    def test_lane_match_strict_blocks_wrong_lane(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__summarize_evtx",
+                    {
+                        "status": "success",
+                        "csv_path": "/cases/CASE-1/artifacts/evtx/evtx_timeline.csv",
+                        "total_records": 100,
+                    },
+                ),
+                trigger_path=str(trigger_path),
+            )
+            agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__record_analysis_lane",
+                    {"status": "ok", "lane_id": "memory"},
+                    tool_input={"lane_id": "memory"},
+                ),
+                trigger_path=str(trigger_path),
+            )
+            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            self.assertFalse(payload["processed"])
 
     def test_zero_hit_sigma_does_not_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
