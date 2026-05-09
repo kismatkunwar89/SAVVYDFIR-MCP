@@ -108,6 +108,52 @@ class LaneControlToolTests(unittest.TestCase):
             self.assertIn("E-999", result["missing_execution_ids"])
             self.assertIn("F-999", result["missing_finding_ids"])
 
+    def test_record_analysis_lane_rejects_event_auth_without_evtx_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server = _load_server_for_test(Path(tmp_dir))
+            server._state_manager.load("CASE-LANE")
+
+            result = server.record_analysis_lane(
+                case_id="CASE-LANE",
+                lane_id="event_auth",
+                status="COMPLETE_WITH_GAPS",
+                assigned_agent="evtx-analyst",
+                execution_ids=[],
+                finding_ids=[],
+                summary="Attempted closure before EVTX collection.",
+            )
+
+            self.assertEqual(result["status"], "error")
+            self.assertIn("EVTX evidence", result["error"])
+            self.assertEqual(result["next_required_tool"], "summarize_evtx")
+
+    def test_record_analysis_lane_accepts_event_auth_after_evtx_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server = _load_server_for_test(Path(tmp_dir))
+            server._state_manager.load("CASE-LANE")
+            server._state_manager.add_execution(
+                {
+                    "case_id": "CASE-LANE",
+                    "execution_id": "E-010",
+                    "iteration": 1,
+                    "tool_name": "disk.summarize_evtx",
+                    "command_line": "summarize_evtx()",
+                }
+            )
+
+            result = server.record_analysis_lane(
+                case_id="CASE-LANE",
+                lane_id="event_auth",
+                status="COMPLETE_WITH_GAPS",
+                assigned_agent="evtx-analyst",
+                execution_ids=["E-010"],
+                finding_ids=[],
+                summary="EVTX lane completed after Security.evtx parsing.",
+            )
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["lane"]["lane_id"], "event_auth")
+
     def test_record_analysis_lane_persists_valid_agent_and_gates_clear(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             server = _load_server_for_test(Path(tmp_dir))
@@ -285,6 +331,62 @@ class LaneControlToolTests(unittest.TestCase):
             self.assertIn("registry-analyst", result["lane"]["supporting_agents"])
             audit_text = (Path(tmp_dir) / "audit.jsonl").read_text(encoding="utf-8")
             self.assertIn("state.record_analysis_lane", audit_text)
+
+    def test_generate_graph_writes_audit_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            analysis = Path(tmp_dir) / "analysis"
+            analysis.mkdir(parents=True, exist_ok=True)
+            server = _load_server_for_test(analysis)
+            server._state_manager.load("CASE-GR-AUDIT")
+            (analysis / "audit.jsonl").write_text("", encoding="utf-8")
+            out = Path(tmp_dir) / "reports" / "CASE-GR-AUDIT" / "graph.html"
+            out.parent.mkdir(parents=True, exist_ok=True)
+
+            class _Proc:
+                returncode = 0
+                stdout = "nodes: 2\nedges: 1\n"
+                stderr = ""
+
+            with mock.patch.object(server.subprocess, "run", return_value=_Proc()):
+                result = server.generate_graph(
+                    "CASE-GR-AUDIT",
+                    state_path=str(analysis / "state.json"),
+                    audit_path=str(analysis / "audit.jsonl"),
+                    output_path=str(out),
+                )
+
+            self.assertEqual(result.get("status"), "ok")
+            audit_text = (analysis / "audit.jsonl").read_text(encoding="utf-8")
+            self.assertIn("graph.generate_graph", audit_text)
+            eid = str(result.get("execution_id") or "").strip()
+            self.assertTrue(eid)
+            self.assertIn(eid, audit_text)
+
+    def test_sigma_scan_merges_status_flags_without_dropping_graph_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            analysis = Path(tmp_dir) / "analysis"
+            analysis.mkdir(parents=True, exist_ok=True)
+            server = _load_server_for_test(analysis)
+            server._state_manager.load("CASE-SIG-FLAG")
+            server._state_manager.update_triage_state(
+                triage_status="IN_PROGRESS",
+                status_flags={"graph_missing": True, "custom_survives": True},
+            )
+            scan_stub = {
+                "hits": [],
+                "detectors_run": [],
+                "detector_timings": {},
+                "detector_warnings": [],
+                "actionable_leads": [],
+                "anti_forensics_warnings": [],
+                "data_gaps": [],
+            }
+            with mock.patch("sift_mcp.server.run_two_phase_scan", return_value=scan_stub):
+                server.sigma_scan("CASE-SIG-FLAG")
+            flags = server._state_manager.to_summary().get("status_flags") or {}
+            self.assertTrue(flags.get("graph_missing"))
+            self.assertTrue(flags.get("custom_survives"))
+            self.assertIn("unresolved_discrepancy", flags)
 
 
 if __name__ == "__main__":

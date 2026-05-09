@@ -10,6 +10,57 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+def _parse_iso8601(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _pending_delegate_is_fresh(
+    pending_delegate: dict[str, Any], *, delegate_file: Path
+) -> bool:
+    try:
+        max_age_seconds = int(
+            os.environ.get("SAVVYDFIR_TRIGGER_MAX_AGE_SECONDS", "21600") or "21600"
+        )
+    except ValueError:
+        max_age_seconds = 21600
+    if max_age_seconds <= 0:
+        return True
+
+    created_at = _parse_iso8601(pending_delegate.get("created_at"))
+    if created_at is None:
+        modified_at = datetime.fromtimestamp(
+            delegate_file.stat().st_mtime, tz=timezone.utc
+        )
+    else:
+        modified_at = created_at
+    age_seconds = (datetime.now(timezone.utc) - modified_at).total_seconds()
+    return age_seconds <= max_age_seconds
+
+
+def _pending_delegate_blocks_case(
+    pending_delegate: dict[str, Any], *, case_id: str, delegate_file: Path
+) -> bool:
+    if pending_delegate.get("processed") is not False:
+        return False
+    if not _pending_delegate_is_fresh(pending_delegate, delegate_file=delegate_file):
+        return False
+    pending_case_id = str(pending_delegate.get("case_id") or "").strip()
+    if pending_case_id and pending_case_id != case_id:
+        return False
+    return True
+
+
 def _status_label(value: Any) -> str:
     return str(value or "UNKNOWN").upper()
 
@@ -369,6 +420,207 @@ def _merge_warning_lists(*collections: list[dict[str, Any]]) -> list[dict[str, A
     return merged
 
 
+MANDATORY_DISK_TOOL_SUFFIXES = frozenset({
+    "extract_mft_timeline",
+    "summarize_evtx",
+    "extract_registry_run_keys",
+    "get_amcache",
+    "extract_prefetch",
+})
+MANDATORY_MEMORY_TOOL_SUFFIXES = frozenset({
+    "list_processes",
+    "scan_processes",
+    "scan_network",
+})
+_EXTENDED_ANTI_FORENSICS_PATTERNS = (
+    "1102",
+    "104",
+    "wevtutil",
+    "sdelete",
+    "cipher /w",
+    "cipher ",
+    "clearing event",
+    "event log was cleared",
+    "audit log was cleared",
+    "cleared the security log",
+)
+
+
+def _execution_tool_suffix(tool_name: str) -> str:
+    tn = str(tool_name or "").strip()
+    if "." in tn:
+        return tn.rsplit(".", 1)[-1]
+    return tn
+
+
+def _collect_execution_suffixes(executions: list[dict[str, Any]]) -> set[str]:
+    return {_execution_tool_suffix(e.get("tool_name")) for e in executions}
+
+
+def _needs_detect_injection(findings: list[dict[str, Any]]) -> bool:
+    for f in findings:
+        try:
+            if int(f.get("psscan_only_count") or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+        if f.get("requires_deeper_analysis") is True:
+            return True
+    return False
+
+
+def _needs_list_dlls(findings: list[dict[str, Any]]) -> bool:
+    for f in findings:
+        pids = f.get("network_followup_pids") or f.get("network_pids") or []
+        if isinstance(pids, list) and len(pids) > 0:
+            return True
+    return False
+
+
+def _signals_extended_anti_forensics_coverage(
+    findings: list[dict[str, Any]],
+    sigma_result: dict[str, Any],
+) -> bool:
+    if sigma_result.get("anti_forensics_warnings"):
+        return True
+    for f in findings:
+        blob = f"{f.get('description', '')} {f.get('tool_name', '')}".lower()
+        if any(p in blob for p in _EXTENDED_ANTI_FORENSICS_PATTERNS):
+            return True
+    return False
+
+
+def evaluate_ir_coverage_gate(
+    *,
+    findings: list[dict[str, Any]],
+    executions: list[dict[str, Any]],
+    sigma_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Return missing Windows IR tool coverage required before a final report."""
+    suffixes = _collect_execution_suffixes(executions)
+    missing: list[dict[str, Any]] = []
+
+    def _add(tool: str, suffix: str, classification: str, reason: str) -> None:
+        if suffix in suffixes:
+            return
+        missing.append(
+            {
+                "tool": tool,
+                "classification": classification,
+                "reason": reason,
+            }
+        )
+
+    for suff in ("list_processes", "scan_processes", "scan_network"):
+        _add(
+            f"memory.{suff}",
+            suff,
+            "mandatory_memory_baseline",
+            "Universal Windows IR memory triage requires pslist, psscan, and netscan.",
+        )
+
+    if _needs_detect_injection(findings):
+        _add(
+            "memory.detect_injection",
+            "detect_injection",
+            "memory_hidden_process_followup",
+            "Psscan-only PIDs or requires_deeper_analysis; run detect_injection on the dump.",
+        )
+    if _needs_list_dlls(findings):
+        _add(
+            "memory.list_dlls",
+            "list_dlls",
+            "memory_network_pid_followup",
+            "Established external connections; run list_dlls for owning PIDs.",
+        )
+
+    for suff in sorted(MANDATORY_DISK_TOOL_SUFFIXES):
+        _add(
+            f"disk.{suff}",
+            suff,
+            "mandatory_disk_baseline",
+            "Universal Windows IR disk triage requires MFT, EVTX, registry, Amcache, and Prefetch.",
+        )
+
+    if _signals_extended_anti_forensics_coverage(findings, sigma_result):
+        for suff, full in (
+            ("analyze_vss", "disk.analyze_vss"),
+            ("extract_shimcache", "disk.extract_shimcache"),
+            ("extract_srum", "disk.extract_srum"),
+        ):
+            _add(
+                full,
+                suff,
+                "anti_forensics_signal",
+                "Anti-forensics or log-manipulation signals require VSS, ShimCache, and SRUM follow-up.",
+            )
+
+    if not missing:
+        return {"ok": True, "missing": [], "next_required_tool": None}
+    return {
+        "ok": False,
+        "missing": missing,
+        "next_required_tool": missing[0]["tool"],
+    }
+
+
+def refresh_report_graph_flags(
+    *,
+    case_id: str,
+    reports_root: str = "./reports",
+) -> dict[str, Any]:
+    """Update graph_missing / data_gaps in an existing report.json after graph generation."""
+    report_dir = (Path(reports_root) / case_id).resolve()
+    report_json_path = report_dir / "report.json"
+    if not report_json_path.is_file():
+        return {"status": "skipped", "reason": "report.json not found"}
+
+    try:
+        payload = json.loads(report_json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"status": "error", "reason": str(exc)}
+
+    graph_html_path = report_dir / "graph.html"
+    graph_json_path = report_dir / "graph.json"
+    graph_exists = graph_html_path.is_file() or graph_json_path.is_file()
+
+    status_flags = dict(payload.get("status_flags") or {})
+    status_flags["graph_missing"] = not graph_exists
+    payload["status_flags"] = status_flags
+
+    gaps = [g for g in (payload.get("data_gaps") or []) if isinstance(g, dict)]
+    gaps = [g for g in gaps if g.get("classification") != "graph_missing"]
+    if not graph_exists:
+        gaps.append(
+            {
+                "artifact_family": "graph",
+                "classification": "graph_missing",
+                "reason": "graph.html / graph.json not present under report directory.",
+                "lane_id": "timeline_correlation",
+                "next_required_tool": "generate_graph",
+            }
+        )
+    payload["data_gaps"] = gaps
+    payload["next_required_tool"] = "generate_graph" if not graph_exists else None
+    if graph_exists and "graph_path" not in payload:
+        payload["graph_path"] = str(graph_html_path) if graph_html_path.is_file() else None
+        payload["graph_json_path"] = str(graph_json_path) if graph_json_path.is_file() else None
+
+    try:
+        report_json_path.write_text(
+            json.dumps(payload, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return {"status": "error", "reason": str(exc)}
+
+    return {
+        "status": "ok",
+        "graph_missing": not graph_exists,
+        "report_json_path": str(report_json_path),
+    }
+
+
 def _lane_has_work(lane: dict[str, Any]) -> bool:
     return bool(lane.get("execution_ids") or lane.get("finding_ids"))
 
@@ -535,7 +787,12 @@ def validate_report(
         executions=executions,
         persisted_lanes=persisted_lanes,
     )
-    unresolved = int(state_manager.to_summary().get("unresolved_discrepancies", 0) or 0)
+    unresolved = sum(
+        1
+        for f in findings
+        if (f.get("contradicted_by") or [])
+        and str(f.get("finding_status") or "").upper() != "REJECTED"
+    )
 
     anti_forensics_warnings = _merge_warning_lists(
         list(sigma_result.get("anti_forensics_warnings", [])),
@@ -614,7 +871,7 @@ def validate_report(
     status_flags = {
         "open_leads": bool(sigma_result.get("actionable_leads", [])),
         "anti_forensics_warning": bool(anti_forensics_warnings),
-        "unresolved_discrepancy": bool(unresolved),
+        "unresolved_discrepancy": unresolved > 0,
         "specialist_lanes_inferred": specialist_lanes_inferred,
     }
     triage_status = (
@@ -871,7 +1128,15 @@ def generate_report_payload(
             pending_delegate = json.loads(delegate_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pending_delegate = {"path": str(delegate_file), "error": "unreadable delegate file"}
-        if isinstance(pending_delegate, dict) and pending_delegate.get("processed") is False and not allow_partial:
+        if (
+            isinstance(pending_delegate, dict)
+            and _pending_delegate_blocks_case(
+                pending_delegate,
+                case_id=case_id,
+                delegate_file=delegate_file,
+            )
+            and not allow_partial
+        ):
             return {
                 "status": "needs_delegate",
                 "tool": "generate_report",
@@ -921,6 +1186,25 @@ def generate_report_payload(
         }
 
     findings = state_manager.get_findings()
+    executions = state_manager.get_executions()
+    if not allow_partial:
+        coverage_check = evaluate_ir_coverage_gate(
+            findings=findings,
+            executions=executions,
+            sigma_result=sigma_result,
+        )
+        if not coverage_check["ok"]:
+            return {
+                "status": "needs_coverage",
+                "tool": "generate_report",
+                "case_id": case_id,
+                "reason": "Required Windows IR artifact coverage is incomplete.",
+                "missing_coverage": coverage_check["missing"],
+                "next_required_tool": coverage_check["next_required_tool"],
+                "report_path": str(report_path),
+                "report_json_path": str(report_json_path),
+            }
+
     pre_summary = state_manager.to_summary()
     report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -942,7 +1226,10 @@ def generate_report_payload(
     triage_status = validation["triage_status"]
     analysis_lanes = validation["analysis_lanes"]
     orchestration_warnings = validation["orchestration_warnings"]
-    unresolved = pre_summary.get("unresolved_discrepancies", 0)
+    unresolved_discrepancies = [
+        dict(finding) for finding in state_manager.get_unresolved_discrepancies()
+    ]
+    unresolved = len(unresolved_discrepancies)
     if graph_missing:
         graph_gap = {
             "artifact_family": "graph",
@@ -969,6 +1256,7 @@ def generate_report_payload(
         "data_gaps": data_gaps,
         "findings_count": pre_summary.get("findings_count", 0),
         "unresolved_count": unresolved,
+        "unresolved_discrepancies": unresolved_discrepancies,
         "open_questions": pre_summary.get("open_questions", []),
         "sigma_scan": sigma_result,
         "coverage": coverage_result,
@@ -1014,7 +1302,10 @@ def generate_report_payload(
     payload["analysis_lanes"] = summary.get("analysis_lanes", analysis_lanes)
     payload["orchestration_warnings"] = orchestration_warnings
     payload["findings_count"] = summary.get("findings_count", 0)
-    payload["unresolved_count"] = summary.get("unresolved_discrepancies", 0)
+    payload["unresolved_count"] = len(payload.get("unresolved_discrepancies", []))
+    status_flags_payload = dict(payload.get("status_flags") or {})
+    status_flags_payload["unresolved_discrepancy"] = payload["unresolved_count"] > 0
+    payload["status_flags"] = status_flags_payload
     payload["open_questions"] = summary.get("open_questions", [])
     report_path.write_text(render_report_html(payload), encoding="utf-8")
     report_json_path.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")

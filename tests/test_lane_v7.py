@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,8 +7,15 @@ from sift_mcp.reporting import (
     EXPECTED_LANE_AGENTS,
     classify_missing_artifact_record,
     generate_report_payload,
+    refresh_report_graph_flags,
+    validate_report,
 )
 from sift_mcp.state import CaseStateManager
+
+try:
+    from ir_baseline import add_windows_ir_baseline_executions
+except ModuleNotFoundError:
+    from tests.ir_baseline import add_windows_ir_baseline_executions
 
 
 class LaneV7Tests(unittest.TestCase):
@@ -504,6 +512,265 @@ class LaneV7Tests(unittest.TestCase):
             self.assertEqual(result["finding_quality_summary"]["raw_detector_hits"], 1)
             self.assertEqual(result["finding_quality_summary"]["reportable_findings"], 0)
             self.assertEqual(result["top_active_leads"], [])
+
+    def _sigma_stub(self) -> dict:
+        return {
+            "status": "ok",
+            "total_hits": 0,
+            "critical_count": 0,
+            "high_count": 0,
+            "summary_markdown": "No anomalies detected.",
+            "actionable_leads": [],
+            "anti_forensics_warnings": [],
+            "data_gaps": [],
+        }
+
+    def _coverage_stub(self) -> dict:
+        return {
+            "covered_tactics": [],
+            "uncovered_tactics": [],
+            "coverage_percent": 0.0,
+            "suggested_next_tools": {},
+        }
+
+    def _ensure_graph(self, tmp_dir: str, case_id: str) -> None:
+        report_dir = Path(tmp_dir) / case_id
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "graph.html").write_text("<html/>", encoding="utf-8")
+
+    def test_coverage_gate_blocks_partial_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            manager.load("CASE-COV-PARTIAL")
+            self._ensure_graph(tmp_dir, "CASE-COV-PARTIAL")
+            partial_tools = [
+                "memory.list_processes",
+                "memory.scan_processes",
+                "memory.scan_network",
+                "disk.extract_prefetch",
+                "disk.extract_registry_run_keys",
+            ]
+            for i, tool_name in enumerate(partial_tools):
+                manager.add_execution(
+                    {
+                        "case_id": "CASE-COV-PARTIAL",
+                        "execution_id": f"E-{i + 1:03d}",
+                        "iteration": 1,
+                        "tool_name": tool_name,
+                        "command_line": f"{tool_name}()",
+                    }
+                )
+
+            result = generate_report_payload(
+                case_id="CASE-COV-PARTIAL",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: self._sigma_stub(),
+                coverage_fn=lambda case_id: self._coverage_stub(),
+                reports_root=tmp_dir,
+                delegate_path=str(Path(tmp_dir) / "missing_delegate.json"),
+            )
+            self.assertEqual(result["status"], "needs_coverage")
+            self.assertEqual(result["next_required_tool"], "disk.extract_mft_timeline")
+            self.assertTrue(any(
+                m.get("tool") == "disk.extract_mft_timeline"
+                for m in result.get("missing_coverage", [])
+            ))
+
+    def test_coverage_gate_allows_full_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            manager.load("CASE-COV-FULL")
+            self._ensure_graph(tmp_dir, "CASE-COV-FULL")
+            add_windows_ir_baseline_executions(manager, "CASE-COV-FULL")
+
+            result = generate_report_payload(
+                case_id="CASE-COV-FULL",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: self._sigma_stub(),
+                coverage_fn=lambda case_id: self._coverage_stub(),
+                reports_root=tmp_dir,
+                delegate_path=str(Path(tmp_dir) / "missing_delegate.json"),
+            )
+            self.assertEqual(result["status"], "ok")
+
+    def test_coverage_gate_allow_partial_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            manager.load("CASE-COV-OVERRIDE")
+            self._ensure_graph(tmp_dir, "CASE-COV-OVERRIDE")
+            manager.add_execution(
+                {
+                    "case_id": "CASE-COV-OVERRIDE",
+                    "execution_id": "E-001",
+                    "iteration": 1,
+                    "tool_name": "memory.list_processes",
+                    "command_line": "list_processes()",
+                }
+            )
+
+            result = generate_report_payload(
+                case_id="CASE-COV-OVERRIDE",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: self._sigma_stub(),
+                coverage_fn=lambda case_id: self._coverage_stub(),
+                reports_root=tmp_dir,
+                allow_partial=True,
+            )
+            self.assertEqual(result["status"], "ok")
+
+    def test_coverage_gate_conditional_detect_injection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            manager.load("CASE-COV-INJ")
+            self._ensure_graph(tmp_dir, "CASE-COV-INJ")
+            add_windows_ir_baseline_executions(manager, "CASE-COV-INJ")
+            manager.add_finding(
+                {
+                    "case_id": "CASE-COV-INJ",
+                    "finding_type": "memory_anomaly",
+                    "artifact_type": "memory",
+                    "artifact_path": "/evidence/mem.raw",
+                    "tool_name": "memory.scan_processes",
+                    "execution_id": "E-002",
+                    "iteration": 1,
+                    "evidence_kind": "observation",
+                    "finding_status": "ACTIVE",
+                    "confidence": 0.9,
+                    "description": "Psscan-only PID.",
+                    "psscan_only_count": 2,
+                    "contradicted_by": [],
+                }
+            )
+
+            result = generate_report_payload(
+                case_id="CASE-COV-INJ",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: self._sigma_stub(),
+                coverage_fn=lambda case_id: self._coverage_stub(),
+                reports_root=tmp_dir,
+                delegate_path=str(Path(tmp_dir) / "missing_delegate.json"),
+            )
+            self.assertEqual(result["status"], "needs_coverage")
+            self.assertEqual(result["next_required_tool"], "memory.detect_injection")
+
+    def test_coverage_gate_conditional_list_dlls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            manager.load("CASE-COV-DLL")
+            self._ensure_graph(tmp_dir, "CASE-COV-DLL")
+            add_windows_ir_baseline_executions(manager, "CASE-COV-DLL")
+            manager.add_finding(
+                {
+                    "case_id": "CASE-COV-DLL",
+                    "finding_type": "network",
+                    "artifact_type": "memory",
+                    "artifact_path": "/evidence/mem.raw",
+                    "tool_name": "memory.scan_network",
+                    "execution_id": "E-003",
+                    "iteration": 1,
+                    "evidence_kind": "observation",
+                    "finding_status": "ACTIVE",
+                    "confidence": 0.85,
+                    "description": "External connection.",
+                    "network_followup_pids": [4242, 5150],
+                    "contradicted_by": [],
+                }
+            )
+
+            result = generate_report_payload(
+                case_id="CASE-COV-DLL",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: self._sigma_stub(),
+                coverage_fn=lambda case_id: self._coverage_stub(),
+                reports_root=tmp_dir,
+                delegate_path=str(Path(tmp_dir) / "missing_delegate.json"),
+            )
+            self.assertEqual(result["status"], "needs_coverage")
+            self.assertEqual(result["next_required_tool"], "memory.list_dlls")
+
+    def test_coverage_gate_conditional_anti_forensics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            manager.load("CASE-COV-AF")
+            self._ensure_graph(tmp_dir, "CASE-COV-AF")
+            add_windows_ir_baseline_executions(manager, "CASE-COV-AF")
+
+            sigma_af = {
+                **self._sigma_stub(),
+                "anti_forensics_warnings": [{"detector": "log_clear", "description": "1102"}],
+            }
+
+            result = generate_report_payload(
+                case_id="CASE-COV-AF",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: sigma_af,
+                coverage_fn=lambda case_id: self._coverage_stub(),
+                reports_root=tmp_dir,
+                delegate_path=str(Path(tmp_dir) / "missing_delegate.json"),
+            )
+            self.assertEqual(result["status"], "needs_coverage")
+            self.assertEqual(result["next_required_tool"], "disk.analyze_vss")
+
+    def test_unresolved_flag_only_for_contradictions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            manager.load("CASE-UNRESOLVED")
+            findings: list[dict] = []
+            for i in range(13):
+                findings.append(
+                    {
+                        "case_id": "CASE-UNRESOLVED",
+                        "finding_id": f"F-{i + 1:03d}",
+                        "finding_type": "test",
+                        "artifact_type": "disk",
+                        "artifact_path": "/x",
+                        "tool_name": "disk.test",
+                        "execution_id": "E-001",
+                        "iteration": 1,
+                        "evidence_kind": "observation",
+                        "finding_status": "ACTIVE",
+                        "confidence": 0.5,
+                        "description": f"Finding {i}",
+                        "contradicted_by": [],
+                    }
+                )
+            vr = validate_report(
+                state_manager=manager,
+                findings=findings,
+                sigma_result=self._sigma_stub(),
+            )
+            self.assertFalse(vr["status_flags"]["unresolved_discrepancy"])
+
+    def test_generate_graph_refreshes_report_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            case_id = "CASE-GRAPH-REF"
+            report_dir = Path(tmp_dir) / case_id
+            report_dir.mkdir(parents=True, exist_ok=True)
+            (report_dir / "graph.html").write_text("<html>g</html>", encoding="utf-8")
+            payload = {
+                "case_id": case_id,
+                "status_flags": {"graph_missing": True},
+                "data_gaps": [
+                    {
+                        "artifact_family": "graph",
+                        "classification": "graph_missing",
+                        "reason": "missing",
+                        "lane_id": "timeline_correlation",
+                        "next_required_tool": "generate_graph",
+                    }
+                ],
+                "next_required_tool": "generate_graph",
+            }
+            (report_dir / "report.json").write_text(
+                json.dumps(payload), encoding="utf-8"
+            )
+            refresh_report_graph_flags(case_id=case_id, reports_root=tmp_dir)
+            updated = json.loads((report_dir / "report.json").read_text(encoding="utf-8"))
+            self.assertFalse(updated["status_flags"]["graph_missing"])
+            self.assertIsNone(updated.get("next_required_tool"))
+            self.assertFalse(
+                any(g.get("classification") == "graph_missing" for g in updated["data_gaps"])
+            )
 
 
 if __name__ == "__main__":

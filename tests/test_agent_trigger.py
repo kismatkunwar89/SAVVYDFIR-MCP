@@ -215,8 +215,10 @@ class AgentTriggerTests(unittest.TestCase):
                 ),
                 trigger_path=str(trigger_path),
             )
-            self.assertEqual(follow_up["decision"], "block")
-            self.assertIn("@evtx-analyst", follow_up["reason"])
+            self.assertIsNone(follow_up)
+            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["lane_id"], "event_auth")
+            self.assertFalse(payload["processed"])
 
             lane_record = agent_trigger.process_event(
                 self._nested_event(
@@ -229,6 +231,34 @@ class AgentTriggerTests(unittest.TestCase):
             self.assertIsNone(lane_record)
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertTrue(payload["processed"])
+
+    def test_pending_delegation_blocks_report_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__summarize_evtx",
+                    {
+                        "status": "success",
+                        "case_id": "CASE-1",
+                        "csv_path": "/cases/CASE-1/artifacts/evtx/evtx_timeline.csv",
+                        "total_records": 100,
+                    },
+                    tool_input={"case_id": "CASE-1"},
+                ),
+                trigger_path=str(trigger_path),
+            )
+            blocked = agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__generate_report",
+                    {"status": "ok"},
+                    tool_input={"case_id": "CASE-1"},
+                ),
+                trigger_path=str(trigger_path),
+            )
+            self.assertIsNotNone(blocked)
+            self.assertEqual(blocked["decision"], "block")
+            self.assertIn("@evtx-analyst", blocked["reason"])
 
     def test_pending_delegation_does_not_block_unrelated_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -255,6 +285,64 @@ class AgentTriggerTests(unittest.TestCase):
             self.assertIsNone(unrelated)
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertFalse(payload["processed"])
+
+    def test_pending_delegation_does_not_block_other_lane_tool_or_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__summarize_evtx",
+                    {
+                        "status": "success",
+                        "case_id": "CASE-1",
+                        "csv_path": "/cases/CASE-1/artifacts/evtx/evtx_timeline.csv",
+                        "total_records": 100,
+                    },
+                    tool_input={"case_id": "CASE-1"},
+                ),
+                trigger_path=str(trigger_path),
+            )
+
+            unrelated_lane = agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__detect_injection",
+                    {"status": "success", "case_id": "CASE-1", "records_count": 3},
+                    tool_input={"case_id": "CASE-1"},
+                ),
+                trigger_path=str(trigger_path),
+            )
+            self.assertIsNone(unrelated_lane)
+            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["lane_id"], "event_auth")
+            self.assertFalse(payload["processed"])
+
+    def test_pending_delegation_case_mismatch_marks_trigger_processed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            trigger_path.write_text(
+                json.dumps(
+                    {
+                        "processed": False,
+                        "lane_id": "event_auth",
+                        "subagent_type": "evtx-analyst",
+                        "case_id": "CASE-A",
+                        "session_id": "SESSION-A",
+                        "created_at": "2099-01-01T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__generate_report",
+                    {"status": "ok"},
+                    tool_input={"case_id": "CASE-B"},
+                ),
+                trigger_path=str(trigger_path),
+            )
+            self.assertIsNone(result)
+            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            self.assertTrue(payload["processed"])
 
     def test_lane_match_strict_clears_trigger_when_lane_matches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
