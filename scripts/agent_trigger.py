@@ -91,12 +91,57 @@ ERROR_PATTERNS: dict[str, str] = {
 }
 
 DEFAULT_TRIGGER_PATH = "/tmp/savvydfir_delegate.json"
+SAVVYDFIR_TOOL_PREFIXES = ("mcp__savvydfir__", "savvydfir__")
 DELEGATION_BYPASS_TOOLS = {
+    # Lane control — unblocks the pending delegate
     "mcp__savvydfir__read_state",
     "mcp__savvydfir__record_analysis_lane",
     "read_state",
     "record_analysis_lane",
+    # State inspection — needed to write a useful lane summary before calling record_analysis_lane
+    "mcp__savvydfir__get_findings",
+    "mcp__savvydfir__get_finding",
+    "mcp__savvydfir__get_investigation_gates",
+    "mcp__savvydfir__query_sigma_results",
+    "get_findings",
+    "get_finding",
+    "get_investigation_gates",
+    "query_sigma_results",
 }
+
+
+def _candidate_tool_names(tool_name: str) -> tuple[str, ...]:
+    """Return equivalent tool-name forms (namespaced + bare) for dispatch matching."""
+    normalized = str(tool_name or "").strip()
+    if not normalized:
+        return tuple()
+
+    candidates = {normalized}
+    if normalized.startswith("mcp__savvydfir__"):
+        bare = normalized[len("mcp__savvydfir__"):]
+        if bare:
+            candidates.add(bare)
+    elif normalized.startswith("savvydfir__"):
+        bare = normalized[len("savvydfir__"):]
+        if bare:
+            candidates.add(bare)
+            candidates.add(f"mcp__savvydfir__{bare}")
+    elif not normalized.startswith("mcp__"):
+        candidates.add(f"mcp__savvydfir__{normalized}")
+    return tuple(candidates)
+
+
+def _is_savvydfir_tool(tool_name: str) -> bool:
+    """True when the tool belongs to the SAVVYDFIR flow/gates domain."""
+    normalized = str(tool_name or "").strip()
+    if normalized.startswith(SAVVYDFIR_TOOL_PREFIXES):
+        return True
+    candidates = _candidate_tool_names(tool_name)
+    if not candidates:
+        return False
+    if any(name in TOOL_AGENT_MAP for name in candidates):
+        return True
+    return any(name in DELEGATION_BYPASS_TOOLS for name in candidates)
 
 
 def _parse_result_payload(tool_result: Any) -> tuple[dict[str, Any], str]:
@@ -199,7 +244,7 @@ def _resolve_dispatch(tool_name: str, result_data: dict[str, Any]) -> Optional[t
             str(agent_instruction or "Review the tool output."),
         )
 
-    if tool_name in ("sigma_scan", "mcp__savvydfir__sigma_scan"):
+    if any(name in {"sigma_scan", "mcp__savvydfir__sigma_scan"} for name in _candidate_tool_names(tool_name)):
         total_hits = int(result_data.get("total_hits", 0) or 0)
         if total_hits <= 0:
             return None
@@ -214,7 +259,11 @@ def _resolve_dispatch(tool_name: str, result_data: dict[str, Any]) -> Optional[t
             ),
         )
 
-    return TOOL_AGENT_MAP.get(tool_name)
+    for candidate in _candidate_tool_names(tool_name):
+        dispatch = TOOL_AGENT_MAP.get(candidate)
+        if dispatch is not None:
+            return dispatch
+    return None
 
 
 def _augment_instruction(instruction: str, result_data: dict[str, Any]) -> str:
@@ -318,6 +367,27 @@ def _mark_trigger_processed(trigger_path: Optional[str] = None) -> None:
         pass
 
 
+def _recorded_lane_id_from_event(
+    event: dict[str, Any], result_data: dict[str, Any]
+) -> str:
+    """Resolve lane_id from hook event (tool input) or tool result payload."""
+    for key in ("tool_input", "toolInput", "input"):
+        inp = event.get(key)
+        if isinstance(inp, dict):
+            lane = inp.get("lane_id")
+            if lane is not None and str(lane).strip():
+                return str(lane).strip()
+    lane_value = result_data.get("lane_id")
+    if lane_value is not None and str(lane_value).strip():
+        return str(lane_value).strip()
+    lane_obj = result_data.get("lane")
+    if isinstance(lane_obj, dict):
+        nested_lane = lane_obj.get("lane_id")
+        if nested_lane is not None and str(nested_lane).strip():
+            return str(nested_lane).strip()
+    return ""
+
+
 def _delegation_block_reason(trigger: dict[str, Any]) -> str:
     subagent_type = str(trigger.get("subagent_type") or "specialist")
     lane_id = str(trigger.get("lane_id") or "analysis")
@@ -326,11 +396,30 @@ def _delegation_block_reason(trigger: dict[str, Any]) -> str:
     agent_call = str(trigger.get("delegation_text") or trigger.get("agent_call") or "")
     return (
         "SPECIALIST DELEGATION REQUIRED BEFORE CONTINUING. "
-        f"Start @{subagent_type} now for lane_id={lane_id!r}; do not run parent "
-        "run_analysis or proceed to more artifact collection until the specialist "
-        "returns and record_analysis_lane validates the lane. "
-        "Use the Task/subagent tool if available with: "
-        f"subagent_type={subagent_type!r}, description={description!r}, prompt={prompt!r}. "
+        f"Start @{subagent_type} now for lane_id={lane_id!r}.\n"
+        "ORCHESTRATION CONTRACT (pick PATH A or PATH B, then ALWAYS finish with step 3):\n"
+        "PATH A — Task tool IS available:\n"
+        "  1A) Call Task SYNCHRONOUSLY (run_in_background=false, the default). "
+        "Task returns ONLY after the subagent has finished — do NOT say 'specialist is "
+        "still running' or wait for another user message.\n"
+        "  2A) When Task returns, parse the subagent's JSON and IMMEDIATELY proceed to step 3.\n"
+        f"  Use Task with: subagent_type={subagent_type!r}, "
+        f"description={description!r}, prompt={prompt!r}.\n"
+        "PATH B — Task tool is NOT available in this session:\n"
+        "  1B) DO NOT loop forever. As the parent, run focused run_analysis(...) queries "
+        "against the durable handle (csv_path / storage_path / artifact directory) printed "
+        "in the originating tool's response. Add evidence-backed findings via add_finding(...).\n"
+        "  2B) Then proceed to step 3 with assigned_agent='main-agent'.\n"
+        "STEP 3 — UNBLOCK THE GATE (BOTH paths must do this in the same turn):\n"
+        f"  Call record_analysis_lane(case_id=..., lane_id={lane_id!r}, "
+        "status='COMPLETE' or 'COMPLETE_WITH_GAPS', assigned_agent='" + subagent_type + "' "
+        "(PATH A) or 'main-agent' (PATH B), execution_ids=[...], finding_ids=[...], "
+        "summary=<one sentence>). The lane_id MUST equal "
+        f"{lane_id!r} verbatim or the delegate stays unprocessed.\n"
+        "DO NOT stop your turn between the analysis step and record_analysis_lane. "
+        "DO NOT collect more artifacts before recording the lane. "
+        "DO NOT abandon the run with a free-text 'investigation summary' — that is a "
+        "skipped lane, not a completed one.\n"
         f"Main-style fallback text: {agent_call}"
     )
 
@@ -342,10 +431,26 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
     if not tool_name:
         return None
 
+    pending = _read_pending_trigger(trigger_path=trigger_path)
+
     if tool_name in DELEGATION_BYPASS_TOOLS:
-        if str(result_data.get("status") or "").lower() in {"ok", "success"}:
-            _mark_trigger_processed(trigger_path=trigger_path)
+        status_ok = str(result_data.get("status") or "").lower() in {"ok", "success"}
+        if status_ok and tool_name in (
+            "mcp__savvydfir__record_analysis_lane",
+            "record_analysis_lane",
+        ):
+            if pending:
+                recorded_lane = _recorded_lane_id_from_event(event, result_data)
+                pending_lane = str(pending.get("lane_id") or "").strip()
+                if pending_lane and recorded_lane == pending_lane:
+                    _mark_trigger_processed(trigger_path=trigger_path)
         return None
+
+    if pending and _is_savvydfir_tool(tool_name):
+        return {
+            "decision": "block",
+            "reason": _delegation_block_reason(pending),
+        }
 
     block_reason = _detect_block_reason(result_data, raw_text)
     if block_reason:
@@ -353,12 +458,6 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
 
     dispatch = _resolve_dispatch(tool_name, result_data)
     if dispatch is None:
-        pending = _read_pending_trigger(trigger_path=trigger_path)
-        if pending:
-            return {
-                "decision": "block",
-                "reason": _delegation_block_reason(pending),
-            }
         return None
 
     subagent_type, lane_id, base_instruction = dispatch
