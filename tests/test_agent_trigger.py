@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -340,6 +341,34 @@ class AgentTriggerTests(unittest.TestCase):
                 ),
                 trigger_path=str(trigger_path),
             )
+            self.assertIsNone(result)
+            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            self.assertTrue(payload["processed"])
+
+    def test_legacy_stale_trigger_without_created_at_is_processed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            trigger_path.write_text(
+                json.dumps(
+                    {
+                        "processed": False,
+                        "lane_id": "event_auth",
+                        "subagent_type": "evtx-analyst",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            os.utime(trigger_path, (0, 0))
+
+            result = agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__generate_report",
+                    {"status": "ok"},
+                    tool_input={"case_id": "CASE-B"},
+                ),
+                trigger_path=str(trigger_path),
+            )
+
             self.assertIsNone(result)
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertTrue(payload["processed"])

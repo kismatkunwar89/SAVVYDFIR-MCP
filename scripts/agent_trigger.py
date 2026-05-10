@@ -211,9 +211,11 @@ def _parse_iso8601(value: Any) -> Optional[datetime]:
 def _trigger_is_stale(trigger: dict[str, Any]) -> bool:
     if TRIGGER_MAX_AGE_SECONDS <= 0:
         return False
-    created_at = _parse_iso8601(trigger.get("created_at"))
+    created_at = _parse_iso8601(
+        trigger.get("created_at") or trigger.get("_trigger_file_mtime")
+    )
     if created_at is None:
-        return False
+        return True
     age_seconds = (datetime.now(timezone.utc) - created_at).total_seconds()
     return age_seconds > TRIGGER_MAX_AGE_SECONDS
 
@@ -435,6 +437,9 @@ def _read_pending_trigger(trigger_path: Optional[str] = None) -> Optional[dict[s
             return None
         payload = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(payload, dict) and not payload.get("processed"):
+            payload["_trigger_file_mtime"] = datetime.fromtimestamp(
+                path.stat().st_mtime, tz=timezone.utc
+            ).isoformat()
             return payload
     except (OSError, IOError, json.JSONDecodeError):
         return None
