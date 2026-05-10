@@ -460,6 +460,21 @@ MANDATORY_MEMORY_TOOL_SUFFIXES = frozenset({
     "scan_processes",
     "scan_network",
 })
+_COVERAGE_SUFFIX_LANES: dict[str, str] = {
+    "list_processes": "memory",
+    "scan_processes": "memory",
+    "scan_network": "memory",
+    "detect_injection": "memory",
+    "list_dlls": "memory",
+    "extract_mft_timeline": "timeline_correlation",
+    "summarize_evtx": "event_auth",
+    "extract_registry_run_keys": "disk_execution_persistence",
+    "get_amcache": "disk_execution_persistence",
+    "extract_prefetch": "disk_execution_persistence",
+    "analyze_vss": "anti_forensics_recovery",
+    "extract_shimcache": "disk_execution_persistence",
+    "extract_srum": "timeline_correlation",
+}
 _EXTENDED_ANTI_FORENSICS_PATTERNS = (
     "1102",
     "104",
@@ -518,18 +533,54 @@ def _signals_extended_anti_forensics_coverage(
     return False
 
 
+def _coverage_lane_acceptance(
+    suffix: str,
+    analysis_lanes: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Return the explicit lane record that can satisfy missing tool coverage."""
+    lane_id = _COVERAGE_SUFFIX_LANES.get(suffix)
+    if not lane_id or not analysis_lanes:
+        return None
+    for lane in analysis_lanes:
+        if not isinstance(lane, dict) or lane.get("lane_id") != lane_id:
+            continue
+        if str(lane.get("status") or "").upper() not in {"COMPLETE", "COMPLETE_WITH_GAPS"}:
+            return None
+        if not str(lane.get("assigned_agent") or "").strip():
+            return None
+        has_evidence = bool(lane.get("execution_ids") or lane.get("finding_ids"))
+        if not has_evidence:
+            return None
+        return lane
+    return None
+
+
 def evaluate_ir_coverage_gate(
     *,
     findings: list[dict[str, Any]],
     executions: list[dict[str, Any]],
     sigma_result: dict[str, Any],
+    analysis_lanes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return missing Windows IR tool coverage required before a final report."""
     suffixes = _collect_execution_suffixes(executions)
     missing: list[dict[str, Any]] = []
+    accepted_by_lane: list[dict[str, Any]] = []
 
     def _add(tool: str, suffix: str, classification: str, reason: str) -> None:
         if suffix in suffixes:
+            return
+        lane = _coverage_lane_acceptance(suffix, analysis_lanes)
+        if lane:
+            accepted_by_lane.append(
+                {
+                    "tool": tool,
+                    "lane_id": lane.get("lane_id"),
+                    "status": lane.get("status"),
+                    "assigned_agent": lane.get("assigned_agent"),
+                    "classification": classification,
+                }
+            )
             return
         missing.append(
             {
@@ -584,11 +635,17 @@ def evaluate_ir_coverage_gate(
             )
 
     if not missing:
-        return {"ok": True, "missing": [], "next_required_tool": None}
+        return {
+            "ok": True,
+            "missing": [],
+            "next_required_tool": None,
+            "accepted_by_lane": accepted_by_lane,
+        }
     return {
         "ok": False,
         "missing": missing,
         "next_required_tool": missing[0]["tool"],
+        "accepted_by_lane": accepted_by_lane,
     }
 
 
@@ -1248,6 +1305,7 @@ def generate_report_payload(
             findings=findings,
             executions=executions,
             sigma_result=sigma_result,
+            analysis_lanes=state_manager.get_analysis_lanes(),
         )
         if not coverage_check["ok"]:
             return {

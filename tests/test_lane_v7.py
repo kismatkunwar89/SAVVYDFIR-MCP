@@ -6,6 +6,7 @@ from pathlib import Path
 from sift_mcp.reporting import (
     EXPECTED_LANE_AGENTS,
     classify_missing_artifact_record,
+    evaluate_ir_coverage_gate,
     generate_report_payload,
     refresh_report_graph_flags,
     validate_report,
@@ -648,6 +649,72 @@ class LaneV7Tests(unittest.TestCase):
                 delegate_path=str(Path(tmp_dir) / "missing_delegate.json"),
             )
             self.assertEqual(result["status"], "ok")
+
+    def test_coverage_gate_accepts_explicit_owned_lane_equivalent(self) -> None:
+        executions = [
+            {"tool_name": "memory.list_processes"},
+            {"tool_name": "memory.scan_processes"},
+            {"tool_name": "memory.scan_network"},
+            {"tool_name": "disk.extract_mft_timeline"},
+            {"tool_name": "disk.summarize_evtx"},
+            {"tool_name": "disk.extract_registry_run_keys"},
+            {"tool_name": "disk.extract_prefetch"},
+        ]
+        lanes = [
+            {
+                "lane_id": "disk_execution_persistence",
+                "status": "COMPLETE",
+                "assigned_agent": "prefetch-analyst",
+                "execution_ids": ["E-007", "E-008"],
+                "finding_ids": ["F-006"],
+                "summary": "Execution and persistence lane completed from Prefetch and registry evidence.",
+            }
+        ]
+
+        result = evaluate_ir_coverage_gate(
+            findings=[],
+            executions=executions,
+            sigma_result=self._sigma_stub(),
+            analysis_lanes=lanes,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(any(
+            accepted.get("tool") == "disk.get_amcache"
+            and accepted.get("lane_id") == "disk_execution_persistence"
+            for accepted in result.get("accepted_by_lane", [])
+        ))
+
+    def test_coverage_gate_blocks_unowned_lane_equivalent(self) -> None:
+        executions = [
+            {"tool_name": "memory.list_processes"},
+            {"tool_name": "memory.scan_processes"},
+            {"tool_name": "memory.scan_network"},
+            {"tool_name": "disk.extract_mft_timeline"},
+            {"tool_name": "disk.summarize_evtx"},
+            {"tool_name": "disk.extract_registry_run_keys"},
+            {"tool_name": "disk.extract_prefetch"},
+        ]
+        lanes = [
+            {
+                "lane_id": "disk_execution_persistence",
+                "status": "COMPLETE",
+                "assigned_agent": None,
+                "execution_ids": ["E-007"],
+                "finding_ids": ["F-006"],
+                "summary": "Unowned lane should not satisfy missing tool coverage.",
+            }
+        ]
+
+        result = evaluate_ir_coverage_gate(
+            findings=[],
+            executions=executions,
+            sigma_result=self._sigma_stub(),
+            analysis_lanes=lanes,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["next_required_tool"], "disk.get_amcache")
 
     def test_coverage_gate_allow_partial_override(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
