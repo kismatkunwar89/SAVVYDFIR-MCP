@@ -139,13 +139,15 @@ cd /opt/SAVVYDFIR-MCP/reports && python3 -m http.server 8080
 
 ## Validation Status
 
-Validated in a live remote SIFT-host run:
+Validated in live remote SIFT-host runs:
 
 - Single-host investigation flow on `HACKATHON-2026-WKSTN01`
 - Audit-backed completion for `compare_disk_and_memory`, `sigma_scan`, and `generate_report`
 - Summary-first MCP responses for heavy disk tools
 - Report and graph generation to `reports/{case_id}/`
 - EVTX cache/idempotency fix under repeated workflow use
+- v7 lane orchestration hardening at commit `bdffba4`: all required lanes reached `COMPLETE`, specialist lane writeback cleared stale delegates, and final `report.json`, `report.html`, `graph.json`, and `graph.html` were produced on the remote SIFT host
+- `COMPLETE_WITH_GAPS` remains an expected investigation outcome when unresolved forensic discrepancies are still documented; it is not treated as a report-generation failure
 
 Still pending broader end-to-end validation:
 
@@ -154,7 +156,7 @@ Still pending broader end-to-end validation:
 - Deferred optimization work from the original plan: parallel RECmd execution and wider timeout tuning
 - Full live coverage of less-used artifact tools such as `analyze_vss`, `extract_pca`, `extract_shimcache`, `extract_srum`, `coverage_report`, and YARA/timeline workflows
 
-So the current repo is ready for single-host investigations and Batch 1-4 validation, but a few adjacent workflows are still marked as pending live validation rather than fully signed off.
+So the current repo is ready for single-host investigations and Batch 1-4 validation, with adjacent multi-host and less-used artifact workflows still marked as pending live validation rather than fully signed off.
 
 ---
 
