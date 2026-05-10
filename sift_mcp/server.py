@@ -1149,6 +1149,9 @@ def list_deleted_files(
     image_path: str,
     case_id: str = "default",
     max_entries: int = 500,
+    response_format: str = "summary",
+    limit: int = 50,
+    page_offset: int = 0,
 ) -> dict[str, Any]:
     """List deleted files from the filesystem using Sleuth Kit.
 
@@ -1166,7 +1169,14 @@ def list_deleted_files(
     case_id:
         Case identifier for output file naming.
     max_entries:
-        Maximum number of DeletedFile entries to return.
+        Maximum number of DeletedFile entries to preview.
+    response_format:
+        ``"summary"`` returns preview + durable handle. ``"detailed"``
+        includes a bounded ``data`` page.
+    limit:
+        Maximum number of DeletedFile entries in detailed page.
+    page_offset:
+        Zero-based offset into the persisted deleted-file result.
 
     Returns
     -------
@@ -1176,7 +1186,14 @@ def list_deleted_files(
     try:
         return _finalize_tool_response(
             "disk.list_deleted_files",
-            _list_deleted_files(image_path=image_path, case_id=case_id, max_entries=max_entries),
+            _list_deleted_files(
+                image_path=image_path,
+                case_id=case_id,
+                max_entries=max_entries,
+                response_format=response_format,
+                limit=limit,
+                page_offset=page_offset,
+            ),
         )
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "list_deleted_files"}

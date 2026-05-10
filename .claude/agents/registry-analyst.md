@@ -104,3 +104,5 @@ Return to main investigator — max 20 lines:
 - Credential theft evidence
 - User behavior highlights (decoded UserAssist paths, USB devices, networks visited)
 - Suggested cross-references: "Run key LastWrite matches EVTX EID 7045 at same timestamp"
+## Machine-Enforced Final Response
+End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.

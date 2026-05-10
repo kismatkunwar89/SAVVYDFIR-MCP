@@ -104,3 +104,5 @@ Return to main investigator — condensed attack narrative (max 20 lines):
 - B... lateral movement file transfers
 - Anti-forensic cleanup bursts
 - Final timeline: T0 initial access → T1 persistence → T2 lateral movement → T3 exfiltration
+## Machine-Enforced Final Response
+End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.

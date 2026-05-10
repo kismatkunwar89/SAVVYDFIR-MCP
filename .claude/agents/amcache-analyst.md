@@ -110,3 +110,5 @@ Return to main investigator — max 15 lines:
 - Deleted file evidence (in Amcache, missing from MFT)
 - First introduction timestamps aligned to attack window
 - Suggested cross-references: "SHA-1 abc123 in Amcache, no Prefetch .pf = execution unconfirmed, file deleted"
+## Machine-Enforced Final Response
+End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.

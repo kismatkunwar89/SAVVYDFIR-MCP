@@ -100,3 +100,5 @@ Return to main investigator — max 20 lines:
 - System directory drops
 - Deleted tools
 - Suggested cross-references to EVTX/Amcache findings
+## Machine-Enforced Final Response
+End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.

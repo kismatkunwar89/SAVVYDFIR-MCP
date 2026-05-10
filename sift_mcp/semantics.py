@@ -70,6 +70,8 @@ _ADAPTIVE_EVTX_BASE_EIDS: set[int] = {4624, 4625, 4648, 4688, 4689}
 
 _CANONICAL_ARTIFACT_TYPES = {"disk", "memory", "correlation", "timeline", "yara"}
 _ARTIFACT_TYPE_ALIASES: dict[str, str] = {
+    "file_system": "disk",
+    "filesystem": "disk",
     "evtx": "disk",
     "evtx_event": "disk",
     "event_log": "disk",
@@ -77,6 +79,7 @@ _ARTIFACT_TYPE_ALIASES: dict[str, str] = {
     "mft": "disk",
     "mft_entry": "disk",
     "prefetch": "disk",
+    "prefetch_record": "disk",
     "amcache": "disk",
     "shimcache": "disk",
     "userassist": "disk",
@@ -224,7 +227,12 @@ def _canonicalize_artifact_type(value: Any, tool_name: Any) -> tuple[str, Option
         return inferred, token
     if inferred:
         return inferred, None
-    raise ValueError(f"Unsupported artifact_type {value!r}.")
+    supported = ", ".join(sorted(_CANONICAL_ARTIFACT_TYPES))
+    aliases = ", ".join(sorted(_ARTIFACT_TYPE_ALIASES))
+    raise ValueError(
+        f"Unsupported artifact_type {value!r}. "
+        f"valid_artifact_types=[{supported}]; supported_aliases=[{aliases}]"
+    )
 
 
 def _canonicalize_evidence_kind(value: Any) -> str:

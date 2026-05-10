@@ -61,6 +61,34 @@ def _pending_delegate_blocks_case(
     return True
 
 
+def _lane_already_completed_for_delegate(
+    pending_delegate: dict[str, Any], state_manager: Any
+) -> bool:
+    lane_id = str(pending_delegate.get("lane_id") or "").strip()
+    if not lane_id:
+        return False
+    try:
+        lanes = state_manager.get_analysis_lanes()
+    except Exception:
+        return False
+    for lane in lanes:
+        if str(lane.get("lane_id") or "").strip() != lane_id:
+            continue
+        status = str(lane.get("status") or "").strip().upper()
+        return status in {"COMPLETE", "COMPLETE_WITH_GAPS"}
+    return False
+
+
+def _mark_delegate_processed(delegate_file: Path, pending_delegate: dict[str, Any]) -> None:
+    try:
+        updated = dict(pending_delegate)
+        updated["processed"] = True
+        updated["processed_reason"] = "lane_already_completed"
+        delegate_file.write_text(json.dumps(updated, indent=2), encoding="utf-8")
+    except OSError:
+        return
+
+
 def _status_label(value: Any) -> str:
     return str(value or "UNKNOWN").upper()
 
@@ -1137,16 +1165,19 @@ def generate_report_payload(
             )
             and not allow_partial
         ):
-            return {
-                "status": "needs_delegate",
-                "tool": "generate_report",
-                "case_id": case_id,
-                "reason": "A specialist delegate is pending; final report files were not written.",
-                "pending_delegate": pending_delegate,
-                "next_required_tool": "record_analysis_lane",
-                "report_path": str(report_path),
-                "report_json_path": str(report_json_path),
-            }
+            if _lane_already_completed_for_delegate(pending_delegate, state_manager):
+                _mark_delegate_processed(delegate_file, pending_delegate)
+            else:
+                return {
+                    "status": "needs_delegate",
+                    "tool": "generate_report",
+                    "case_id": case_id,
+                    "reason": "A specialist delegate is pending; final report files were not written.",
+                    "pending_delegate": pending_delegate,
+                    "next_required_tool": "record_analysis_lane",
+                    "report_path": str(report_path),
+                    "report_json_path": str(report_json_path),
+                }
 
     graph_missing = not (graph_html_path.exists() or graph_json_path.exists())
     if graph_missing and not allow_partial:

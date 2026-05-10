@@ -118,3 +118,5 @@ Return to main investigator — max 15 lines:
 - Selective deletion gaps (prove cover-up intent)
 - Exfiltration via browser (upload to file-sharing/webmail)
 - Session restore URLs from attack timeframe
+## Machine-Enforced Final Response
+End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.

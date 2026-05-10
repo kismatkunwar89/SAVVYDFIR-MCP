@@ -117,3 +117,5 @@ Return to main investigator — condensed attack timeline (max 20 lines):
 - Account names and source IPs for each lateral movement step
 - ATT&CK technique per finding
 - Suggested cross-references: "EID 7045 service install at T matches registry Run key LastWrite and MFT FN created at same timestamp"
+## Machine-Enforced Final Response
+End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.

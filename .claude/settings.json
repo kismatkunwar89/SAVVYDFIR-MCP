@@ -95,6 +95,17 @@
         ]
       }
     ],
+    "SubagentStop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 scripts/agent_trigger.py --subagent-stop"
+          }
+        ]
+      }
+    ],
     "Stop": []
   }
 }

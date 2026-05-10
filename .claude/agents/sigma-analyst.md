@@ -210,3 +210,5 @@ Return to main investigator — max 20 lines:
 5. ATT&CK technique summary (which techniques fired, which need corroboration)
 6. Cross-reference instructions: "EID 7045 service install at T+2h — run extract_registry_run_keys and check MFT for service binary at same timestamp"
 7. If log clearing found: "EID 1102 at T — run analyze_vss; pre-clearing Security.evtx may be in shadow copies"
+## Machine-Enforced Final Response
+End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.

@@ -512,6 +512,132 @@ class AgentTriggerTests(unittest.TestCase):
         self.assertEqual(result["decision"], "block")
         self.assertIn("Permission denied", result["reason"])
 
+    def test_subagent_stop_no_pending_delegate_noops(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            result = agent_trigger.process_subagent_stop(
+                {"result": "plain prose"},
+                trigger_path=str(trigger_path),
+            )
+            self.assertIsNone(result)
+
+    def test_subagent_stop_valid_json_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            trigger_path.write_text(
+                json.dumps({"processed": False, "lane_id": "memory"}),
+                encoding="utf-8",
+            )
+            result = agent_trigger.process_subagent_stop(
+                {
+                    "result": json.dumps(
+                        {
+                            "lane_id": "memory",
+                            "status": "COMPLETE",
+                            "execution_ids": ["E-001"],
+                            "finding_ids": ["F-001"],
+                            "data_gaps": [],
+                            "summary": "Memory lane analyzed.",
+                            "confidence_notes": [],
+                        }
+                    )
+                },
+                trigger_path=str(trigger_path),
+            )
+            self.assertIsNone(result)
+
+    def test_subagent_stop_missing_json_blocks_with_path_b(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            trigger_path.write_text(
+                json.dumps(
+                    {
+                        "processed": False,
+                        "lane_id": "event_auth",
+                        "source_artifact_path": "/cases/CASE/artifacts/evtx.csv",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = agent_trigger.process_subagent_stop(
+                {"result": "I analyzed the logs and found issues."},
+                trigger_path=str(trigger_path),
+            )
+            self.assertEqual(result["decision"], "block")
+            self.assertIn("SUBAGENT CONTRACT INVALID", result["reason"])
+            self.assertIn("Path B", result["reason"])
+            self.assertIn("COMPLETE_WITH_GAPS", result["reason"])
+
+    def test_subagent_stop_wrong_lane_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            trigger_path.write_text(
+                json.dumps({"processed": False, "lane_id": "timeline_correlation"}),
+                encoding="utf-8",
+            )
+            result = agent_trigger.process_subagent_stop(
+                {
+                    "result": json.dumps(
+                        {
+                            "lane_id": "memory",
+                            "status": "COMPLETE",
+                            "execution_ids": [],
+                            "finding_ids": [],
+                            "data_gaps": [],
+                            "summary": "Wrong lane.",
+                            "confidence_notes": [],
+                        }
+                    )
+                },
+                trigger_path=str(trigger_path),
+            )
+            self.assertEqual(result["decision"], "block")
+            self.assertIn("pending lane_id is 'timeline_correlation'", result["reason"])
+
+    def test_subagent_stop_complete_with_gaps_requires_gap_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            trigger_path.write_text(
+                json.dumps({"processed": False, "lane_id": "memory"}),
+                encoding="utf-8",
+            )
+            missing_gap = agent_trigger.process_subagent_stop(
+                {
+                    "result": json.dumps(
+                        {
+                            "lane_id": "memory",
+                            "status": "COMPLETE_WITH_GAPS",
+                            "execution_ids": [],
+                            "finding_ids": [],
+                            "data_gaps": [],
+                            "summary": "Could not access memory artifact.",
+                            "confidence_notes": [],
+                        }
+                    )
+                },
+                trigger_path=str(trigger_path),
+            )
+            self.assertEqual(missing_gap["decision"], "block")
+            self.assertIn("requires at least one", missing_gap["reason"])
+
+            valid_gap = agent_trigger.process_subagent_stop(
+                {
+                    "result": json.dumps(
+                        {
+                            "lane_id": "memory",
+                            "status": "COMPLETE_WITH_GAPS",
+                            "execution_ids": [],
+                            "finding_ids": [],
+                            "data_gaps": [{"reason": "artifact unavailable"}],
+                            "summary": "Memory lane could not be completed.",
+                            "confidence_notes": [],
+                        }
+                    )
+                },
+                trigger_path=str(trigger_path),
+            )
+            self.assertIsNone(valid_gap)
+
 
 if __name__ == "__main__":
     unittest.main()

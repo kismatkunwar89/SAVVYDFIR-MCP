@@ -161,6 +161,51 @@ class ReportingHtmlTests(unittest.TestCase):
 
             self.assertNotEqual(result["status"], "needs_delegate")
 
+    def test_generate_report_payload_processes_stale_delegate_for_completed_lanes(self) -> None:
+        lane_agents = {
+            "memory": "memory-analyst",
+            "event_auth": "evtx-analyst",
+            "timeline_correlation": "mft-analyst",
+            "disk_execution_persistence": "prefetch-analyst",
+        }
+        for lane_id, agent in lane_agents.items():
+            with self.subTest(lane_id=lane_id), tempfile.TemporaryDirectory() as tmp_dir:
+                state_path = Path(tmp_dir) / "state.json"
+                manager = CaseStateManager(str(state_path))
+                manager.load("CASE-DELEGATE-DONE")
+                manager.upsert_analysis_lane(
+                    lane_id,
+                    status="COMPLETE",
+                    assigned_agent=agent,
+                    summary=f"{lane_id} lane complete.",
+                )
+                delegate_path = Path(tmp_dir) / "delegate.json"
+                delegate_path.write_text(
+                    json.dumps(
+                        {
+                            "processed": False,
+                            "subagent_type": agent,
+                            "lane_id": lane_id,
+                            "case_id": "CASE-DELEGATE-DONE",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+                result = generate_report_payload(
+                    case_id="CASE-DELEGATE-DONE",
+                    state_manager=manager,
+                    sigma_scan_fn=lambda case_id: {"status": "ok"},
+                    coverage_fn=lambda case_id: {"covered_tactics": [], "uncovered_tactics": []},
+                    reports_root=tmp_dir,
+                    delegate_path=str(delegate_path),
+                )
+
+                self.assertNotEqual(result["status"], "needs_delegate")
+                payload = json.loads(delegate_path.read_text(encoding="utf-8"))
+                self.assertTrue(payload["processed"])
+                self.assertEqual(payload["processed_reason"], "lane_already_completed")
+
     def test_generate_report_payload_unresolved_count_matches_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_path = Path(tmp_dir) / "state.json"

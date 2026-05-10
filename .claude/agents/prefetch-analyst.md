@@ -101,3 +101,5 @@ Return to main investigator — max 15 lines:
 - Referenced files revealing staging or wiping activity
 - Lateral movement indicators (PSEXESVC hostname, tscon)
 - Missing .pf files that should exist (evidence of anti-forensic cleanup)
+## Machine-Enforced Final Response
+End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.

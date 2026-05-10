@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -117,6 +118,16 @@ DELEGATION_BYPASS_TOOLS = {
     "get_investigation_gates",
     "query_sigma_results",
 }
+SUBAGENT_REQUIRED_FIELDS = {
+    "lane_id",
+    "status",
+    "execution_ids",
+    "finding_ids",
+    "data_gaps",
+    "summary",
+    "confidence_notes",
+}
+SUBAGENT_FINAL_STATUSES = {"COMPLETE", "COMPLETE_WITH_GAPS", "FAILED"}
 
 
 def _candidate_tool_names(tool_name: str) -> tuple[str, ...]:
@@ -138,6 +149,178 @@ def _candidate_tool_names(tool_name: str) -> tuple[str, ...]:
     elif not normalized.startswith("mcp__"):
         candidates.add(f"mcp__savvydfir__{normalized}")
     return tuple(candidates)
+
+
+def _iter_text_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        values: list[str] = []
+        for item in value.values():
+            values.extend(_iter_text_values(item))
+        return values
+    if isinstance(value, list):
+        values = []
+        for item in value:
+            values.extend(_iter_text_values(item))
+        return values
+    return []
+
+
+def _json_objects_from_text(text: str) -> list[dict[str, Any]]:
+    candidates: list[str] = []
+    stripped = text.strip()
+    if stripped:
+        candidates.append(stripped)
+    candidates.extend(
+        match.group(1).strip()
+        for match in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S)
+    )
+    for start, ch in enumerate(text):
+        if ch != "{":
+            continue
+        depth = 0
+        in_string = False
+        escape = False
+        for idx in range(start, len(text)):
+            current = text[idx]
+            if escape:
+                escape = False
+                continue
+            if current == "\\" and in_string:
+                escape = True
+                continue
+            if current == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if current == "{":
+                depth += 1
+            elif current == "}":
+                depth -= 1
+                if depth == 0:
+                    candidates.append(text[start : idx + 1])
+                    break
+
+    parsed: list[dict[str, Any]] = []
+    for candidate in candidates:
+        try:
+            obj = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            parsed.append(obj)
+    return parsed
+
+
+def _extract_subagent_contract(event: dict[str, Any]) -> Optional[dict[str, Any]]:
+    for text in _iter_text_values(event):
+        for obj in _json_objects_from_text(text):
+            if "lane_id" in obj or "finding_ids" in obj or "execution_ids" in obj:
+                return obj
+    return None
+
+
+def _subagent_contract_block_reason(pending: dict[str, Any], *, detail: str) -> str:
+    lane_id = str(pending.get("lane_id") or "analysis")
+    source = str(
+        pending.get("source_artifact_path")
+        or pending.get("csv_path")
+        or pending.get("storage_path")
+        or "the delegated artifact handle"
+    )
+    return (
+        "SUBAGENT CONTRACT INVALID. "
+        f"{detail} Parent must use Path B now: run focused run_analysis/add_finding "
+        f"against {source}, then call record_analysis_lane(case_id=..., "
+        f"lane_id={lane_id!r}, status='COMPLETE_WITH_GAPS', assigned_agent='main-agent', "
+        "execution_ids=[...], finding_ids=[...], data_gaps=[...], summary=<one sentence>)."
+    )
+
+
+def process_subagent_stop(
+    event: dict[str, Any], *, trigger_path: Optional[str] = None
+) -> Optional[dict[str, Any]]:
+    """Validate specialist final JSON before the parent resumes."""
+    pending = _read_pending_trigger(trigger_path=trigger_path)
+    if not pending:
+        return None
+    expected_lane = str(pending.get("lane_id") or "").strip()
+    if not expected_lane:
+        return None
+
+    contract = _extract_subagent_contract(event)
+    if contract is None:
+        return {
+            "decision": "block",
+            "reason": _subagent_contract_block_reason(
+                pending,
+                detail="The specialist did not return parseable compact JSON with lane state.",
+            ),
+        }
+
+    missing = sorted(field for field in SUBAGENT_REQUIRED_FIELDS if field not in contract)
+    if missing:
+        return {
+            "decision": "block",
+            "reason": _subagent_contract_block_reason(
+                pending,
+                detail=f"The specialist JSON is missing required fields: {missing}.",
+            ),
+        }
+
+    lane_id = str(contract.get("lane_id") or "").strip()
+    if lane_id != expected_lane:
+        return {
+            "decision": "block",
+            "reason": _subagent_contract_block_reason(
+                pending,
+                detail=(
+                    f"The specialist returned lane_id={lane_id!r}, but pending "
+                    f"lane_id is {expected_lane!r}."
+                ),
+            ),
+        }
+
+    status = str(contract.get("status") or "").strip().upper()
+    if status not in SUBAGENT_FINAL_STATUSES:
+        return {
+            "decision": "block",
+            "reason": _subagent_contract_block_reason(
+                pending,
+                detail=f"The specialist returned invalid status={status!r}.",
+            ),
+        }
+
+    for field in ("execution_ids", "finding_ids", "data_gaps", "confidence_notes"):
+        if not isinstance(contract.get(field), list):
+            return {
+                "decision": "block",
+                "reason": _subagent_contract_block_reason(
+                    pending,
+                    detail=f"The specialist field {field!r} must be a list.",
+                ),
+            }
+    if not str(contract.get("summary") or "").strip():
+        return {
+            "decision": "block",
+            "reason": _subagent_contract_block_reason(
+                pending,
+                detail="The specialist summary must be a non-empty sentence.",
+            ),
+        }
+    if status == "COMPLETE_WITH_GAPS" and not contract.get("data_gaps"):
+        return {
+            "decision": "block",
+            "reason": _subagent_contract_block_reason(
+                pending,
+                detail="COMPLETE_WITH_GAPS requires at least one explicit data_gaps entry.",
+            ),
+        }
+    return None
 
 
 def _is_savvydfir_tool(tool_name: str) -> bool:
@@ -630,7 +813,10 @@ def main() -> None:
     except Exception:
         return
 
-    result = process_event(event)
+    if "--subagent-stop" in sys.argv or event.get("hook_event_name") == "SubagentStop":
+        result = process_subagent_stop(event)
+    else:
+        result = process_event(event)
     if result is not None:
         print(json.dumps(result))
 

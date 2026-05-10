@@ -127,3 +127,5 @@ Return to main investigator — max 20 lines:
 - C2 network connections with destination IP:port and process
 - Named pipe / mutex IOCs matching known frameworks
 - Suggested cross-references to EVTX/MFT findings
+## Machine-Enforced Final Response
+End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.

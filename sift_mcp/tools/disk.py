@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import re
 import shutil
@@ -2796,6 +2797,9 @@ def list_deleted_files(
     image_path: Optional[str] = None,
     case_id: Optional[str] = None,
     max_entries: int = 500,
+    response_format: str = "summary",
+    limit: Optional[int] = None,
+    page_offset: int = 0,
 ) -> dict[str, Any]:
     # image_path is an alias for device_path (server.py compat)
     if image_path and device_path == "/mnt/disk":
@@ -2805,9 +2809,9 @@ def list_deleted_files(
     Wraps ``fls -rd`` (recursive, deleted-only) on SIFT Workstation.
 
     Deleted files retain their directory entry until the inode is reallocated,
-    making them recoverable with ``icat``.  This tool returns the full list
-    of deleted entries so the analyst can identify forensically interesting
-    artifacts for extraction.
+    making them recoverable with ``icat``.  Summary mode persists the complete
+    parsed result to a durable JSON handle and returns only a bounded preview
+    so large deleted-file sets do not flood agent context.
 
     Parameters
     ----------
@@ -2820,9 +2824,9 @@ def list_deleted_files(
     Returns
     -------
     dict
-        ``tool_name``, ``status``, ``data`` (list of DeletedFile dicts),
-        ``findings_created``, ``execution_id``, ``raw_command``,
-        ``records_count``.
+        ``tool_name``, ``status``, ``preview``, ``storage_path``,
+        ``findings_created``, ``execution_id``, ``raw_command``, and
+        ``records_count``.  Detailed mode includes a bounded ``data`` page.
     """
     tool = "disk.list_deleted_files"
     if _sk_runner is None or _state is None or _audit is None:
@@ -2931,15 +2935,60 @@ def list_deleted_files(
         fid = _state.add_finding(finding.model_dump(mode="json"))
         finding_ids.append(fid)
 
-    return {
+    response_mode = str(response_format or "summary").strip().lower()
+    if response_mode not in {"summary", "detailed"}:
+        response_mode = "summary"
+    page_start = max(0, int(page_offset or 0))
+    page_limit = max(1, int(limit if limit is not None else max_entries or 50))
+    preview_limit = min(page_limit, max(1, int(max_entries or 50)), 50)
+    serialized_records = [r.model_dump(mode="json") for r in records]
+    preview = serialized_records[:preview_limit]
+    page = serialized_records[page_start : page_start + page_limit]
+
+    storage_path: Optional[str] = None
+    try:
+        output_dir = _artifact_output_dir("deleted_files")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "deleted_files.json"
+        output_path.write_text(
+            json.dumps(
+                {
+                    "tool_name": tool,
+                    "records_count": len(serialized_records),
+                    "raw_command": result.command_line,
+                    "records": serialized_records,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        storage_path = str(output_path)
+    except OSError:
+        storage_path = None
+
+    response = {
         "tool_name": tool,
         "status": "success",
-        "data": [r.model_dump(mode="json") for r in records],
+        "preview": preview,
         "findings_created": finding_ids,
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(records),
+        "records_returned": len(page if response_mode == "detailed" else preview),
+        "storage_path": storage_path,
+        "response_format": response_mode,
+        "note": (
+            f"Summary mode returned {len(preview)} preview rows from {len(records)} "
+            f"deleted entries. Full parsed output is at {storage_path}."
+            if storage_path
+            else f"Summary mode returned {len(preview)} preview rows from {len(records)} deleted entries."
+        ),
     }
+    if response_mode == "detailed":
+        response["data"] = page
+        response["page_offset"] = page_start
+        response["page_limit"] = page_limit
+    return response
 
 
 # ---------------------------------------------------------------------------

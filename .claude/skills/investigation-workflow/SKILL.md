@@ -19,7 +19,7 @@ This workflow is an investigation loop, not a checklist. The parent agent keeps 
 - Full integrity hashing is deferred in fast IR unless manifest hashes exist, evidence access is inconsistent, or the operator asks for it.
 
 ## Specialist Contract
-Specialists return compact JSON, not prose dumps:
+Specialists return compact JSON, not prose dumps. The `SubagentStop` hook enforces this contract when a delegate is pending.
 
 ```json
 {
@@ -38,6 +38,8 @@ Specialists return compact JSON, not prose dumps:
 ```
 
 The parent validates IDs with `read_state(case_id)` before `record_analysis_lane(...)`.
+
+If a specialist cannot access the artifact, cannot create findings, or finds that the evidence is unavailable/unsupported, it still returns this JSON with `status="COMPLETE_WITH_GAPS"` and at least one `data_gaps` entry. Do not silently summarize unavailable evidence.
 
 ## Phase 1: Evidence Preparation
 1. `start_investigation(manifest_path)`
