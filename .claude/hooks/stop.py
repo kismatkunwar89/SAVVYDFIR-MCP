@@ -1,112 +1,169 @@
 #!/usr/bin/env python3
-"""Stop hook: ensures investigation is complete before ending session.
+"""Stop hook: block session end when SAVVYDFIR investigations are incomplete."""
 
-Validates completion from authoritative state.json and audit.jsonl — never
-from transcript text (which is brittle and produces false-blocking).
+from __future__ import annotations
 
-Checks:
-1. state.json status == "COMPLETE"   → generate_report() was called
-2. audit.jsonl has sigma_scan completed entry
-3. audit.jsonl has compare_disk_and_memory completed entry
-"""
 import json
-import sys
 import os
-import glob
+import sys
+from pathlib import Path
+from typing import Any
+
+DEFAULT_DELEGATE_PATH = "/tmp/savvydfir_delegate.json"
+FINAL_LANE_STATUSES = {"COMPLETE", "COMPLETE_WITH_GAPS"}
 
 
-def _find_state_json() -> str | None:
-    """Locate state.json under the analysis directory."""
-    analysis_dir = os.environ.get("SAVVYDFIR_ANALYSIS_DIR", "./analysis")
-    candidate = os.path.join(analysis_dir, "state.json")
-    if os.path.isfile(candidate):
-        return candidate
-    # Fallback: search common locations
-    for pattern in ["./analysis/state.json", "/cases/*/state.json", "/tmp/savvydfir/state.json"]:
-        matches = glob.glob(pattern)
-        if matches:
-            return matches[0]
-    return None
+def _analysis_dir() -> Path:
+    return Path(os.environ.get("SAVVYDFIR_ANALYSIS_DIR", "./analysis")).resolve()
 
 
-def _find_audit_jsonl() -> str | None:
-    """Locate audit.jsonl under the analysis directory."""
-    analysis_dir = os.environ.get("SAVVYDFIR_ANALYSIS_DIR", "./analysis")
-    candidate = os.path.join(analysis_dir, "audit.jsonl")
-    if os.path.isfile(candidate):
-        return candidate
-    for pattern in ["./analysis/audit.jsonl", "/cases/*/audit.jsonl"]:
-        matches = glob.glob(pattern)
-        if matches:
-            return matches[0]
-    return None
+def _state_path() -> Path:
+    return _analysis_dir() / "state.json"
 
 
-def _audit_has_completed_tool(audit_path: str, tool_fragment: str) -> bool:
-    """Return True if audit.jsonl has a 'completed' entry whose tool field contains the fragment."""
+def _reports_root() -> Path:
+    configured = os.environ.get("SAVVYDFIR_REPORTS_DIR")
+    if configured:
+        return Path(configured).resolve()
+    analysis_dir = _analysis_dir()
+    if analysis_dir.name == "analysis":
+        return (analysis_dir.parent / "reports").resolve()
+    return (Path.cwd() / "reports").resolve()
+
+
+def _delegate_path() -> Path:
+    return Path(os.environ.get("SAVVYDFIR_DELEGATE_PATH", DEFAULT_DELEGATE_PATH)).resolve()
+
+
+def _load_json(path: Path) -> dict[str, Any] | None:
     try:
-        with open(audit_path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if entry.get("event_type") != "completed":
-                    continue
-                tool_name = str(entry.get("tool", "") or "")
-                if tool_fragment in tool_name:
-                    return True
-    except (OSError, IOError):
-        pass
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _is_active_investigation(state: dict[str, Any]) -> bool:
+    if str(state.get("case_id") or "").strip():
+        return True
+    for key in ("status", "triage_status"):
+        if str(state.get(key) or "").strip():
+            return True
+    for key in ("findings", "executions", "analysis_lanes"):
+        value = state.get(key)
+        if isinstance(value, list) and value:
+            return True
     return False
 
 
-def main():
+def _incomplete_required_lanes(state: dict[str, Any]) -> list[str]:
+    lanes = state.get("analysis_lanes")
+    if not isinstance(lanes, list):
+        return []
+    pending: list[str] = []
+    for lane in lanes:
+        if not isinstance(lane, dict) or not lane.get("required"):
+            continue
+        status = str(lane.get("status") or "PENDING").upper()
+        if status not in FINAL_LANE_STATUSES:
+            lane_id = str(lane.get("lane_id") or "").strip()
+            if lane_id:
+                pending.append(lane_id)
+    return pending
+
+
+def _pending_delegate_lane() -> str | None:
+    payload = _load_json(_delegate_path())
+    if not payload or payload.get("processed") is True:
+        return None
+    lane_id = str(payload.get("lane_id") or "").strip()
+    return lane_id or None
+
+
+def _missing_final_artifacts(case_id: str) -> list[str]:
+    report_dir = _reports_root() / case_id
+    expected = {
+        "report.json": report_dir / "report.json",
+        "report.html": report_dir / "report.html",
+        "graph.json": report_dir / "graph.json",
+        "graph.html": report_dir / "graph.html",
+    }
+    return [name for name, path in expected.items() if not path.is_file()]
+
+
+def _block(reason: str) -> None:
+    print(json.dumps({"decision": "block", "reason": reason}))
+
+
+def _approve() -> None:
+    print(json.dumps({"decision": "approve"}))
+
+
+def main() -> None:
     try:
-        data = json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, EOFError):
+        json.loads(sys.stdin.read() or "{}")
+    except json.JSONDecodeError:
         return
 
-    warnings = []
+    state_path = _state_path()
+    if not state_path.is_file():
+        _approve()
+        return
 
-    # --- Check 1: state.json status == "COMPLETE" (proves generate_report ran) ---
-    state_path = _find_state_json()
-    state_complete = False
-    if state_path:
-        try:
-            with open(state_path, "r", encoding="utf-8") as fh:
-                state = json.load(fh)
-            if isinstance(state, dict) and state.get("status", "").upper() == "COMPLETE":
-                state_complete = True
-        except (json.JSONDecodeError, OSError):
-            pass
+    state = _load_json(state_path)
+    if not state:
+        _block(
+            "Investigation state is unreadable. Fix analysis/state.json before ending the session."
+        )
+        return
+    if not _is_active_investigation(state):
+        _approve()
+        return
 
-    if not state_complete:
-        warnings.append(
-            "generate_report() was not called (state.json status != COMPLETE).")
+    pending_delegate_lane = _pending_delegate_lane()
+    if pending_delegate_lane:
+        _block(
+            "Investigation incomplete: pending delegate for lane "
+            f"{pending_delegate_lane}. Call get_investigation_gates(case_id=...), "
+            "finish the pending lane with evidence or COMPLETE_WITH_GAPS, then continue."
+        )
+        return
 
-    # --- Check 2 & 3: audit.jsonl has completed entries for synthesis tools ---
-    audit_path = _find_audit_jsonl()
-    if audit_path:
-        if not _audit_has_completed_tool(audit_path, "sigma_scan"):
-            warnings.append("sigma_scan() has no completed audit entry.")
-        if not _audit_has_completed_tool(audit_path, "compare_disk_and_memory"):
-            warnings.append(
-                "compare_disk_and_memory() has no completed audit entry.")
-    else:
-        # No audit file at all — investigation never started, allow exit
-        pass
+    incomplete_lanes = _incomplete_required_lanes(state)
+    if incomplete_lanes:
+        lanes_text = ", ".join(sorted(incomplete_lanes))
+        _block(
+            "Investigation incomplete: required lanes still open: "
+            f"{lanes_text}. Call get_investigation_gates(case_id=...), finish those "
+            "lanes with evidence or COMPLETE_WITH_GAPS, then continue."
+        )
+        return
 
-    if warnings:
-        print(json.dumps({
-            "decision": "block",
-            "reason": "Investigation incomplete: " + "; ".join(warnings),
-        }))
-    else:
-        print(json.dumps({"decision": "approve"}))
+    case_id = str(state.get("case_id") or "").strip()
+    if not case_id:
+        _block(
+            "Investigation state is active but missing case_id. Fix state before ending the session."
+        )
+        return
+
+    missing_artifacts = _missing_final_artifacts(case_id)
+    if missing_artifacts:
+        artifacts_text = ", ".join(missing_artifacts)
+        _block(
+            "Investigation incomplete: final artifacts missing: "
+            f"{artifacts_text}. Call generate_graph(case_id=...) and "
+            "generate_report(case_id=...) before ending the session."
+        )
+        return
+
+    if str(state.get("status") or "").upper() != "COMPLETE":
+        _block(
+            "Investigation incomplete: state status is not COMPLETE. "
+            "Call generate_report(case_id=...) after the required lanes and graph are ready."
+        )
+        return
+
+    _approve()
 
 
 if __name__ == "__main__":
