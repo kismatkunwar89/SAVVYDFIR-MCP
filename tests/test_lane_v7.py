@@ -465,6 +465,62 @@ class LaneV7Tests(unittest.TestCase):
             self.assertEqual(anti_lane["assigned_agent"], "sigma-analyst")
             self.assertIn("evtx-analyst", anti_lane["supporting_agents"])
 
+    def test_pending_anti_forensics_lane_with_stale_work_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            manager.load("CASE-V72-ANTI-PENDING")
+            manager.upsert_analysis_lane(
+                "timeline_correlation",
+                status="COMPLETE_WITH_GAPS",
+                required=True,
+                assigned_agent="sigma-analyst",
+                execution_ids=["E-002"],
+            )
+            manager.upsert_analysis_lane(
+                "anti_forensics_recovery",
+                status="PENDING",
+                required=True,
+                execution_ids=["E-001"],
+                summary="Stale anti-forensics work should not pass final gate.",
+            )
+
+            result = generate_report_payload(
+                case_id="CASE-V72-ANTI-PENDING",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: {
+                    "status": "ok",
+                    "total_hits": 0,
+                    "critical_count": 0,
+                    "high_count": 0,
+                    "summary_markdown": "No anomalies detected.",
+                    "actionable_leads": [],
+                    "anti_forensics_warnings": [],
+                    "data_gaps": [],
+                },
+                coverage_fn=lambda case_id: {
+                    "covered_tactics": [],
+                    "uncovered_tactics": [],
+                    "coverage_percent": 0.0,
+                    "suggested_next_tools": {},
+                },
+                reports_root=tmp_dir,
+                allow_partial=True,
+            )
+
+            anti_lane = next(
+                lane for lane in result["analysis_lanes"]
+                if lane["lane_id"] == "anti_forensics_recovery"
+            )
+            self.assertEqual(anti_lane["status"], "FAILED")
+            self.assertIsNone(anti_lane.get("assigned_agent"))
+            self.assertTrue(
+                any(
+                    gap.get("lane_id") == "anti_forensics_recovery"
+                    and gap.get("classification") == "not_collected"
+                    for gap in result["data_gaps"]
+                )
+            )
+
     def test_raw_detector_hits_are_not_top_active_leads(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))

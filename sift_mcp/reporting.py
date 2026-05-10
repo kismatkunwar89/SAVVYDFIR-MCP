@@ -770,6 +770,10 @@ def _synthesize_analysis_lanes(
         if lane["status"] in {"PENDING", "UNKNOWN"}:
             lane["status"] = "COMPLETE"
 
+    anti_findings = [
+        finding for finding in findings
+        if str(finding.get("finding_type") or "").lower() == "anti_forensics_recovery"
+    ]
     anti_lane = lanes.get("anti_forensics_recovery")
     sigma_owned_lane = next(
         (
@@ -779,7 +783,7 @@ def _synthesize_analysis_lanes(
         ),
         None,
     )
-    if anti_lane and _lane_has_work(anti_lane) and not _lane_owned(anti_lane) and sigma_owned_lane:
+    if anti_lane and anti_findings and not _lane_owned(anti_lane) and sigma_owned_lane:
         anti_lane["assigned_agent"] = "sigma-analyst"
         anti_lane["supporting_agents"] = sorted(
             set((anti_lane.get("supporting_agents") or []) + ["evtx-analyst"])
@@ -790,6 +794,24 @@ def _synthesize_analysis_lanes(
         )
 
     return [lanes[lane_id] for lane_id in _LANE_SPECS if lane_id in lanes]
+
+
+def _mark_required_lane_failed(
+    lane: dict[str, Any],
+    *,
+    data_gaps: list[dict[str, Any]],
+    reason: str = "Required lane has no recorded executions or findings.",
+) -> list[dict[str, Any]]:
+    lane_id = lane.get("lane_id")
+    lane["status"] = "FAILED"
+    lane_gap = {
+        "artifact_family": lane_id,
+        "classification": "not_collected",
+        "reason": reason,
+        "lane_id": lane_id,
+    }
+    lane["data_gaps"] = _merge_warning_lists(lane.get("data_gaps", []), [lane_gap])
+    return _merge_warning_lists(data_gaps, lane["data_gaps"])
 
 
 def validate_report(
@@ -859,18 +881,21 @@ def validate_report(
                     )
             if lane["data_gaps"]:
                 data_gaps = _merge_warning_lists(data_gaps, lane["data_gaps"])
+            if lane.get("required") and lane["status"] in {"PENDING", "UNKNOWN"}:
+                data_gaps = _mark_required_lane_failed(
+                    lane,
+                    data_gaps=data_gaps,
+                    reason=(
+                        "Required anti-forensics lane was not explicitly completed "
+                        "or marked COMPLETE_WITH_GAPS."
+                    ),
+                )
         elif lane.get("required"):
             if lane["status"] == "PENDING":
-                lane["status"] = "FAILED"
+                data_gaps = _mark_required_lane_failed(lane, data_gaps=data_gaps)
             if lane["status"] == "FAILED":
-                lane["data_gaps"].append(
-                    {
-                        "artifact_family": lane_id,
-                        "classification": "not_collected",
-                        "reason": "Required lane has no recorded executions or findings.",
-                        "lane_id": lane_id,
-                    }
-                )
+                if not lane.get("data_gaps"):
+                    data_gaps = _mark_required_lane_failed(lane, data_gaps=data_gaps)
                 data_gaps = _merge_warning_lists(data_gaps, lane["data_gaps"])
 
     required_lanes = [lane for lane in analysis_lanes if lane.get("required")]
