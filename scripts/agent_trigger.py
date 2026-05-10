@@ -248,6 +248,8 @@ def _parse_result_payload(tool_result: Any) -> tuple[dict[str, Any], str]:
                 raw_text = str(first.get("text", ""))
         elif isinstance(content, dict):
             data = dict(content)
+        elif isinstance(content, str):
+            raw_text = content
 
     if not data and raw_text:
         try:

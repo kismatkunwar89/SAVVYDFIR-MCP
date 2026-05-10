@@ -5456,6 +5456,29 @@ def _mark_state_updated_after_report(case_id: str) -> None:
     )
 
 
+def _mark_delegate_processed_for_lane(case_id: str, lane_id: str) -> None:
+    """Clear the pending delegate marker after authoritative lane writeback."""
+    delegate_path = Path(
+        os.environ.get("SAVVYDFIR_DELEGATE_PATH") or "/tmp/savvydfir_delegate.json"
+    )
+    try:
+        if not delegate_path.exists():
+            return
+        payload = json.loads(delegate_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("processed") is not False:
+            return
+        pending_lane = str(payload.get("lane_id") or "").strip()
+        pending_case = str(payload.get("case_id") or "").strip()
+        if pending_lane != lane_id:
+            return
+        if pending_case and pending_case != case_id:
+            return
+        payload["processed"] = True
+        delegate_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except (OSError, json.JSONDecodeError):
+        pass
+
+
 def _mark_evidence_access_lane(source_tool: str, summary: str) -> None:
     try:
         existing = next(
@@ -5641,6 +5664,7 @@ def record_analysis_lane(
             completed_entry=completed_entry,
         )
         _mark_state_updated_after_report(case_id)
+        _mark_delegate_processed_for_lane(case_id, normalized_lane)
         return {
             "status": "ok",
             "tool": "record_analysis_lane",

@@ -208,6 +208,50 @@ class LaneControlToolTests(unittest.TestCase):
             self.assertEqual(memory_lane["assigned_agent"], "memory-analyst")
             self.assertNotIn("memory", gates["missing_specialists"])
 
+    def test_record_analysis_lane_clears_matching_delegate_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server = _load_server_for_test(Path(tmp_dir))
+            server._state_manager.load("CASE-LANE")
+            server._state_manager.add_execution(
+                {
+                    "case_id": "CASE-LANE",
+                    "execution_id": "E-001",
+                    "iteration": 1,
+                    "tool_name": "memory.detect_injection",
+                    "command_line": "detect_injection()",
+                }
+            )
+            delegate_path = Path(tmp_dir) / "delegate.json"
+            delegate_path.write_text(
+                json.dumps(
+                    {
+                        "processed": False,
+                        "lane_id": "memory",
+                        "case_id": "",
+                        "subagent_type": "memory-analyst",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {"SAVVYDFIR_DELEGATE_PATH": str(delegate_path)},
+                clear=False,
+            ):
+                result = server.record_analysis_lane(
+                    case_id="CASE-LANE",
+                    lane_id="memory",
+                    status="COMPLETE",
+                    assigned_agent="memory-analyst",
+                    execution_ids=["E-001"],
+                    summary="Memory lane reviewed.",
+                )
+
+            self.assertEqual(result["status"], "ok")
+            payload = json.loads(delegate_path.read_text(encoding="utf-8"))
+            self.assertTrue(payload["processed"])
+
     def test_extract_windows_artifacts_writes_only_durable_raw_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             server = _load_server_for_test(Path(tmp_dir))

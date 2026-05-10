@@ -425,6 +425,35 @@ class AgentTriggerTests(unittest.TestCase):
             payload = json.loads(trigger_path.read_text(encoding="utf-8"))
             self.assertTrue(payload["processed"])
 
+    def test_lane_match_parses_string_content_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            agent_trigger.process_event(
+                self._nested_event(
+                    "mcp__savvydfir__detect_injection",
+                    {"status": "success", "records_count": 0},
+                ),
+                trigger_path=str(trigger_path),
+            )
+            event = {
+                "tool_name": "mcp__savvydfir__record_analysis_lane",
+                "tool_result": {
+                    "content": json.dumps(
+                        {
+                            "status": "ok",
+                            "tool": "record_analysis_lane",
+                            "case_id": "CASE-1",
+                            "lane": {"lane_id": "memory"},
+                        }
+                    )
+                },
+            }
+
+            agent_trigger.process_event(event, trigger_path=str(trigger_path))
+
+            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            self.assertTrue(payload["processed"])
+
     def test_lane_match_strict_blocks_wrong_lane(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             trigger_path = Path(tmp_dir) / "delegate.json"
