@@ -56,6 +56,10 @@ class ArtifactHit(BaseModel):
     pivot_suggestion: Optional[str] = Field(
         None, description="Recommended next investigation step."
     )
+    next_pivot: Optional[dict[str, Any]] = Field(
+        None,
+        description="Structured recommended next pivot: {tool, args, human_readable}.",
+    )
 
 
 class ToolResult(BaseModel):
@@ -117,6 +121,21 @@ class SigmaScanResult(BaseModel):
     high_count: int = Field(default=0, ge=0, description="HIGH hits.")
     detectors_run: list[str] = Field(
         default_factory=list, description="Detector names that ran."
+    )
+    detector_warnings: list[dict[str, Any]] = Field(
+        default_factory=list, description="Soft-fail, budget, or data-gap warnings."
+    )
+    detector_timings: dict[str, float] = Field(
+        default_factory=dict, description="Wall-clock seconds per detector."
+    )
+    actionable_leads: list[dict[str, Any]] = Field(
+        default_factory=list, description="Renderable leads derived from detector hits."
+    )
+    anti_forensics_warnings: list[dict[str, Any]] = Field(
+        default_factory=list, description="Detected evidence-loss or anti-forensics warnings."
+    )
+    data_gaps: list[dict[str, Any]] = Field(
+        default_factory=list, description="Artifact/data gaps discovered during detection."
     )
     scanned_at: datetime = Field(
         default_factory=lambda: datetime.now(tz=timezone.utc),

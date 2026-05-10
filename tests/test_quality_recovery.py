@@ -284,6 +284,7 @@ class TestReportTruthTracking(unittest.TestCase):
                     "coverage_percent": 0.0, "suggested_next_tools": {},
                 },
                 reports_root=tmp_dir,
+                allow_partial=True,
             )
 
             self.assertIn("status_breakdown", result)

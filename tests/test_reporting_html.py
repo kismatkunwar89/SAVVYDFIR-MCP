@@ -6,6 +6,11 @@ from pathlib import Path
 from sift_mcp.reporting import generate_report_payload
 from sift_mcp.state import CaseStateManager
 
+try:
+    from ir_baseline import add_windows_ir_baseline_executions
+except ModuleNotFoundError:
+    from tests.ir_baseline import add_windows_ir_baseline_executions
+
 
 class ReportingHtmlTests(unittest.TestCase):
     def test_generate_report_payload_writes_html_and_marks_complete(self) -> None:
@@ -13,6 +18,7 @@ class ReportingHtmlTests(unittest.TestCase):
             state_path = Path(tmp_dir) / "state.json"
             manager = CaseStateManager(str(state_path))
             manager.load("CASE-REPORT-OK")
+            add_windows_ir_baseline_executions(manager, "CASE-REPORT-OK")
             manager.add_finding(
                 {
                     "case_id": "CASE-REPORT-OK",
@@ -20,7 +26,7 @@ class ReportingHtmlTests(unittest.TestCase):
                     "artifact_type": "disk",
                     "artifact_path": r"C:\Users\Alice\AppData\Roaming\evil.exe",
                     "tool_name": "disk.extract_registry_run_keys",
-                    "execution_id": "E-001",
+                    "execution_id": "E-006",
                     "iteration": 1,
                     "evidence_kind": "observation",
                     "finding_status": "ACTIVE",
@@ -33,6 +39,9 @@ class ReportingHtmlTests(unittest.TestCase):
                     "mitre_technique": "T1547.001",
                 }
             )
+            report_dir = Path(tmp_dir) / "CASE-REPORT-OK"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            (report_dir / "graph.json").write_text("{}", encoding="utf-8")
 
             result = generate_report_payload(
                 case_id="CASE-REPORT-OK",
@@ -51,6 +60,7 @@ class ReportingHtmlTests(unittest.TestCase):
                     "suggested_next_tools": {"TA0006": ["disk.summarize_evtx"]},
                 },
                 reports_root=tmp_dir,
+                delegate_path=str(Path(tmp_dir) / "no_delegate.json"),
             )
 
             self.assertEqual(result["status"], "ok")
@@ -62,6 +72,7 @@ class ReportingHtmlTests(unittest.TestCase):
 
             html_text = report_path.read_text(encoding="utf-8")
             self.assertIn("Executive Summary", html_text)
+            self.assertIn("Analysis Lanes", html_text)
             self.assertIn("ATT&amp;CK Coverage", html_text)
             self.assertIn("Sigma Anomaly Summary", html_text)
             self.assertIn("Top Confirmed Findings", html_text)
@@ -89,12 +100,116 @@ class ReportingHtmlTests(unittest.TestCase):
                     "suggested_next_tools": {},
                 },
                 reports_root=tmp_dir,
+                delegate_path=str(Path(tmp_dir) / "no_delegate.json"),
             )
 
-            self.assertEqual(result["status"], "error")
-            self.assertIn("sigma_scan", result)
+            self.assertEqual(result["status"], "needs_graph")
+            self.assertEqual(result["next_required_tool"], "generate_graph")
             persisted = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(persisted["status"], "IN_PROGRESS")
+
+    def test_generate_report_payload_refuses_pending_delegate_before_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state.json"
+            manager = CaseStateManager(str(state_path))
+            manager.load("CASE-DELEGATE")
+            delegate_path = Path(tmp_dir) / "delegate.json"
+            delegate_path.write_text(
+                json.dumps({"processed": False, "subagent_type": "sigma-analyst"}),
+                encoding="utf-8",
+            )
+
+            result = generate_report_payload(
+                case_id="CASE-DELEGATE",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: {"status": "ok"},
+                coverage_fn=lambda case_id: {"covered_tactics": [], "uncovered_tactics": []},
+                reports_root=tmp_dir,
+                delegate_path=str(delegate_path),
+            )
+
+            self.assertEqual(result["status"], "needs_delegate")
+            self.assertEqual(result["next_required_tool"], "record_analysis_lane")
+            self.assertFalse((Path(tmp_dir) / "CASE-DELEGATE" / "report.json").exists())
+
+    def test_generate_report_payload_ignores_pending_delegate_for_other_case(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state.json"
+            manager = CaseStateManager(str(state_path))
+            manager.load("CASE-ONE")
+            delegate_path = Path(tmp_dir) / "delegate.json"
+            delegate_path.write_text(
+                json.dumps(
+                    {
+                        "processed": False,
+                        "subagent_type": "evtx-analyst",
+                        "case_id": "CASE-TWO",
+                        "created_at": "2026-05-09T00:00:00+00:00",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = generate_report_payload(
+                case_id="CASE-ONE",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: {"status": "ok"},
+                coverage_fn=lambda case_id: {"covered_tactics": [], "uncovered_tactics": []},
+                reports_root=tmp_dir,
+                delegate_path=str(delegate_path),
+            )
+
+            self.assertNotEqual(result["status"], "needs_delegate")
+
+    def test_generate_report_payload_unresolved_count_matches_details(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state.json"
+            manager = CaseStateManager(str(state_path))
+            manager.load("CASE-UNRESOLVED")
+            add_windows_ir_baseline_executions(manager, "CASE-UNRESOLVED")
+            manager.add_finding(
+                {
+                    "case_id": "CASE-UNRESOLVED",
+                    "finding_type": "other",
+                    "artifact_type": "memory",
+                    "artifact_path": "/evidence/memory.raw",
+                    "tool_name": "memory.list_processes",
+                    "execution_id": "E-002",
+                    "iteration": 1,
+                    "evidence_kind": "observation",
+                    "finding_status": "ACTIVE",
+                    "confidence": 0.7,
+                    "description": "Unresolved contradiction test finding.",
+                    "contradicted_by": ["F-XYZ"],
+                }
+            )
+            report_dir = Path(tmp_dir) / "CASE-UNRESOLVED"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            (report_dir / "graph.json").write_text("{}", encoding="utf-8")
+
+            result = generate_report_payload(
+                case_id="CASE-UNRESOLVED",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: {
+                    "status": "ok",
+                    "total_hits": 0,
+                    "critical_count": 0,
+                    "high_count": 0,
+                    "summary_markdown": "none",
+                },
+                coverage_fn=lambda case_id: {
+                    "covered_tactics": [{"id": "TA0003", "name": "Persistence"}],
+                    "uncovered_tactics": [],
+                    "coverage_percent": 100.0,
+                    "suggested_next_tools": {},
+                },
+                reports_root=tmp_dir,
+                delegate_path=str(Path(tmp_dir) / "no_delegate.json"),
+            )
+
+            self.assertEqual(result["status"], "ok")
+            self.assertIn("unresolved_discrepancies", result)
+            self.assertEqual(result["unresolved_count"], len(result["unresolved_discrepancies"]))
 
 
 if __name__ == "__main__":

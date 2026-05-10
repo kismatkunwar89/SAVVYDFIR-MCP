@@ -111,6 +111,18 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "disk.extract_registry_run_keys": _entry(
         "disk.extract_registry_run_keys", "disk", ("disk", "registry"), "artifact"
     ),
+    "disk.extract_windows_artifacts": _entry(
+        "disk.extract_windows_artifacts",
+        "disk",
+        ("disk", "event_logs", "registry", "file_system"),
+        "artifact",
+    ),
+    "disk.classify_missing_artifact": _entry(
+        "disk.classify_missing_artifact",
+        "disk",
+        ("disk", "event_logs", "state", "reporting"),
+        "analysis",
+    ),
     "memory.detect_profile": _entry(
         "memory.detect_profile", "memory", ("memory",), "artifact"
     ),
@@ -169,6 +181,12 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "state.describe_tool_catalog": _entry(
         "state.describe_tool_catalog", "state", ("state",), "state"
     ),
+    "state.record_analysis_lane": _entry(
+        "state.record_analysis_lane", "state", ("state", "reporting"), "state"
+    ),
+    "state.get_investigation_gates": _entry(
+        "state.get_investigation_gates", "state", ("state", "reporting"), "state"
+    ),
     "graph.generate_graph": _entry(
         "graph.generate_graph", "graph", ("state", "reporting"), "graph"
     ),
@@ -214,6 +232,9 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     ),
     "lifecycle.start_investigation": _entry(
         "lifecycle.start_investigation", "lifecycle", ("state",), "state"
+    ),
+    "lifecycle.environment_preflight": _entry(
+        "lifecycle.environment_preflight", "lifecycle", ("state", "reporting"), "analysis"
     ),
     "lifecycle.add_finding": _entry(
         "lifecycle.add_finding", "lifecycle", ("state",), "state"
