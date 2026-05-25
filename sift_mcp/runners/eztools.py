@@ -165,6 +165,54 @@ class EZToolsRunner(SafeRunner):
         return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
+    # MFTECmd — USN Journal mode
+    # ------------------------------------------------------------------
+
+    def run_mftecmd_usn(
+        self,
+        usn_path: str,
+        csv_dir: str,
+        csv_filename: str,
+        mft_path: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> RunResult:
+        """Parse an extracted ``$UsnJrnl:$J`` stream with MFTECmd.
+
+        B.2 NTFS USN Journal extraction. MFTECmd reads the carved ``$J``
+        file directly (the user must have extracted it from the image
+        first via icat / extract_windows_artifacts).
+
+        Parameters
+        ----------
+        usn_path:
+            Absolute path to the extracted ``$J`` file (the USN Journal
+            ``$J`` data stream, typically ``/cases/<case>/artifacts/raw/
+            usn/$J``).
+        csv_dir:
+            Output directory. Must exist.
+        csv_filename:
+            Output CSV filename.
+        mft_path:
+            Optional ``$MFT`` path. When supplied, MFTECmd resolves
+            parent paths for each USN record (much more useful for
+            analysts).
+
+        Returns
+        -------
+        RunResult
+            On success the CSV is at ``{csv_dir}/{csv_filename}``.
+        """
+        _bin = _sift_bin("MFTECmd")
+        cmd: List[str] = (
+            [_bin] if _bin else ["dotnet", _dll("MFTECmd.dll")]
+        ) + ["-f", usn_path]
+        if mft_path:
+            cmd += ["-m", mft_path]
+        cmd += ["--csv", csv_dir, "--csvf", csv_filename]
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
+
+    # ------------------------------------------------------------------
     # PECmd — Prefetch parser
     # ------------------------------------------------------------------
 

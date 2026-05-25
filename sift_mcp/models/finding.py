@@ -236,6 +236,67 @@ class Finding(BaseModel):
         None,
         description="Source class that satisfied the latest corroboration requirement.",
     )
+    # --- peer reviewer consensus 2026-05-19 (Tier-A report-gate invariants) -------
+    requires_re_extraction: bool = Field(
+        default=False,
+        description=(
+            "True when the finding's execution_id cannot be resolved in the "
+            "current evidence ledger (cross-session inheritance or autogen "
+            "placeholder). CONFIRMED status is blocked until either the "
+            "execution is re-run in this session or this flag is set as an "
+            "explicit operator waiver."
+        ),
+    )
+    alternative_hypothesis: str = Field(
+        default="",
+        description=(
+            "Strongest benign / competing explanation for the same evidence. "
+            "Mandatory for CONFIRMED findings (or set disposition='not_applicable' "
+            "with a reason). Required for dual-use tools and admin/IR activity."
+        ),
+    )
+    evidence_that_would_support_it: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Concrete observable facts that would be present if the alternative "
+            "(benign) hypothesis were true."
+        ),
+    )
+    evidence_against_it: list[str] = Field(
+        default_factory=list,
+        description=(
+            "What was actually observed that rules out the alternative hypothesis. "
+            "Must contain >=1 entry when disposition='ruled_out'."
+        ),
+    )
+    disposition: Literal["", "ruled_out", "not_resolved", "partially_plausible", "not_applicable"] = Field(
+        default="",
+        description=(
+            "Final analyst disposition of the alternative hypothesis. "
+            "CONFIRMED status requires disposition='ruled_out' or 'not_applicable'."
+        ),
+    )
+    alternative_hypothesis_not_applicable_reason: str = Field(
+        default="",
+        description=(
+            "Required when disposition='not_applicable'. One-line reason why "
+            "no plausible benign alternative exists (e.g. 'self-extracting "
+            "ransomware encryption pattern — no benign use of this binary')."
+        ),
+    )
+    # --- peer reviewer consensus 2026-05-22 (Phase 1 — durable specialist provenance) ---
+    assigned_agent: Optional[str] = Field(
+        default=None,
+        description=(
+            "The specialist subagent_type that registered this finding via "
+            "submit_finding (e.g. 'mft-analyst', 'evtx-analyst'). NULL when the "
+            "finding was registered via state.add_finding by the main agent or "
+            "auto-recorded by an MCP extraction tool. Required for the Phase 5 "
+            "investigation-success gate to verify per-lane specialist contribution. "
+            "Keep tool_name as the MCP producing tool — DO NOT overload it with "
+            "the specialist name (peer reviewer sign-off)."
+        ),
+    )
     fk_source_class: Optional[str] = Field(
         None,
         description="FK/source-strength bucket used for structural confidence handling.",
@@ -285,6 +346,70 @@ class Finding(BaseModel):
         description=(
             "Structured raw evidence references backing this finding. Each item "
             "records a path plus optional offset and provenance role."
+        ),
+    )
+    psscan_only_count: Optional[int] = Field(
+        None,
+        ge=0,
+        description=(
+            "PIDs seen in psscan but not in pslist for the same dump — DKOM-hidden "
+            "or unlinked processes; triggers mandatory detect_injection coverage."
+        ),
+    )
+    psscan_unverified: Optional[bool] = Field(
+        None,
+        description=(
+            "True when scan_processes ran without a matching pslist baseline. "
+            "peer reviewer round-7 P2: replaces the prior false-positive of treating all "
+            "psscan PIDs as hidden. Gate recomputes the delta when pslist later runs."
+        ),
+    )
+    psscan_pids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Full PID set observed by psscan; used by the report gate to recompute "
+            "the psscan-pslist delta when both findings are available."
+        ),
+    )
+    pslist_pids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Full PID set observed by list_processes; pairs with psscan_pids for "
+            "deferred DKOM detection in the report gate."
+        ),
+    )
+    requires_deeper_analysis: Optional[bool] = Field(
+        None,
+        description="When true, memory follow-up tools (e.g. detect_injection) are required before final report.",
+    )
+    network_followup_pids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "PIDs with established non-loopback connections; use list_dlls for "
+            "follow-up before final report."
+        ),
+    )
+    dlllist_covered_pid: Optional[int] = Field(
+        None,
+        ge=0,
+        description=(
+            "PID a list_dlls finding actually examined. E.2 (peer reviewer round-1 P2): "
+            "the report gate uses this to verify per-PID coverage instead of "
+            "accepting any list_dlls execution as full coverage."
+        ),
+    )
+    network_pids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Plan/API alias for PIDs requiring list_dlls follow-up; mirrors "
+            "network_followup_pids for external-connection findings."
+        ),
+    )
+    next_required_tool: Optional[str] = Field(
+        None,
+        description=(
+            "Suggested MCP tool to run next for this finding (e.g. detect_injection, "
+            "list_dlls) when coverage gates require follow-up."
         ),
     )
     created_at: datetime = Field(

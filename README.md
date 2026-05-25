@@ -10,7 +10,7 @@
 
 ## What It Does
 
-SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It currently exposes 48 typed forensic tools over stdio transport, supports cross-artifact correlation between disk and memory evidence, and keeps findings traceable through persisted artifacts, state, and audit logs.
+SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It exposes 56 typed forensic tools over stdio transport (see `describe_tool_catalog`), supports cross-artifact correlation between disk and memory evidence via 10 anti-forensics detection checks, and keeps findings traceable through persisted artifacts, state, and audit logs with court-defensible provenance (Section 3-lite evidence schema + CTX heuristic provenance chain).
 
 ---
 
@@ -137,7 +137,7 @@ cd /opt/SAVVYDFIR-MCP/reports && python3 -m http.server 8080
 
 Validated in live remote SIFT-host runs:
 
-- Single-host investigation flow on `HACKATHON-2026-WKSTN01`
+- Single-host investigation flow against a published Windows intrusion dataset
 - Audit-backed completion for `compare_disk_and_memory`, `sigma_scan`, and `generate_report`
 - Summary-first MCP responses for heavy disk tools
 - Report and graph generation to `reports/{case_id}/`
@@ -158,11 +158,15 @@ So the current repo is ready for single-host investigations and Batch 1-4 valida
 
 ## Skills Reference
 
-Claude Code uses the repository-local `.agents/skills/` tree for investigation guidance. On the merged `master` branch, the tracked skill is:
+Claude Code skills provide on-demand forensic expertise. Skills auto-discover at startup (only name + description load). Full content loads when invoked.
 
-| Path | Skill | What It Does |
+| Slash Command | Skill | What It Does |
 |---|---|---|
-| `.agents/skills/investigation-workflow/SKILL.md` | Investigation Workflow | Five-phase DFIR workflow from evidence mounting through report generation, with decision points and quality gates |
+| `/memory-forensics` | Memory Forensics | Volatility 3 plugins: pslist, psscan, netscan, malfind, dlllist, hashdump |
+| `/disk-forensics` | Disk Forensics | ewfmount, mmls, fls, icat — E01 mounting and filesystem analysis |
+| `/ez-tools` | EZ Tools | MFTECmd, EvtxECmd, PECmd, AppCompatCacheParser, LECmd, JLECmd, SBECmd, regripper |
+| `/timeline` | Timeline | log2timeline.py + psort.py — super timeline creation and filtering |
+| `/yara` | YARA | Signature scanning on disk files and memory dumps |
 
 ---
 
@@ -210,7 +214,7 @@ Evidence directories are READ-ONLY. By default output goes to `analysis/` and `r
 
 ---
 
-## MCP Tools (48)
+## MCP Tools (41)
 
 | Namespace | Tools | Description |
 |---|---|---|
@@ -219,9 +223,8 @@ Evidence directories are READ-ONLY. By default output goes to `analysis/` and `r
 | memory | `detect_profile`, `list_processes`, `scan_processes`, `scan_network`, `detect_injection`, `list_dlls` | Volatility 3 memory analysis |
 | timeline | `build_timeline`, `query_timeline` | Plaso super timeline |
 | yara | `scan_files`, `scan_memory` | YARA signature scanning |
-| correlation | `compare_disk_and_memory`, `flag_discrepancy` | Cross-artifact correlation (6 checks) |
+| correlation | `compare_disk_and_memory`, `flag_discrepancy`, `find_temporal_clusters` | Cross-artifact correlation (10 anti-forensics checks) + temporal clustering for synthesis |
 | state | `read_state`, `get_finding`, `get_findings`, `export_trace`, `describe_tool_catalog` | Case state summary, retrieval, trace export, and catalog metadata |
-| orchestration | `environment_preflight`, `extract_windows_artifacts`, `classify_missing_artifact`, `record_analysis_lane`, `get_investigation_gates` | Environment checks, artifact bundle extraction, lane writeback, and gate visibility |
 | lifecycle | `start_investigation`, `add_finding`, `coverage_report`, `generate_report` | Investigation lifecycle |
 | mounting | `mount_image`, `load_memory` | Evidence preparation |
 | graph | `generate_graph`, `serve_graph`, `merge_host_graphs`, `build_reports_index` | D3 investigation graph + multi-host unified view + reports dashboard |

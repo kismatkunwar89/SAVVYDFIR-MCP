@@ -40,6 +40,33 @@ class AgentTriggerTests(unittest.TestCase):
             ev["tool_input"] = tool_input
         return ev
 
+    def _read_queue_delegate(self, trigger_path: Path, lane_id: Optional[str] = None, index: int = 0) -> Optional[dict]:
+        """Read a delegate from the queue file structure.
+
+        Args:
+            trigger_path: Path to queue JSON file
+            lane_id: Lane identifier (e.g., "event_auth"). If None, returns first delegate from any lane.
+            index: Index in lane's queue (0 = head)
+
+        Returns:
+            Delegate dict or None if not found
+        """
+        if not trigger_path.exists():
+            return None
+        queue = json.loads(trigger_path.read_text(encoding="utf-8"))
+
+        if lane_id is None:
+            # Return first delegate from any lane (for simple tests)
+            for lane_queue in queue.values():
+                if lane_queue and len(lane_queue) > 0:
+                    return lane_queue[0]
+            return None
+
+        lane_queue = queue.get(lane_id, [])
+        if index < len(lane_queue):
+            return lane_queue[index]
+        return None
+
     def test_namespaced_evtx_payload_dispatches_and_writes_trigger(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             trigger_path = Path(tmp_dir) / "delegate.json"
@@ -61,7 +88,8 @@ class AgentTriggerTests(unittest.TestCase):
             self.assertIn("PATH B", result["reason"])
             self.assertIn("main-agent", result["reason"])
             self.assertIn("record_analysis_lane", result["reason"])
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path, "event_auth")
+            self.assertIsNotNone(payload, "Delegate should be queued in event_auth lane")
             self.assertEqual(payload["agent"], "@evtx-analyst")
             self.assertEqual(payload["subagent_type"], "evtx-analyst")
             self.assertEqual(payload["lane_id"], "event_auth")
@@ -87,7 +115,8 @@ class AgentTriggerTests(unittest.TestCase):
             self.assertIsNotNone(result)
             self.assertEqual(result["decision"], "block")
             self.assertIn("@evtx-analyst", result["reason"])
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path, "event_auth")
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertEqual(payload["subagent_type"], "evtx-analyst")
             self.assertEqual(payload["lane_id"], "event_auth")
             self.assertEqual(payload["tool"], "summarize_evtx")
@@ -109,7 +138,8 @@ class AgentTriggerTests(unittest.TestCase):
             result = agent_trigger.process_event(event, trigger_path=str(trigger_path))
 
             self.assertEqual(result["decision"], "block")
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertEqual(payload["agent"], "@custom-analyst")
             self.assertEqual(payload["subagent_type"], "custom-analyst")
             self.assertIn("Use the metadata-driven path.", payload["instruction"])
@@ -130,7 +160,8 @@ class AgentTriggerTests(unittest.TestCase):
 
             self.assertIsNotNone(result)
             self.assertEqual(result["decision"], "block")
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertEqual(payload["agent"], "@timeline-analyst")
             self.assertIn("@timeline-analyst", result["reason"])
             self.assertIn("storage handle", payload["instruction"])
@@ -153,7 +184,8 @@ class AgentTriggerTests(unittest.TestCase):
             result = agent_trigger.process_event(event, trigger_path=str(trigger_path))
 
             self.assertEqual(result["decision"], "block")
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertEqual(payload["agent"], "@sigma-analyst")
             self.assertEqual(payload["subagent_type"], "sigma-analyst")
             self.assertIn("2 CRITICAL", payload["instruction"])
@@ -189,7 +221,8 @@ class AgentTriggerTests(unittest.TestCase):
                     self.assertEqual(result["decision"], "block")
                     self.assertIn(f"@{subagent_type}", result["reason"])
                     self.assertIn("record_analysis_lane", result["reason"])
-                    payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+                    payload = self._read_queue_delegate(trigger_path)
+                    self.assertIsNotNone(payload, "Delegate should be queued")
                     self.assertEqual(payload["subagent_type"], subagent_type)
                     self.assertIn(f"@{subagent_type}", payload["delegation_text"])
 
@@ -217,7 +250,8 @@ class AgentTriggerTests(unittest.TestCase):
                 trigger_path=str(trigger_path),
             )
             self.assertIsNone(follow_up)
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertEqual(payload["lane_id"], "event_auth")
             self.assertFalse(payload["processed"])
 
@@ -230,7 +264,8 @@ class AgentTriggerTests(unittest.TestCase):
                 trigger_path=str(trigger_path),
             )
             self.assertIsNone(lane_record)
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertTrue(payload["processed"])
 
     def test_pending_delegation_blocks_report_generation(self) -> None:
@@ -284,7 +319,8 @@ class AgentTriggerTests(unittest.TestCase):
                 trigger_path=str(trigger_path),
             )
             self.assertIsNone(unrelated)
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertFalse(payload["processed"])
 
     def test_pending_delegation_does_not_block_other_lane_tool_or_overwrite(self) -> None:
@@ -313,7 +349,8 @@ class AgentTriggerTests(unittest.TestCase):
                 trigger_path=str(trigger_path),
             )
             self.assertIsNone(unrelated_lane)
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertEqual(payload["lane_id"], "event_auth")
             self.assertFalse(payload["processed"])
 
@@ -342,7 +379,8 @@ class AgentTriggerTests(unittest.TestCase):
                 trigger_path=str(trigger_path),
             )
             self.assertIsNone(result)
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertTrue(payload["processed"])
 
     def test_legacy_stale_trigger_without_created_at_is_processed(self) -> None:
@@ -370,7 +408,8 @@ class AgentTriggerTests(unittest.TestCase):
             )
 
             self.assertIsNone(result)
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertTrue(payload["processed"])
 
     def test_lane_match_strict_clears_trigger_when_lane_matches(self) -> None:
@@ -395,7 +434,8 @@ class AgentTriggerTests(unittest.TestCase):
                 ),
                 trigger_path=str(trigger_path),
             )
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertTrue(payload["processed"])
 
     def test_lane_match_uses_nested_lane_payload(self) -> None:
@@ -422,7 +462,8 @@ class AgentTriggerTests(unittest.TestCase):
                 ),
                 trigger_path=str(trigger_path),
             )
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertTrue(payload["processed"])
 
     def test_lane_match_parses_string_content_payload(self) -> None:
@@ -451,7 +492,8 @@ class AgentTriggerTests(unittest.TestCase):
 
             agent_trigger.process_event(event, trigger_path=str(trigger_path))
 
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertTrue(payload["processed"])
 
     def test_lane_match_strict_blocks_wrong_lane(self) -> None:
@@ -476,7 +518,8 @@ class AgentTriggerTests(unittest.TestCase):
                 ),
                 trigger_path=str(trigger_path),
             )
-            payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+            payload = self._read_queue_delegate(trigger_path)
+            self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertFalse(payload["processed"])
 
     def test_zero_hit_sigma_does_not_dispatch(self) -> None:
@@ -512,131 +555,145 @@ class AgentTriggerTests(unittest.TestCase):
         self.assertEqual(result["decision"], "block")
         self.assertIn("Permission denied", result["reason"])
 
-    def test_subagent_stop_no_pending_delegate_noops(self) -> None:
+    def test_error_status_does_not_spawn_specialist(self) -> None:
+        """Run2 bug: failed summarize_evtx spawned evtx-analyst with no data,
+        analyst burned 21k tokens then bailed. Hook must not dispatch on error."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             trigger_path = Path(tmp_dir) / "delegate.json"
-            result = agent_trigger.process_subagent_stop(
-                {"result": "plain prose"},
-                trigger_path=str(trigger_path),
+            event = self._nested_event(
+                "mcp__savvydfir__summarize_evtx",
+                {
+                    "status": "error",
+                    "csv_path": "/cases/CASE-1/artifacts/evtx/evtx_timeline.csv",
+                },
             )
+            result = agent_trigger.process_event(event, trigger_path=str(trigger_path))
+            self.assertIsNone(result, f"error must not spawn specialist, got: {result}")
+            self.assertFalse(trigger_path.exists())
+
+    def test_not_initialised_status_does_not_spawn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            trigger_path = Path(tmp_dir) / "delegate.json"
+            event = self._nested_event(
+                "mcp__savvydfir__summarize_evtx",
+                {"status": "not_initialised", "csv_path": "/tmp/x.csv"},
+            )
+            result = agent_trigger.process_event(event, trigger_path=str(trigger_path))
             self.assertIsNone(result)
+            self.assertFalse(trigger_path.exists())
 
-    def test_subagent_stop_valid_json_passes(self) -> None:
+    def test_same_lane_different_tools_queue_concurrently(self) -> None:
+        """H.1 fix: same-lane tools should NOT block each other.
+
+        Old behavior: extract_mft_timeline and sigma_hunt (both in
+        timeline_correlation lane) blocked each other due to lane_id match.
+        New behavior: different tools in same lane can queue concurrently.
+        """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            trigger_path = Path(tmp_dir) / "delegate.json"
-            trigger_path.write_text(
-                json.dumps({"processed": False, "lane_id": "memory"}),
-                encoding="utf-8",
-            )
-            result = agent_trigger.process_subagent_stop(
-                {
-                    "result": json.dumps(
-                        {
-                            "lane_id": "memory",
-                            "status": "COMPLETE",
-                            "execution_ids": ["E-001"],
-                            "finding_ids": ["F-001"],
-                            "data_gaps": [],
-                            "summary": "Memory lane analyzed.",
-                            "confidence_notes": [],
-                        }
-                    )
-                },
-                trigger_path=str(trigger_path),
-            )
-            self.assertIsNone(result)
+            # Use queue path instead of single trigger file
+            queue_path = Path(tmp_dir) / "delegate_queue.json"
+            os.environ["SAVVYDFIR_DELEGATE_QUEUE_PATH"] = str(queue_path)
 
-    def test_subagent_stop_missing_json_blocks_with_path_b(self) -> None:
+            try:
+                # First tool in timeline_correlation lane: extract_mft_timeline
+                result1 = agent_trigger.process_event(
+                    self._nested_event(
+                        "mcp__savvydfir__extract_mft_timeline",
+                        {
+                            "status": "success",
+                            "csv_path": "/cases/CASE-1/mft_timeline.csv",
+                            "total_rows": 301000,
+                        },
+                    ),
+                    trigger_path=str(queue_path),
+                )
+                self.assertIsNotNone(result1)
+                self.assertEqual(result1["decision"], "block")
+                self.assertIn("@mft-analyst", result1["reason"])
+
+                # Second tool in SAME lane: sigma_hunt
+                # OLD: would block because lane_id == "timeline_correlation"
+                # NEW: should queue because it's a DIFFERENT tool
+                result2 = agent_trigger.process_event(
+                    self._nested_event(
+                        "mcp__savvydfir__sigma_hunt",
+                        {
+                            "status": "success",
+                            "finding_ids_generated": ["F-001", "F-002"],
+                            "detection_count": 42,
+                        },
+                    ),
+                    trigger_path=str(queue_path),
+                )
+
+                # Should NOT be None (specialist should be queued)
+                self.assertIsNotNone(result2, "Same-lane different tools should queue concurrently")
+                self.assertEqual(result2["decision"], "block")
+                self.assertIn("@sigma-analyst", result2["reason"])
+
+                # Verify queue has both delegates
+                with open(queue_path) as f:
+                    queue = json.load(f)
+                self.assertIn("timeline_correlation", queue)
+                self.assertEqual(len(queue["timeline_correlation"]), 2)
+                self.assertEqual(queue["timeline_correlation"][0]["tool"], "mcp__savvydfir__extract_mft_timeline")
+                self.assertEqual(queue["timeline_correlation"][1]["tool"], "mcp__savvydfir__sigma_hunt")
+
+            finally:
+                os.environ.pop("SAVVYDFIR_DELEGATE_QUEUE_PATH", None)
+
+    def test_same_lane_same_tool_blocks_duplicate(self) -> None:
+        """H.1 fix: same tool already queued in same lane should block.
+
+        Prevents duplicate delegates for the same tool in the same lane.
+        """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            trigger_path = Path(tmp_dir) / "delegate.json"
-            trigger_path.write_text(
-                json.dumps(
-                    {
-                        "processed": False,
-                        "lane_id": "event_auth",
-                        "source_artifact_path": "/cases/CASE/artifacts/evtx.csv",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            result = agent_trigger.process_subagent_stop(
-                {"result": "I analyzed the logs and found issues."},
-                trigger_path=str(trigger_path),
-            )
-            self.assertEqual(result["decision"], "block")
-            self.assertIn("SUBAGENT CONTRACT INVALID", result["reason"])
-            self.assertIn("Path B", result["reason"])
-            self.assertIn("COMPLETE_WITH_GAPS", result["reason"])
+            queue_path = Path(tmp_dir) / "delegate_queue.json"
+            os.environ["SAVVYDFIR_DELEGATE_QUEUE_PATH"] = str(queue_path)
 
-    def test_subagent_stop_wrong_lane_blocks(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            trigger_path = Path(tmp_dir) / "delegate.json"
-            trigger_path.write_text(
-                json.dumps({"processed": False, "lane_id": "timeline_correlation"}),
-                encoding="utf-8",
-            )
-            result = agent_trigger.process_subagent_stop(
-                {
-                    "result": json.dumps(
+            try:
+                # First sigma_hunt in timeline_correlation
+                result1 = agent_trigger.process_event(
+                    self._nested_event(
+                        "mcp__savvydfir__sigma_hunt",
                         {
-                            "lane_id": "memory",
-                            "status": "COMPLETE",
-                            "execution_ids": [],
-                            "finding_ids": [],
-                            "data_gaps": [],
-                            "summary": "Wrong lane.",
-                            "confidence_notes": [],
-                        }
-                    )
-                },
-                trigger_path=str(trigger_path),
-            )
-            self.assertEqual(result["decision"], "block")
-            self.assertIn("pending lane_id is 'timeline_correlation'", result["reason"])
+                            "status": "success",
+                            "finding_ids_generated": ["F-001"],
+                        },
+                    ),
+                    trigger_path=str(queue_path),
+                )
+                self.assertIsNotNone(result1)
+                self.assertEqual(result1["decision"], "block")
 
-    def test_subagent_stop_complete_with_gaps_requires_gap_entries(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            trigger_path = Path(tmp_dir) / "delegate.json"
-            trigger_path.write_text(
-                json.dumps({"processed": False, "lane_id": "memory"}),
-                encoding="utf-8",
-            )
-            missing_gap = agent_trigger.process_subagent_stop(
-                {
-                    "result": json.dumps(
+                # Second sigma_hunt in SAME lane — should block (duplicate)
+                result2 = agent_trigger.process_event(
+                    self._nested_event(
+                        "mcp__savvydfir__sigma_hunt",
                         {
-                            "lane_id": "memory",
-                            "status": "COMPLETE_WITH_GAPS",
-                            "execution_ids": [],
-                            "finding_ids": [],
-                            "data_gaps": [],
-                            "summary": "Could not access memory artifact.",
-                            "confidence_notes": [],
-                        }
-                    )
-                },
-                trigger_path=str(trigger_path),
-            )
-            self.assertEqual(missing_gap["decision"], "block")
-            self.assertIn("requires at least one", missing_gap["reason"])
+                            "status": "success",
+                            "finding_ids_generated": ["F-002"],
+                        },
+                    ),
+                    trigger_path=str(queue_path),
+                )
 
-            valid_gap = agent_trigger.process_subagent_stop(
-                {
-                    "result": json.dumps(
-                        {
-                            "lane_id": "memory",
-                            "status": "COMPLETE_WITH_GAPS",
-                            "execution_ids": [],
-                            "finding_ids": [],
-                            "data_gaps": [{"reason": "artifact unavailable"}],
-                            "summary": "Memory lane could not be completed.",
-                            "confidence_notes": [],
-                        }
-                    )
-                },
-                trigger_path=str(trigger_path),
-            )
-            self.assertIsNone(valid_gap)
+                # Should block with delegation reason
+                self.assertIsNotNone(result2)
+                self.assertEqual(result2["decision"], "block")
+                self.assertIn("@sigma-analyst", result2["reason"])
+
+                # Verify queue has only ONE sigma_hunt delegate (no duplicate)
+                with open(queue_path) as f:
+                    queue = json.load(f)
+                sigma_count = sum(
+                    1 for d in queue.get("timeline_correlation", [])
+                    if "sigma_hunt" in d.get("tool", "")
+                )
+                self.assertEqual(sigma_count, 1, "Duplicate tool should not be queued twice")
+
+            finally:
+                os.environ.pop("SAVVYDFIR_DELEGATE_QUEUE_PATH", None)
 
 
 if __name__ == "__main__":

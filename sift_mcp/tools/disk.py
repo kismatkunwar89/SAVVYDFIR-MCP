@@ -564,18 +564,50 @@ def _raw_artifact_base() -> Path:
 
 
 def _durable_raw_artifact_path(kind: str) -> Optional[str]:
-    """Return a durable extracted artifact path for *kind* if one exists."""
+    """Return a durable extracted artifact path for *kind* — content-aware.
+
+    peer reviewer Phase-A-boundary review: the prior 'first existing path' check
+    accepted empty directories created by failed/partial extract_windows_
+    artifacts runs. An empty raw/evtx would then shadow a valid mounted
+    Windows root and break A.2 path resolution.
+
+    Now: only return a path that contains the artifact files we expect.
+    """
     base = _raw_artifact_base()
-    candidates = {
-        "evtx": [base / "evtx"],
-        "registry": [base / "registry"],
-        "amcache": [base / "amcache" / "Amcache.hve"],
-        "prefetch": [base / "prefetch"],
-        "mft": [base / "mft" / "$MFT"],
-    }.get(kind, [])
-    for candidate in candidates:
-        if candidate.exists():
+    if kind == "evtx":
+        candidate = base / "evtx"
+        if candidate.is_dir() and any(candidate.glob("*.evtx")):
             return str(candidate)
+        return None
+    if kind == "registry":
+        candidate = base / "registry"
+        if candidate.is_dir():
+            # Run-8 lesson: a SAM-only staging dir was treated as valid here,
+            # then RECmd produced SAM-only output and persistence data was
+            # lost (no Run keys, no services). For persistence analysis we
+            # need SYSTEM and/or SOFTWARE — the hives that actually carry
+            # Run keys + ControlSet\Services. Return the dir only if at
+            # least one of those is present; SAM or NTUSER alone is not
+            # enough to call this "a registry dir for persistence work".
+            for required in ("SYSTEM", "SOFTWARE"):
+                if (candidate / required).is_file():
+                    return str(candidate)
+        return None
+    if kind == "prefetch":
+        candidate = base / "prefetch"
+        if candidate.is_dir() and any(candidate.glob("*.pf")):
+            return str(candidate)
+        return None
+    if kind == "amcache":
+        candidate = base / "amcache" / "Amcache.hve"
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return str(candidate)
+        return None
+    if kind == "mft":
+        candidate = base / "mft" / "$MFT"
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return str(candidate)
+        return None
     return None
 
 
@@ -626,24 +658,47 @@ def _unsafe_path_error(
 
 
 def _resolve_evtx_dir_input(image_path: str, evtx_dir: Optional[str]) -> str:
+    """Resolve the EVTX directory to use for parsing.
+
+    A.2 fix: durable extracted-artifacts path (/cases/{case}/artifacts/raw/evtx)
+    is preferred over scanning the image/mount root, because raw mount paths
+    like /mnt/evidence/ewf1 do not auto-navigate to the Windows partition
+    and the mount-root fallback returns a non-existent path. Run2 evidence:
+    main agent called summarize_evtx with the mount root first, the call
+    failed, and the hook then dispatched evtx-analyst on the failure.
+
+    Resolution order:
+      1. explicit evtx_dir argument (caller knows best)
+      2. durable extracted artifacts (proves extract_windows_artifacts ran)
+      3. image_path is a single .evtx file → use its parent
+      4. image_path is a directory containing .evtx files → use it
+      5. mount-root fallback via Windows/System32/winevt/Logs
+    """
     if evtx_dir is not None:
         return evtx_dir
+    # A.2: prefer durable path BEFORE scanning image_path. If the operator
+    # has already extracted artifacts, those win regardless of what
+    # image_path was passed.
+    durable = _durable_raw_artifact_path("evtx")
+    if durable:
+        return durable
     base = Path(image_path)
     if _path_is_file(base) and base.suffix.lower() == ".evtx":
         return str(base.parent)
     if _path_is_dir(base) and _any_glob(base, "*.evtx"):
         return str(base)
-    durable = _durable_raw_artifact_path("evtx")
-    if durable:
-        return durable
     return _resolve_windows_relative_path(
         image_path, "Windows", "System32", "winevt", "Logs"
     )
 
 
 def _resolve_registry_hive_dir_input(image_path: str, hive_dir: Optional[str]) -> str:
+    """A.2: durable extracted artifacts take precedence over image_path scan."""
     if hive_dir is not None:
         return hive_dir
+    durable = _durable_raw_artifact_path("registry")
+    if durable:
+        return durable
     base = Path(image_path)
     if _path_is_file(base) and base.name.upper() in {
         "SYSTEM",
@@ -655,49 +710,49 @@ def _resolve_registry_hive_dir_input(image_path: str, hive_dir: Optional[str]) -
         return str(base.parent)
     if _path_is_dir(base) and any(_path_exists(base / name) for name in ("SYSTEM", "SOFTWARE", "NTUSER.DAT")):
         return str(base)
-    durable = _durable_raw_artifact_path("registry")
-    if durable:
-        return durable
     return _resolve_windows_relative_path(
         image_path, "Windows", "System32", "config"
     )
 
 
 def _resolve_amcache_hive_input(image_path: str, hive_path: Optional[str]) -> str:
+    """A.2: durable extracted artifacts win over image_path scan."""
     if hive_path is not None:
         return hive_path
-    base = Path(image_path)
-    if _path_is_file(base) and base.name.lower() == "amcache.hve":
-        return str(base)
     durable = _durable_raw_artifact_path("amcache")
     if durable:
         return durable
+    base = Path(image_path)
+    if _path_is_file(base) and base.name.lower() == "amcache.hve":
+        return str(base)
     return _resolve_windows_relative_path(
         image_path, "Windows", "appcompat", "Programs", "Amcache.hve"
     )
 
 
 def _resolve_prefetch_dir_input(image_path: str, prefetch_dir: Optional[str]) -> str:
+    """A.2: durable extracted artifacts win over image_path scan."""
     if prefetch_dir is not None:
         return prefetch_dir
-    base = Path(image_path)
-    if _path_is_dir(base) and _any_glob(base, "*.pf"):
-        return str(base)
     durable = _durable_raw_artifact_path("prefetch")
     if durable:
         return durable
+    base = Path(image_path)
+    if _path_is_dir(base) and _any_glob(base, "*.pf"):
+        return str(base)
     return _resolve_windows_relative_path(image_path, "Windows", "Prefetch")
 
 
 def _resolve_mft_path_input(image_path: str, mft_path: Optional[str]) -> str:
+    """A.2: durable extracted artifacts win over image_path scan."""
     if mft_path is not None:
         return mft_path
-    base = Path(image_path)
-    if _path_is_file(base) and base.name == "$MFT":
-        return str(base)
     durable = _durable_raw_artifact_path("mft")
     if durable:
         return durable
+    base = Path(image_path)
+    if _path_is_file(base) and base.name == "$MFT":
+        return str(base)
     return _resolve_windows_relative_path(image_path, "$MFT")
 
 
@@ -921,6 +976,10 @@ def _prefetch_contract_payload(
     )
     return build_contract_response(
         response,
+        case_id=_case_id(),
+        execution_id=response.get("execution_id"),
+        state_manager=_state,
+        audit_logger=_audit,
         tool_name="disk.extract_prefetch",
         summary=summary,
         normalized_observations=normalized,
@@ -998,6 +1057,10 @@ def _amcache_contract_payload(
     )
     return build_contract_response(
         response,
+        case_id=_case_id(),
+        execution_id=response.get("execution_id"),
+        state_manager=_state,
+        audit_logger=_audit,
         tool_name="disk.get_amcache",
         summary=summary,
         normalized_observations=normalized,
@@ -1068,6 +1131,10 @@ def _mft_contract_payload(
     )
     return build_contract_response(
         response,
+        case_id=_case_id(),
+        execution_id=response.get("execution_id"),
+        state_manager=_state,
+        audit_logger=_audit,
         tool_name="disk.extract_mft_timeline",
         summary=summary,
         normalized_observations=normalized,
@@ -1143,6 +1210,10 @@ def _evtx_contract_payload(
     )
     return build_contract_response(
         response,
+        case_id=_case_id(),
+        execution_id=response.get("execution_id"),
+        state_manager=_state,
+        audit_logger=_audit,
         tool_name="disk.summarize_evtx",
         summary=(
             f"EVTX summarization returned {response.get('records_count', len(records))} rows "
@@ -1240,6 +1311,10 @@ def _registry_contract_payload(
     ]
     return build_contract_response(
         response,
+        case_id=_case_id(),
+        execution_id=response.get("execution_id"),
+        state_manager=_state,
+        audit_logger=_audit,
         tool_name="disk.extract_registry_run_keys",
         summary=(
             f"Registry persistence extraction returned {response.get('records_count', len(records))} rows "
@@ -2779,6 +2854,276 @@ def extract_mft_timeline(
 
 
 # ---------------------------------------------------------------------------
+# Tool: extract_usn_journal (B.2)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_usn_path_input(image_path: str, usn_path: Optional[str]) -> str:
+    """Resolve $UsnJrnl:$J path. A.2-style: durable artifacts beat scan.
+
+    The icat staging step writes the ADS as a flat file under
+    /cases/<id>/artifacts/raw/usn/. Naming has drifted across staging
+    revisions — we accept all known variants AND fall back to scanning
+    the directory for any file >0 bytes that contains 'UsnJrnl' or 'J'.
+    """
+    if usn_path is not None:
+        return usn_path
+    cid = _case_id()
+    base = Path(os.environ.get("OUTPUT_BASE", "/cases")) / cid / "artifacts" / "raw" / "usn"
+    if base.is_dir():
+        # Known staged filenames across staging revisions
+        for candidate_name in (
+            "$UsnJrnl_$J",   # current staging (extract_windows_artifacts)
+            "$UsnJrnl:$J",   # raw ADS-style (some mount paths)
+            "$J",            # icat-direct extract
+            "UsnJrnl_J",     # sanitized variant
+            "usn_journal_J",
+            "J",
+        ):
+            candidate = base / candidate_name
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return str(candidate)
+        # Last-resort directory scan — pick the largest UsnJrnl/J-ish file.
+        # Defensive: if any future staging revision uses yet another name,
+        # the file is still found as long as its name carries "UsnJrnl"
+        # or starts with "J" or "$J".
+        try:
+            candidates = []
+            for child in base.iterdir():
+                if not child.is_file():
+                    continue
+                size = child.stat().st_size
+                if size <= 0:
+                    continue
+                name = child.name
+                if (
+                    "UsnJrnl" in name
+                    or name.startswith("J")
+                    or name.startswith("$J")
+                    or "usn" in name.lower()
+                ):
+                    candidates.append((size, child))
+            if candidates:
+                candidates.sort(reverse=True)  # largest first
+                return str(candidates[0][1])
+        except OSError:
+            pass
+    base_img = Path(image_path)
+    if _path_is_file(base_img) and base_img.name in ("$J", "UsnJrnl_J", "$UsnJrnl_$J"):
+        return str(base_img)
+    # Last resort: Windows-relative; rarely useful since $J is an ADS
+    return _resolve_windows_relative_path(
+        image_path, "$Extend", "$UsnJrnl_J"  # mount-translated ADS name varies
+    )
+
+
+def extract_usn_journal(
+    image_path: str,
+    usn_path: Optional[str] = None,
+    mft_path: Optional[str] = None,
+    case_id: Optional[str] = None,
+    response_format: str = "summary",
+) -> dict[str, Any]:
+    """Parse the NTFS USN Journal ($UsnJrnl:$J) via MFTECmd.
+
+    B.2 — USN persists filesystem-change records that the MFT itself may
+    overwrite. Critical for ransomware/exfiltration timelines because:
+      - rename/delete is recorded with timestamps even after the MFT
+        record is reallocated
+      - 'BasicInfoChange + FileCreate + DataExtend' chains reveal
+        encryption activity (ransomware) and large-file staging (exfil)
+
+    Like extract_mft_timeline, USN output is LARGE (often >1M rows). We
+    return a summary + csv_path handle ONLY — the parent agent must use
+    run_analysis() against the CSV, never load rows into context.
+    Specialist analyst: @mft-analyst (handles both MFT and USN pivots).
+
+    Parameters
+    ----------
+    image_path:
+        Image path (used to resolve case_id and durable artifact dir).
+    usn_path:
+        Optional explicit path to the extracted $J file. When None,
+        prefers /cases/<case>/artifacts/raw/usn/$J (durable artifact)
+        before falling back to scanning image_path.
+    mft_path:
+        Optional $MFT path. When given, MFTECmd resolves parent paths
+        for each USN record (substantially more useful for triage).
+    case_id:
+        Overrides the resolved case_id for output naming.
+    response_format:
+        "summary" (default) returns counts and the csv_path; "detailed"
+        adds a small preview (first 25 rows). Detailed format must NOT
+        be the default per project rules on large artifacts.
+    """
+    tool = "disk.extract_usn_journal"
+    if _ez_runner is None or _state is None or _audit is None:
+        return _not_initialised(tool)
+
+    normalized_format = _normalize_response_format(response_format)
+    if normalized_format is None:
+        return {
+            "tool_name": tool,
+            "status": "error",
+            "error_message": "Invalid response_format. Use 'summary' or 'detailed'.",
+            "data": [],
+            "findings_created": [],
+            "execution_id": None,
+            "raw_command": None,
+        }
+
+    usn_path = _resolve_usn_path_input(image_path, usn_path)
+    resolved_usn = _resolved_path_str(usn_path)
+    if _unsafe_runtime_tmp_input(resolved_usn):
+        return _unsafe_path_error(
+            tool, input_name="usn_path", resolved_path=resolved_usn,
+            image_path=image_path,
+        )
+    if not Path(resolved_usn).is_file():
+        return _path_missing_error(
+            tool, input_name="usn_path", resolved_path=resolved_usn,
+            image_path=image_path,
+        )
+
+    # If mft_path not explicit, try to find a durable one (A.2 pattern)
+    if mft_path is None:
+        durable_mft = _durable_raw_artifact_path("mft")
+        if durable_mft and Path(durable_mft).is_file():
+            mft_path = durable_mft
+
+    with tempfile.TemporaryDirectory(prefix="savvydfir_usn_") as tmp_dir:
+        csv_filename = "usn_journal.csv"
+        csv_path = os.path.join(tmp_dir, csv_filename)
+
+        try:
+            result = _ez_runner.run_mftecmd_usn(
+                usn_path=resolved_usn,
+                csv_dir=tmp_dir,
+                csv_filename=csv_filename,
+                mft_path=mft_path,
+                tool_name=tool,
+            )
+        except Exception as exc:
+            return _runner_error(tool, exc)
+
+        if not result.ok and not Path(csv_path).exists():
+            return {
+                "tool_name": tool,
+                "status": "error",
+                "error_message": (
+                    f"MFTECmd (USN mode) exited with code {result.exit_code}. "
+                    f"stderr: {result.stderr[:300]}"
+                ),
+                "data": [],
+                "findings_created": [],
+                "execution_id": result.execution_id,
+                "raw_command": result.command_line,
+                "stderr": result.stderr,
+            }
+
+        # Stream-count rows without loading the whole CSV (large artifact rule)
+        total_rows = 0
+        try:
+            with open(csv_path, "r", encoding="utf-8-sig", newline="") as fh:
+                # Subtract 1 for header row
+                total_rows = max(0, sum(1 for _ in fh) - 1)
+        except OSError:
+            total_rows = 0
+
+        persistent_csv = _persist_csv(csv_path, "usn")
+        durable_csv, artifact_persistence = _finalize_artifact_persistence(
+            artifact_label="USN journal CSV",
+            persisted_path=persistent_csv,
+            preflight={"ok": True},  # USN doesn't have its own preflight
+        )
+
+    # Build a small preview when detailed is requested (capped at 25 rows)
+    preview: list[dict[str, Any]] = []
+    if normalized_format == "detailed" and durable_csv:
+        try:
+            import csv as _csv
+            with open(durable_csv, "r", encoding="utf-8-sig", newline="") as fh:
+                reader = _csv.DictReader(fh)
+                for i, row in enumerate(reader):
+                    if i >= 25:
+                        break
+                    preview.append(dict(row))
+        except OSError:
+            pass
+
+    # Single summary finding so the report gate sees structured proof
+    # the tool ran. Suspicious-pattern detection is left to the analyst
+    # working through run_analysis on the CSV.
+    finding_ids: list[str] = []
+    try:
+        finding_dict = {
+            "case_id": _case_id(),
+            "finding_type": "other",
+            "artifact_type": "disk",
+            "artifact_path": resolved_usn,
+            "tool_name": tool,
+            "execution_id": result.execution_id,
+            "iteration": _current_iteration(),
+            "evidence_kind": "observation",
+            "finding_status": "active",
+            "confidence": 0.7 if total_rows > 0 else 0.4,
+            "description": (
+                f"USN Journal parsed: {total_rows} change records from {resolved_usn}. "
+                "Use run_analysis on the CSV for rename/delete/large-write pivots."
+            ),
+            "supporting_indicators": [
+                f"row_count={total_rows}",
+                f"csv={durable_csv or 'transient'}",
+                f"mft_correlated={'yes' if mft_path else 'no'}",
+            ],
+        }
+        finding_ids.append(_state.add_finding(finding_dict))
+    except Exception:
+        pass
+
+    response = {
+        "tool_name": tool,
+        "status": "success" if durable_csv else "warning",
+        # Phase B boundary: explicit empty data array even on success —
+        # USN context is large and never inlined. Clients/hooks enforce
+        # the contract by checking data == [].
+        "data": [],
+        "findings_created": finding_ids,
+        "execution_id": result.execution_id,
+        "raw_command": result.command_line,
+        "total_records": total_rows,
+        "csv_path": durable_csv,
+        "artifact_persistence": artifact_persistence,
+        "mft_correlated": bool(mft_path),
+        "requires_agent": "@mft-analyst",
+        "agent_instruction": (
+            f"USN journal at {durable_csv} ({total_rows} records). Run targeted "
+            "run_analysis queries: rename-burst detection (BasicInfoChange + "
+            "DataExtend), encryption signature (FileCreate then large RenameNewName "
+            "to .encrypted/.locked/.crypt), and staging directories (mass creates "
+            "under Temp / Downloads). Do NOT load the full CSV into context."
+        ),
+        "note": (
+            f"{total_rows} USN records persisted at {durable_csv}. Summary-only "
+            "response; specialist must query via run_analysis to avoid context bloat."
+            if durable_csv
+            else "USN parsed but CSV persistence failed; fix OUTPUT_BASE and re-run."
+        ),
+    }
+    if normalized_format == "detailed":
+        response["preview"] = preview
+    return _finalize_tool_response_with_envelope(tool, response)
+
+
+def _finalize_tool_response_with_envelope(tool: str, response: dict[str, Any]) -> dict[str, Any]:
+    """Helper: tools imported into server.py go through _finalize_tool_response;
+    when invoked directly from a test or other module, this no-op shim keeps
+    the response structure consistent. server.py's mcp wrapper does the
+    forensic envelope binding."""
+    return response
+
+
+# ---------------------------------------------------------------------------
 # Tool: list_deleted_files
 # ---------------------------------------------------------------------------
 
@@ -2992,6 +3337,145 @@ def list_deleted_files(
 
 
 # ---------------------------------------------------------------------------
+# Tool: summarize_evtx — helpers
+# ---------------------------------------------------------------------------
+
+# High-value attack-surface channels: extract if present and non-empty.
+# Baseline (Security/System/Application/Defender) are always processed.
+_EVTX_HIGH_VALUE_STEMS = frozenset({
+    "microsoft-windows-sysmon%4operational",
+    "microsoft-windows-powershell%4operational",
+    "microsoft-windows-terminalservices-rdpclient%4operational",
+    "microsoft-windows-terminalservices-localsessionmanager%4operational",
+    "microsoft-windows-taskscheduler%4operational",
+    "microsoft-windows-winrm%4operational",
+    "microsoft-windows-wmi-activity%4operational",
+    "microsoft-windows-smbserver%4security",
+    "microsoft-windows-smbclient%4security",
+    "microsoft-windows-windows firewall with advanced security%4firewall",
+})
+
+_EVTX_BASELINE_STEMS = frozenset({
+    "security",
+    "system",
+    "application",
+    "microsoft-windows-windows defender%4operational",
+})
+
+
+def _enumerate_evtx_channels(evtx_dir: str) -> dict[str, Any]:
+    """Scan evtx_dir for .evtx files; classify each as present or empty.
+
+    Returns a dict keyed by channel stem (lower-case filename without
+    extension).  Each value contains size_bytes, is_present (>4 KB),
+    tier ('baseline', 'high_value', or 'other'), and file_path.
+    """
+    directory = Path(evtx_dir)
+    inventory: dict[str, Any] = {}
+    for evtx_file in sorted(directory.glob("*.evtx")):
+        try:
+            size = evtx_file.stat().st_size
+        except OSError:
+            size = 0
+        stem = evtx_file.stem.lower()
+        tier: str
+        if stem in _EVTX_BASELINE_STEMS:
+            tier = "baseline"
+        elif stem in _EVTX_HIGH_VALUE_STEMS:
+            tier = "high_value"
+        else:
+            tier = "other"
+        inventory[stem] = {
+            "file_path": str(evtx_file),
+            "size_bytes": size,
+            "is_present": size > 4096,
+            "tier": tier,
+        }
+    present = sum(1 for v in inventory.values() if v["is_present"])
+    empty = len(inventory) - present
+    return {
+        "channels": inventory,
+        "total_channels": len(inventory),
+        "present_channels": present,
+        "empty_channels": empty,
+        "baseline_present": [s for s, v in inventory.items() if v["tier"] == "baseline" and v["is_present"]],
+        "high_value_present": [s for s, v in inventory.items() if v["tier"] == "high_value" and v["is_present"]],
+    }
+
+
+def _stage_evtx_for_extraction(
+    inventory: dict[str, Any],
+    tmp_dir: str,
+    *,
+    fallback_dir: str,
+) -> tuple[str, list[str]]:
+    """Copy only baseline + present high-value .evtx files into a staging dir.
+
+    Returns (staging_dir, [channel_stems_staged]).  If the inventory contains
+    no usable channels we return the original fallback_dir untouched — this
+    keeps the legacy "process everything" behaviour as a safety net.
+
+    Run7 Stage 2 behaviour: EvtxECmd runs only against this bounded set,
+    matching the plan's selective extraction promise.
+    """
+    channels = inventory.get("channels") or {}
+    selectable = [
+        meta for meta in channels.values()
+        if meta.get("is_present") and meta.get("tier") in ("baseline", "high_value")
+    ]
+    if not selectable:
+        return fallback_dir, []
+
+    staging = Path(tmp_dir) / "tier_selected"
+    staging.mkdir(parents=True, exist_ok=True)
+    staged_stems: list[str] = []
+    for meta in selectable:
+        src = Path(meta["file_path"])
+        if not src.is_file():
+            continue
+        try:
+            shutil.copy2(str(src), str(staging / src.name))
+            staged_stems.append(src.stem.lower())
+        except OSError:
+            continue
+    if not staged_stems:
+        return fallback_dir, []
+    return str(staging), staged_stems
+
+
+def _record_evtx_inventory(inventory: dict[str, Any]) -> None:
+    """Persist channel inventory into state artifact_coverage (non-destructive merge).
+
+    update_triage_state replaces artifact_coverage wholesale, so we read the
+    current coverage via to_summary() and merge our key into it before writing.
+    Otherwise any other coverage data already in state.json gets wiped.
+    """
+    if _state is None:
+        return
+    try:
+        summary = _state.to_summary()
+        triage_status = summary.get("triage_status") or summary.get("status") or "IN_PROGRESS"
+        existing_coverage = dict(summary.get("artifact_coverage") or {})
+        existing_coverage["evtx_inventory"] = {
+            "total_channels": inventory["total_channels"],
+            "present_channels": inventory["present_channels"],
+            "empty_channels": inventory["empty_channels"],
+            "baseline_present": inventory["baseline_present"],
+            "high_value_present": inventory["high_value_present"],
+            "coverage_debt": [
+                s for s, v in inventory["channels"].items()
+                if v["tier"] in ("baseline", "high_value") and not v["is_present"]
+            ],
+        }
+        _state.update_triage_state(
+            triage_status=triage_status,
+            artifact_coverage=existing_coverage,
+        )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Tool: summarize_evtx
 # ---------------------------------------------------------------------------
 
@@ -3083,6 +3567,23 @@ def summarize_evtx(
     preflight = _preflight_artifact_persistence("evtx", "evtx_timeline.csv")
     if not preflight.get("ok"):
         return _artifact_preflight_error(tool_name=tool, preflight=preflight)
+
+    # Channel inventory — always enumerate before processing so state.json
+    # records which channels are present vs empty vs not extracted.
+    evtx_inventory = _enumerate_evtx_channels(resolved_evtx_dir)
+    _record_evtx_inventory(evtx_inventory)
+    # Context-budget discipline: response carries STATS only, not the
+    # full per-channel dict (which can be ~46 KB for 307 channels and is
+    # already persisted in state.json:artifact_coverage.evtx_inventory).
+    # The agent reads state.json via read_state() to drill in on demand.
+    evtx_inventory_summary = {
+        "total_channels": evtx_inventory["total_channels"],
+        "present_channels": evtx_inventory["present_channels"],
+        "empty_channels": evtx_inventory["empty_channels"],
+        "baseline_present": evtx_inventory["baseline_present"],
+        "high_value_present": evtx_inventory["high_value_present"],
+        "drill_in_hint": "Full per-channel detail in state.json:artifact_coverage.evtx_inventory.channels",
+    }
 
     event_id_strategy = "explicit"
     if event_ids is not None:
@@ -3200,6 +3701,7 @@ def summarize_evtx(
                 "reason": "Cached EVTX CSV is available at a durable artifact path.",
                 "fix_hint": None,
             },
+            "evtx_inventory": evtx_inventory_summary,
         }
         formatted = _apply_response_format(
             response,
@@ -3225,11 +3727,27 @@ def summarize_evtx(
         csv_filename = "evtx_timeline.csv"
         csv_path = os.path.join(tmp_dir, csv_filename)
 
+        # Run7 Stage 2: stage only baseline + present high-value channels into a
+        # bounded temp dir. EvtxECmd then processes ONLY those files, matching the
+        # plan's promised channel selectivity instead of running against the full
+        # evtx_dir.  If the user explicitly passed a `channel` filter, defer to
+        # them and pass the original dir through (legacy behaviour).
+        staged_evtx_dir = resolved_evtx_dir
+        extracted_channels: list[str] = []
+        if channel is None:
+            try:
+                staged_evtx_dir, extracted_channels = _stage_evtx_for_extraction(
+                    evtx_inventory, tmp_dir, fallback_dir=resolved_evtx_dir,
+                )
+            except Exception:
+                staged_evtx_dir = resolved_evtx_dir
+                extracted_channels = []
+
         # Default to DFIR_ESSENTIAL_EIDS to prevent context flooding.
         # Pass event_ids=[] explicitly to disable filtering.
         try:
             result = _ez_runner.run_evtxecmd(
-                evtx_dir=resolved_evtx_dir,
+                evtx_dir=staged_evtx_dir,
                 csv_dir=tmp_dir,
                 csv_filename=csv_filename,
                 start_date=start_date,
@@ -3309,6 +3827,9 @@ def summarize_evtx(
         } if start_date or end_date else None,
         "cache_hit": False,
         "cache_source_execution_id": None,
+        "evtx_inventory": evtx_inventory_summary,
+        "extracted_channels": extracted_channels,
+        "channel_selection_mode": "tier_selected" if extracted_channels else "directory_passthrough",
     }
     response = _apply_response_format(
         response,
@@ -3676,9 +4197,83 @@ def extract_registry_run_keys(
         csv_filename = "registry.csv"
         csv_path = os.path.join(tmp_dir, csv_filename)
 
+        # Phase 6.1 fix: clean SYSTEM/SOFTWARE/SAM/SECURITY hives with rla.exe
+        # before passing to RECmd, to replay transaction logs (.LOG1/.LOG2).
+        # Dirty hives produce incorrect/missing keys.
+        cleaned_hive_dir = resolved_hive_dir
+        system_hive_tmpdirs: list[Path] = []
+        try:
+            system_hive_names = ("SYSTEM", "SOFTWARE", "SAM", "SECURITY")
+            source_hives = [
+                Path(resolved_hive_dir) / name
+                for name in system_hive_names
+                if (Path(resolved_hive_dir) / name).is_file()
+            ]
+            if source_hives:
+                cleaned_dir = Path(tmp_dir) / "cleaned_system_hives"
+                cleaned_dir.mkdir(parents=True, exist_ok=True)
+                for hive_path in source_hives:
+                    try:
+                        cleaned_hive, h_in, h_out = _replay_hive_with_rla(
+                            hive_path, hive_path.name
+                        )
+                        system_hive_tmpdirs.extend(
+                            [d for d in (h_in, h_out) if d is not None]
+                        )
+                        shutil.copy2(
+                            str(cleaned_hive),
+                            str(cleaned_dir / hive_path.name),
+                        )
+                    except Exception:
+                        # rla.exe failure on a single hive is non-fatal —
+                        # fall back to the dirty hive AND keep its transaction
+                        # logs (.LOG1/.LOG2) so RECmd can still replay them.
+                        # peer reviewer round-5 P2-#2: prior fallback dropped logs,
+                        # regressing from the original directory which had them.
+                        try:
+                            shutil.copy2(
+                                str(hive_path),
+                                str(cleaned_dir / hive_path.name),
+                            )
+                            for log_suffix in (".LOG1", ".LOG2"):
+                                log_src = hive_path.parent / f"{hive_path.name}{log_suffix}"
+                                if log_src.is_file():
+                                    shutil.copy2(
+                                        str(log_src),
+                                        str(cleaned_dir / log_src.name),
+                                    )
+                        except Exception:
+                            pass
+                cleaned_hive_dir = str(cleaned_dir)
+
+                # H.3 fix: Verify SYSTEM or SOFTWARE present (at least one required for persistence)
+                critical_hives = ["SYSTEM", "SOFTWARE"]
+                missing = [h for h in critical_hives if not (Path(cleaned_hive_dir) / h).exists()]
+                if missing:
+                    # Fall back to original hive_dir if it has the critical hives
+                    if any((Path(resolved_hive_dir) / h).exists() for h in missing):
+                        cleaned_hive_dir = resolved_hive_dir
+                        data_gaps.append({
+                            "artifact_family": "registry",
+                            "classification": "incomplete_hive_selection",
+                            "reason": f"Critical hives {missing} not in cleaned dir, using original path",
+                            "lane_id": "disk_execution_persistence",
+                        })
+                    else:
+                        # Neither cleaned nor original has them — surface warning
+                        data_gaps.append({
+                            "artifact_family": "registry",
+                            "classification": "missing_system_hives",
+                            "reason": f"SYSTEM/SOFTWARE hives not found; persistence analysis incomplete",
+                            "lane_id": "disk_execution_persistence",
+                        })
+        except Exception:
+            # Any setup failure → fall back to original hive_dir
+            cleaned_hive_dir = resolved_hive_dir
+
         try:
             result = _ez_runner.run_recmd(
-                hive_dir=resolved_hive_dir,
+                hive_dir=cleaned_hive_dir,
                 csv_dir=tmp_dir,
                 csv_filename=csv_filename,
                 batch_file=batch_file_used,
@@ -3686,7 +4281,12 @@ def extract_registry_run_keys(
                 tool_name=tool,
             )
         except Exception as exc:
+            for d in system_hive_tmpdirs:
+                shutil.rmtree(d, ignore_errors=True)
             return _runner_error(tool, exc)
+        finally:
+            for d in system_hive_tmpdirs:
+                shutil.rmtree(d, ignore_errors=True)
 
         if not result.ok and not Path(csv_path).exists():
             return {
@@ -3825,6 +4425,35 @@ def extract_registry_run_keys(
         )
     if batch_warning:
         response["batch_warning"] = batch_warning
+
+    # Run-8 fix: when SYSTEM or SOFTWARE was missing from the hive_dir,
+    # RECmd ran but produced incomplete output (e.g. SAM-only). Escalate
+    # to a loud warning in the response so the agent doesn't silently
+    # accept partial persistence data. Cross-check the hive_dir RECmd
+    # actually used (cleaned_hive_dir).
+    critical_present = []
+    critical_missing = []
+    try:
+        for h in ("SYSTEM", "SOFTWARE"):
+            if (Path(cleaned_hive_dir) / h).is_file():
+                critical_present.append(h)
+            else:
+                critical_missing.append(h)
+    except Exception:
+        pass
+    response["hives_present"] = critical_present
+    response["hives_missing"] = critical_missing
+    if critical_missing:
+        response["status"] = "warning"
+        response["critical_hive_warning"] = (
+            f"Persistence-critical hives MISSING from {cleaned_hive_dir}: "
+            f"{critical_missing}. RECmd output is incomplete — "
+            f"Run keys (HKLM\\SOFTWARE\\...\\Run) and services "
+            f"(HKLM\\SYSTEM\\CurrentControlSet\\Services) will be absent if "
+            "SOFTWARE/SYSTEM aren't both present. Re-run extract_windows_artifacts "
+            "and verify the registry/ stage dir contains both hives before retrying."
+        )
+
     response = _apply_response_format(
         response,
         response_format=normalized_format,

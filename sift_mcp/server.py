@@ -16,7 +16,7 @@ Architecture
 * **FastMCP** — synchronous MCP server over stdio; all tool functions are sync
   because ``SafeRunner`` uses ``subprocess.run()``.
 
-Tool namespaces (43 tools)
+Tool namespaces (56 tools)
 --------------------------
 Evidence (2):   verify_integrity, get_provenance
 Disk (6):       extract_prefetch, get_amcache, extract_mft_timeline,
@@ -53,6 +53,7 @@ from sift_mcp.tools.state_tools import export_trace as _export_trace
 from sift_mcp.tools.state_tools import read_state as _read_state
 from sift_mcp.tools.correlation import flag_discrepancy as _flag_discrepancy
 from sift_mcp.tools.correlation import compare_disk_and_memory as _compare_disk_and_memory
+from sift_mcp.tools.correlation import find_temporal_clusters as _find_temporal_clusters
 from sift_mcp.tools.yara import scan_memory as _scan_memory
 from sift_mcp.tools.yara import scan_files as _scan_files
 from sift_mcp.tools.timeline import query_timeline as _query_timeline
@@ -62,6 +63,7 @@ from sift_mcp.tools.disk import extract_registry_run_keys as _extract_registry_r
 from sift_mcp.tools.disk import summarize_evtx as _summarize_evtx
 from sift_mcp.tools.disk import list_deleted_files as _list_deleted_files
 from sift_mcp.tools.disk import extract_mft_timeline as _extract_mft_timeline
+from sift_mcp.tools.disk import extract_usn_journal as _extract_usn_journal
 from sift_mcp.tools.disk import get_amcache as _get_amcache
 from sift_mcp.tools.disk import extract_prefetch as _extract_prefetch
 from sift_mcp.tools.evidence import get_provenance as _get_provenance
@@ -105,6 +107,26 @@ from sift_mcp.tool_catalog import group_tool_catalog
 from sift_mcp.tools._contracts import build_handle, compact_unique
 
 # ---------------------------------------------------------------------------
+# Queue file permission fix (user-agnostic)
+# ---------------------------------------------------------------------------
+# Ensure delegate queue file is writable by the current user. If it exists
+# but is not writable (e.g., created by a different user in a previous session),
+# delete it so it can be recreated with correct ownership when needed.
+_QUEUE_PATH = Path(os.environ.get("SAVVYDFIR_DELEGATE_QUEUE_PATH", "/tmp/savvydfir_delegate_queue.json"))
+if _QUEUE_PATH.exists():
+    try:
+        # Test write access by opening in append mode
+        with _QUEUE_PATH.open("a") as _:
+            pass
+    except (OSError, IOError):
+        # Not writable - delete and let agent_trigger.py recreate it
+        try:
+            _QUEUE_PATH.unlink()
+            print(f"[server] Cleared unwritable delegate queue: {_QUEUE_PATH}", file=sys.stderr)
+        except OSError as e:
+            print(f"[server] Warning: Could not clear delegate queue: {e} - delegates may fail silently", file=sys.stderr)
+
+# ---------------------------------------------------------------------------
 # Server instance
 # ---------------------------------------------------------------------------
 
@@ -145,6 +167,15 @@ BLOCKED_CMDS: list[str] = [
     "rm", "dd", "mkfs", "shred", "wget", "curl", "ssh", "scp",
     "fdisk", "parted", "nc", "netcat", "format", "chmod", "chown",
 ]
+
+# Tools listed here are skipped at call time (return disabled status immediately).
+# Set SAVVYDFIR_DISABLE_TOOLS=extract_shimcache,extract_srum before launching
+# the MCP server to surgically disable new tools without code changes.
+_DISABLED_TOOLS: frozenset[str] = frozenset(
+    t.strip()
+    for t in os.environ.get("SAVVYDFIR_DISABLE_TOOLS", "").split(",")
+    if t.strip()
+)
 
 
 def validate_path(path: str, *, write: bool = False) -> bool:
@@ -884,6 +915,265 @@ def _record_execution_parity(
     )
 
 
+def _record_artifact_absent_audit(
+    *,
+    tool_name: str,
+    artifact_name: str,
+    checked_paths: list[str],
+    reason: str,
+    case_id: str,
+    command_line: str = "",
+    parameters: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """peer reviewer ITEM-2 helper: persist an artifact-absent classification end-to-end.
+
+    Monolithic disk tools (extract_shimcache, extract_srum, extract_pca) used
+    to early-return ``status: artifact_absent`` directly, bypassing the audit
+    pipeline. The hooks gate on ``state.json:executions[].outputs_summary``,
+    so without this 5-step recording the gate cannot see the legitimate gap
+    and keeps demanding the tool be re-called.
+
+    Steps:
+      1. Allocate execution_id
+      2. log_execution
+      3. add neutral 'evidence_access_gap' finding (DOCUMENTED, no MITRE,
+         confidence=1.0 for "not at checked paths")
+      4. log_result with outputs_summary containing literal 'status=artifact_absent'
+         so the hook substring match hits
+      5. _record_execution_parity → adds the row to state.json:executions
+
+    Returns the response dict the caller should return verbatim.
+    """
+    import time as _time
+    if parameters is None:
+        parameters = {"artifact": artifact_name, "checked_paths": checked_paths}
+    if not command_line:
+        command_line = f"{tool_name}(artifact={artifact_name!r}) -> artifact_absent"
+
+    eid = _audit_logger.next_execution_id()
+    t0 = _time.monotonic()
+
+    started = _audit_logger.log_execution(
+        execution_id=eid,
+        tool_name=tool_name,
+        parameters=parameters,
+        command_line=command_line,
+    )
+
+    # Neutral gap finding — DOCUMENTED, no MITRE tags, no overclaim.
+    finding_id = None
+    try:
+        finding_id = _state_manager.add_finding({
+            "case_id": case_id,
+            "finding_type": "evidence_access_gap",
+            "artifact_type": artifact_name,
+            "artifact_path": "; ".join(checked_paths) if checked_paths else artifact_name,
+            "tool_name": tool_name,
+            "execution_id": eid,
+            "evidence_kind": "observation",
+            "finding_status": "active",
+            "finding_kind": "documented_gap",
+            "confidence": 1.0,
+            "description": (
+                f"artifact_absent: {artifact_name} not present at checked paths "
+                f"({', '.join(checked_paths) or 'n/a'}). {reason}"
+            ),
+            "supporting_indicators": [
+                f"artifact={artifact_name}",
+                f"checked_paths={'; '.join(checked_paths)}",
+                "status=artifact_absent",
+            ],
+        })
+    except Exception:
+        # Finding write failure is non-fatal — the audit + execution row still go through
+        finding_id = None
+
+    outputs_summary = (
+        f"status=artifact_absent artifact={artifact_name} "
+        f"checked={';'.join(checked_paths) or 'n/a'} reason=not_present"
+    )
+
+    completed = _audit_logger.log_result(
+        execution_id=eid,
+        exit_code=0,
+        duration=_time.monotonic() - t0,
+        outputs_summary=outputs_summary,
+        finding_ids=[finding_id] if finding_id else [],
+        tool_name=tool_name,
+        command_line=command_line,
+        parameters=parameters,
+    )
+
+    if isinstance(completed, dict):
+        _record_execution_parity(
+            execution_id=eid,
+            tool_name=tool_name,
+            command_line=command_line,
+            parameters=parameters,
+            duration_seconds=_time.monotonic() - t0,
+            exit_code=0,
+            outputs_summary=outputs_summary,
+            started_entry=started,
+            completed_entry=completed,
+        )
+
+    return {
+        "status": "artifact_absent",
+        "tool": tool_name,
+        "artifact_name": artifact_name,
+        "checked_paths": checked_paths,
+        "reason": reason,
+        "execution_id": eid,
+        "findings_created": [finding_id] if finding_id else [],
+    }
+
+
+def _strip_data_for_summary(response: Any, response_format: str = "summary",
+                            count_key: str = "count") -> Any:
+    """Context-budget discipline: when caller asks for summary format,
+    strip the heavy ``data`` array but keep counts + handles. Mirrors the
+    pattern used by disk tools via _apply_response_format.
+
+    This applies to memory tools (scan_network, detect_injection, list_dlls)
+    which previously returned full record arrays on every call — a typical
+    list_dlls response is 200+ DLLs ≈ 30 KB of context per PID.
+    """
+    if not isinstance(response, dict):
+        return response
+    fmt = (response_format or "summary").strip().lower()
+    if fmt == "detailed":
+        return response
+    # Default = summary — drop heavy fields, keep counts + handles + status.
+    out = dict(response)
+    data = out.get("data")
+    if isinstance(data, list):
+        out[count_key] = len(data)
+        # Keep first 3 records as a tiny preview so the LLM has something
+        # to anchor on without context bloat.
+        out["preview"] = data[:3]
+        out.pop("data", None)
+    out["response_format"] = "summary"
+    return out
+
+
+def _record_tool_success_audit(
+    *,
+    tool_name: str,
+    outputs_summary: str,
+    finding_ids: Optional[list[str]] = None,
+    parameters: Optional[dict[str, Any]] = None,
+    command_line: str = "",
+    exit_code: int = 0,
+    # peer reviewer review round-2 ITEM-2: real timing instead of synthetic ~0ms.
+    # Callers MUST capture start_time before subprocess work begins; without
+    # it the row records the helper-call duration only, not actual work.
+    start_time: Optional[float] = None,
+    # peer reviewer review round-2 ITEM-1: structured artifact linkage. Without
+    # this, downstream correlation (_latest_durable_csv_for_tool) cannot
+    # find the produced CSV and silently misses evidence.
+    raw_evidence_refs: Optional[list[dict[str, Any]]] = None,
+    csv_path: Optional[str] = None,  # convenience wrapper for the common case
+) -> str:
+    """peer reviewer consensus follow-up: monolithic tools must record execution parity
+    for SUCCESS paths with REAL provenance, not synthetic placeholders.
+
+    Caller responsibilities (consensus contract):
+      * ``start_time``: capture ``time.monotonic()`` BEFORE the heavy
+        subprocess work (esedbexport, AppCompatCacheParser, etc.). Falls
+        back to ``time.monotonic()`` at helper-call time with a stderr
+        warning — but that loses real duration.
+      * ``command_line``: pass the actual subprocess invocation. For
+        multi-phase pipelines, use a composite string like
+        ``"esedbexport ... && SrumECmd parse ..."``. For pure-Python
+        parsers, a truthful operation descriptor like
+        ``"disk.extract_shimcache(input=..., parser=...)"``. Do NOT
+        invent a fake shell command.
+      * ``raw_evidence_refs`` or ``csv_path``: link the durable CSV so
+        correlation can discover it via ``_latest_durable_csv_for_tool``.
+        ``csv_path`` is a convenience that auto-builds a derived ref.
+
+    Returns the allocated execution_id.
+    """
+    import time as _time
+    if finding_ids is None:
+        finding_ids = []
+    if parameters is None:
+        parameters = {}
+    if not command_line:
+        # Fallback only — warn so this doesn't silently regress.
+        command_line = f"{tool_name}(exit_code={exit_code})"
+        sys.stderr.write(
+            f"[audit] _record_tool_success_audit: synthetic command_line for "
+            f"{tool_name} — caller should pass real subprocess invocation.\n"
+        )
+
+    if start_time is None:
+        start_time = _time.monotonic()
+        sys.stderr.write(
+            f"[audit] _record_tool_success_audit: no start_time for "
+            f"{tool_name} — duration will record helper-call time only, not "
+            f"actual subprocess work.\n"
+        )
+
+    duration = _time.monotonic() - start_time
+
+    # Build the structured ref list: csv_path is a convenience that
+    # auto-builds a derived/csv ref and prepends to any explicit refs.
+    refs: list[dict[str, Any]] = list(raw_evidence_refs or [])
+    if csv_path:
+        refs.insert(0, {"path": str(csv_path), "role": "derived", "kind": "csv"})
+
+    eid = _audit_logger.next_execution_id()
+    started = _audit_logger.log_execution(
+        execution_id=eid,
+        tool_name=tool_name,
+        parameters=parameters,
+        command_line=command_line,
+    )
+    completed = _audit_logger.log_result(
+        execution_id=eid,
+        exit_code=exit_code,
+        duration=duration,
+        outputs_summary=outputs_summary,
+        finding_ids=list(finding_ids),
+        tool_name=tool_name,
+        command_line=command_line,
+        parameters=parameters,
+    )
+    if isinstance(completed, dict):
+        _record_execution_parity(
+            execution_id=eid,
+            tool_name=tool_name,
+            command_line=command_line,
+            parameters=parameters,
+            duration_seconds=duration,
+            exit_code=exit_code,
+            outputs_summary=outputs_summary,
+            started_entry=started,
+            completed_entry=completed,
+        )
+        # peer reviewer review round-2 ITEM-1: link the durable CSV so
+        # _latest_durable_csv_for_tool can find it. Without this, the
+        # gate passes but correlation silently sees zero evidence.
+        if refs:
+            try:
+                _state_manager.link_execution(
+                    execution_id=eid,
+                    tool_name=tool_name,
+                    raw_evidence_refs=refs,
+                    command_line=command_line,
+                    duration_seconds=duration,
+                    exit_code=exit_code,
+                    outputs_summary=outputs_summary,
+                )
+            except Exception as exc:
+                sys.stderr.write(
+                    f"[audit] _record_tool_success_audit: link_execution "
+                    f"failed for {tool_name}: {exc}\n"
+                )
+    return eid
+
+
 def _finalize_tool_response(tool_name: str, response: Any) -> Any:
     """Append the Phase 7 linked audit event and reconcile execution provenance."""
     if not isinstance(response, dict):
@@ -896,6 +1186,27 @@ def _finalize_tool_response(tool_name: str, response: Any) -> Any:
     execution_id = str(response.get("execution_id") or "").strip()
     if not execution_id:
         return response
+
+    # W1.7 (CR-revised plan 2026-05-23): centralized Tier-1 heuristic injection
+    # for the 11 non-contract tools (list_processes, scan_network, list_dlls,
+    # extract_usn_journal, extract_shimcache, extract_srum, sigma_hunt, etc.).
+    # Runs BEFORE the already-linked early-return so reruns also get heuristics.
+    # Skips if applicable_heuristics already present (contract-response tools
+    # already injected via build_contract_response).
+    try:
+        from sift_mcp.tools._contracts import _attach_heuristic_slice
+        _case_id = getattr(_state_manager, "case_id", None) or ""
+        if _case_id and _case_id != "unknown":
+            _attach_heuristic_slice(
+                response,
+                tool_name=tool_name,
+                case_id=_case_id,
+                execution_id=execution_id,
+                state_manager=_state_manager,
+                audit_logger=_audit_logger,
+            )
+    except Exception:
+        pass  # heuristic injection is enhancement, never block
 
     try:
         execution = _state_manager.get_execution(execution_id)
@@ -929,6 +1240,14 @@ def _finalize_tool_response(tool_name: str, response: Any) -> Any:
             audit_linked_entry_hash=linked_entry.get("entry_hash"),
             artifact_hashes=artifact_hashes,
             raw_evidence_refs=raw_evidence_refs,
+            # Artifact metadata for specialist agents
+            csv_path=response.get("csv_path"),
+            total_records=response.get("total_records"),
+            records_count=response.get("records_count"),
+            storage_path=response.get("storage_path"),
+            output_path=response.get("output_path"),
+            export_dir=response.get("export_dir"),
+            artifact_path=response.get("artifact_path"),
         )
         _sync_finding_provenance(finding_ids, raw_evidence_refs)
         response["artifact_hashes"] = artifact_hashes
@@ -1142,6 +1461,54 @@ def extract_mft_timeline(
         return _finalize_tool_response("disk.extract_mft_timeline", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "extract_mft_timeline"}
+
+
+@mcp.tool()
+def extract_usn_journal(
+    image_path: str,
+    usn_path: Optional[str] = None,
+    mft_path: Optional[str] = None,
+    case_id: Optional[str] = None,
+    response_format: str = "summary",
+) -> dict[str, Any]:
+    """Parse the NTFS USN Journal ($UsnJrnl:$J) via MFTECmd.
+
+    B.2: USN persists rename/delete/extend records the MFT itself may
+    have overwritten — critical for ransomware encryption timelines
+    and large-file exfil staging detection.
+
+    Output is LARGE (often >1M rows). Summary-only response returns the
+    csv_path handle; the @mft-analyst runs targeted run_analysis queries
+    against the CSV. Do NOT pass response_format='detailed' for routine
+    analysis — only for narrow row drill-down.
+
+    Parameters
+    ----------
+    image_path:
+        Image path (used to resolve case_id and durable artifact dir).
+    usn_path:
+        Explicit path to extracted $J. Defaults to
+        /cases/<case>/artifacts/raw/usn/$J.
+    mft_path:
+        Optional $MFT path for parent-path resolution.
+    case_id:
+        Optional override of the resolved case_id.
+    response_format:
+        'summary' (default) or 'detailed' (adds 25-row preview only).
+    """
+    try:
+        _r = _extract_usn_journal(
+            image_path=image_path,
+            usn_path=usn_path,
+            mft_path=mft_path,
+            case_id=case_id,
+            response_format=response_format,
+        )
+        if isinstance(_r, dict) and _r.get("status") != "error":
+            _r.update(_forensic_envelope("disk.extract_usn_journal"))
+        return _finalize_tool_response("disk.extract_usn_journal", _r)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "extract_usn_journal"}
 
 
 @mcp.tool()
@@ -1455,7 +1822,7 @@ def scan_processes(dump_path: str, response_format: str = "summary") -> dict[str
 
 
 @mcp.tool()
-def scan_network(dump_path: str) -> dict[str, Any]:
+def scan_network(dump_path: str, response_format: str = "summary") -> dict[str, Any]:
     """Extract network connections and sockets from a memory dump.
 
     Runs Volatility 3 ``windows.netscan.NetScan`` to find TCP/UDP endpoints
@@ -1482,6 +1849,7 @@ def scan_network(dump_path: str) -> dict[str, Any]:
         _r = _scan_network(dump_path=dump_path)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("memory.scan_network"))
+        _r = _strip_data_for_summary(_r, response_format, count_key="connection_count")
         return _finalize_tool_response("memory.scan_network", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "scan_network"}
@@ -1491,6 +1859,7 @@ def scan_network(dump_path: str) -> dict[str, Any]:
 def detect_injection(
     dump_path: str,
     pid: Optional[int] = None,
+    response_format: str = "summary",
 ) -> dict[str, Any]:
     """Detect process injection via VAD region analysis (malfind).
 
@@ -1521,13 +1890,14 @@ def detect_injection(
         _r = _detect_injection(dump_path=dump_path, pid=pid)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("memory.detect_injection"))
+        _r = _strip_data_for_summary(_r, response_format, count_key="injection_count")
         return _finalize_tool_response("memory.detect_injection", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "detect_injection"}
 
 
 @mcp.tool()
-def list_dlls(dump_path: str, pid: int) -> dict[str, Any]:
+def list_dlls(dump_path: str, pid: int, response_format: str = "summary") -> dict[str, Any]:
     """List DLLs loaded into a specific process from memory.
 
     Runs Volatility 3 ``windows.dlllist.DllList`` for *pid*.  Unexpected
@@ -1553,6 +1923,7 @@ def list_dlls(dump_path: str, pid: int) -> dict[str, Any]:
         _r = _list_dlls(dump_path=dump_path, pid=pid)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("memory.list_dlls"))
+        _r = _strip_data_for_summary(_r, response_format, count_key="dll_count")
         return _finalize_tool_response("memory.list_dlls", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "list_dlls"}
@@ -1842,6 +2213,117 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def find_temporal_clusters(
+    case_id: str,
+    window_seconds: int = 300,
+    min_sources: int = 2,
+    min_events: int = 3,
+) -> dict[str, Any]:
+    """Find temporal clusters of activity across artifact types — Phase 6 synthesis input.
+
+    W1.7 Run-3 fix (BUG-8, tri-agent signed 2026-05-24): this function existed
+    in correlation.py but was never registered as an MCP tool. Run 3 agent tried
+    to use it for Phase 6 synthesis and hit "tool not found", which contributed
+    to the synthesis_corroboration lane closing with finding_ids=[] (0 CONFIRMED).
+
+    Professional workflow (DFIR):
+    1. Merge all timestamped findings chronologically
+    2. Slide a window (default ±5 min = 300s)
+    3. Identify multi-source bursts (FILE + REG + EVT at same second)
+    4. Return clusters with ≥min_events events from ≥min_sources artifact types
+
+    Use the returned cluster finding_ids as input to ``submit_finding(...)`` with
+    ``corroborated_by=[<cluster_finding_ids>]`` to register the synthesis
+    promotion (status="CONFIRMED" eligible if A1+A2 fields complete).
+
+    Parameters
+    ----------
+    case_id:
+        Forensic case identifier.
+    window_seconds:
+        Time window for clustering (default 300 = ±5 min causality window).
+    min_sources:
+        Minimum distinct artifact types per cluster (default 2).
+    min_events:
+        Minimum events per cluster (default 3 — the stacking threshold).
+
+    Returns
+    -------
+    dict
+        clusters[]: each has window_start, window_end, source_count,
+        event_count, finding_ids[]; total_clusters; checked_at; execution_id.
+    """
+    import time as _time
+    _tool = "correlation.find_temporal_clusters"
+    _eid = _audit_logger.next_execution_id()
+    _started = _audit_logger.log_execution(
+        execution_id=_eid,
+        tool_name=_tool,
+        parameters={"case_id": case_id, "window_seconds": window_seconds, "min_sources": min_sources, "min_events": min_events},
+        command_line=f"find_temporal_clusters({case_id!r}, window_seconds={window_seconds}, min_sources={min_sources}, min_events={min_events})",
+    )
+    _t0 = _time.monotonic()
+    try:
+        result = _find_temporal_clusters(
+            case_id=case_id,
+            window_seconds=window_seconds,
+            min_sources=min_sources,
+            min_events=min_events,
+        )
+        duration = _time.monotonic() - _t0
+        outputs_summary = f"{result.get('total_clusters', 0)} clusters found"
+        _completed = _audit_logger.log_result(
+            execution_id=_eid,
+            exit_code=0,
+            duration=duration,
+            outputs_summary=outputs_summary,
+            finding_ids=[],
+            tool_name=_tool,
+            command_line=f"find_temporal_clusters({case_id!r})",
+            parameters={"case_id": case_id, "window_seconds": window_seconds, "min_sources": min_sources, "min_events": min_events},
+        )
+        _record_execution_parity(
+            execution_id=_eid,
+            tool_name=_tool,
+            command_line=f"find_temporal_clusters({case_id!r})",
+            parameters={"case_id": case_id, "window_seconds": window_seconds, "min_sources": min_sources, "min_events": min_events},
+            duration_seconds=duration,
+            exit_code=0,
+            outputs_summary=outputs_summary,
+            started_entry=_started,
+            completed_entry=_completed,
+        )
+        if isinstance(result, dict):
+            result.setdefault("execution_id", _eid)
+        return _finalize_tool_response(_tool, result)
+    except Exception as exc:
+        duration = _time.monotonic() - _t0
+        outputs_summary = f"error: {exc}"
+        _completed = _audit_logger.log_result(
+            execution_id=_eid,
+            exit_code=1,
+            duration=duration,
+            outputs_summary=outputs_summary,
+            finding_ids=[],
+            tool_name=_tool,
+            command_line=f"find_temporal_clusters({case_id!r})",
+            parameters={"case_id": case_id, "window_seconds": window_seconds, "min_sources": min_sources, "min_events": min_events},
+        )
+        _record_execution_parity(
+            execution_id=_eid,
+            tool_name=_tool,
+            command_line=f"find_temporal_clusters({case_id!r})",
+            parameters={"case_id": case_id, "window_seconds": window_seconds, "min_sources": min_sources, "min_events": min_events},
+            duration_seconds=duration,
+            exit_code=1,
+            outputs_summary=outputs_summary,
+            started_entry=_started,
+            completed_entry=_completed,
+        )
+        return {"status": "error", "error": str(exc), "tool": "find_temporal_clusters"}
+
+
+@mcp.tool()
 def flag_discrepancy(
     finding_id_a: str,
     finding_id_b: str,
@@ -2069,6 +2551,78 @@ def export_trace(case_id: str) -> dict[str, Any]:
         return _export_trace(case_id=case_id)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "export_trace"}
+
+
+@mcp.tool()
+def summarize_run(
+    case_id: str,
+    response_format: str = "markdown",
+) -> dict[str, Any]:
+    """Consolidated post-mortem for an investigation run.
+
+    Pulls every audit surface into ONE summary so the operator does not
+    have to grep across analysis/state.json, analysis/audit.jsonl,
+    /tmp/savvydfir_delegation_ledger.jsonl, /tmp/savvydfir_current_session.json,
+    and reports/<case_id>/report.json.
+
+    Sections produced:
+      * Session: id, start/end, duration
+      * Phase timeline: Phase 1..7 buckets with eid + duration per tool call
+      * Lanes: Path A vs Path B attribution with ledger evidence
+      * Delegation ledger: counts (task_attempt / task_outcome / would_*)
+      * Findings: CONFIRMED, ACTIVE-demoted-by-gate (with block reasons), other
+      * Gate coverage: each mandatory tool's last run + exit code
+      * Report-generation attempts: the allow_partial sequence
+      * Recent failures: last 5 non-zero-exit tool calls
+
+    Parameters
+    ----------
+    case_id:
+        The forensic case identifier.
+    response_format:
+        ``"markdown"`` (default, human-readable) or ``"json"`` (structured).
+
+    Returns
+    -------
+    dict
+        On success::
+
+            {
+              "status": "ok",
+              "case_id": "...",
+              "format": "markdown" | "json",
+              "summary": <dict>,        # always included
+              "markdown": "<rendered string>"  # only when format=markdown
+            }
+    """
+    try:
+        scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
+        if str(scripts_dir) not in sys.path:
+            sys.path.insert(0, str(scripts_dir))
+        try:
+            from summarize_run import build_summary, render_markdown  # type: ignore  # noqa: WPS433
+        except Exception as exc:
+            return {
+                "status": "error",
+                "error": f"summarize_run module not importable: {exc}",
+                "tool": "summarize_run",
+            }
+
+        # Honour SAVVYDFIR_ANALYSIS_DIR override for multi-host pipelines.
+        analysis_dir_env = os.environ.get("SAVVYDFIR_ANALYSIS_DIR")
+        analysis_dir = Path(analysis_dir_env) if analysis_dir_env else None
+        summary = build_summary(case_id, analysis_dir=analysis_dir)
+        out: dict[str, Any] = {
+            "status": "ok",
+            "case_id": case_id,
+            "format": response_format,
+            "summary": summary,
+        }
+        if response_format == "markdown":
+            out["markdown"] = render_markdown(summary)
+        return out
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "summarize_run"}
 
 
 @mcp.tool()
@@ -2598,6 +3152,141 @@ _SIGMA_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "inform
 _SIGMA_ATTACK_TAG_RE = re.compile(r"attack\.(t\d{4}(?:\.\d{3})?)", re.IGNORECASE)
 _SIGMA_VALID_SEVERITIES = {"critical", "high", "medium", "low", "informational"}
 
+# W1.7 Run-4 fix (tri-agent consensus 2026-05-24, peer reviewer+peer reviewer signed):
+# Chainsaw emits "info" (short form) but legacy code expected "informational".
+# Without normalization, severity_filter=["informational"] silently misses
+# every Chainsaw "info" hit (Run 4 evidence: 192 "info" hits + 30,893 "User
+# Logoff" hits all using "info"). peer reviewer consensus: this normalization is
+# Step 0 of the fix — no level-semantic logic works without it.
+_SIGMA_LEVEL_ALIASES = {
+    "info": "informational",
+    "informational": "informational",
+    "low": "low",
+    "medium": "medium",
+    "med": "medium",
+    "high": "high",
+    "critical": "critical",
+    "crit": "critical",
+    "": "informational",
+    None: "informational",
+}
+
+
+def _normalize_sigma_level(raw_level: Any) -> str:
+    """Map any Sigma/Chainsaw severity representation to the canonical 5-bucket
+    enum (critical/high/medium/low/informational). Default 'informational'
+    for unknown/missing — never silently classify as actionable.
+    """
+    if raw_level is None:
+        return "informational"
+    key = str(raw_level).strip().lower()
+    return _SIGMA_LEVEL_ALIASES.get(key, "informational")
+
+
+# Default inline-actionable threshold. Operator can override via env var
+# SAVVYDFIR_SIGMA_INLINE_LEVEL=low|medium|high|critical to expand or contract
+# (peer reviewer Q5: tunable so phishing cases can lower threshold to 'low'). The
+# threshold ONLY moves the summary/inline boundary — it never suppresses
+# persisted JSON or queryability via query_sigma_results.
+_SIGMA_ACTIONABLE_DEFAULT_LEVEL = "medium"
+
+
+def _resolve_actionable_threshold() -> str:
+    """Return canonical level name for the inline-actionable threshold.
+    Resolution: env var → default 'medium'. Validates against enum; falls
+    back to default on garbage input.
+    """
+    raw = os.environ.get("SAVVYDFIR_SIGMA_INLINE_LEVEL", "")
+    canonical = _normalize_sigma_level(raw) if raw else _SIGMA_ACTIONABLE_DEFAULT_LEVEL
+    if canonical not in _SIGMA_VALID_SEVERITIES:
+        canonical = _SIGMA_ACTIONABLE_DEFAULT_LEVEL
+    return canonical
+
+
+def _is_actionable_level(level: str, threshold: str) -> bool:
+    """A hit at `level` is actionable iff its severity rank is <= threshold's
+    rank. Default threshold='medium' means critical+high+medium are inline;
+    low+informational are summarized.
+    """
+    return _SIGMA_SEVERITY_RANK.get(level, 5) <= _SIGMA_SEVERITY_RANK.get(threshold, 2)
+
+
+def _compact_sigma_hit(hit: dict[str, Any], *, index: int = -1) -> dict[str, Any]:
+    """Compact projection of a Chainsaw hit — preserves the fields the agent
+    needs to triage (rule, severity, technique, who/when/where) without the
+    full event document body that bloats response size (Run-4 evidence: 50 raw
+    hits = 89k chars; compact = ~300 chars each).
+
+    The full raw event remains in the persisted CSV/JSON at csv_path; use
+    query_sigma_results(case_id=..., rule_name=...) for deep drill-down.
+    """
+    return {
+        "rule_name": str(hit.get("name", hit.get("rule", f"hit_{index}")))[:140],
+        "level": _normalize_sigma_level(hit.get("level")),
+        "event_id": str(hit.get("event_id", hit.get("EventID", "?")))[:16],
+        "timestamp": str(hit.get("system_time", hit.get("timestamp", "unknown")))[:32],
+        "techniques": _extract_sigma_techniques(hit),
+        "channel": str(hit.get("channel", hit.get("Channel", "?")))[:64],
+        "computer": str(hit.get("computer", hit.get("Computer", "?")))[:64],
+        "user": str(hit.get("user", hit.get("User", "?")))[:64],
+        "tactic": str(hit.get("tactic", "?"))[:64],
+        "hit_index": index,  # for back-reference into csv_path via query_sigma_results
+    }
+
+
+def _aggregate_below_threshold_summary(
+    hits: list[dict[str, Any]],
+    *,
+    examples_per_rule: int = 3,
+    max_rules: int = 20,
+    noise_count_threshold: int = 1000,
+) -> dict[str, Any]:
+    """Build the 'summarized but not gapped' view of below-threshold hits.
+
+    peer reviewer consensus 2026-05-24: never dump raw rows; always return:
+    - per-rule {name, level, count, first_ts, last_ts, sample_indices[≤3]}
+    - top-`max_rules` rules by count (rest folded into 'other_rules_count')
+    - `noise_rules`: rules with count > noise_count_threshold (e.g. User Logoff)
+      so the agent sees 'User Logoff fired 30,893 times' without seeing all
+      30,893 records.
+    """
+    per_rule: dict[str, dict[str, Any]] = {}
+    for idx, hit in enumerate(hits):
+        rule = str(hit.get("name", hit.get("rule", "unknown")))[:140]
+        level = _normalize_sigma_level(hit.get("level"))
+        ts = str(hit.get("system_time", hit.get("timestamp", "")))
+        bucket = per_rule.setdefault(rule, {
+            "rule_name": rule,
+            "level": level,
+            "count": 0,
+            "first_ts": ts,
+            "last_ts": ts,
+            "sample_indices": [],
+        })
+        bucket["count"] += 1
+        if ts and (not bucket["first_ts"] or ts < bucket["first_ts"]):
+            bucket["first_ts"] = ts
+        if ts and ts > bucket["last_ts"]:
+            bucket["last_ts"] = ts
+        if len(bucket["sample_indices"]) < examples_per_rule:
+            bucket["sample_indices"].append(idx)
+    sorted_rules = sorted(per_rule.values(), key=lambda r: r["count"], reverse=True)
+    top_rules = sorted_rules[:max_rules]
+    other_count = sum(r["count"] for r in sorted_rules[max_rules:])
+    noise_rules = [
+        {"rule_name": r["rule_name"], "level": r["level"], "count": r["count"]}
+        for r in sorted_rules
+        if r["count"] > noise_count_threshold
+    ]
+    return {
+        "rules_returned": len(top_rules),
+        "rules_total": len(sorted_rules),
+        "top_rules": top_rules,
+        "other_rules_overflow_count": other_count,
+        "noise_rules": noise_rules,  # high-volume info-level rules
+        "noise_count_threshold": noise_count_threshold,
+    }
+
 
 def _parse_sigma_filter_values(raw_value: str, *, upper: bool = False) -> set[str]:
     values = {
@@ -2628,10 +3317,14 @@ def _filter_sigma_hits(
     requested_severities: set[str],
     requested_techniques: set[str],
 ) -> list[dict[str, Any]]:
+    # Normalize requested severities so operator can pass 'info' or
+    # 'informational' (or 'med' etc.) — handles the Chainsaw alias mismatch
+    # that caused Run 4's severity_filter to silently match nothing.
+    normalized_sev_filter = {_normalize_sigma_level(s) for s in requested_severities}
     filtered_hits: list[dict[str, Any]] = []
     for hit in hits:
-        level = str(hit.get("level", "informational")).lower()
-        if requested_severities and level not in requested_severities:
+        level = _normalize_sigma_level(hit.get("level"))
+        if normalized_sev_filter and level not in normalized_sev_filter:
             continue
         hit_techniques = {tech for tech in _extract_sigma_techniques(hit) if tech != "—"}
         if requested_techniques and not (hit_techniques & requested_techniques):
@@ -2639,7 +3332,7 @@ def _filter_sigma_hits(
         filtered_hits.append(hit)
     filtered_hits.sort(
         key=lambda hit: _SIGMA_SEVERITY_RANK.get(
-            str(hit.get("level", "informational")).lower(), 5
+            _normalize_sigma_level(hit.get("level")), 5
         )
     )
     return filtered_hits
@@ -2652,7 +3345,8 @@ def _sigma_breakdowns(
     technique_counts: dict[str, int] = {}
     technique_set: set[str] = set()
     for hit in hits:
-        sev = str(hit.get("level", "informational")).lower()
+        # Use normalized level so "info" and "informational" don't double-count
+        sev = _normalize_sigma_level(hit.get("level"))
         severity_counts[sev] = severity_counts.get(sev, 0) + 1
         for technique_id in _extract_sigma_techniques(hit):
             if technique_id == "—":
@@ -2680,7 +3374,7 @@ def sigma_hunt(
     evtx_path: str,
     sigma_rules_path: Optional[str] = None,
     chainsaw_mapping: Optional[str] = None,
-    max_entries: int = 50,
+    max_entries: int = 500,
     case_id: str = "default",
     severity: str = "",
     techniques: str = "",
@@ -2722,7 +3416,11 @@ def sigma_hunt(
     max_entries:
         Maximum number of Sigma hit findings to create in CaseStateManager.
         Individual findings are ranked by severity (critical > high > medium)
-        before truncation.  Defaults to 50.
+        before truncation.  Defaults to 500.  Note: Chainsaw ALWAYS processes
+        every event in the EVTX target — max_entries only caps how many hits
+        become individual findings.  The full hit list is persisted as JSON at
+        the output_path and can be paged through with ``query_sigma_results()``.
+        The summary finding always reports the TRUE ``hits_total`` count.
     case_id:
         Case identifier for output file naming.
     severity:
@@ -2789,26 +3487,74 @@ def sigma_hunt(
         command_line=command_repr,
     )
     _t0 = _time.monotonic()
-    normalized_format = _normalize_response_format(response_format)
-    if normalized_format is None:
-        return {
+
+    # I.2 fix: Helper to finalize audit trail for validation failures
+    def _finalize_validation_failure(error_msg: str, exit_code: int = 1) -> dict[str, Any]:
+        """Complete audit trail for sigma_hunt validation failures.
+
+        peer reviewer adversarial review MEDIUM priority: sigma_hunt opened audit
+        execution before validation, but several post-start failure paths
+        returned without log_result or _record_execution_parity. This defeats
+        the success/failure gate and loses debugging context for operators.
+        """
+        _completed = _audit_logger.log_result(
+            execution_id=_eid,
+            exit_code=exit_code,
+            duration=_time.monotonic() - _t0,
+            outputs_summary=f"validation failed: {error_msg}",
+            finding_ids=[],
+            tool_name="detection.sigma_hunt",
+            command_line=command_repr,
+            parameters={
+                "evtx_path": evtx_path,
+                "sigma_rules_path": sigma_rules_path,
+                "chainsaw_mapping": chainsaw_mapping,
+                "max_entries": max_entries,
+                "case_id": case_id,
+                "severity": severity,
+                "techniques": techniques,
+                "response_format": response_format,
+            },
+        )
+        _record_execution_parity(
+            execution_id=_eid,
+            tool_name="detection.sigma_hunt",
+            command_line=command_repr,
+            parameters={
+                "evtx_path": evtx_path,
+                "sigma_rules_path": sigma_rules_path,
+                "chainsaw_mapping": chainsaw_mapping,
+                "max_entries": max_entries,
+                "case_id": case_id,
+                "severity": severity,
+                "techniques": techniques,
+                "response_format": response_format,
+            },
+            duration_seconds=_time.monotonic() - _t0,
+            exit_code=exit_code,
+            outputs_summary=f"validation failed: {error_msg}",
+            started_entry=_started,
+            completed_entry=_completed,
+        )
+        return _finalize_tool_response("detection.sigma_hunt", {
             "status": "error",
             "tool": tool_name,
-            "error": 'response_format must be "summary" or "detailed".',
-        }
+            "error": error_msg,
+            "execution_id": _eid,
+            "raw_command": command_repr,
+        })
+
+    normalized_format = _normalize_response_format(response_format)
+    if normalized_format is None:
+        return _finalize_validation_failure('response_format must be "summary" or "detailed".')
 
     requested_severities = _parse_sigma_filter_values(severity)
     invalid_severities = sorted(requested_severities - _SIGMA_VALID_SEVERITIES)
     if invalid_severities:
-        return {
-            "status": "error",
-            "tool": tool_name,
-            "error": (
-                "Invalid severity filter(s): "
-                f"{', '.join(invalid_severities)}. Valid values are "
-                "critical, high, medium, low, informational."
-            ),
-        }
+        return _finalize_validation_failure(
+            f"Invalid severity filter(s): {', '.join(invalid_severities)}. "
+            "Valid values are critical, high, medium, low, informational."
+        )
 
     requested_techniques = _parse_sigma_filter_values(techniques, upper=True)
 
@@ -2907,15 +3653,11 @@ def sigma_hunt(
                 break
 
     if sigma_dir is None:
-        return {
-            "status": "error",
-            "tool": tool_name,
-            "error": (
-                "Sigma rules directory not found. Clone from:\n"
-                "  git clone --depth=1 https://github.com/SigmaHQ/sigma.git /opt/sigma\n"
-                "Then pass sigma_rules_path='/opt/sigma/rules/windows'."
-            ),
-        }
+        return _finalize_validation_failure(
+            "Sigma rules directory not found. Clone from:\n"
+            "  git clone --depth=1 https://github.com/SigmaHQ/sigma.git /opt/sigma\n"
+            "Then pass sigma_rules_path='/opt/sigma/rules/windows'."
+        )
 
     # ------------------------------------------------------------------
     # 3. Resolve Chainsaw mapping file
@@ -2937,11 +3679,7 @@ def sigma_hunt(
     # ------------------------------------------------------------------
     evtx_target = Path(evtx_path)
     if not evtx_target.exists():
-        return {
-            "status": "error",
-            "tool": tool_name,
-            "error": f"EVTX path does not exist: {evtx_path}",
-        }
+        return _finalize_validation_failure(f"EVTX path does not exist: {evtx_path}")
 
     # ------------------------------------------------------------------
     # 5. Build output path for JSON results
@@ -3079,6 +3817,71 @@ def sigma_hunt(
         }
 
     # ------------------------------------------------------------------
+    # 6.5. Validate Chainsaw execution (Phase 6.2: Run1 0.02s failure fix)
+    # Only fail on non-zero exit. Empty output is legitimate ("no hits" on
+    # clean systems) and is handled by _parse_chainsaw_hits below.
+    #
+    # peer reviewer round-5 P2-#1: must record audit completion BEFORE returning
+    # so validate_run and the coverage gate can distinguish "real failed
+    # run" from "never completed". A bare early-return leaves only the
+    # 'started' entry, which the new gate would treat as not-yet-run.
+    # ------------------------------------------------------------------
+    if proc.returncode != 0:
+        _failed_summary = (
+            f"chainsaw failed with exit_code={proc.returncode}; "
+            f"stderr={(proc.stderr or '')[:200]!r}"
+        )
+        _fail_params = {
+            "evtx_path": evtx_path,
+            "sigma_rules_path": sigma_rules_path,
+            "chainsaw_mapping": chainsaw_mapping,
+            "max_entries": max_entries,
+            "case_id": case_id,
+            "severity": severity,
+            "techniques": techniques,
+            "response_format": response_format,
+        }
+        _failed_completed = None
+        try:
+            _failed_completed = _audit_logger.log_result(
+                execution_id=_eid,
+                exit_code=proc.returncode,
+                duration=_time.monotonic() - _t0,
+                outputs_summary=_failed_summary,
+                finding_ids=[],
+                tool_name="detection.sigma_hunt",
+                command_line=command_repr,
+                parameters=_fail_params,
+            )
+        except Exception:
+            _failed_completed = None
+        # peer reviewer round-6 P2: _record_execution_parity dereferences
+        # completed_entry.get("entry_hash") and will raise on None.
+        # Only call it when we have a real completed entry.
+        if isinstance(_failed_completed, dict):
+            try:
+                _record_execution_parity(
+                    execution_id=_eid,
+                    tool_name="detection.sigma_hunt",
+                    command_line=command_repr,
+                    parameters=_fail_params,
+                    duration_seconds=_time.monotonic() - _t0,
+                    exit_code=proc.returncode,
+                    outputs_summary=_failed_summary,
+                    started_entry=_started,
+                    completed_entry=_failed_completed,
+                )
+            except Exception:
+                pass  # do not mask original failure with audit-write errors
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": f"Chainsaw exited with code {proc.returncode}",
+            "stderr": proc.stderr[:1000] if proc.stderr else "",
+            "execution_id": _eid,
+        }
+
+    # ------------------------------------------------------------------
     # 7. Parse JSON output
     # ------------------------------------------------------------------
     raw_hits = _parse_chainsaw_hits(output_target, proc.stdout)
@@ -3093,9 +3896,41 @@ def sigma_hunt(
     )
     raw_hits_total = len(raw_hits)
     hits_total = len(filtered_hits)
-    hits_to_process = filtered_hits[:max_entries]
     severity_counts, technique_counts, technique_set = _sigma_breakdowns(filtered_hits)
-    preview_hits = _sigma_preview(hits_to_process)
+
+    # W1.7 Run-4 fix (tri-agent consensus 2026-05-24): split hits by sigma
+    # rule level — NEVER drop actionable detections, summarize noise.
+    # User constraint: 'fix should be not have gap on detection triggered'.
+    # actionable_threshold default 'medium' (critical+high+medium inline),
+    # operator-tunable via SAVVYDFIR_SIGMA_INLINE_LEVEL env var.
+    actionable_threshold = _resolve_actionable_threshold()
+    actionable_hits_raw: list[dict[str, Any]] = []
+    below_threshold_hits: list[dict[str, Any]] = []
+    for idx, hit in enumerate(filtered_hits):
+        level = _normalize_sigma_level(hit.get("level"))
+        if _is_actionable_level(level, actionable_threshold):
+            actionable_hits_raw.append(hit)
+        else:
+            below_threshold_hits.append(hit)
+
+    # Compact projection of actionable hits — all medium+ compact inline (per
+    # peer reviewer: "inline ≠ full raw record"; raw lives in persisted JSON for
+    # query_sigma_results drill-down).
+    actionable_hits_compact = [
+        _compact_sigma_hit(hit, index=idx)
+        for idx, hit in enumerate(actionable_hits_raw)
+    ]
+    # Below-threshold summary — per-rule {count, first_ts, last_ts, samples}.
+    # Never dump raw rows; preserve detection visibility without flooding.
+    below_threshold_summary = _aggregate_below_threshold_summary(below_threshold_hits)
+
+    # State-finding policy is now DECOUPLED from response visibility (peer reviewer
+    # consensus Q5): create individual state findings ONLY for actionable hits,
+    # capped at max_entries as a SAFETY ceiling against pathological volumes.
+    # max_entries no longer gates "what the agent sees" — it gates "how many
+    # raw_detector_hit findings pollute state.json".
+    hits_to_process = actionable_hits_raw[:max_entries]
+    preview_hits = [_compact_sigma_hit(h, index=i) for i, h in enumerate(hits_to_process[:10])]
 
     # ------------------------------------------------------------------
     # 9. Create CaseStateManager findings
@@ -3161,7 +3996,13 @@ def sigma_hunt(
             pass
 
     # ------------------------------------------------------------------
-    # 10. Create summary finding
+    # 10. Create summary finding (ALWAYS, including 0-hit clean runs)
+    # Phase-A-boundary review: the gate uses finding_ids_generated as
+    # durable proof of Chainsaw output. Previously summary was only
+    # emitted on hits_total > 0, leaving zero-hit clean runs with no
+    # durable artifact reference. Now: always emit a summary finding,
+    # so finding_ids_generated is non-empty whenever sigma_hunt actually
+    # produced output (regardless of hit count).
     # ------------------------------------------------------------------
     if hits_total > 0:
         summary = (
@@ -3170,30 +4011,83 @@ def sigma_hunt(
             f"ATT&CK techniques detected: {', '.join(sorted(technique_set)) or 'none tagged'}. "
             f"Full results at: {output_target}"
         )
+        summary_confidence = 0.90
+    else:
+        summary = (
+            f"Chainsaw/Sigma hunt: 0 rule hits across {requested_target} "
+            f"(clean system or no matching events). Full results at: {output_target}"
+        )
+        summary_confidence = 0.5  # zero hits is informational
 
-        summary_finding = {
+    summary_finding = {
+        "case_id": case_id,
+        "finding_type": "threat_detection",
+        "artifact_type": "evtx",
+        "artifact_path": str(requested_target),
+        "tool_name": tool_name,
+        "execution_id": execution_id,
+        "evidence_kind": "observation",
+        "finding_status": "active",
+        "finding_kind": "raw_detector_hit",
+        "confidence": summary_confidence,
+        "description": summary,
+        "supporting_indicators": sorted(technique_set) or [f"output_path={output_target}"],
+    }
+    try:
+        summary_fid = _state_manager.add_finding(summary_finding)
+        finding_ids.insert(0, summary_fid)
+    except Exception:
+        pass
+
+    # Per-severity summary findings — surface bucket counts as discrete state
+    # entries so critical/high/medium counts are individually queryable in
+    # state.json without parsing the prose summary. Closes the "30k mediums
+    # buried in one summary" blindspot.
+    for sev_level in ("critical", "high", "medium"):
+        sev_count = severity_counts.get(sev_level, 0)
+        if sev_count <= 0:
+            continue
+        sev_confidence = {"critical": 0.95, "high": 0.88, "medium": 0.75}.get(sev_level, 0.70)
+        sev_finding = {
             "case_id": case_id,
             "finding_type": "threat_detection",
             "artifact_type": "evtx",
-            "artifact_path": str(requested_target),
+            "artifact_path": str(output_target),
             "tool_name": tool_name,
             "execution_id": execution_id,
             "evidence_kind": "observation",
             "finding_status": "active",
             "finding_kind": "raw_detector_hit",
-            "confidence": 0.90,
-            "description": summary,
-            "supporting_indicators": sorted(technique_set),
+            "confidence": sev_confidence,
+            "severity": sev_level,
+            "description": (
+                f"Sigma severity bucket [{sev_level.upper()}]: {sev_count} rule hits "
+                f"in the persisted Chainsaw JSON at {output_target}. "
+                f"sigma-analyst triages with judgment — schema first, then rule rarity "
+                f"and technique clustering — promoting only worthy hits into findings."
+            ),
+            "supporting_indicators": [
+                f"severity={sev_level}",
+                f"count={sev_count}",
+                f"output_path={output_target}",
+            ],
         }
         try:
-            summary_fid = _state_manager.add_finding(summary_finding)
-            finding_ids.insert(0, summary_fid)
+            finding_ids.append(_state_manager.add_finding(sev_finding))
         except Exception:
             pass
 
     # audit: tool completed
-
-    outputs_summary = f"{hits_total} sigma hits across {evtx_path}"
+    # peer reviewer round-4 P1 + Phase-A-boundary review: outputs_summary includes
+    # output_path so the gate can verify durable Chainsaw output. We also
+    # propagate output_target as a parameter so audit consumers can read
+    # the structured path without parsing the prose summary. Phase-A-
+    # boundary noted that substring '.json' was bypassable; the runtime
+    # success path now stores a real Path string in parameters too.
+    outputs_summary = (
+        f"{hits_total} sigma hits across {evtx_path} "
+        f"(output: {output_target})"
+    )
     _completed = _audit_logger.log_result(
         execution_id=_eid,
         exit_code=0,
@@ -3233,6 +4127,87 @@ def sigma_hunt(
         started_entry=_started,
         completed_entry=_completed,
     )
+    # Coverage signal: the full filtered hit list is at output_target as JSON.
+    # max_entries only caps how many become individual MCP findings. The
+    # sigma-analyst subagent is expected to triage the JSON intelligently
+    # (severity ranking, rule rarity, technique clustering, attack-window
+    # filtering) — not mechanically iterate every hit.
+    not_promoted_count = max(0, hits_total - len(hits_to_process))
+    coverage_gap_payload = {
+        "hits_total": hits_total,
+        "findings_created_top_n": len(hits_to_process),
+        "hits_in_json_not_in_findings": not_promoted_count,
+        "persisted_full_dataset": str(output_target),
+        "severity_breakdown": severity_counts,
+        "analyst_guidance": (
+            "Full hit set is on disk. sigma-analyst should drill intelligently — "
+            "schema-first via run_analysis, then prioritize critical/high, "
+            "triage medium by rule rarity (least-frequency primitive), and "
+            "skip informational unless another artifact pivots there. "
+            "query_sigma_results(output_path, severity=...) is available for "
+            "structured paging when the JSON is very large."
+        ),
+    }
+
+    # peer reviewer consensus 2026-05-19 Tier-B1: when fallback was applied due
+    # to full-dir chainsaw timeout, return a ranked list of single-file
+    # follow-up calls the agent should make to close coverage gaps.
+    # System.evtx is FIRST (EID 7045 service install — central to many
+    # attack chains and was missed in Run-10 for exactly this reason).
+    recommended_next_calls: list[dict[str, Any]] = []
+    if fallback_applied and fallback_reason == "directory_timeout":
+        evtx_inv: dict[str, Any] = {}
+        try:
+            evtx_inv = (
+                _state_manager.to_summary()
+                .get("artifact_coverage", {})
+                .get("evtx_inventory", {})
+            )
+        except Exception:
+            evtx_inv = {}
+        # Inventory stores stems lowercased — fall back to ranking even if
+        # the inventory is empty (means summarize_evtx hasn't run yet).
+        present_stems = set()
+        if isinstance(evtx_inv, dict):
+            for stem in (evtx_inv.get("baseline_present") or []) + (
+                evtx_inv.get("high_value_present") or []
+            ):
+                present_stems.add(str(stem).lower())
+        _ranking = [
+            ("system",
+             "System.evtx",
+             "EID 7045 service install, EID 6005/6006 boot/shutdown — direct corroboration for service-based persistence (was missed in Run-10)."),
+            ("microsoft-windows-sysmon%4operational",
+             "Microsoft-Windows-Sysmon%4Operational.evtx",
+             "EID 1 process creation (full command line), EID 3 network, EID 11 file create — richest attack-window telemetry."),
+            ("microsoft-windows-powershell%4operational",
+             "Microsoft-Windows-PowerShell%4Operational.evtx",
+             "EID 4104 script block logging — encoded commands, post-exploitation payloads."),
+            ("microsoft-windows-taskscheduler%4operational",
+             "Microsoft-Windows-TaskScheduler%4Operational.evtx",
+             "EID 129/200 scheduled task register/execute — persistence + lateral execution."),
+        ]
+        for stem, fname, reason in _ranking:
+            # Include if present in inventory, OR if inventory is empty
+            # (warn caller in that case via degraded flag below).
+            if not present_stems or stem in present_stems:
+                # Try to find the actual file path under the resolved evtx_dir
+                # or one of the fallback_candidates.
+                channel_path = None
+                for candidate in fallback_candidates:
+                    cand_str = str(candidate).lower()
+                    if stem.replace("%4", "%4") in cand_str or fname.lower().split("%4")[0] in cand_str:
+                        channel_path = str(candidate)
+                        break
+                recommended_next_calls.append({
+                    "tool": "sigma_hunt",
+                    "arguments": {
+                        "evtx_path": channel_path or fname,
+                        "case_id": case_id,
+                    },
+                    "reason": reason,
+                })
+
     response_payload = {
         "status": "success" if hits_total > 0 else "no_hits",
         "tool": tool_name,
@@ -3250,15 +4225,25 @@ def sigma_hunt(
         "techniques_filter": sorted(requested_techniques) if requested_techniques else [],
         "severity_breakdown": severity_counts,
         "technique_breakdown": dict(sorted(technique_counts.items())),
+        "coverage_gap": coverage_gap_payload,
         "fallback_applied": fallback_applied,
         "fallback_reason": fallback_reason or None,
         "fallback_targets": fallback_targets,
+        "recommended_next_calls": recommended_next_calls,
+        "recommended_next_calls_note": (
+            "Chainsaw timed out on full EVTX directory; only one channel was "
+            "scanned. Run these single-channel sigma_hunt calls to close "
+            "high-value coverage gaps (System=EID 7045 service install was the "
+            "Run-10 miss). Inventory-aware ranking; empty list means no "
+            "high-value channels are present on this image."
+        ) if recommended_next_calls else "",
         "response_format": normalized_format,
         "note": (
-            f"Returning top {len(hits_to_process)} of {hits_total} filtered hits (ranked by severity). "
-            'Use query_sigma_results(output_path=handle.path, ...) for read-only paging/filtering of the '
-            "persisted Sigma dataset. Invoke sigma-analyst to interpret findings."
-        ) if hits_total > max_entries else (
+            f"{hits_total} filtered hits; top {len(hits_to_process)} promoted to findings. "
+            f"{not_promoted_count} more hits live in the persisted JSON at {output_target}. "
+            "@sigma-analyst should triage intelligently — severity-first, then rule rarity, "
+            "then technique clustering — using run_analysis or query_sigma_results as needed."
+        ) if not_promoted_count > 0 else (
             f"All {hits_total} filtered hits were eligible for finding creation." if hits_total > 0
             else "No Sigma rules matched the selected severity/technique filters."
         ),
@@ -3272,9 +4257,429 @@ def sigma_hunt(
         ),
         **_forensic_envelope("detection.sigma_hunt"),
     }
+    # W1.7 Run-4 fix (tri-agent consensus 2026-05-24): response shape now
+    # surfaces ALL actionable detections (medium+) inline as compact records,
+    # AND below-threshold summary so noise visibility is preserved without
+    # flooding context. detailed mode adds raw actionable records for the
+    # operator who explicitly asks; summary mode stays compact+summary.
+    response_payload["actionable_hits"] = actionable_hits_compact
+    response_payload["actionable_hits_total"] = len(actionable_hits_compact)
+    response_payload["actionable_threshold"] = actionable_threshold
+    response_payload["below_threshold_summary"] = below_threshold_summary
+    response_payload["below_threshold_total"] = len(below_threshold_hits)
+    # Operator-visible contract: zero gap on actionable detections.
+    response_payload["detection_gap_invariant"] = (
+        f"All {len(actionable_hits_compact)} hits at level>={actionable_threshold} "
+        f"are inline above (compact projection). Full raw records persisted at "
+        f"{output_target} — use query_sigma_results(case_id, severity=..., rule_name=...) "
+        f"for drill-down. {len(below_threshold_hits)} below-threshold hits "
+        f"(low+informational) are summarized in below_threshold_summary — never dropped, "
+        f"never raw-dumped."
+    )
     if normalized_format == "detailed":
-        response_payload["hits"] = hits_to_process
+        # detailed mode: include raw actionable hits (NOT all 31k — only the
+        # already-bounded actionable set). Below-threshold stays summarized.
+        response_payload["hits"] = actionable_hits_raw
     return _finalize_tool_response("detection.sigma_hunt", response_payload)
+
+
+@mcp.tool()
+def hayabusa_hunt(
+    evtx_path: str,
+    case_id: str = "default",
+    rules_dir: Optional[str] = None,
+    min_level: str = "medium",
+    max_entries: int = 100,
+) -> dict[str, Any]:
+    """Run Hayabusa CSV-timeline against Windows EVTX with Sigma + Hayabusa-native rules.
+
+    B.1: complements sigma_hunt (Chainsaw, ~2,278 rules) with Hayabusa
+    (Yamato Security, ~3,700 Sigma + built-in DFIR rules) and a MITRE
+    ATT&CK-mapped CSV output that downstream timeline-correlation can
+    consume directly.
+
+    Like sigma_hunt this tool:
+      - Returns status='error' on non-zero exit and writes a completed
+        audit entry so validate_run can distinguish failure from
+        never-ran.
+      - Records a summary finding even for 0 hits (durable-output
+        invariant — Phase A boundary).
+      - Includes the output_path in outputs_summary so the report gate's
+        durable-proof check is satisfied.
+
+    Parameters
+    ----------
+    evtx_path:
+        Absolute path to a single .evtx or a directory of EVTX files.
+        Pre-extracted /cases/<case_id>/artifacts/raw/evtx is the
+        preferred input (consistent with sigma_hunt and A.2 path
+        resolution).
+    case_id:
+        Case identifier for output naming + audit binding.
+    rules_dir:
+        Optional override for the Hayabusa rules tree. Defaults to
+        /opt/hayabusa/rules (the install location used on SIFT).
+    min_level:
+        Minimum severity to include: 'informational', 'low', 'medium',
+        'high', 'critical'. Default 'medium' to reduce noise.
+    max_entries:
+        Maximum number of detection findings to create from the CSV.
+    """
+    import time as _time
+
+    tool_name = "hayabusa_hunt"
+    command_repr = (
+        f"hayabusa_hunt({evtx_path!r}, case_id={case_id!r}, "
+        f"min_level={min_level!r}, max_entries={max_entries})"
+    )
+    _eid = _audit_logger.next_execution_id()
+    _started = _audit_logger.log_execution(
+        execution_id=_eid,
+        tool_name="detection.hayabusa_hunt",
+        parameters={
+            "evtx_path": evtx_path,
+            "rules_dir": rules_dir,
+            "min_level": min_level,
+            "max_entries": max_entries,
+            "case_id": case_id,
+        },
+        command_line=command_repr,
+    )
+    _t0 = _time.monotonic()
+
+    # Locate hayabusa binary
+    hayabusa_bin: Optional[str] = None
+    for candidate in [
+        "hayabusa",
+        "/usr/local/bin/hayabusa",
+        "/usr/bin/hayabusa",
+        "/opt/hayabusa/hayabusa",
+    ]:
+        try:
+            chk = subprocess.run(
+                [candidate, "help"], capture_output=True, text=True, timeout=10,
+            )
+            if chk.returncode == 0 and "Yamato Security" in chk.stdout:
+                hayabusa_bin = candidate
+                break
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+
+    if hayabusa_bin is None:
+        # Phase B boundary: mirror sigma_hunt's hardened missing-binary
+        # path — record a completed audit entry with exit_code=127 so
+        # coverage/audit consumers can distinguish "dependency absent"
+        # from "started but abandoned".
+        _missing_summary = (
+            "Hayabusa binary not found on PATH (install from "
+            "https://github.com/Yamato-Security/hayabusa/releases)"
+        )
+        _missing_params = {
+            "evtx_path": evtx_path,
+            "rules_dir": rules_dir,
+            "min_level": min_level,
+            "case_id": case_id,
+        }
+        _missing_completed = None
+        try:
+            _missing_completed = _audit_logger.log_result(
+                execution_id=_eid,
+                exit_code=127,
+                duration=_time.monotonic() - _t0,
+                outputs_summary=_missing_summary,
+                finding_ids=[],
+                tool_name="detection.hayabusa_hunt",
+                command_line=command_repr,
+                parameters=_missing_params,
+            )
+        except Exception:
+            pass
+        if isinstance(_missing_completed, dict):
+            try:
+                _record_execution_parity(
+                    execution_id=_eid,
+                    tool_name="detection.hayabusa_hunt",
+                    command_line=command_repr,
+                    parameters=_missing_params,
+                    duration_seconds=_time.monotonic() - _t0,
+                    exit_code=127,
+                    outputs_summary=_missing_summary,
+                    started_entry=_started,
+                    completed_entry=_missing_completed,
+                )
+            except Exception:
+                pass
+        return _finalize_tool_response("detection.hayabusa_hunt", {
+            "status": "tool_not_found",
+            "tool": tool_name,
+            "error": (
+                "Hayabusa not installed. Install from "
+                "https://github.com/Yamato-Security/hayabusa/releases (latest "
+                "lin-x64-musl.zip) into /usr/local/bin/hayabusa with rules at "
+                "/opt/hayabusa/rules."
+            ),
+            "execution_id": _eid,
+        })
+
+    # Resolve rules dir
+    rules = rules_dir or "/opt/hayabusa/rules"
+    if not Path(rules).is_dir():
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": (
+                f"Hayabusa rules directory not found at {rules}. "
+                "Pass rules_dir explicitly or install rules to /opt/hayabusa/rules."
+            ),
+            "execution_id": _eid,
+        }
+
+    # Validate EVTX path
+    evtx_target = Path(evtx_path)
+    if not evtx_target.exists():
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": f"EVTX path does not exist: {evtx_path}",
+            "execution_id": _eid,
+        }
+
+    # Output path
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_dir = _ANALYSIS_DIR / case_id / "hayabusa"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_csv = out_dir / f"hayabusa_{ts}.csv"
+
+    # Build command. Hayabusa flags:
+    #   -d / -f: input dir or single file
+    #   -r:      rules dir
+    #   -c:      rules-config dir (Hayabusa requires this — it looks for
+    #           channel_abbreviations.txt and others under here; defaults
+    #           are at <rules>/config in the standard install layout)
+    #   -o:      output CSV path
+    #   -m:      --min-level (min severity to include)
+    #   -w:      --no-wizard (don't prompt for profile)
+    #   -q:      --quiet (suppress launch banner / progress)
+    #   -K:      --no-color (clean CSV stderr for parsing)
+    #   -C:      --clobber (overwrite an existing output file)
+    rules_config = str(Path(rules) / "config")
+    cmd: list[str] = [
+        hayabusa_bin, "csv-timeline",
+        "-d" if evtx_target.is_dir() else "-f", str(evtx_target),
+        "-r", rules,
+        "-c", rules_config,
+        "-o", str(out_csv),
+        "-m", min_level.lower(),
+        "-w", "-q", "-K", "-C",
+    ]
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": "Hayabusa timed out after 1800 seconds.",
+            "execution_id": _eid,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": f"Hayabusa execution failed: {exc}",
+            "execution_id": _eid,
+        }
+
+    # Failure path: log completion (peer reviewer round-5 pattern)
+    if proc.returncode != 0:
+        _failed_summary = (
+            f"hayabusa failed with exit_code={proc.returncode}; "
+            f"stderr={(proc.stderr or '')[:200]!r}"
+        )
+        _fail_params = {
+            "evtx_path": evtx_path,
+            "rules_dir": rules,
+            "min_level": min_level,
+            "case_id": case_id,
+        }
+        _failed_completed = None
+        try:
+            _failed_completed = _audit_logger.log_result(
+                execution_id=_eid,
+                exit_code=proc.returncode,
+                duration=_time.monotonic() - _t0,
+                outputs_summary=_failed_summary,
+                finding_ids=[],
+                tool_name="detection.hayabusa_hunt",
+                command_line=command_repr,
+                parameters=_fail_params,
+            )
+        except Exception:
+            pass
+        if isinstance(_failed_completed, dict):
+            try:
+                _record_execution_parity(
+                    execution_id=_eid,
+                    tool_name="detection.hayabusa_hunt",
+                    command_line=command_repr,
+                    parameters=_fail_params,
+                    duration_seconds=_time.monotonic() - _t0,
+                    exit_code=proc.returncode,
+                    outputs_summary=_failed_summary,
+                    started_entry=_started,
+                    completed_entry=_failed_completed,
+                )
+            except Exception:
+                pass
+        return {
+            "status": "error",
+            "tool": tool_name,
+            "error": f"Hayabusa exited with code {proc.returncode}",
+            "stderr": proc.stderr[:1000] if proc.stderr else "",
+            "execution_id": _eid,
+        }
+
+    # Parse CSV — Hayabusa columns vary by profile; we read the first
+    # max_entries rows and create findings.
+    finding_ids: list[str] = []
+    hits_total = 0
+    if out_csv.is_file() and out_csv.stat().st_size > 0:
+        try:
+            import csv as _csv
+            with out_csv.open(encoding="utf-8", newline="") as fh:
+                reader = _csv.DictReader(fh)
+                for i, row in enumerate(reader):
+                    hits_total += 1
+                    if i >= max_entries:
+                        continue
+                    rule_name = (
+                        row.get("RuleTitle") or row.get("Rule") or row.get("Title")
+                        or f"hayabusa_rule_{i}"
+                    )
+                    level = str(row.get("Level") or row.get("level") or "").lower()
+                    confidence_map = {
+                        "critical": 0.95,
+                        "high": 0.88,
+                        "medium": 0.75,
+                        "low": 0.60,
+                        "informational": 0.50,
+                    }
+                    confidence = confidence_map.get(level, 0.65)
+                    description = (
+                        f"[Hayabusa/{level.upper() or 'UNKNOWN'}] {rule_name} | "
+                        f"Channel: {row.get('Channel', '?')} | "
+                        f"EID: {row.get('EventID', '?')} | "
+                        f"Time: {row.get('Timestamp', '?')}"
+                    )
+                    finding_dict = {
+                        "case_id": case_id,
+                        "finding_type": "threat_detection",
+                        "artifact_type": "evtx",
+                        "artifact_path": str(evtx_target),
+                        "tool_name": tool_name,
+                        "execution_id": _eid,
+                        "evidence_kind": "observation",
+                        "finding_status": "active",
+                        "finding_kind": "raw_detector_hit",
+                        "confidence": confidence,
+                        "description": description,
+                        "supporting_indicators": [
+                            rule_name,
+                            f"Level: {level}",
+                            f"Output CSV: {out_csv.name}",
+                        ],
+                        "severity": level,
+                    }
+                    try:
+                        fid = _state_manager.add_finding(finding_dict)
+                        finding_ids.append(fid)
+                    except Exception:
+                        pass
+        except Exception:
+            pass  # parsing error doesn't invalidate the run; the CSV still exists
+
+    # Always emit a summary finding (Phase-A-boundary durable-output invariant)
+    summary_text = (
+        f"Hayabusa hunt: {hits_total} detections at min_level={min_level} "
+        f"across {evtx_target}. Output: {out_csv}."
+    )
+    try:
+        summary_fid = _state_manager.add_finding({
+            "case_id": case_id,
+            "finding_type": "threat_detection",
+            "artifact_type": "evtx",
+            "artifact_path": str(evtx_target),
+            "tool_name": tool_name,
+            "execution_id": _eid,
+            "evidence_kind": "observation",
+            "finding_status": "active",
+            "finding_kind": "raw_detector_hit",
+            "confidence": 0.5 if hits_total == 0 else 0.85,
+            "description": summary_text,
+            "supporting_indicators": [f"output_path={out_csv}", f"hits={hits_total}"],
+        })
+        finding_ids.insert(0, summary_fid)
+    except Exception:
+        pass
+
+    duration = _time.monotonic() - _t0
+    outputs_summary = (
+        f"{hits_total} hayabusa hits across {evtx_target} (output: {out_csv})"
+    )
+    _completed = _audit_logger.log_result(
+        execution_id=_eid,
+        exit_code=0,
+        duration=duration,
+        outputs_summary=outputs_summary,
+        finding_ids=finding_ids,
+        tool_name="detection.hayabusa_hunt",
+        command_line=command_repr,
+        parameters={
+            "evtx_path": evtx_path,
+            "rules_dir": rules,
+            "min_level": min_level,
+            "case_id": case_id,
+        },
+    )
+    try:
+        _record_execution_parity(
+            execution_id=_eid,
+            tool_name="detection.hayabusa_hunt",
+            command_line=command_repr,
+            parameters={
+                "evtx_path": evtx_path,
+                "rules_dir": rules,
+                "min_level": min_level,
+                "case_id": case_id,
+            },
+            duration_seconds=duration,
+            exit_code=0,
+            outputs_summary=outputs_summary,
+            started_entry=_started,
+            completed_entry=_completed,
+        )
+    except Exception:
+        pass
+
+    return _finalize_tool_response("detection.hayabusa_hunt", {
+        "status": "success" if hits_total > 0 else "no_hits",
+        "tool": tool_name,
+        "evtx_path": evtx_path,
+        "rules_dir": rules,
+        "hits_total": hits_total,
+        "hits_returned": len(finding_ids) - 1,
+        "findings_created": finding_ids,
+        "execution_id": _eid,
+        "output_path": str(out_csv),
+        "raw_command": command_repr,
+        "requires_agent": "@sigma-analyst",
+        "agent_instruction": (
+            f"Hayabusa produced {hits_total} detections at {out_csv}. "
+            "Triage critical/high first, cross-reference with sigma_hunt hits, "
+            "and map confirmed detections to MITRE ATT&CK."
+        ),
+        **_forensic_envelope("detection.hayabusa_hunt"),
+    })
 
 
 @mcp.tool()
@@ -3407,8 +4812,19 @@ def query_sigma_results(
         ),
         **_forensic_envelope("detection.query_sigma_results"),
     }
+    # W1.7 Run-4 fix (tri-agent consensus 2026-05-24, peer reviewer P0): query_sigma_results
+    # detailed mode used to return RAW chainsaw event documents (Run-4 evidence:
+    # 50 hits = 89,002 chars overflow). Compact projection mirrors sigma_hunt's
+    # actionable_hits shape — operator gets queryable paged drill-down without
+    # blowing the MCP response budget. Raw records remain at output_path for
+    # operators who need them via direct file read.
+    payload["actionable_hits"] = [
+        _compact_sigma_hit(h, index=offset + i) for i, h in enumerate(page)
+    ]
     if normalized_format == "detailed":
-        payload["hits"] = page
+        # Compact projection in detailed mode too (peer reviewer: "50 compact hits ≠
+        # 50 raw Chainsaw blobs"). For raw event docs, read output_path directly.
+        payload["hits"] = [_compact_sigma_hit(h, index=offset + i) for i, h in enumerate(page)]
     return _finalize_tool_response("detection.query_sigma_results", payload)
 
 
@@ -4089,23 +5505,33 @@ def extract_pca(
     # 2. Check presence — Windows version gate
     # ------------------------------------------------------------------
     if not pca_launch_dic.exists():
-        version_note = (
-            "PcaAppLaunchDic.txt not found. This artifact requires Windows 11 22H2 or later. "
-            "Windows 10 and Windows Server do not have this artifact by design. "
-            "Verify the mounted image is from a Windows 11 22H2+ system before investigating further. "
-            f"Checked path: {pca_launch_dic}"
-        )
-        # audit: tool completed
-        return {
-            "status": "pca_not_present",
-            "tool": tool_name,
-            "pca_dir": str(pca_dir),
-            "note": version_note,
-            "alternative": (
-                "For execution evidence on Windows 10 systems, use: "
-                "extract_prefetch() + get_amcache() + extract_registry_run_keys()"
+        # peer reviewer ITEM-2 broadened: pca_not_present is the canonical
+        # Windows-10/Server "this artifact doesn't exist on this image" case.
+        # Route through the audit pipeline so the hook gate sees the gap.
+        response = _record_artifact_absent_audit(
+            tool_name="disk.extract_pca",
+            artifact_name="PcaAppLaunchDic.txt",
+            checked_paths=[str(pca_launch_dic)],
+            reason=(
+                "PcaAppLaunchDic.txt not found. This artifact requires "
+                "Windows 11 22H2 or later. Windows 10 and Windows Server do "
+                "not have it by design — documented gap, not a tool failure."
             ),
-        }
+            case_id=case_id,
+            parameters={
+                "mount_point": mount_point,
+                "max_entries": max_entries,
+                "flag_suspicious_paths": flag_suspicious_paths,
+                "case_id": case_id,
+            },
+        )
+        response["status"] = "pca_not_present"  # preserve legacy status name
+        response["pca_dir"] = str(pca_dir)
+        response["alternative"] = (
+            "For execution evidence on Windows 10 systems, use: "
+            "extract_prefetch() + get_amcache() + extract_registry_run_keys()"
+        )
+        return response
 
     _eid = _audit_logger.next_execution_id()
     _started = _audit_logger.log_execution(
@@ -4459,13 +5885,39 @@ def extract_shimcache(
     dict
         status, entries_total, suspicious_count, findings_created, csv_path.
     """
+    if "extract_shimcache" in _DISABLED_TOOLS:
+        return {"status": "disabled", "reason": "extract_shimcache is in SAVVYDFIR_DISABLE_TOOLS"}
+    # peer reviewer review round-2 ITEM-2: capture real start time BEFORE rla.exe
+    # transaction-log replay + AppCompatCacheParser parsing.
+    import time as _time_shim
+    _shim_start_time = _time_shim.monotonic()
     mp = Path(mount_point)
     system_hive = mp / "Windows" / "System32" / "config" / "SYSTEM"
+    # Fallback: when disk isn't mounted (TSK-direct workflow via
+    # extract_windows_artifacts), look for the hive in the case's raw artifact dir.
     if not system_hive.exists():
-        return {
-            "status": "error",
-            "error": f"SYSTEM hive not found at {system_hive}. Check mount_point.",
-        }
+        safe_case = re.sub(r"[^A-Za-z0-9._-]+", "_", str(case_id)).strip("._") or "UNKNOWN"
+        raw_hive = Path(os.environ.get("OUTPUT_BASE", "/cases")) / safe_case / "artifacts" / "raw" / "registry" / "SYSTEM"
+        if raw_hive.is_file():
+            system_hive = raw_hive
+        else:
+            # peer reviewer ITEM-2: persist artifact_absent through the audit pipeline
+            # so the hooks (which read state.json:executions) see the gap.
+            return _record_artifact_absent_audit(
+                tool_name="disk.extract_shimcache",
+                artifact_name="SYSTEM_hive",
+                checked_paths=[
+                    str(mp / "Windows" / "System32" / "config" / "SYSTEM"),
+                    str(raw_hive),
+                ],
+                reason=(
+                    "SYSTEM hive not at standard mount path nor at the "
+                    "case's raw-artifact stage path. Mount disk via "
+                    "mount_image() or stage hives via extract_windows_artifacts()."
+                ),
+                case_id=case_id,
+                parameters={"mount_point": mount_point, "case_id": case_id, "max_entries": max_entries},
+            )
 
     output_dir = Path(f"/cases/shimcache/{case_id}")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -4497,7 +5949,32 @@ def extract_shimcache(
         # Find the CSV — named {timestamp}_..._AppCompatCache.csv
         csv_files = sorted(output_dir.glob("*AppCompatCache.csv"))
         if not csv_files:
-            return {"status": "error", "error": "No CSV output produced."}
+            # AppCompatCacheParser exited cleanly but produced no CSV.
+            # In SleuthKit-direct workflows the staged SYSTEM hive may lack
+            # replayed transaction logs (.LOG1/.LOG2), leaving the
+            # AppCompatCache key dirty/empty. This is a legitimate
+            # documented gap, not a tool failure — route through the audit
+            # pipeline so the hook gate sees the gap (state.json:executions
+            # gets a row with outputs_summary containing "artifact_absent").
+            response = _record_artifact_absent_audit(
+                tool_name="disk.extract_shimcache",
+                artifact_name="ShimCache_AppCompatCache_Key",
+                checked_paths=[str(cleaned_hive)],
+                reason=(
+                    "AppCompatCacheParser exited 0 but produced no CSV. "
+                    "Staged SYSTEM hive may lack replayed transaction logs "
+                    "(LOG1/LOG2) or the AppCompatCache key was empty/dirty. "
+                    "Cross-reference execution evidence with Prefetch + Amcache + EVTX EID 4688."
+                ),
+                case_id=case_id,
+                parameters={"mount_point": mount_point, "case_id": case_id, "max_entries": max_entries},
+            )
+            response["alternative"] = (
+                "For execution evidence without ShimCache, corroborate via "
+                "Prefetch (FirstRun/LastRun timestamps) + Amcache (SHA-1 hashes) "
+                "+ EVTX EID 4688 (process creation) + Sysmon EID 1."
+            )
+            return response
         csv_path = csv_files[-1]
 
         # Parse CSV
@@ -4588,8 +6065,31 @@ def extract_shimcache(
                 })
                 finding_ids.append(sfid)
 
+        # peer reviewer review round-2: SUCCESS path records execution parity
+        # WITH real provenance — duration covers full rla.exe + parsing,
+        # csv_path linked to raw_evidence_refs for correlation, command_line
+        # is a truthful operation descriptor (not a fake shell invocation
+        # since the heavy work is rla.exe subprocess + Python CSV parsing).
+        shim_command_line = (
+            f"dotnet rla.exe -d {system_hive.parent} && "
+            f"dotnet AppCompatCacheParser.dll -f {cleaned_hive} --csv {output_dir} && "
+            f"disk.extract_shimcache(parse_csv, max_entries={max_entries})"
+        )
+        eid = _record_tool_success_audit(
+            tool_name="disk.extract_shimcache",
+            outputs_summary=(
+                f"status=success entries_total={len(entries)} "
+                f"suspicious_count={len(suspicious)} csv_path={csv_path}"
+            ),
+            finding_ids=finding_ids,
+            parameters={"mount_point": mount_point, "case_id": case_id, "max_entries": max_entries},
+            command_line=shim_command_line,
+            start_time=_shim_start_time,
+            csv_path=str(csv_path),
+        )
         return {
             "status":          "success",
+            "execution_id":    eid,
             "entries_total":   len(entries),
             "suspicious_count": len(suspicious),
             "findings_created": finding_ids,
@@ -4642,13 +6142,44 @@ def extract_srum(
     dict
         status, network_entries, flagged_processes, findings_created.
     """
+    if "extract_srum" in _DISABLED_TOOLS:
+        return {"status": "disabled", "reason": "extract_srum is in SAVVYDFIR_DISABLE_TOOLS"}
+    # peer reviewer review round-2 ITEM-2: capture real start time BEFORE any
+    # heavy subprocess work so the success-audit row records actual duration.
+    import time as _time_srum
+    _srum_start_time = _time_srum.monotonic()
     mp = Path(mount_point)
     srudb = mp / "Windows" / "System32" / "sru" / "SRUDB.dat"
+    # Fallback: TSK-direct workflow stages SRUDB under raw artifact dir.
     if not srudb.exists():
-        return {
-            "status": "error",
-            "error": f"SRUDB.dat not found at {srudb}.",
-        }
+        safe_case = re.sub(r"[^A-Za-z0-9._-]+", "_", str(case_id)).strip("._") or "UNKNOWN"
+        raw_srudb = Path(os.environ.get("OUTPUT_BASE", "/cases")) / safe_case / "artifacts" / "raw" / "srum" / "SRUDB.dat"
+        if raw_srudb.is_file():
+            srudb = raw_srudb
+        else:
+            # peer reviewer ITEM-2: route absence through audit pipeline so the
+            # state.json:executions row carries the artifact_absent marker
+            # the hooks search for.
+            return _record_artifact_absent_audit(
+                tool_name="disk.extract_srum",
+                artifact_name="SRUDB.dat",
+                checked_paths=[
+                    str(mp / "Windows" / "System32" / "sru" / "SRUDB.dat"),
+                    str(raw_srudb),
+                ],
+                reason=(
+                    "SRUDB.dat not present at standard mount path nor at "
+                    "the case's raw-artifact stage path. SRUM may be "
+                    "disabled or absent on this image."
+                ),
+                case_id=case_id,
+                parameters={
+                    "mount_point": mount_point,
+                    "case_id": case_id,
+                    "max_entries": max_entries,
+                    "bytes_sent_threshold_mb": bytes_sent_threshold_mb,
+                },
+            )
 
     safe_case = re.sub(r"[^a-zA-Z0-9]", "_", case_id)[:20]
     export_base = Path(f"/cases/srum/{safe_case}")
@@ -4701,6 +6232,9 @@ def extract_srum(
 
     # ---- Find and parse the network data table ------------------------------
     # Table has columns: AutoIncId, TimeStamp, AppId, UserId, ..., BytesSent, BytesRecvd
+    # IMPORTANT: read ALL rows before truncating. Computing the 3x-median
+    # threshold on a 50-row insertion-order sample (the previous behaviour)
+    # produced wrong findings — the median was effectively random.
     network_entries: list[dict] = []
     for tbl_file in sorted(export_dir.iterdir()):
         if not tbl_file.is_file() or tbl_file.stat().st_size < 10:
@@ -4710,38 +6244,68 @@ def extract_srum(
         if "BytesSent" in header and "BytesRecvd" in header:
             with open(tbl_file, encoding="utf-8", errors="replace") as fh:
                 reader = _csv.DictReader(fh, delimiter="\t")
-                for i, row in enumerate(reader):
-                    if i >= max_entries:
-                        break
+                for row in reader:  # full scan, no early break
                     app_id = row.get("AppId", "").strip()
                     sent = int(row.get("BytesSent", 0) or 0)
                     recv = int(row.get("BytesRecvd", 0) or 0)
                     ts = row.get("TimeStamp", "").strip()
+                    user_id = row.get("UserId", "").strip()
+                    interface_luid = row.get("InterfaceLuid", "").strip() or row.get("L2ProfileId", "").strip()
                     app_name = id_map.get(app_id, f"AppId:{app_id}")
                     network_entries.append({
-                        "app_name":   app_name,
-                        "app_id":     app_id,
-                        "timestamp":  ts,
-                        "bytes_sent": sent,
-                        "bytes_recv": recv,
-                        "mb_sent":    round(sent / 1_048_576, 2),
-                        "mb_recv":    round(recv / 1_048_576, 2),
+                        # Columns named to match @srum-analyst's expected schema
+                        "ProcessName":   app_name,
+                        "app_id":        app_id,
+                        "TimeStamp":     ts,
+                        "UserId":        user_id,
+                        "InterfaceLuid": interface_luid,
+                        "BytesSent":     sent,
+                        "BytesRecvd":    recv,
+                        "mb_sent":       round(sent / 1_048_576, 2),
+                        "mb_recv":       round(recv / 1_048_576, 2),
                     })
             break  # Only one network table
 
     if not network_entries:
-        return {
-            "status":  "no_data",
-            "message": "No network usage data found in SRUM export.",
-            "export_dir": str(export_dir),
-        }
+        # peer reviewer ITEM-2 broadened: even the no_data path must register an
+        # execution row so the hook gate sees the legitimate gap.
+        response = _record_artifact_absent_audit(
+            tool_name="disk.extract_srum",
+            artifact_name="SRUM_network_table",
+            checked_paths=[str(export_dir)],
+            reason="esedbexport succeeded but the network usage table was empty.",
+            case_id=case_id,
+            parameters={"mount_point": mount_point, "case_id": case_id},
+        )
+        # Preserve the legacy no_data response shape for the agent
+        response["status"] = "no_data"
+        response["message"] = "No network usage data found in SRUM export."
+        response["export_dir"] = str(export_dir)
+        return response
 
-    # Sort by bytes_sent descending
-    network_entries.sort(key=lambda x: x["bytes_sent"], reverse=True)
+    # Sort by BytesSent descending across the FULL dataset
+    network_entries.sort(key=lambda x: x["BytesSent"], reverse=True)
 
-    # Flag above threshold
-    threshold_bytes = int(bytes_sent_threshold_mb * 1_048_576)
-    flagged = [e for e in network_entries if e["bytes_sent"] >= threshold_bytes]
+    # Relative flagging computed on the full dataset (not the truncated sample).
+    # Top-10 senders are always inspected; processes ≥ 3× median are flagged_high.
+    import statistics as _stats
+    all_sent = [e["BytesSent"] for e in network_entries]
+    median_sent = _stats.median(all_sent) if all_sent else 0
+    relative_threshold = max(median_sent * 3, int(bytes_sent_threshold_mb * 1_048_576))
+    flagged_high = [e for e in network_entries if e["BytesSent"] >= relative_threshold]
+    # max_entries now caps the in-context preview only, never the analysis.
+    preview_entries = network_entries[: max(max_entries, 10)]
+
+    # ---- Persist FULL network entries as queryable CSV for srum-analyst -------
+    import csv as _csv
+    network_csv_path = export_base.parent / f"{safe_case}_srum_network.csv"
+    try:
+        with open(network_csv_path, "w", encoding="utf-8", newline="") as fh:
+            writer = _csv.DictWriter(fh, fieldnames=list(network_entries[0].keys()))
+            writer.writeheader()
+            writer.writerows(network_entries)
+    except OSError:
+        network_csv_path = None
 
     # ---- Build findings -------------------------------------------------------
     finding_ids = []
@@ -4757,10 +6321,9 @@ def extract_srum(
         "confidence":     0.92,
         "description": (
             f"SRUM network usage table parsed via esedbexport. "
-            f"{len(network_entries)} application entries analysed "
-            f"(capped at max_entries={max_entries}). "
+            f"{len(network_entries)} application entries analysed (full dataset). "
             f"Total outbound across all apps: {total_sent_mb:.1f} MB. "
-            f"{len(flagged)} processes exceed the {bytes_sent_threshold_mb} MB "
+            f"{len(flagged_high)} processes exceed 3× median ({round(median_sent/1_048_576, 2)} MB) "
             f"outbound threshold. SRUM retains ~60 days of network data — "
             f"entries for deleted applications indicate potential anti-forensics."
         ),
@@ -4768,7 +6331,7 @@ def extract_srum(
         "mitre_tactic":       "TA0010",
         "mitre_technique":    "T1041",
         "supporting_indicators": [
-            f"{e['app_name']} sent {e['mb_sent']} MB" for e in flagged[:5]
+            f"{e['ProcessName']} sent {e['mb_sent']} MB" for e in flagged_high[:5]
         ],
         "corroborated_by":    [],
         "contradicted_by":    [],
@@ -4776,8 +6339,8 @@ def extract_srum(
     })
     finding_ids.append(fid)
 
-    # Per-process finding for high-volume senders
-    for entry in flagged[:10]:
+    # Per-process finding for high-volume senders (relative threshold)
+    for entry in flagged_high[:10]:
         sfid = _state_manager.add_finding({
             "finding_type":   "srum_high_outbound_process",
             "artifact_type":  "disk",
@@ -4786,20 +6349,21 @@ def extract_srum(
             "finding_status": "HYPOTHESIS",
             "confidence":     0.85,
             "description": (
-                f"SRUM: {entry['app_name']} sent {entry['mb_sent']:.1f} MB "
+                f"SRUM: {entry['ProcessName']} sent {entry['mb_sent']:.1f} MB "
                 f"/ received {entry['mb_recv']:.1f} MB "
-                f"(last record: {entry['timestamp']}). "
-                f"Outbound volume exceeds {bytes_sent_threshold_mb} MB threshold. "
-                f"Cross-reference with Prefetch, Amcache, and MFT to confirm "
-                f"binary existence and execution timeline."
+                f"(last record: {entry['TimeStamp']}). "
+                f"Outbound volume is ≥3× the median for this endpoint "
+                f"({round(median_sent/1_048_576, 2)} MB median). "
+                f"Candidate exfiltration — requires corroboration with EVTX "
+                f"network events and memory scan_network findings before labelling confirmed."
             ),
             "tool_name":          "disk.extract_srum",
             "mitre_tactic":       "TA0010",
             "mitre_technique":    "T1041",
             "supporting_indicators": [
-                entry["app_name"],
+                entry["ProcessName"],
                 f"{entry['mb_sent']} MB sent",
-                entry["timestamp"],
+                entry["TimeStamp"],
             ],
             "corroborated_by":    [],
             "contradicted_by":    [],
@@ -4807,13 +6371,61 @@ def extract_srum(
         })
         finding_ids.append(sfid)
 
+    # peer reviewer review round-2: SUCCESS path must record execution parity
+    # WITH real provenance (start_time + composite command_line + csv_path
+    # linkage), so:
+    #   1. The gate sees the tool ran (state.json:executions row)
+    #   2. Correlation can find the CSV via _latest_durable_csv_for_tool
+    #      (raw_evidence_refs role=derived)
+    #   3. Chain-of-custody preserves real duration + the actual pipeline
+    success_summary = (
+        f"status=success network_entries={len(network_entries)} "
+        f"flagged_processes={len(flagged_high)} "
+        f"median_mb_sent={round(median_sent/1_048_576, 2)} "
+        f"csv_path={network_csv_path}"
+    )
+    srum_command_line = (
+        f"esedbexport -m all -t {export_base} {srudb} && "
+        f"SrumECmd parse {export_dir} (network table + IdMapTable resolution)"
+    )
+    eid = _record_tool_success_audit(
+        tool_name="disk.extract_srum",
+        outputs_summary=success_summary,
+        finding_ids=finding_ids,
+        parameters={
+            "mount_point": mount_point,
+            "case_id": case_id,
+            "max_entries": max_entries,
+            "bytes_sent_threshold_mb": bytes_sent_threshold_mb,
+        },
+        command_line=srum_command_line,
+        start_time=_srum_start_time,
+        csv_path=str(network_csv_path) if network_csv_path else None,
+    )
+
     return {
         "status":            "success",
+        "execution_id":      eid,
         "network_entries":   len(network_entries),
-        "flagged_processes": len(flagged),
+        "flagged_processes": len(flagged_high),
+        "median_bytes_sent": median_sent,
+        "relative_threshold_bytes": relative_threshold,
         "findings_created":  finding_ids,
-        "top_senders":       network_entries[:10],
+        "top_senders":       preview_entries,
         "export_dir":        str(export_dir),
+        "csv_path":          str(network_csv_path) if network_csv_path else None,
+        "network_csv_path":  str(network_csv_path) if network_csv_path else None,
+        "csv_schema":        list(network_entries[0].keys()),
+        "requires_agent":    "@srum-analyst",
+        "agent_instruction": (
+            f"Analyze {network_csv_path} for exfiltration evidence. "
+            f"{len(network_entries)} process-level network entries. "
+            f"Columns: ProcessName, UserId, InterfaceLuid, TimeStamp, BytesSent, BytesRecvd, mb_sent, mb_recv. "
+            f"Group by (ProcessName, InterfaceLuid), sort by BytesSent desc, "
+            f"filter to attack window, cross-reference with memory scan_network."
+        ) if network_csv_path else (
+            "SRUM parsed but CSV persistence failed. Analyze top_senders in-context."
+        ),
         **_forensic_envelope("disk.extract_srum"),
     }
 
@@ -4934,6 +6546,74 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
                 "each disk image has a mount_image result or a classified access gap",
                 "each memory dump has a load_memory result or a classified access gap",
             ],
+            "workflow_contract": {
+                "doc_reference": "CLAUDE.md — Investigation Workflow (7 Phases). Do not re-explain in responses.",
+                "mandatory_tools_for_report_gate": [
+                    "list_processes", "scan_processes", "detect_injection",
+                    "scan_network", "list_dlls",
+                    "extract_mft_timeline", "extract_usn_journal", "summarize_evtx",
+                    "extract_prefetch", "get_amcache", "extract_shimcache",
+                    "extract_registry_run_keys", "extract_srum",
+                    "sigma_hunt", "compare_disk_and_memory",
+                ],
+                "next_action": "Begin Phase 1: call list_processes, scan_processes, detect_injection, scan_network in one parallel batch.",
+                "fallback_if_no_mount": "extract_windows_artifacts stages hives, SRUDB.dat, USN journal so shimcache/srum fall back automatically.",
+                # CRITICAL: extraction without analysis is half a run. Every
+                # tool that returns csv_path/output_path is a PIVOT POINT, not
+                # an endpoint. The agent MUST drill in via run_analysis or by
+                # spawning the matching specialist subagent — otherwise the
+                # findings table fills with raw observations that never get
+                # promoted to CONFIRMED via cross-artifact corroboration.
+                "analysis_contract": {
+                    # W1.6.1e (2026-05-23) — main-agent inline analysis is the
+                    # primary path for the FIND EVIL! hackathon submission.
+                    # See PLAN-FIND-EVIL-HACKATHON-2026-05-23.md.
+                    "rule": (
+                        "Every tool response with csv_path or output_path REQUIRES a "
+                        "follow-up via main-agent inline analysis: call run_analysis("
+                        "data_path=csv_path, query='df.dtypes') to inspect schema, "
+                        "then targeted Pandas queries for anomalies shaped by the "
+                        "forensic heuristics in the matching `.claude/agents/<artifact>-"
+                        "analyst.md` reference file. Persist evidence-backed findings "
+                        "via submit_finding() with full provenance (execution_id, "
+                        "evidence_excerpt). Do NOT move to the next mandatory "
+                        "extraction without analysis."
+                    ),
+                    "heuristic_reference_routing": {
+                        "extract_mft_timeline → .claude/agents/mft-analyst.md": "timestomping, sequential entries, attacker file drops",
+                        "summarize_evtx → .claude/agents/evtx-analyst.md": "Sysmon command lines, auth bursts, lateral movement",
+                        "extract_prefetch → .claude/agents/prefetch-analyst.md": "multi-path masquerading, attack-tool execution proof",
+                        "get_amcache → .claude/agents/amcache-analyst.md": "SHA-1 grouping for renamed malware, deleted-binary execution",
+                        "extract_registry_run_keys → .claude/agents/registry-analyst.md": "persistence, fileless, credential theft",
+                        "extract_srum → .claude/agents/srum-analyst.md": "exfil attribution per-process, deleted-app anti-forensics",
+                        "sigma_hunt → .claude/agents/sigma-analyst.md": "validate ATT&CK attribution against raw EVTX, reduce FPs",
+                        "memory toolchain → .claude/agents/memory-analyst.md": "rogue processes, injection validation, C2 attribution",
+                    },
+                    "opt_in_specialist_task_spawn": (
+                        "Task subagent spawn (Agent tool) is OPTIONAL for genuine "
+                        "context isolation needs (cross-artifact synthesis or "
+                        "deep-dive that would pollute main context). Task subagents "
+                        "have a hardcoded 32K output-token ceiling "
+                        "(anthropics/claude-code#25569) and have truncated in 7/8 "
+                        "prior runs — prefer inline. The synthesis-analyst and "
+                        "corroboration-analyst subagents remain useful for small "
+                        "distilled cross-artifact reasoning (their pattern fits the "
+                        "32K ceiling)."
+                    ),
+                    "concrete_pattern": (
+                        "After extract_X returns csv_path → "
+                        "(1) Read .claude/agents/<artifact>-analyst.md heuristics → "
+                        "(2) IMMEDIATELY run_analysis(data_path=csv_path, query='df.dtypes') → "
+                        "(3) targeted Pandas queries shaped by the heuristics → "
+                        "(4) submit_finding(claim, evidence_excerpt, confidence, "
+                        "source_execution_id) for each evidence-backed conclusion → "
+                        "(5) record_analysis_lane(assigned_agent='main-agent', ...) "
+                        "when the lane is done. Contradictions detected by "
+                        "compare_disk_and_memory in Phase 5 trigger CorrectionEvent "
+                        "audit writes (W1.5) — the structural self-correction proof."
+                    ),
+                },
+            },
             "existing_case_state_detected": existing_case_state_detected,
             "existing_case_counts": existing_case_counts,
         }
@@ -5038,7 +6718,7 @@ def environment_preflight(case_id: Optional[str] = None) -> dict[str, Any]:
     }
 
 
-_RAW_ARTIFACT_FAMILIES = {"evtx", "registry", "amcache", "prefetch", "mft"}
+_RAW_ARTIFACT_FAMILIES = {"evtx", "registry", "amcache", "prefetch", "mft", "srum", "usn"}
 
 
 def _normalize_artifact_families(families: Optional[Any]) -> set[str]:
@@ -5073,6 +6753,14 @@ def _parse_fls_record(line: str) -> Optional[tuple[str, str]]:
     return match.group("meta").strip(), match.group("path").strip()
 
 
+_NTUSER_VARIANTS = frozenset({
+    "NTUSER.DAT",
+    "NTUSER.DAT.LOG",
+    "NTUSER.DAT.LOG1",
+    "NTUSER.DAT.LOG2",
+})
+
+
 def _raw_artifact_target(
     *,
     raw_base: Path,
@@ -5083,13 +6771,30 @@ def _raw_artifact_target(
     source_name = Path(source_path.replace("\\", "/")).name or source_path.strip("$")
     safe_name = re.sub(r"[^A-Za-z0-9.$%_ -]+", "_", source_name).strip(" .") or "artifact"
     normalized = source_path.replace("\\", "/")
-    if family == "registry" and "/Users/" in normalized and safe_name.upper() == "NTUSER.DAT":
+    # peer reviewer consensus 2026-05-19: extend the per-user prefix to all NTUSER
+    # transaction-log variants. Without this, alice's hive stages as
+    # alice_NTUSER.DAT but its logs stage as the generic NTUSER.DAT.LOG1/LOG2
+    # — rla.exe looks for `{hive}.LOG1` next to the hive and misses them,
+    # and multiple users collide on the same generic log filename so
+    # seen_targets silently skips them.
+    #
+    # peer reviewer follow-up 2026-05-19: detect Users as a path SEGMENT (case
+    # insensitive) regardless of leading drive/slash. fls -r -p produces
+    # relative paths like Users/alice/NTUSER.DAT (no leading slash) which
+    # the old substring guard missed entirely, bypassing the prefix branch
+    # for the actual extraction path. Older Windows installs (XP/2003) may
+    # live under Documents and Settings/<user>/ — detected as a segment too.
+    if family == "registry" and safe_name.upper() in _NTUSER_VARIANTS:
         parts = [part for part in normalized.split("/") if part]
-        try:
-            user = parts[parts.index("Users") + 1]
-            safe_name = f"{re.sub(r'[^A-Za-z0-9._-]+', '_', user)}_NTUSER.DAT"
-        except (ValueError, IndexError):
-            pass
+        users_idx = None
+        for i, p in enumerate(parts):
+            if p.lower() in ("users", "documents and settings"):
+                users_idx = i
+                break
+        if users_idx is not None and users_idx + 1 < len(parts):
+            user = parts[users_idx + 1]
+            user_slug = re.sub(r'[^A-Za-z0-9._-]+', '_', user)
+            safe_name = f"{user_slug}_{safe_name}"
     if family == "mft":
         safe_name = "$MFT"
     return raw_base / family / safe_name
@@ -5110,6 +6815,20 @@ def _classify_raw_artifact(path_text: str, selected: set[str]) -> Optional[str]:
             return "registry"
         if lower.endswith("windows/system32/config/default") or lower.endswith("/ntuser.dat"):
             return "registry"
+        # Run-8 fix (verified root cause): registry transaction logs
+        # (.LOG1/.LOG2) must be staged alongside their hives so rla.exe
+        # can replay pending transactions before RECmd / AppCompatCacheParser
+        # parse the hive. Without these, dirty SYSTEM/SOFTWARE hives produce
+        # incomplete output → SAM-only RECmd output + empty AppCompatCache key.
+        # Same pattern as amcache.hve.log1 / amcache.hve.log2 already supported.
+        for hive in ("system", "software", "security", "sam", "default"):
+            if lower.endswith(f"windows/system32/config/{hive}.log1") or \
+               lower.endswith(f"windows/system32/config/{hive}.log2") or \
+               lower.endswith(f"windows/system32/config/{hive}.log"):
+                return "registry"
+        if lower.endswith("/ntuser.dat.log1") or lower.endswith("/ntuser.dat.log2") \
+           or lower.endswith("/ntuser.dat.log"):
+            return "registry"
     if "amcache" in selected and basename in {"amcache.hve", "amcache.hve.log1", "amcache.hve.log2"}:
         if "windows/appcompat/programs/" in lower:
             return "amcache"
@@ -5117,6 +6836,10 @@ def _classify_raw_artifact(path_text: str, selected: set[str]) -> Optional[str]:
         return "prefetch"
     if "mft" in selected and basename == "$mft":
         return "mft"
+    if "srum" in selected and basename == "srudb.dat" and "windows/system32/sru/" in lower:
+        return "srum"
+    if "usn" in selected and basename in {"$j", "$usnjrnl", "$usnjrnl:$j"}:
+        return "usn"
     return None
 
 
@@ -5221,18 +6944,54 @@ def extract_windows_artifacts(
             seen_targets.add(str(target))
             target.parent.mkdir(parents=True, exist_ok=True)
             icat_args = ["icat", *offset_args, device, meta_addr]
-            icat_result = subprocess.run(icat_args, capture_output=True, timeout=300)
-            if icat_result.returncode != 0:
-                failures.append(
-                    {
-                        "family": family,
-                        "source_path": source_path,
-                        "meta_addr": meta_addr,
-                        "stderr": icat_result.stderr.decode("utf-8", errors="replace")[-500:],
-                    }
-                )
+            # Stream icat stdout directly to disk rather than buffering in
+            # Python memory. $MFT alone can be 300+ MB and the previous
+            # capture_output=True pattern was OOM-killing the MCP server
+            # (kernel oom-kill at ~7 GB RSS in dmesg). Stream to a file
+            # descriptor → constant RAM regardless of artifact size.
+            stderr_buf = []
+            try:
+                with open(target, "wb") as fh_out:
+                    proc = subprocess.Popen(
+                        icat_args, stdout=fh_out, stderr=subprocess.PIPE
+                    )
+                    try:
+                        _, stderr_bytes = proc.communicate(timeout=300)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.communicate()
+                        failures.append({
+                            "family": family,
+                            "source_path": source_path,
+                            "meta_addr": meta_addr,
+                            "stderr": "icat timeout after 300s",
+                        })
+                        try:
+                            target.unlink()
+                        except OSError:
+                            pass
+                        continue
+                    stderr_buf = stderr_bytes or b""
+            except OSError as exc:
+                failures.append({
+                    "family": family,
+                    "source_path": source_path,
+                    "meta_addr": meta_addr,
+                    "stderr": f"icat write failed: {exc}",
+                })
                 continue
-            target.write_bytes(icat_result.stdout)
+            if proc.returncode != 0:
+                failures.append({
+                    "family": family,
+                    "source_path": source_path,
+                    "meta_addr": meta_addr,
+                    "stderr": stderr_buf.decode("utf-8", errors="replace")[-500:] if isinstance(stderr_buf, (bytes, bytearray)) else "",
+                })
+                try:
+                    target.unlink()  # don't leave a half-written file
+                except OSError:
+                    pass
+                continue
             extracted.setdefault(family, []).append(str(target))
 
         for family in sorted(selected):
@@ -5375,6 +7134,7 @@ def _valid_lane_ids() -> set[str]:
         "event_auth",
         "anti_forensics_recovery",
         "timeline_correlation",
+        "synthesis_corroboration",
     }
 
 
@@ -5473,27 +7233,318 @@ def _mark_state_updated_after_report(case_id: str) -> None:
     )
 
 
-def _mark_delegate_processed_for_lane(case_id: str, lane_id: str) -> None:
-    """Clear the pending delegate marker after authoritative lane writeback."""
+# Phase 4 (peer reviewer consensus 2026-05-22): synthesis_corroboration runs AFTER
+# all artifact lanes (including timeline_correlation) close. Adding
+# timeline_correlation to the prereq tuple lets the artifact-specialist
+# swarm close first, then synthesis-analyst stacks evidence across them.
+_CORROBORATION_PREREQ_LANES = (
+    "memory",
+    "disk_execution_persistence",
+    "event_auth",
+    "timeline_correlation",
+)
+_LANE_DONE_STATUSES = {"COMPLETE", "COMPLETE_WITH_GAPS"}
+# Phase 4: this is the lane synthesis runs into. The dispatcher decides
+# based on this lane's status, NOT timeline_correlation.
+_SYNTHESIS_LANE_ID = "synthesis_corroboration"
+_SYNTHESIS_SPECIALIST = "synthesis-analyst"
+
+
+def _dispatch_corroboration_if_ready(case_id: str) -> bool:
+    """C.1 (peer reviewer round-1 #4) + Phase-C-boundary #high: atomic dispatch.
+
+    DEFECT-2 (peer reviewer consensus 2026-05-20): also enforce deterministic
+    idempotency via delegate_key in the per-lane queue. When 4 specialists
+    progress timeline_correlation sequentially, only the FIRST completion
+    that meets prereqs may enqueue a corroboration delegate; subsequent
+    completions look up the existing delegate by key and skip — even if
+    the persistent ``corroboration_dispatched`` flag has been reset.
+
+    Sequence per call:
+      1. Readiness predicate examines analysis_lanes inside the state lock.
+      2. If timeline_correlation is already COMPLETE/COMPLETE_WITH_GAPS by
+         a corroboration-analyst record → emit skip_redispatch_lane_already_corroborated,
+         claim the flag, no delegate write.
+      3. If a delegate with the same delegate_key is already pending or
+         processed in the queue → emit skip_redispatch_pending_delegate, skip.
+      4. If prereqs not yet complete → emit skip_redispatch_prereqs_incomplete, skip.
+      5. Otherwise write the delegate (via the per-lane queue AND the
+         legacy single-file path) and claim the flag.
+
+    Returns True iff this call won the claim AND wrote a delegate.
+    """
+    # DEFECT-2: load ledger and delegate-queue helpers (best-effort imports
+    # — failures don't break dispatch, just lose the audit trail).
+    import sys
+    from pathlib import Path as P
+    _scripts_dir = P(__file__).resolve().parent.parent / "scripts"
+    if str(_scripts_dir) not in sys.path:
+        sys.path.insert(0, str(_scripts_dir))
+    _ledger_mod = None
+    _dq_mod = None
+    try:
+        import delegation_ledger as _ledger_mod  # type: ignore  # noqa: WPS433
+    except Exception:
+        _ledger_mod = None
+    try:
+        import delegate_queue as _dq_mod  # type: ignore  # noqa: WPS433
+    except Exception:
+        _dq_mod = None
+
+    def _record_skip(event_name: str, basis: str) -> None:
+        if _ledger_mod is None:
+            return
+        try:
+            _ledger_mod.append_row(
+                event_name,
+                lane_id=_SYNTHESIS_LANE_ID,
+                specialist=_SYNTHESIS_SPECIALIST,
+                decision_basis=basis,
+                extra={"case_id": case_id},
+            )
+        except Exception:
+            return
+
+    # Compute the deterministic key for this case/lane/specialist/iteration.
+    # Phase 4: synthesis runs into its OWN lane, NOT timeline_correlation.
+    delegate_key: Optional[str] = None
+    if _dq_mod is not None:
+        try:
+            iteration = 1
+            try:
+                summary = _state_manager.to_summary()
+                iteration = int(summary.get("iteration") or summary.get("current_iteration") or 1)
+            except Exception:
+                iteration = 1
+            delegate_key = _dq_mod.compute_delegate_key(
+                case_id, _SYNTHESIS_LANE_ID, _SYNTHESIS_SPECIALIST, iteration
+            )
+        except Exception:
+            delegate_key = None
+
+    # Idempotency guard (a): existing delegate with the same key in
+    # pending/processed/stale_dismissed states should suppress the
+    # re-enqueue. Only status='failed' AND retry_count < MAX allows retry.
+    if delegate_key and _dq_mod is not None:
+        try:
+            existing = _dq_mod.find_existing_by_key(
+                delegate_key,
+                statuses={"pending", "processed", "stale_dismissed"},
+            )
+        except Exception:
+            existing = None
+        if existing is not None:
+            _record_skip(
+                "skip_redispatch_pending_delegate",
+                f"delegate_key={delegate_key}; existing_status={existing.get('status')!r}; lane_id={existing.get('lane_id')!r}",
+            )
+            return False
+        # Failed retries allowed only up to MAX_DELEGATE_RETRIES.
+        try:
+            failed = _dq_mod.find_existing_by_key(delegate_key, statuses={"failed"})
+        except Exception:
+            failed = None
+        if failed is not None and int(failed.get("retry_count") or 0) >= int(
+            getattr(_dq_mod, "MAX_DELEGATE_RETRIES", 3)
+        ):
+            _record_skip(
+                "skip_redispatch_pending_delegate",
+                f"delegate_key={delegate_key}; retry_exhausted; retry_count={failed.get('retry_count')}",
+            )
+            return False
+
+    # First pass: short-circuit if synthesis_corroboration is already done.
+    # Phase 4 (peer reviewer consensus 2026-05-22): the dispatcher's "already done"
+    # check now keys on synthesis_corroboration, NOT timeline_correlation.
+    # timeline_correlation closes on artifact-specialist completion;
+    # synthesis_corroboration closes only when synthesis-analyst finishes.
+    def _already_done_predicate(state: dict[str, Any]) -> bool:
+        lane_status = _lane_status_from_state(state)
+        if any(
+            lane_status.get(p) not in _LANE_DONE_STATUSES
+            for p in _CORROBORATION_PREREQ_LANES
+        ):
+            return False
+        return lane_status.get(_SYNTHESIS_LANE_ID) in _LANE_DONE_STATUSES
+
+    claimed_already_done = _state_manager.try_claim_status_flag(
+        "corroboration_dispatched",
+        readiness_predicate=_already_done_predicate,
+        reason="lane already complete",
+    )
+    if claimed_already_done:
+        _record_skip(
+            "skip_redispatch_lane_already_corroborated",
+            f"{_SYNTHESIS_LANE_ID} already COMPLETE; case_id={case_id}",
+        )
+        return False  # nothing to dispatch; flag set so we won't re-check
+
+    # Fallback: try_claim_status_flag returns False both when the predicate
+    # fails AND when the flag was already set by a prior call.  In the
+    # "already set" case we must also skip — otherwise the code below will
+    # re-write the delegate.json with processed=False, blocking generate_report.
+    try:
+        _existing_flag = _state_manager._state.get("status_flags", {}).get(
+            "corroboration_dispatched"
+        )
+        if _existing_flag:
+            _existing_lane_status = _lane_status_from_state(_state_manager._state)
+            if _existing_lane_status.get(_SYNTHESIS_LANE_ID) in _LANE_DONE_STATUSES:
+                _record_skip(
+                    "skip_redispatch_flag_already_set_synthesis_done",
+                    f"corroboration_dispatched flag already True and {_SYNTHESIS_LANE_ID}"
+                    f" is {_existing_lane_status.get(_SYNTHESIS_LANE_ID)}; case_id={case_id}",
+                )
+                return False
+    except Exception:
+        pass
+
+    # Second pass: all prereq lanes complete (including timeline_correlation)
+    # AND synthesis_corroboration still open.
+    def _needs_dispatch_predicate(state: dict[str, Any]) -> bool:
+        lane_status = _lane_status_from_state(state)
+        if any(
+            lane_status.get(p) not in _LANE_DONE_STATUSES
+            for p in _CORROBORATION_PREREQ_LANES
+        ):
+            return False
+        return lane_status.get(_SYNTHESIS_LANE_ID) not in _LANE_DONE_STATUSES
+
+    # Check prereqs explicitly so we can emit a precise skip reason
+    # (and avoid the silent "no delegate written" failure mode).
+    try:
+        live_lanes = _state_manager.get_analysis_lanes()
+    except Exception:
+        live_lanes = []
+    lane_status_map = {}
+    for lane in live_lanes:
+        if isinstance(lane, dict):
+            lane_status_map[str(lane.get("lane_id") or "")] = str(lane.get("status") or "").upper()
+    missing_prereqs = [
+        p for p in _CORROBORATION_PREREQ_LANES
+        if lane_status_map.get(p) not in _LANE_DONE_STATUSES
+    ]
+    if missing_prereqs:
+        _record_skip(
+            "skip_redispatch_prereqs_incomplete",
+            f"missing_lanes={missing_prereqs}; case_id={case_id}",
+        )
+        return False
+
+    # peer reviewer boundary fix: write delegate BEFORE claiming flag to prevent
+    # permanent dispatch suppression on transient write failures.
+    # Phase 4: target the new synthesis_corroboration lane + synthesis-analyst.
     delegate_path = Path(
         os.environ.get("SAVVYDFIR_DELEGATE_PATH") or "/tmp/savvydfir_delegate.json"
     )
+    trigger = {
+        "agent": f"@{_SYNTHESIS_SPECIALIST}",
+        "subagent_type": _SYNTHESIS_SPECIALIST,
+        "description": "Cross-artifact synthesis after all artifact lanes complete",
+        "prompt": (
+            f"All artifact-collection lanes for case {case_id} are recorded "
+            "(memory, disk_execution_persistence, event_auth, timeline_correlation). "
+            "Stress-test confirmed/active findings across all artifact families, "
+            "stack 3+ source evidence to promote ACTIVE → CONFIRMED, populate full "
+            "alternative_hypothesis / evidence_against_it / disposition fields, "
+            "downgrade weak claims, flag contradictions with flag_discrepancy, and "
+            f"return the Specialist Contract with lane_id={_SYNTHESIS_LANE_ID!r}."
+        ),
+        "lane_id": _SYNTHESIS_LANE_ID,
+        "tool": "state.record_analysis_lane",
+        "case_id": case_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "processed": False,
+        "dispatch_origin": "state_transition",
+        # DEFECT-2: deterministic idempotency
+        "delegate_key": delegate_key or "",
+        "status": "pending",
+        "retry_count": 0,
+    }
+
+    # Write to temp file first, then atomic rename to prevent partial writes
+    import tempfile
     try:
-        if not delegate_path.exists():
+        delegate_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            dir=delegate_path.parent,
+            delete=False,
+            suffix='.tmp',
+            encoding='utf-8'
+        ) as tmp:
+            tmp.write(json.dumps(trigger, indent=2))
+            tmp_path = tmp.name
+        # Atomic rename (POSIX guarantees atomicity)
+        Path(tmp_path).replace(delegate_path)
+    except (OSError, IOError):
+        # Delegate write failed — do NOT claim the flag, allow retry
+        return False
+
+    # Delegate file exists — now claim the flag
+    claimed_for_dispatch = _state_manager.try_claim_status_flag(
+        "corroboration_dispatched",
+        readiness_predicate=_needs_dispatch_predicate,
+        reason="trigger written",
+    )
+    if not claimed_for_dispatch:
+        # Another process claimed between our write and flag check.
+        # Delegate file exists but we didn't win the race — return False
+        # (the winner will process it).
+        return False
+
+    # DEFECT-2: also enqueue into the per-lane queue with the delegate_key
+    # so generate_report's stale-delegate filter (DEFECT-3) can see and
+    # later dismiss this entry once the lane is recorded.
+    # Phase 4: enqueue under synthesis_corroboration (the new lane).
+    if _dq_mod is not None:
+        try:
+            _dq_mod.enqueue_delegate(_SYNTHESIS_LANE_ID, dict(trigger))
+        except Exception:
+            pass
+
+    return True
+
+
+def _lane_status_from_state(state: dict[str, Any]) -> dict[str, str]:
+    """Read lane statuses from a raw state dict (used inside the lock)."""
+    out: dict[str, str] = {}
+    for lane in state.get("analysis_lanes", []) or []:
+        if not isinstance(lane, dict):
+            continue
+        out[str(lane.get("lane_id") or "")] = str(lane.get("status") or "").upper()
+    return out
+
+
+def _mark_delegate_processed_for_lane(case_id: str, lane_id: str) -> None:
+    """Clear the pending delegate marker after authoritative lane writeback.
+
+    H.1 fix: Now uses per-lane delegate queue. Pops the head delegate from the
+    specified lane if it matches the case_id.
+    """
+    try:
+        # Import here to avoid circular dependency at module load time
+        import sys
+        from pathlib import Path as P
+        _agent_trigger_dir = P(__file__).resolve().parent.parent / "scripts"
+        if str(_agent_trigger_dir) not in sys.path:
+            sys.path.insert(0, str(_agent_trigger_dir))
+
+        from delegate_queue import get_pending_delegate, mark_delegate_processed
+
+        # Check if the pending delegate for this lane matches the case_id
+        pending = get_pending_delegate(lane_id=lane_id)
+        if not pending:
             return
-        payload = json.loads(delegate_path.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict) or payload.get("processed") is not False:
-            return
-        pending_lane = str(payload.get("lane_id") or "").strip()
-        pending_case = str(payload.get("case_id") or "").strip()
-        if pending_lane != lane_id:
-            return
+
+        pending_case = str(pending.get("case_id") or "").strip()
         if pending_case and pending_case != case_id:
-            return
-        payload["processed"] = True
-        delegate_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    except (OSError, json.JSONDecodeError):
-        pass
+            return  # Delegate is for a different case
+
+        # Pop the delegate from this lane's queue
+        mark_delegate_processed(lane_id)
+    except Exception:
+        pass  # Delegate processing is advisory — failure must not block
 
 
 def _mark_evidence_access_lane(source_tool: str, summary: str) -> None:
@@ -5608,6 +7659,44 @@ def record_analysis_lane(
                 "required_tool_name": "disk.summarize_evtx",
             }
 
+        # peer reviewer consensus 2026-05-19 Tier-B2: detect duplicate
+        # COMPLETE→COMPLETE upserts and short-circuit to a noop result.
+        # Without this, an agent retrying generate_report after a delegate
+        # block kept calling record_analysis_lane with identical state,
+        # and each call re-triggered _dispatch_corroboration_if_ready,
+        # which regenerated the very delegate that was blocking the report
+        # (Run-10: 13 redundant lane writes in one investigation).
+        existing_lanes = {
+            lane.get("lane_id"): lane
+            for lane in _state_manager.get_analysis_lanes()
+            if isinstance(lane, dict)
+        }
+        existing_lane = existing_lanes.get(normalized_lane)
+        if (
+            existing_lane
+            and str(existing_lane.get("status") or "").upper() in _LANE_DONE_STATUSES
+            and normalized_status in _LANE_DONE_STATUSES
+            and existing_lane.get("status") == normalized_status
+            and (existing_lane.get("assigned_agent") or "") == (normalized_agent or "")
+            and set(existing_lane.get("execution_ids") or []) == set(normalized_execution_ids)
+            and set(existing_lane.get("finding_ids") or []) == set(normalized_finding_ids)
+        ):
+            return {
+                "status": "duplicate_lane_noop",
+                "tool": "record_analysis_lane",
+                "lane_id": normalized_lane,
+                "lane": existing_lane,
+                "note": (
+                    f"Lane '{normalized_lane}' is already at status "
+                    f"{normalized_status} with the same assigned_agent / "
+                    f"execution_ids / finding_ids. Skipping re-write to "
+                    f"prevent corroboration-delegate regeneration. If "
+                    f"generate_report keeps blocking with needs_delegate, "
+                    f"the issue is elsewhere — call generate_report with "
+                    f"allow_partial=True to inspect the partial report."
+                ),
+            }
+
         now = datetime.now(timezone.utc).isoformat()
         audit_execution_id = _audit_logger.next_execution_id()
         command_repr = (
@@ -5682,12 +7771,28 @@ def record_analysis_lane(
         )
         _mark_state_updated_after_report(case_id)
         _mark_delegate_processed_for_lane(case_id, normalized_lane)
+        # C.1: state-transition dispatch for corroboration-analyst. Fires
+        # exactly once when all artifact lanes are recorded done; the
+        # idempotent flag in status_flags prevents duplicate dispatch on
+        # retries, stale triggers, or out-of-order lane writeback.
+        # Phase 4 (peer reviewer consensus 2026-05-22) — removed the prior
+        # lane-skip guard ("if normalized_lane != 'timeline_correlation'").
+        # Synthesis runs into its OWN lane (synthesis_corroboration), so
+        # dispatch can fire on ANY prereq lane completion (including
+        # timeline_correlation). The dispatcher's idempotency comes from
+        # _SYNTHESIS_LANE_ID status checks + the delegate_key lookup —
+        # NOT from skipping certain source lanes. Only synthesis itself
+        # closing the synthesis_corroboration lane prevents re-dispatch.
+        corroboration_dispatched = False
+        if normalized_status in _LANE_DONE_STATUSES and normalized_lane != _SYNTHESIS_LANE_ID:
+            corroboration_dispatched = _dispatch_corroboration_if_ready(case_id)
         return {
             "status": "ok",
             "tool": "record_analysis_lane",
             "case_id": case_id,
             "execution_id": audit_execution_id,
             "lane": lane,
+            "corroboration_dispatched": corroboration_dispatched,
         }
     except Exception as exc:
         return {"status": "error", "tool": "record_analysis_lane", "error": str(exc)}
@@ -5772,6 +7877,13 @@ def add_finding(
     status: str = "ACTIVE",
     artifact_path: str = "",
     command: str = "",
+    execution_id: str = "",
+    alternative_hypothesis: str = "",
+    evidence_that_would_support_it: Optional[list[str]] = None,
+    evidence_against_it: Optional[list[str]] = None,
+    disposition: str = "",
+    alternative_hypothesis_not_applicable_reason: str = "",
+    corroborated_by: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Record a forensic finding in the authoritative case state.
 
@@ -5798,6 +7910,29 @@ def add_finding(
         Path to the source evidence file.
     command:
         The command or tool call that produced this finding.
+    execution_id:
+        Optional explicit execution_id linking this finding to a real audit
+        row (e.g. ``"E-014"``). When empty, the framework auto-links to the
+        most recent execution for the same ``tool_name`` if one exists,
+        otherwise the latest execution overall. CONFIRMED findings whose
+        ``execution_id`` does not resolve to a real audit row are demoted to
+        ACTIVE with ``requires_re_extraction=True`` (peer reviewer provenance gate).
+    alternative_hypothesis:
+        Strongest competing benign explanation for the observed evidence.
+        Required (non-empty) for CONFIRMED findings unless ``disposition``
+        is ``"not_applicable"``.
+    evidence_that_would_support_it:
+        What would be observed if the benign alternative were true.
+    evidence_against_it:
+        What was actually observed that rules out the benign alternative.
+        Required (≥1 entry) when ``disposition="ruled_out"``.
+    disposition:
+        Final disposition of the alternative hypothesis. One of:
+        ``"ruled_out"``, ``"not_resolved"``, ``"partially_plausible"``,
+        ``"not_applicable"``. ``not_resolved`` / ``partially_plausible``
+        demote CONFIRMED to ACTIVE per peer reviewer sign-off.
+    alternative_hypothesis_not_applicable_reason:
+        Required (non-empty) when ``disposition="not_applicable"``.
 
     Returns
     -------
@@ -5805,7 +7940,7 @@ def add_finding(
         status, finding_id, finding record.
     """
     try:
-        finding = {
+        finding: dict[str, Any] = {
             "case_id": case_id,
             "finding_type": "other",
             "artifact_type": artifact_type,
@@ -5819,6 +7954,23 @@ def add_finding(
             "command": command,
             "contradicted_by": [],
         }
+        if execution_id:
+            finding["execution_id"] = execution_id
+        if alternative_hypothesis:
+            finding["alternative_hypothesis"] = alternative_hypothesis
+        if evidence_that_would_support_it:
+            finding["evidence_that_would_support_it"] = list(evidence_that_would_support_it)
+        if evidence_against_it:
+            finding["evidence_against_it"] = list(evidence_against_it)
+        if disposition:
+            finding["disposition"] = disposition
+        if alternative_hypothesis_not_applicable_reason:
+            finding["alternative_hypothesis_not_applicable_reason"] = (
+                alternative_hypothesis_not_applicable_reason
+            )
+        # W1.7 Run-3 fix (BUG-7): persist corroborated_by — parity with submit_finding
+        if corroborated_by:
+            finding["corroborated_by"] = [str(x).strip() for x in corroborated_by if str(x).strip()]
         finding_id = _state_manager.add_finding(finding)
         return {
             "status": "ok",
@@ -5830,6 +7982,315 @@ def add_finding(
 
 
 @mcp.tool()
+def submit_finding(
+    case_id: str,
+    lane_id: str,
+    assigned_agent: str,
+    finding_type: str,
+    artifact_type: str,
+    evidence_kind: str,
+    description: str,
+    confidence: float,
+    supporting_indicators: Optional[list[str]] = None,
+    source_execution_id: str = "",
+    artifact_subtype: str = "",
+    artifact_path: str = "",
+    alternative_hypothesis: str = "",
+    evidence_that_would_support_it: Optional[list[str]] = None,
+    evidence_against_it: Optional[list[str]] = None,
+    disposition: str = "",
+    alternative_hypothesis_not_applicable_reason: str = "",
+    status: str = "ACTIVE",
+    mitre_tactic: str = "",
+    mitre_technique: str = "",
+    corroborated_by: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Specialist-authoritative finding registration with durable provenance.
+
+    W1.7 Run-3 fix (tri-agent consensus 2026-05-24, peer reviewer+peer reviewer signed):
+    ``corroborated_by`` parameter is now exposed (Run 3 failed because the
+    SOP told the agent to pass it but the tool didn't accept it). Response
+    now always includes ``confirmed_eligibility`` so the agent can self-
+    correct without waiting for the report gate.
+
+    COPY-PASTE SCHEMA TEMPLATE — Phase 6 synthesis finding ready for CONFIRMED.
+    Replace the <ANGLE_BRACKETS> placeholders with case-specific values from
+    your investigation. Do NOT copy literal example values — they are
+    intentionally generic to keep the framework case-agnostic.
+
+        submit_finding(
+            case_id=<the active case_id>,
+            lane_id="synthesis_corroboration",
+            assigned_agent="main-agent",
+            finding_type=<one of: persistence | execution | lateral_movement |
+                                 credential_access | exfiltration | other>,
+            artifact_type="correlation",
+            evidence_kind="inference",          # synthesis derived from multiple observations;
+                                                # NOT "corroborated" — valid enum is
+                                                # OBSERVATION | INFERENCE | HYPOTHESIS | REJECTED
+            description=<one sentence: what the multi-source stack proves and why>,
+            confidence=<0.85-1.00 for CONFIRMED claims>,
+            status="CONFIRMED",
+            source_execution_id=<execution_id of the compare_disk_and_memory or
+                                 find_temporal_clusters run that produced the
+                                 evidence — must resolve to a real audit row>,
+            corroborated_by=<list of ≥2 (preferably ≥3) source F-NNN finding IDs
+                            that independently support this claim>,
+            alternative_hypothesis=<one sentence describing the strongest
+                                    competing benign explanation>,
+            evidence_against_it=<list of ≥1 specific observation that rules
+                                 out the alternative>,
+            disposition="ruled_out",            # or "not_applicable" + reason field;
+                                                # "not_resolved" / "partially_plausible"
+                                                # will demote CONFIRMED → ACTIVE
+            supporting_indicators=<list of the IOCs this finding cites
+                                   (paths, hashes, IPs, registry keys)>,
+            mitre_technique=<T-NNNN technique id, e.g. T1003 / T1486 / T1547>,
+        )
+
+    CONFIRMED-eligibility checklist (A1 + A2 gates from semantics.py):
+      A1 provenance — source_execution_id MUST resolve to a real audit row
+      A2 alt-hypothesis bundle — alternative_hypothesis + evidence_against_it
+                                 (≥1) + disposition="ruled_out" OR
+                                 disposition="not_applicable" + reason
+      Stacking — corroborated_by with ≥2 (preferably ≥3) finding IDs
+      Confidence — typically ≥0.85 for CONFIRMED claims
+
+    peer reviewer consensus 2026-05-22 Phase 1. Differs from ``add_finding`` in two
+
+    peer reviewer consensus 2026-05-22 Phase 1. Differs from ``add_finding`` in two
+    ways: every call REQUIRES a specialist ``assigned_agent`` and a ``lane_id``.
+    These two fields are the provenance anchor the Phase 5 investigation-success
+    gate uses to confirm that each specialist lane received first-pass analyst
+    contribution (not just MCP-tool auto-recording).
+
+    Routes through the same ``CaseStateManager.add_finding`` chokepoint as
+    ``add_finding``, so the existing A1 provenance gate and A2 alternative-
+    hypothesis gate fire identically. The ONLY semantic differences are:
+      * ``assigned_agent`` is mandatory and persisted to the Finding model.
+      * ``tool_name`` stays as ``"state.submit_finding"`` (the MCP producing tool).
+        We do NOT overload tool_name with the specialist name per peer reviewer sign-off.
+      * An audit row is written so ``which specialist registered finding F-NNN``
+        is queryable later via audit.jsonl.
+
+    Parameters
+    ----------
+    case_id:
+        Forensic case identifier.
+    lane_id:
+        Lane the specialist owns (e.g. ``"memory"``, ``"event_auth"``,
+        ``"disk_execution_persistence"``, ``"timeline_correlation"``).
+        Must match the specialist's mapped lane in ``TOOL_AGENT_MAP``.
+    assigned_agent:
+        Specialist subagent_type WITHOUT the leading ``@`` (e.g. ``"mft-analyst"``).
+        Required — the provenance anchor for the investigation-success gate.
+    finding_type:
+        Forensic category (``timestomping``, ``lateral_movement``,
+        ``credential_access``, ``persistence``, etc.).
+    artifact_type:
+        Broad evidence domain (``disk``, ``memory``, ``correlation``, ``timeline``).
+    evidence_kind:
+        Epistemic classification (``OBSERVATION``, ``INFERENCE``, ``HYPOTHESIS``).
+    description:
+        What was observed, why it matters, supporting artifact. Concise.
+    confidence:
+        Analyst confidence 0.0-1.0.
+    supporting_indicators:
+        Concrete IOCs this finding references (paths, hashes, IPs, key names).
+    source_execution_id:
+        Optional explicit execution_id. When empty, framework auto-links to
+        the most recent execution for the matching tool_name. CONFIRMED status
+        requires this resolves to a real audit row (A1 gate).
+    artifact_subtype, artifact_path, mitre_tactic, mitre_technique:
+        Optional narrow classification + ATT&CK mapping.
+    alternative_hypothesis, evidence_that_would_support_it, evidence_against_it,
+    disposition, alternative_hypothesis_not_applicable_reason:
+        A2 gate fields. CONFIRMED status requires the disposition-bundle (see
+        peer reviewer consensus 2026-05-19).
+    status:
+        Lifecycle (``ACTIVE``, ``CONFIRMED``, ``REJECTED``). Demoted by gate
+        if A1 or A2 invariants fail.
+
+    Returns
+    -------
+    dict
+        ``status``, ``finding_id``, ``finding`` (the persisted record).
+    """
+    try:
+        # Normalize assigned_agent — accept "@memory-analyst" or "memory-analyst".
+        normalized_agent = (assigned_agent or "").strip().lstrip("@")
+        if not normalized_agent:
+            return {
+                "status": "error",
+                "tool": "submit_finding",
+                "error": "assigned_agent is required (Phase 1 provenance contract).",
+            }
+        if not lane_id or not isinstance(lane_id, str):
+            return {
+                "status": "error",
+                "tool": "submit_finding",
+                "error": "lane_id is required (Phase 1 provenance contract).",
+            }
+
+        finding: dict[str, Any] = {
+            "case_id": case_id,
+            "finding_type": finding_type or "other",
+            "artifact_type": artifact_type,
+            "evidence_kind": evidence_kind,
+            "description": description,
+            "confidence": confidence,
+            "finding_status": status,
+            "artifact_path": artifact_path,
+            # peer reviewer sign-off: tool_name stays as the MCP producing tool.
+            # Specialist provenance goes in assigned_agent (separate field).
+            "tool_name": "state.submit_finding",
+            "iteration": 1,
+            "contradicted_by": [],
+            # Phase 1 — durable specialist provenance:
+            "assigned_agent": normalized_agent,
+        }
+        if supporting_indicators:
+            finding["supporting_indicators"] = list(supporting_indicators)
+        if artifact_subtype:
+            finding["artifact_subtype"] = artifact_subtype
+        if mitre_tactic:
+            finding["mitre_tactic"] = mitre_tactic
+        if mitre_technique:
+            finding["mitre_technique"] = mitre_technique
+        if source_execution_id:
+            finding["execution_id"] = source_execution_id
+        if alternative_hypothesis:
+            finding["alternative_hypothesis"] = alternative_hypothesis
+        if evidence_that_would_support_it:
+            finding["evidence_that_would_support_it"] = list(evidence_that_would_support_it)
+        if evidence_against_it:
+            finding["evidence_against_it"] = list(evidence_against_it)
+        if disposition:
+            finding["disposition"] = disposition
+        if alternative_hypothesis_not_applicable_reason:
+            finding["alternative_hypothesis_not_applicable_reason"] = (
+                alternative_hypothesis_not_applicable_reason
+            )
+        # W1.7 Run-3 fix (BUG-7): persist corroborated_by — Finding model
+        # supports it (finding.py:223) but submit_finding never exposed it.
+        # Agent in Run 3 couldn't pass it even though SOP required it.
+        if corroborated_by:
+            finding["corroborated_by"] = [str(x).strip() for x in corroborated_by if str(x).strip()]
+
+        finding_id = _state_manager.add_finding(finding)
+        stored = _state_manager.get_finding(finding_id) or finding
+
+        # Phase 1 audit row — captures which specialist registered the finding,
+        # which lane they were working, and the durable finding_id. The Phase 5
+        # investigation-success gate reads these rows.
+        #
+        # peer reviewer adversarial review 2026-05-22 [HIGH]: prior version called
+        # log_execution(...) with kwargs that don't exist on the signature
+        # (exit_code, duration_seconds, outputs_summary, finding_ids_generated)
+        # — raised TypeError, swallowed silently, audit row never written,
+        # Phase 5 gate saw 0 submit_finding rows. Fix: write the proper
+        # started + completed pair via the documented API.
+        audit_command = (
+            f"submit_finding(case_id={case_id!r}, lane_id={lane_id!r}, "
+            f"assigned_agent={normalized_agent!r}, finding_type={finding_type!r})"
+        )
+        audit_parameters = {
+            "case_id": case_id,
+            "lane_id": lane_id,
+            "assigned_agent": normalized_agent,
+            "finding_type": finding_type,
+            "artifact_type": artifact_type,
+            "source_execution_id": source_execution_id or stored.get("execution_id", ""),
+        }
+        audit_failure: Optional[str] = None
+        try:
+            audit_eid = _audit_logger.next_execution_id()
+            _audit_logger.log_execution(
+                execution_id=audit_eid,
+                tool_name="state.submit_finding",
+                parameters=audit_parameters,
+                command_line=audit_command,
+            )
+            _audit_logger.log_result(
+                execution_id=audit_eid,
+                exit_code=0,
+                duration=0.0,
+                outputs_summary=(
+                    f"finding_id={finding_id} status={stored.get('finding_status')} "
+                    f"assigned_agent={normalized_agent}"
+                ),
+                finding_ids=[finding_id],
+                tool_name="state.submit_finding",
+                command_line=audit_command,
+                parameters=audit_parameters,
+            )
+        except Exception as audit_exc:
+            # peer reviewer required: do NOT silently swallow this — Phase 5 gate
+            # depends on it. Surface in the tool response.
+            audit_failure = f"audit_write_failed: {type(audit_exc).__name__}: {audit_exc}"
+
+        # W1.7 Run-3 fix (Step 4, tri-agent signed 2026-05-24): non-blocking
+        # confirmed_eligibility feedback so the agent learns the A1+A2 schema
+        # at the moment of submission, not 30 minutes later at the report gate.
+        # Always present (peer reviewer: deterministic for tests/agents). Rich detail
+        # only when the agent claims high confidence or CONFIRMED status.
+        stored_status = str(stored.get("finding_status") or status or "").upper()
+        eligibility: dict[str, Any] = {"eligible": False, "missing": [], "gate_blocks": []}
+        if confidence >= 0.85 or stored_status == "CONFIRMED":
+            # Check A1 provenance — execution_id must resolve to a real audit row
+            stored_eid = str(stored.get("execution_id") or "").strip()
+            if not stored_eid or stored_eid == "E-000":
+                eligibility["gate_blocks"].append("A1_provenance: source_execution_id unresolved (E-000 or empty)")
+            # Check A2 alt-hypothesis bundle
+            disp = str(stored.get("disposition") or "").lower()
+            alt = str(stored.get("alternative_hypothesis") or "")
+            against = stored.get("evidence_against_it") or []
+            nareason = stored.get("alternative_hypothesis_not_applicable_reason") or ""
+            if disp == "ruled_out":
+                if not alt:
+                    eligibility["missing"].append("alternative_hypothesis (required when disposition=ruled_out)")
+                if not against:
+                    eligibility["missing"].append("evidence_against_it (≥1 required when disposition=ruled_out)")
+            elif disp == "not_applicable":
+                if not nareason:
+                    eligibility["missing"].append("alternative_hypothesis_not_applicable_reason (required when disposition=not_applicable)")
+            else:
+                eligibility["missing"].append("disposition (must be 'ruled_out' or 'not_applicable' for CONFIRMED)")
+            # Stacking suggestion (not blocking but recommended)
+            corr = stored.get("corroborated_by") or []
+            if not corr:
+                eligibility["missing"].append("corroborated_by (recommended: ≥2 source finding IDs for stacked evidence)")
+            # Compute eligibility
+            eligibility["eligible"] = (
+                stored_status == "CONFIRMED"
+                and not eligibility["missing"]
+                and not eligibility["gate_blocks"]
+            )
+            if stored_status == "CONFIRMED" and (eligibility["missing"] or eligibility["gate_blocks"]):
+                eligibility["hint"] = (
+                    "Finding requested CONFIRMED but A1/A2 gates will demote to ACTIVE. "
+                    "Fix the missing/gate_blocks items above and resubmit, OR call "
+                    "submit_finding with status='ACTIVE' if synthesis isn't ready."
+                )
+        else:
+            eligibility["reason"] = "low_confidence_or_active_lane_finding"
+
+        response: dict[str, Any] = {
+            "status": "ok",
+            "finding_id": finding_id,
+            "assigned_agent": normalized_agent,
+            "lane_id": lane_id,
+            "finding": stored,
+            "confirmed_eligibility": eligibility,
+        }
+        if audit_failure:
+            response["audit_warning"] = audit_failure
+        return response
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "submit_finding"}
+
+
+@mcp.tool()
 def coverage_report(case_id: str) -> dict[str, Any]:
     """Compute ATT&CK tactic coverage and suggested next tools for a case."""
     try:
@@ -5838,6 +8299,421 @@ def coverage_report(case_id: str) -> dict[str, Any]:
     except Exception as exc:
         return ToolResult(
             status="error", tool="coverage_report", error=str(exc)
+        ).model_dump()
+
+
+# ---------------------------------------------------------------------------
+# W1.7 — heuristic-injection MCP tools (CR13 Option X)
+# ---------------------------------------------------------------------------
+#
+# Three tools form the heuristic-injection lane:
+#
+#   prepare_hypothesis_context(case_id)
+#       Tier-2 bundle: aggregates manifest taxonomy + volatile summary +
+#       detection anchors + execution anomalies + open corrections + data
+#       gaps + per-artifact heuristic slices for artifacts that produced
+#       findings. Dedup via state.heuristic_refs_loaded — second call returns
+#       refs only, not full slice content (peer reviewer CR13-3).
+#
+#   record_hypotheses(case_id, hypotheses=[...])
+#       Persist LLM-formed Hypothesis records to state for audit + follow-on
+#       pivot iteration. Idempotent on hypothesis_id.
+#
+#   get_heuristic(artifact, topic)
+#       Tier-3 on-demand depth reader. Returns a specific section
+#       (forensic_ground_rules / what_to_hunt / professional_patterns / etc.)
+#       from the canonical .md file for pivot-loop drill-down.
+#
+# All three write context_bundle audit rows (event_type=context_bundle,
+# CTX-NNN ids) so findings can cite heuristic_context_refs for court-grade
+# provenance.
+
+def _import_heuristic_extractor():
+    """Lazy-import the heuristic slice extractor from scripts/."""
+    import sys
+    scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import extract_heuristic_slice as _ex  # noqa
+    return _ex
+
+
+def _emit_context_bundle_for_slice(
+    case_id: str,
+    artifact: str,
+    slice_data: dict[str, Any],
+    triggered_by: str,
+    execution_id: Optional[str] = None,
+) -> tuple[str, bool]:
+    """Allocate a CTX-NNN, write context_bundle audit row, persist heuristic ref
+    to state. Returns (context_id, was_new). If the exact (artifact, excerpt_hash)
+    pair was already loaded for this case, returns the existing CTX id and
+    was_new=False — caller can use this to return refs-only instead of content.
+    """
+    excerpt_hash = slice_data.get("excerpt_hash") or ""
+    existing = _state_manager.lookup_heuristic_ref(artifact, excerpt_hash)
+    if existing:
+        return existing["context_id"], False
+    ctx_id = _state_manager.next_context_id()
+    section_label = " + ".join(slice_data.get("sections_included") or ["unknown"])
+    try:
+        _audit_logger.log_context_bundle(
+            case_id=case_id,
+            artifact=artifact,
+            heuristic_source_path=slice_data.get("source_path") or "",
+            heuristic_source_hash=slice_data.get("source_hash") or "",
+            heuristic_section=section_label,
+            heuristic_excerpt_hash=excerpt_hash,
+            excerpt_token_count=int(slice_data.get("token_count") or 0),
+            triggered_by=triggered_by,
+            execution_id=execution_id,
+            context_id=ctx_id,
+        )
+    except Exception:
+        pass
+    _state_manager.record_heuristic_ref(
+        context_id=ctx_id,
+        artifact=artifact,
+        source_hash=slice_data.get("source_hash") or "",
+        excerpt_hash=excerpt_hash,
+        section=section_label,
+        triggered_by=triggered_by,
+    )
+    return ctx_id, True
+
+
+@mcp.tool()
+def prepare_hypothesis_context(case_id: str) -> dict[str, Any]:
+    """Bundle the context an LLM needs to form 2-5 ranked investigation
+    hypotheses. CR13 Option X — the missing brain step between detection
+    anchors and pivot loop.
+
+    Returns a dict with:
+        taxonomy             — manifest investigative_taxonomy (if present)
+        volatile_summary     — active processes / network / injection flags
+        detection_anchors    — top-N sigma + hayabusa hits (NOT raw 502)
+        execution_anomalies  — first-runs / off-path binaries from
+                                Prefetch/Amcache/ShimCache
+        open_corrections     — outstanding CorrectionEvent records
+        data_gaps            — coverage_debt + analyst-recorded gaps
+        applicable_heuristics— per-artifact heuristic slices with CTX refs,
+                                ONLY for artifacts that produced findings;
+                                duplicates already-loaded slices return as
+                                refs-only (token-budget protection)
+        loaded_refs          — list of CTX ids already in state (for the
+                                LLM to reference without re-receiving content)
+        agent_instruction    — what the LLM should do with this bundle
+
+    Token budget: ~5K maximum per call. Tier-2 slices are ~600 tokens each;
+    capped at 4 fresh artifacts per call. Repeat calls return mostly refs.
+    """
+    try:
+        _state_manager.load(case_id)
+        ex = _import_heuristic_extractor()
+
+        # 1) Manifest taxonomy (if present)
+        case_state_dict = _state_manager.to_summary()
+        manifest_taxonomy = (
+            case_state_dict.get("manifest_taxonomy")
+            or case_state_dict.get("investigative_taxonomy")
+            or {}
+        )
+
+        # 2) Volatile summary — derive from existing memory findings if present
+        findings = _state_manager.get_findings()
+        volatile_summary = {
+            "process_findings": len([f for f in findings if (f.get("tool_name") or "").startswith("memory.")]),
+            "injection_findings": len([
+                f for f in findings
+                if "injection" in (f.get("description") or "").lower()
+                or "injection" in (f.get("finding_type") or "").lower()
+            ]),
+            "network_findings": len([
+                f for f in findings
+                if "network" in (f.get("tool_name") or "")
+                or "network" in (f.get("finding_type") or "").lower()
+            ]),
+        }
+
+        # 3) Detection anchors — ranked, NOT raw 502
+        sigma_findings = [
+            f for f in findings
+            if "sigma" in (f.get("tool_name") or "").lower()
+        ]
+        try:
+            sigma_findings.sort(
+                key=lambda f: float(f.get("confidence", 0) or 0),
+                reverse=True,
+            )
+        except Exception:
+            pass
+        detection_anchors = {
+            "sigma_top_20": [
+                {
+                    "finding_id": f.get("finding_id"),
+                    "description": (f.get("description") or "")[:160],
+                    "confidence": f.get("confidence"),
+                    "mitre_technique": f.get("mitre_technique"),
+                }
+                for f in sigma_findings[:20]
+            ],
+            "sigma_total": len(sigma_findings),
+            "hayabusa_findings": [
+                {
+                    "finding_id": f.get("finding_id"),
+                    "description": (f.get("description") or "")[:160],
+                }
+                for f in findings
+                if "hayabusa" in (f.get("tool_name") or "").lower()
+            ][:20],
+        }
+
+        # 4) Execution anomalies — from disk-execution findings
+        execution_anomalies = [
+            {"finding_id": f.get("finding_id"), "description": (f.get("description") or "")[:160]}
+            for f in findings
+            if any(tag in (f.get("tool_name") or "")
+                   for tag in ("prefetch", "amcache", "shimcache"))
+        ][:15]
+
+        # 5) Open CorrectionEvents (read from audit if available)
+        open_corrections: list[dict[str, Any]] = []
+        try:
+            corrected_finding_ids = {
+                f.get("finding_id")
+                for f in findings
+                if (f.get("finding_status") or "").upper() == "CORRECTED"
+                or (f.get("contradicted_by") or [])
+            }
+            for fid in list(corrected_finding_ids)[:10]:
+                if not fid:
+                    continue
+                open_corrections.append({"finding_id": fid})
+        except Exception:
+            pass
+
+        # 6) Data gaps
+        data_gaps = case_state_dict.get("data_gaps") or []
+        artifact_coverage = case_state_dict.get("artifact_coverage") or {}
+        coverage_debt = artifact_coverage.get("coverage_debt") or []
+
+        # 7) Per-artifact heuristic slices — for artifacts that produced findings
+        produced_artifacts: set[str] = set()
+        artifact_classifiers = [
+            ("memory.", "memory"),
+            ("disk.extract_mft", "mft"),
+            ("disk.extract_usn", "mft"),
+            ("disk.summarize_evtx", "evtx"),
+            ("disk.extract_prefetch", "prefetch"),
+            ("disk.get_amcache", "amcache"),
+            ("disk.extract_shimcache", "registry"),
+            ("disk.extract_registry", "registry"),
+            ("disk.extract_srum", "srum"),
+            ("sigma", "sigma"),
+        ]
+        for f in findings:
+            tn = (f.get("tool_name") or "").lower()
+            for prefix, artifact in artifact_classifiers:
+                if prefix.lower() in tn:
+                    produced_artifacts.add(artifact)
+                    break
+
+        applicable_heuristics: dict[str, Any] = {}
+        loaded_refs: list[str] = []
+        # Cap at 4 fresh artifacts to control token budget
+        budget_fresh = 4
+        for artifact in sorted(produced_artifacts):
+            slice_data = ex.extract_tier2_slice(artifact)
+            if slice_data is None or not slice_data.get("section_found"):
+                continue
+            ctx_id, was_new = _emit_context_bundle_for_slice(
+                case_id=case_id,
+                artifact=artifact,
+                slice_data=slice_data,
+                triggered_by="prepare_hypothesis_context",
+            )
+            if was_new and budget_fresh > 0:
+                applicable_heuristics[artifact] = {
+                    "ctx_id": ctx_id,
+                    "source_path": slice_data["source_path"],
+                    "source_hash": slice_data["source_hash"],
+                    "sections": slice_data["sections_included"],
+                    "content": slice_data["content"],
+                    "token_count": slice_data["token_count"],
+                }
+                loaded_refs.append(ctx_id)
+                budget_fresh -= 1
+            else:
+                # Already loaded OR budget exhausted — return ref only
+                applicable_heuristics[artifact] = {
+                    "ctx_id": ctx_id,
+                    "source_path": slice_data["source_path"],
+                    "ref_only": True,
+                    "reason": "already_loaded_in_session" if not was_new else "budget_exceeded_this_call",
+                }
+                loaded_refs.append(ctx_id)
+
+        # Append already-loaded refs from prior calls (for LLM continuity)
+        for prior in _state_manager.get_heuristic_refs():
+            cid = prior.get("context_id")
+            if cid and cid not in loaded_refs:
+                loaded_refs.append(cid)
+
+        return {
+            "status": "ok",
+            "tool": "prepare_hypothesis_context",
+            "case_id": case_id,
+            "taxonomy": manifest_taxonomy,
+            "volatile_summary": volatile_summary,
+            "detection_anchors": detection_anchors,
+            "execution_anomalies": execution_anomalies,
+            "open_corrections": open_corrections,
+            "data_gaps": data_gaps,
+            "coverage_debt": coverage_debt,
+            "applicable_heuristics": applicable_heuristics,
+            "loaded_refs": loaded_refs,
+            "agent_instruction": (
+                "Use this bundle to form 2-5 ranked investigation hypotheses. "
+                "Each hypothesis should cite the CTX ids of heuristic bundles "
+                "you used via the source_context_refs field. Call "
+                "record_hypotheses(case_id, hypotheses=[...]) to persist. "
+                "Drill into top hypothesis using run_analysis + get_heuristic "
+                "for targeted depth. Each finding you produce should cite "
+                "heuristic_context_refs of the bundles that informed it."
+            ),
+        }
+    except Exception as exc:
+        return ToolResult(
+            status="error", tool="prepare_hypothesis_context", error=str(exc)
+        ).model_dump()
+
+
+@mcp.tool()
+def record_hypotheses(case_id: str, hypotheses: list[dict[str, Any]]) -> dict[str, Any]:
+    """Persist LLM-formed investigation hypotheses to state for audit and
+    follow-on pivot iteration. CR13 Option X.
+
+    Each hypothesis dict should conform to the Hypothesis Pydantic schema
+    (sift_mcp.models.hypothesis.Hypothesis):
+        {
+          "hypothesis_id": "<ULID>",            # optional, auto-generated
+          "attack_class": "credential-theft via LSASS access",
+          "initial_pivot": "Memory tree around lsass.exe at ...",
+          "expected_evidence_chain": ["EVTX 4624", "memory injected DLL", ...],
+          "source_context_refs": ["CTX-001", "CTX-002"],
+          "rank": 1,
+          "status": "ACTIVE",
+          "mitre_techniques": ["T1003"]
+        }
+
+    Idempotent on hypothesis_id — existing entries are updated in place.
+    """
+    try:
+        _state_manager.load(case_id)
+        from sift_mcp.models.hypothesis import Hypothesis
+        validated: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for h_input in hypotheses or []:
+            try:
+                model = Hypothesis(**h_input)
+                validated.append(model.model_dump())
+            except Exception as exc:
+                errors.append({"input": h_input, "error": str(exc)})
+        ids = _state_manager.record_hypotheses(validated)
+        return {
+            "status": "ok" if not errors else "partial",
+            "tool": "record_hypotheses",
+            "case_id": case_id,
+            "hypothesis_ids": ids,
+            "recorded_count": len(ids),
+            "rejected": errors,
+        }
+    except Exception as exc:
+        return ToolResult(
+            status="error", tool="record_hypotheses", error=str(exc)
+        ).model_dump()
+
+
+@mcp.tool()
+def get_heuristic(artifact: str, topic: str = "what_to_hunt") -> dict[str, Any]:
+    """Return a specific section from the canonical heuristic .md for an
+    artifact. CR13 Option X Tier-3 — for pivot-loop drill-down when the
+    main agent needs deeper DFIR guidance on a specific topic.
+
+    Parameters
+    ----------
+    artifact:
+        One of: 'mft', 'evtx', 'prefetch', 'amcache', 'registry', 'srum',
+        'sigma', 'memory'.
+    topic:
+        One of:
+            forensic_ground_rules
+            what_to_hunt
+            critical_heuristics
+            critical_distinction
+            professional_patterns
+            query_pattern
+            systematic_coverage
+            output_format
+        Default: 'what_to_hunt'.
+
+    Returns the section content fenced as <HEURISTIC ctx_id="CTX-NNN">...</HEURISTIC>
+    with a context_bundle audit row written so findings can cite the CTX ref.
+    """
+    try:
+        ex = _import_heuristic_extractor()
+        slice_data = ex.extract_topic(artifact, topic)
+        if slice_data is None:
+            return ToolResult(
+                status="error",
+                tool="get_heuristic",
+                error=(
+                    f"No heuristic slice for artifact={artifact!r} topic={topic!r}. "
+                    f"Valid artifacts: {ex.list_artifacts()}. "
+                    f"Valid topics: {ex.list_topics()}."
+                ),
+            ).model_dump()
+
+        # Best-effort: write CTX audit row if a case is loaded
+        ctx_id: Optional[str] = None
+        try:
+            current_case = _state_manager.case_id
+            if current_case:
+                ctx_id, _ = _emit_context_bundle_for_slice(
+                    case_id=current_case,
+                    artifact=artifact,
+                    slice_data={
+                        "source_path": slice_data["source_path"],
+                        "source_hash": slice_data["source_hash"],
+                        "excerpt_hash": slice_data["excerpt_hash"],
+                        "sections_included": [slice_data["section_header"]],
+                        "token_count": slice_data["token_count"],
+                    },
+                    triggered_by="get_heuristic",
+                )
+        except Exception:
+            pass
+
+        fenced = f"<HEURISTIC ctx_id=\"{ctx_id or 'CTX-pending'}\" artifact=\"{artifact}\" topic=\"{topic}\">\n{slice_data['content']}\n</HEURISTIC>"
+        return {
+            "status": "ok",
+            "tool": "get_heuristic",
+            "artifact": artifact,
+            "topic": topic,
+            "ctx_id": ctx_id,
+            "source_path": slice_data["source_path"],
+            "section_header": slice_data["section_header"],
+            "content": fenced,
+            "token_count": slice_data["token_count"],
+            "agent_instruction": (
+                "Apply this heuristic to your current pivot. Cite the ctx_id "
+                "in any finding's heuristic_context_refs field for "
+                "court-defensible provenance."
+            ),
+        }
+    except Exception as exc:
+        return ToolResult(
+            status="error", tool="get_heuristic", error=str(exc)
         ).model_dump()
 
 
@@ -6310,12 +9186,34 @@ def mount_image(
                         "device_path": device,
                         "partition_offset_sectors": offset,
                     },
+                    # Fresh-user workflow fix: when the image is SleuthKit-direct
+                    # (no NTFS-mounted /mnt/disk/), every disk tool that defaults
+                    # to /mnt/disk/<path> will fail with "file not found" until
+                    # raw artifacts are staged. Make extract_windows_artifacts
+                    # the unambiguous MANDATORY next tool — it uses fls + icat
+                    # to stage $MFT, hives + their .LOG1/.LOG2, EVTX, prefetch,
+                    # amcache, SRUDB.dat to /cases/<case_id>/artifacts/raw/.
+                    # After that, durable-path resolvers in the other disk
+                    # tools find their inputs automatically.
+                    "next_required_tool": "extract_windows_artifacts",
+                    "next_required_tool_args": {
+                        "image_path": device,
+                        "tsk_device_path": device,
+                        "partition_offset_sectors": offset,
+                    },
                     "note": (
-                        "SleuthKit can read the exposed EWF device directly; OS mounting is "
-                        "not required and may fail when FUSE blocks root without allow_other. "
-                        "Continue with MCP disk tools that support image/device paths instead "
-                        "of manual mount, losetup, or xmount recovery."
-                        ),
+                        "SleuthKit-direct access mode — no NTFS volume mount available. "
+                        "MANDATORY next: call extract_windows_artifacts(case_id, image_path="
+                        f"'{device}', tsk_device_path='{device}', "
+                        f"partition_offset_sectors={offset}) BEFORE any other disk tool. "
+                        "It stages $MFT + registry hives + .LOG1/.LOG2 + EVTX + prefetch + "
+                        "amcache + SRUDB.dat to /cases/<case_id>/artifacts/raw/. After that, "
+                        "extract_mft_timeline / summarize_evtx / get_amcache / "
+                        "extract_registry_run_keys / extract_shimcache / extract_srum / "
+                        "extract_usn_journal all auto-discover their inputs at the staged "
+                        "paths via durable-path resolution. Calling those tools BEFORE "
+                        "extract_windows_artifacts will fail with file-not-found errors."
+                    ),
                 })
                 _mark_evidence_access_lane("mount_image", f"SleuthKit direct access ready at {device}")
                 return ToolResult(
@@ -7119,6 +10017,56 @@ def run_analysis(
         return ToolResult(
             status="error", tool="run_analysis", error=str(exc),
         ).model_dump()
+
+
+# ===========================================================================
+# MCP Resources — ATT&CK technique routing (Module 4 pattern)
+# ===========================================================================
+
+
+@mcp.resource("file:///attack_routing/techniques")
+def list_attack_techniques() -> str:
+    """List all ATT&CK techniques in the routing catalog.
+
+    Returns a JSON array of technique IDs (e.g., ['T1003.001', 'T1021.001']).
+    Browse individual techniques via file:///attack_routing/technique/{tid}.
+    """
+    from sift_mcp.routing import list_techniques
+    import json
+
+    try:
+        techniques = list_techniques()
+        return json.dumps({"techniques": techniques, "count": len(techniques)}, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
+@mcp.resource("file:///attack_routing/technique/{technique_id}")
+def get_attack_technique_routing(technique_id: str) -> str:
+    """Get routing details for a specific ATT&CK technique.
+
+    Returns JSON with:
+    - name: technique name
+    - tactics: list of ATT&CK tactic IDs
+    - required_artifacts: MCP tool names to invoke
+    - corroboration_sources: artifact-specific evidence patterns
+    - detection_notes: forensic interpretation guidance
+
+    Example URI: file:///attack_routing/technique/T1003.001
+    """
+    from sift_mcp.routing import get_technique_routing
+    import json
+
+    try:
+        routing = get_technique_routing(technique_id)
+        if routing is None:
+            return json.dumps({"error": f"Technique {technique_id} not found in routing catalog"})
+
+        # Add technique_id to the response for convenience
+        result = {"technique_id": technique_id, **routing}
+        return json.dumps(result, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
 
 
 # ===========================================================================

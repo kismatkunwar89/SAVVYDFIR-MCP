@@ -257,6 +257,21 @@ class Execution(BaseModel):
         default_factory=lambda: datetime.now(tz=timezone.utc),
         description="UTC timestamp when this execution record was persisted to state.",
     )
+    storage_path: Optional[str] = Field(
+        None,
+        description=(
+            "Absolute path to the primary durable output file produced by this "
+            "execution (e.g., Plaso .plaso file, CSV timeline, Amcache database). "
+            "Used by coverage gate to validate tool completion."
+        ),
+    )
+    output_path: Optional[str] = Field(
+        None,
+        description=(
+            "Legacy/alias field for storage_path. Some tools may populate this "
+            "instead of storage_path for backwards compatibility."
+        ),
+    )
 
     @field_validator("execution_id", mode="before")
     @classmethod

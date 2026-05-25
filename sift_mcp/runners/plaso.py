@@ -155,12 +155,24 @@ class PlasoRunner(SafeRunner):
         cmd: List[str] = [
             "log2timeline.py",
             "--storage-file", storage_file,
-            "--parsers", parsers,
+            "--unattended",  # Prevent VSS interactive prompt (Fix RC-3)
             "--hashers", hashers,
             "--timezone", timezone,
             source_path,
         ]
-        return self.run(cmd, timeout=timeout, tool_name=tool_name)
+        # Fix RC-4: Removed --parsers flag. Plaso 20240308 doesn't recognize "win10"
+        # preset and auto-detection handles Windows artifacts correctly.
+
+        # Fix RC-2: Plaso writes logs to CWD. If CWD is not writable by the current
+        # user (e.g., project directory owned by different user), use /tmp instead.
+        # This ensures the command succeeds regardless of project directory ownership.
+        import os
+        from pathlib import Path
+        cwd_override = None
+        if not os.access(Path.cwd(), os.W_OK):
+            cwd_override = "/tmp"
+
+        return self.run(cmd, timeout=timeout, tool_name=tool_name, cwd=cwd_override)
 
     # ------------------------------------------------------------------
     # psort

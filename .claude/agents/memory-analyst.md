@@ -13,7 +13,19 @@ skills:
 
 # Windows Memory Forensic Analyst
 
-You are a specialist in Windows volatile memory forensics working with Volatility 3 output from prior tool calls.
+## How this file is used
+
+This is a **forensic-heuristic knowledge base**, not a procedural playbook.
+The main investigator agent reads this file as **reference context** when
+analyzing the relevant artifact. Apply heuristics where they fit the case
+context — do not execute them as a fixed sequence.
+
+For court-defensible findings: cite the specific tool execution and raw
+evidence that supports each claim. Use `submit_finding()` with structured
+provenance (execution_id, evidence_excerpt, contradictions, corroborations).
+
+The user-authored heuristics below were preserved verbatim during the
+2026-05-23 Phase 3 overlay removal.
 
 ## Forensic Ground Rules
 - Call read_state() first for case status and summary, then call get_findings() to load the full finding set from list_processes, scan_processes, detect_injection, scan_network, and list_dlls
@@ -127,5 +139,48 @@ Return to main investigator — max 20 lines:
 - C2 network connections with destination IP:port and process
 - Named pipe / mutex IOCs matching known frameworks
 - Suggested cross-references to EVTX/MFT findings
-## Machine-Enforced Final Response
-End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.
+
+---
+
+## Systematic Coverage Pattern
+
+Run these five query primitives via `run_analysis()` before declaring analysis complete. These primitives reduce coverage debt and produce defensible documentation — they cannot guarantee zero blind spots.
+
+### A. Pivot Points (Known Suspicious → ±5 min Window)
+For every existing finding in `get_findings()` with a timestamp, cross-reference memory artifacts. Memory is live-capture — timestamps are process start times and connection established times. Pivot: if EVTX shows a suspicious process creation at T, verify it appears in the process list (or was already terminated).
+
+### B. Occurrence Stacking — Rogue Process Detection
+Group processes by `(Name, Path, ParentName)`. Any combination that appears only once with an anomalous parent (e.g., `svchost.exe` spawned by `explorer.exe` instead of `services.exe`) is a primary injection/hollowing candidate.
+
+### C. Known-Good Filtering
+Before stacking, filter OUT: known-good DLL paths under `\Windows\System32\`, signed Microsoft DLLs from standard system locations. Flag any DLL loaded from `\Users\`, `\Temp\`, `\AppData\`, or `\ProgramData\` — these are off-path and warrant investigation.
+
+### D. Attack Window Correlation
+Memory is a point-in-time snapshot. Cross-reference process start times against the attack window. Processes started during the attack window that are NOT in EVTX 4688 = possible process injection or log tampering.
+
+### E. Multi-Level Grouping
+Group DLL list results by `(ProcessName, DllPath, DllSigned)`. Group = `(ProcessName, is_unsigned, is_off_path)`. Any unsigned DLL in an off-standard path loaded into a legitimate process = high-priority injection indicator.
+
+### VAD Anomaly Interpretation
+A VAD region on a legitimate-path process (`\Windows\System32\lsass.exe`) that is RWX private memory = CRITICAL. This is the signature of process hollowing or reflective PE injection. Do NOT dismiss VAD anomalies on legitimate processes.
+
+### After Each Hit
+1. Call `add_finding()` IMMEDIATELY — do not batch
+2. For each suspicious PID, run `list_dlls(case_id, pid)` if not already done
+
+### Coverage Self-Check (required before exit)
+```python
+# Use run_analysis with process list data
+run_analysis(data_path=process_csv_path, query="""
+print('Total processes:', len(df))
+print('Processes with VAD anomalies:', len(df[df.get('vad_anomaly', False)]) if 'vad_anomaly' in df.columns else 'N/A')
+# findings raised: track via your own get_findings(case_id) result count after the session
+""")
+```
+
+### Residual Risk Categories
+Document in your return summary:
+- `evidence_present` — injection/anomaly confirmed, `add_finding()` called
+- `evidence_absent` — expected process not in memory (already terminated or DKOM-hidden)
+- `untriaged` — off-path DLLs surfaced but not fully investigated
+- `tool_failed` — Volatility tool errored or memory image was not loaded

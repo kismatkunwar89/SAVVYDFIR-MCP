@@ -1,0 +1,1956 @@
+{
+  "case_id": "HACKATHON-2026-WKSTN01",
+  "status": "COMPLETE",
+  "triage_status": "COMPLETE_WITH_GAPS",
+  "status_flags": {
+    "open_leads": true,
+    "anti_forensics_warning": true,
+    "unresolved_discrepancy": false,
+    "specialist_lanes_inferred": false
+  },
+  "analysis_lanes": [
+    {
+      "lane_id": "evidence_access",
+      "title": "Evidence Access",
+      "status": "COMPLETE",
+      "required": true,
+      "legacy_inferred": false,
+      "phase": "analysis",
+      "assigned_agent": "main-agent",
+      "supporting_agents": [],
+      "summary": "mount_image: SleuthKit direct access ready at /mnt/evidence/ewf1; load_memory: Memory dump ready at /evidence/memory/base-wkstn-01-mem.img",
+      "lane_inference_confidence": null,
+      "execution_ids": [],
+      "finding_ids": [],
+      "related_lane_ids": [],
+      "data_gaps": [],
+      "anti_forensics_warnings": [],
+      "next_pivots": [],
+      "started_at": null,
+      "completed_at": "2026-05-17T23:18:51.904031+00:00"
+    },
+    {
+      "lane_id": "memory",
+      "title": "Memory",
+      "status": "COMPLETE",
+      "required": true,
+      "legacy_inferred": false,
+      "phase": "analysis",
+      "assigned_agent": "main-agent",
+      "supporting_agents": [],
+      "summary": "Memory analysis completed: DKOM detection (6 hidden processes), network anomalies (ESTABLISHED C2 to 172.16.5.25:54420 from subject_srv.ex PID 214656).",
+      "lane_inference_confidence": "high",
+      "execution_ids": [
+        "E-001",
+        "E-002",
+        "E-003"
+      ],
+      "finding_ids": [
+        "F-001",
+        "F-002",
+        "F-003"
+      ],
+      "related_lane_ids": [],
+      "data_gaps": [],
+      "anti_forensics_warnings": [],
+      "next_pivots": [],
+      "started_at": null,
+      "completed_at": "2026-05-17T23:33:23.314578+00:00",
+      "unresolved_discrepancies": [],
+      "confidence_notes": []
+    },
+    {
+      "lane_id": "disk_execution_persistence",
+      "title": "Disk Execution Persistence",
+      "status": "COMPLETE",
+      "required": true,
+      "legacy_inferred": false,
+      "phase": "analysis",
+      "assigned_agent": "main-agent",
+      "supporting_agents": [],
+      "summary": "Prefetch analysis confirmed malware execution (SUBJECT_SRV.EXE 2x) and log manipulation (WEVTUTIL 30x, SDelete 1x).",
+      "lane_inference_confidence": "medium",
+      "execution_ids": [
+        "E-009",
+        "E-007"
+      ],
+      "finding_ids": [
+        "F-010",
+        "F-011",
+        "F-012",
+        "F-008"
+      ],
+      "related_lane_ids": [],
+      "data_gaps": [],
+      "anti_forensics_warnings": [
+        {
+          "indicator": "WEVTUTIL.EXE executed 30 times",
+          "severity": "critical"
+        }
+      ],
+      "next_pivots": [],
+      "started_at": null,
+      "completed_at": "2026-05-17T23:32:56.369436+00:00",
+      "unresolved_discrepancies": [],
+      "confidence_notes": []
+    },
+    {
+      "lane_id": "event_auth",
+      "title": "Event Auth",
+      "status": "COMPLETE",
+      "required": true,
+      "legacy_inferred": false,
+      "phase": "analysis",
+      "assigned_agent": "main-agent",
+      "supporting_agents": [],
+      "summary": "EVTX auth analysis identified foreign domain compromise (SPADERTECH.COM\\pman.adm), lateral movement from BASE-HUNT (172.16.5.25) with rapid NTLM logons, and admin credential use from 172.16.4.4.",
+      "lane_inference_confidence": "high",
+      "execution_ids": [
+        "E-005",
+        "E-016",
+        "E-018"
+      ],
+      "finding_ids": [
+        "F-004",
+        "F-005",
+        "F-006",
+        "F-007"
+      ],
+      "related_lane_ids": [],
+      "data_gaps": [
+        {
+          "gap": "No EID 1102 (log clearing) detected",
+          "impact": "Cannot confirm anti-forensics"
+        }
+      ],
+      "anti_forensics_warnings": [
+        {
+          "indicator": "Minimal 4688 events suggest disabled audit policy",
+          "severity": "medium"
+        }
+      ],
+      "next_pivots": [],
+      "started_at": null,
+      "completed_at": "2026-05-17T23:28:22.398639+00:00",
+      "unresolved_discrepancies": [],
+      "confidence_notes": []
+    },
+    {
+      "lane_id": "anti_forensics_recovery",
+      "title": "Anti Forensics Recovery",
+      "status": "COMPLETE",
+      "required": true,
+      "legacy_inferred": false,
+      "phase": "analysis",
+      "assigned_agent": "main-agent",
+      "supporting_agents": [],
+      "summary": "Anti-forensics detected: timestomping (subject_srv.exe), SDelete execution, WEVTUTIL log clearing (30x).",
+      "lane_inference_confidence": "medium",
+      "execution_ids": [
+        "E-007",
+        "E-009"
+      ],
+      "finding_ids": [
+        "F-008",
+        "F-009",
+        "F-012"
+      ],
+      "related_lane_ids": [],
+      "data_gaps": [],
+      "anti_forensics_warnings": [
+        {
+          "indicator": "Timestomping on malware binary",
+          "severity": "critical"
+        }
+      ],
+      "next_pivots": [],
+      "started_at": null,
+      "completed_at": "2026-05-17T23:33:26.543346+00:00",
+      "unresolved_discrepancies": [],
+      "confidence_notes": []
+    },
+    {
+      "lane_id": "timeline_correlation",
+      "title": "Timeline Correlation",
+      "status": "COMPLETE",
+      "required": true,
+      "legacy_inferred": false,
+      "phase": "analysis",
+      "assigned_agent": "main-agent",
+      "supporting_agents": [],
+      "summary": "MFT analysis confirmed malware deployment (subject_srv.exe with timestomping) and anti-forensics tooling (SDelete execution).",
+      "lane_inference_confidence": "medium",
+      "execution_ids": [
+        "E-007",
+        "E-014"
+      ],
+      "finding_ids": [
+        "F-008",
+        "F-009",
+        "F-005",
+        "F-006",
+        "F-007"
+      ],
+      "related_lane_ids": [],
+      "data_gaps": [],
+      "anti_forensics_warnings": [
+        {
+          "indicator": "subject_srv.exe SI modified timestamp backdated 3+ years",
+          "severity": "critical"
+        }
+      ],
+      "next_pivots": [],
+      "started_at": null,
+      "completed_at": "2026-05-17T23:32:07.873249+00:00",
+      "unresolved_discrepancies": [],
+      "confidence_notes": []
+    }
+  ],
+  "actionable_leads": [
+    {
+      "detector": "sdelete_cipher_trace",
+      "severity": "HIGH",
+      "confidence": 0.85,
+      "timestamp": null,
+      "affected_findings": [
+        "F-009"
+      ],
+      "description": "Execution evidence indicates SDelete or cipher /w wiping activity.",
+      "mitre_technique": "T1070",
+      "next_pivot": {
+        "tool": "timeline.query_timeline",
+        "args": {
+          "around": null
+        },
+        "human_readable": "Correlate wiping execution with deleted files, USN records, and VSS recovery."
+      },
+      "raw_data": {
+        "finding_id": "F-009"
+      }
+    }
+  ],
+  "artifact_coverage": {
+    "covered_tactics": [
+      {
+        "id": "TA0011",
+        "name": "Command and Control"
+      }
+    ],
+    "uncovered_tactics": [
+      {
+        "id": "TA0001",
+        "name": "Initial Access"
+      },
+      {
+        "id": "TA0002",
+        "name": "Execution"
+      },
+      {
+        "id": "TA0003",
+        "name": "Persistence"
+      },
+      {
+        "id": "TA0004",
+        "name": "Privilege Escalation"
+      },
+      {
+        "id": "TA0005",
+        "name": "Defense Evasion"
+      },
+      {
+        "id": "TA0006",
+        "name": "Credential Access"
+      },
+      {
+        "id": "TA0007",
+        "name": "Discovery"
+      },
+      {
+        "id": "TA0008",
+        "name": "Lateral Movement"
+      },
+      {
+        "id": "TA0009",
+        "name": "Collection"
+      },
+      {
+        "id": "TA0010",
+        "name": "Exfiltration"
+      },
+      {
+        "id": "TA0040",
+        "name": "Impact"
+      },
+      {
+        "id": "TA0042",
+        "name": "Resource Development"
+      },
+      {
+        "id": "TA0043",
+        "name": "Reconnaissance"
+      }
+    ],
+    "coverage_percent": 7.1,
+    "suggested_next_tools": {
+      "TA0001": [
+        "disk.summarize_evtx",
+        "memory.scan_network"
+      ],
+      "TA0002": [
+        "disk.extract_prefetch",
+        "disk.summarize_evtx"
+      ],
+      "TA0003": [
+        "disk.extract_registry_run_keys",
+        "disk.extract_shimcache",
+        "disk.extract_pca"
+      ],
+      "TA0004": [
+        "disk.summarize_evtx",
+        "memory.scan_processes"
+      ],
+      "TA0005": [
+        "disk.extract_mft_timeline",
+        "memory.detect_injection",
+        "detection.sigma_hunt"
+      ],
+      "TA0006": [
+        "disk.extract_shimcache",
+        "disk.get_amcache",
+        "disk.summarize_evtx"
+      ],
+      "TA0007": [
+        "memory.scan_processes",
+        "memory.list_dlls",
+        "timeline.query_timeline"
+      ],
+      "TA0008": [
+        "disk.summarize_evtx",
+        "memory.scan_network",
+        "timeline.query_timeline"
+      ],
+      "TA0009": [
+        "disk.extract_prefetch",
+        "disk.get_amcache",
+        "memory.scan_processes"
+      ],
+      "TA0010": [
+        "disk.extract_srum",
+        "memory.scan_network",
+        "timeline.query_timeline"
+      ],
+      "TA0040": [
+        "disk.summarize_evtx",
+        "memory.detect_injection",
+        "timeline.query_timeline"
+      ],
+      "TA0042": [
+        "disk.get_amcache",
+        "disk.extract_prefetch",
+        "timeline.query_timeline"
+      ],
+      "TA0043": [
+        "disk.summarize_evtx",
+        "memory.scan_network",
+        "timeline.query_timeline"
+      ]
+    }
+  },
+  "anti_forensics_warnings": [
+    {
+      "detector": "sdelete_cipher_trace",
+      "severity": "HIGH",
+      "confidence": 0.85,
+      "timestamp": null,
+      "affected_findings": [
+        "F-009"
+      ],
+      "description": "Execution evidence indicates SDelete or cipher /w wiping activity.",
+      "mitre_technique": "T1070",
+      "next_pivot": {
+        "tool": "timeline.query_timeline",
+        "args": {
+          "around": null
+        },
+        "human_readable": "Correlate wiping execution with deleted files, USN records, and VSS recovery."
+      },
+      "raw_data": {
+        "finding_id": "F-009"
+      }
+    }
+  ],
+  "data_gaps": [],
+  "migration_warnings": [],
+  "enabled_detectors": null,
+  "created_at": "2026-05-17T23:18:37.937Z",
+  "updated_at": "2026-05-17T23:33:40.503Z",
+  "_finding_counter": 12,
+  "_execution_counter": 18,
+  "findings": [
+    {
+      "finding_id": "F-001",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "finding_type": "other",
+      "artifact_type": "memory",
+      "artifact_path": "/evidence/memory/base-wkstn-01-mem.img",
+      "artifact_subtype": null,
+      "artifact_offset": null,
+      "timestamp_observed": null,
+      "tool_name": "memory.scan_processes",
+      "execution_id": "E-002",
+      "iteration": 1,
+      "evidence_kind": "observation",
+      "finding_status": "ACTIVE",
+      "finding_kind": "validated",
+      "confidence": 0.9,
+      "description": "Pool scan (psscan) found 169 EPROCESS structures in /evidence/memory/base-wkstn-01-mem.img. This includes terminated/hidden processes not in the active list. Compare with pslist output to identify DKOM-hidden processes.",
+      "supporting_indicators": [
+        "total_processes=169",
+        "psscan_only_count=2",
+        "/evidence/memory/base-wkstn-01-mem.img"
+      ],
+      "mitre_tactic": null,
+      "mitre_technique": null,
+      "contradicted_by": [],
+      "corroborated_by": [],
+      "related_finding_ids": [],
+      "corroboration_outstanding": [],
+      "corroboration_completed_by": null,
+      "fk_source_class": "memory_process",
+      "fk_confidence_note": "FK multiplier 1.00 applied for memory_process. Original: 0.900 -> Adjusted: 0.900",
+      "supporting_tool_families": [
+        "memory"
+      ],
+      "supporting_artifact_families": [
+        "memory"
+      ],
+      "confidence_support_inputs": {
+        "supporting_indicator_count": 3,
+        "corroboration_count": 0,
+        "contradiction_count": 0,
+        "supporting_tool_families": [
+          "memory"
+        ],
+        "supporting_artifact_families": [
+          "memory"
+        ],
+        "fk_source_class": "memory_process",
+        "fk_multiplier": 1.0,
+        "base_confidence": 0.9,
+        "effective_confidence": 0.9,
+        "promotion_eligibility": "direct"
+      },
+      "promotion_eligibility": "direct",
+      "group_key": null,
+      "support_count": 1,
+      "promotion_reason": null,
+      "raw_evidence_refs": [
+        {
+          "path": "/evidence/memory/base-wkstn-01-mem.img",
+          "role": "input"
+        },
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/psscan/psscan.csv",
+          "role": "derived"
+        }
+      ],
+      "psscan_only_count": 2,
+      "requires_deeper_analysis": true,
+      "network_followup_pids": [],
+      "network_pids": [],
+      "next_required_tool": "detect_injection",
+      "created_at": "2026-05-17T23:19:38.826916Z",
+      "updated_at": "2026-05-17T23:19:38.832000Z",
+      "content_key": "847fda5790ca652e"
+    },
+    {
+      "finding_id": "F-002",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "finding_type": "data_exfil",
+      "artifact_type": "memory",
+      "artifact_path": "/evidence/memory/base-wkstn-01-mem.img",
+      "artifact_subtype": null,
+      "artifact_offset": "0xc08eab1aa010",
+      "timestamp_observed": null,
+      "tool_name": "memory.scan_network",
+      "execution_id": "E-003",
+      "iteration": 1,
+      "evidence_kind": "observation",
+      "finding_status": "ACTIVE",
+      "finding_kind": "validated",
+      "confidence": 0.75,
+      "description": "1 established TCP connection(s) to 172.16.4.10 (ports: 8080). Owning process: svchost.exe (PID 2332). Grouped connections to the same external host from the same process may indicate active C2 or data exfiltration.",
+      "supporting_indicators": [
+        "remote=172.16.4.10",
+        "port=8080",
+        "172.16.7.11:51892",
+        "pid=2332",
+        "process=svchost.exe",
+        "connection_count=1"
+      ],
+      "mitre_tactic": "TA0011",
+      "mitre_technique": "T1071",
+      "contradicted_by": [],
+      "corroborated_by": [],
+      "related_finding_ids": [],
+      "corroboration_outstanding": [],
+      "corroboration_completed_by": null,
+      "fk_source_class": null,
+      "fk_confidence_note": null,
+      "supporting_tool_families": [
+        "memory"
+      ],
+      "supporting_artifact_families": [
+        "memory",
+        "network"
+      ],
+      "confidence_support_inputs": {
+        "supporting_indicator_count": 6,
+        "corroboration_count": 0,
+        "contradiction_count": 0,
+        "supporting_tool_families": [
+          "memory"
+        ],
+        "supporting_artifact_families": [
+          "memory",
+          "network"
+        ],
+        "effective_confidence": 0.75,
+        "promotion_eligibility": "direct"
+      },
+      "promotion_eligibility": "direct",
+      "group_key": "netscan:2332:172.16.4.10:registered",
+      "support_count": 1,
+      "promotion_reason": "established_external",
+      "raw_evidence_refs": [
+        {
+          "path": "/evidence/memory/base-wkstn-01-mem.img",
+          "role": "input",
+          "offset": "0xc08eab1aa010"
+        }
+      ],
+      "psscan_only_count": null,
+      "requires_deeper_analysis": null,
+      "network_followup_pids": [
+        2332
+      ],
+      "network_pids": [
+        2332
+      ],
+      "next_required_tool": "list_dlls",
+      "created_at": "2026-05-17T23:20:11.059865Z",
+      "updated_at": "2026-05-17T23:20:11.064000Z",
+      "content_key": "5e7e7460ee34a6f9"
+    },
+    {
+      "finding_id": "F-003",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "finding_type": "data_exfil",
+      "artifact_type": "memory",
+      "artifact_path": "/evidence/memory/base-wkstn-01-mem.img",
+      "artifact_subtype": null,
+      "artifact_offset": "0xc08eb2aa59f0",
+      "timestamp_observed": null,
+      "tool_name": "memory.scan_network",
+      "execution_id": "E-003",
+      "iteration": 1,
+      "evidence_kind": "observation",
+      "finding_status": "ACTIVE",
+      "finding_kind": "validated",
+      "confidence": 0.75,
+      "description": "1 established TCP connection(s) to 172.16.5.25 (ports: 54420). Owning process: subject_srv.ex (PID 214656). Grouped connections to the same external host from the same process may indicate active C2 or data exfiltration.",
+      "supporting_indicators": [
+        "remote=172.16.5.25",
+        "port=54420",
+        "172.16.7.11:3262",
+        "pid=214656",
+        "process=subject_srv.ex",
+        "connection_count=1"
+      ],
+      "mitre_tactic": "TA0011",
+      "mitre_technique": "T1071",
+      "contradicted_by": [],
+      "corroborated_by": [],
+      "related_finding_ids": [],
+      "corroboration_outstanding": [],
+      "corroboration_completed_by": null,
+      "fk_source_class": null,
+      "fk_confidence_note": null,
+      "supporting_tool_families": [
+        "memory"
+      ],
+      "supporting_artifact_families": [
+        "memory",
+        "network"
+      ],
+      "confidence_support_inputs": {
+        "supporting_indicator_count": 6,
+        "corroboration_count": 0,
+        "contradiction_count": 0,
+        "supporting_tool_families": [
+          "memory"
+        ],
+        "supporting_artifact_families": [
+          "memory",
+          "network"
+        ],
+        "effective_confidence": 0.75,
+        "promotion_eligibility": "direct"
+      },
+      "promotion_eligibility": "direct",
+      "group_key": "netscan:214656:172.16.5.25:ephemeral",
+      "support_count": 1,
+      "promotion_reason": "established_external",
+      "raw_evidence_refs": [
+        {
+          "path": "/evidence/memory/base-wkstn-01-mem.img",
+          "role": "input",
+          "offset": "0xc08eb2aa59f0"
+        }
+      ],
+      "psscan_only_count": null,
+      "requires_deeper_analysis": null,
+      "network_followup_pids": [
+        214656
+      ],
+      "network_pids": [
+        214656
+      ],
+      "next_required_tool": "list_dlls",
+      "created_at": "2026-05-17T23:20:11.060856Z",
+      "updated_at": "2026-05-17T23:20:11.065000Z",
+      "content_key": "d640b420c0313cc9"
+    },
+    {
+      "finding_id": "F-004",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "finding_type": "other",
+      "artifact_type": "disk",
+      "artifact_path": "/cases/HACKATHON-2026-WKSTN01/artifacts/raw/evtx",
+      "artifact_subtype": null,
+      "artifact_offset": null,
+      "timestamp_observed": null,
+      "tool_name": "disk.summarize_evtx",
+      "execution_id": "E-005",
+      "iteration": 1,
+      "evidence_kind": "observation",
+      "finding_status": "ACTIVE",
+      "finding_kind": "validated",
+      "confidence": 0.9,
+      "description": "Parsed 75565 event log entries from /cases/HACKATHON-2026-WKSTN01/artifacts/raw/evtx (channel filter: Security). Events may reveal logon activity, process creation, service installation, and other attacker behaviours.",
+      "supporting_indicators": [
+        "/cases/HACKATHON-2026-WKSTN01/artifacts/raw/evtx"
+      ],
+      "mitre_tactic": null,
+      "mitre_technique": null,
+      "contradicted_by": [],
+      "corroborated_by": [],
+      "related_finding_ids": [],
+      "corroboration_outstanding": [],
+      "corroboration_completed_by": null,
+      "fk_source_class": "evtx_process_creation",
+      "fk_confidence_note": "FK multiplier 1.00 applied for evtx_process_creation. Original: 0.900 -> Adjusted: 0.900",
+      "supporting_tool_families": [
+        "disk"
+      ],
+      "supporting_artifact_families": [
+        "disk",
+        "event_logs"
+      ],
+      "confidence_support_inputs": {
+        "supporting_indicator_count": 1,
+        "corroboration_count": 0,
+        "contradiction_count": 0,
+        "supporting_tool_families": [
+          "disk"
+        ],
+        "supporting_artifact_families": [
+          "disk",
+          "event_logs"
+        ],
+        "fk_source_class": "evtx_process_creation",
+        "fk_multiplier": 1.0,
+        "base_confidence": 0.9,
+        "effective_confidence": 0.9,
+        "promotion_eligibility": "direct"
+      },
+      "promotion_eligibility": "direct",
+      "group_key": null,
+      "support_count": 1,
+      "promotion_reason": null,
+      "raw_evidence_refs": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/raw/evtx",
+          "role": "derived"
+        },
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/evtx/evtx_timeline.csv",
+          "role": "derived"
+        },
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/evtx/evtx_timeline.csv",
+          "role": "handle"
+        }
+      ],
+      "psscan_only_count": null,
+      "requires_deeper_analysis": null,
+      "network_followup_pids": [],
+      "network_pids": [],
+      "next_required_tool": null,
+      "created_at": "2026-05-17T23:26:51.980172Z",
+      "updated_at": "2026-05-17T23:26:52.487000Z",
+      "content_key": "d664591f604c11e5"
+    },
+    {
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "finding_type": "other",
+      "artifact_type": "disk",
+      "evidence_kind": "observation",
+      "description": "Lateral movement - External domain compromise: SPADERTECH.COM\\pman.adm authenticated from 172.16.6.17 (BASE-RD-07) using NTLM at 2020-02-18 17:13:13 UTC. Foreign domain credential use indicates potential domain trust exploitation or credential theft.",
+      "confidence": 0.95,
+      "finding_status": "ACTIVE",
+      "artifact_path": "/cases/HACKATHON-2026-WKSTN01/artifacts/evtx/evtx_timeline.csv",
+      "tool_name": "state.add_finding",
+      "iteration": 1,
+      "command": "run_analysis - EID 4624 LogonType 3 from 172.16.6.17",
+      "contradicted_by": [],
+      "created_at": "2026-05-17T23:28:08.738000Z",
+      "updated_at": "2026-05-17T23:28:08.738000Z",
+      "execution_id": "E-006",
+      "artifact_subtype": "evtx_event",
+      "mitre_tactic": null,
+      "mitre_technique": null,
+      "corroborated_by": [],
+      "related_finding_ids": [],
+      "supporting_indicators": [],
+      "corroboration_outstanding": [],
+      "supporting_tool_families": [
+        "state"
+      ],
+      "supporting_artifact_families": [
+        "disk"
+      ],
+      "promotion_eligibility": "direct",
+      "confidence_support_inputs": {
+        "supporting_indicator_count": 0,
+        "corroboration_count": 0,
+        "contradiction_count": 0,
+        "supporting_tool_families": [
+          "state"
+        ],
+        "supporting_artifact_families": [
+          "disk"
+        ],
+        "artifact_subtype": "evtx_event",
+        "effective_confidence": 0.95,
+        "promotion_eligibility": "direct",
+        "execution_id_source": "state_autogenerated"
+      },
+      "finding_id": "F-005",
+      "artifact_offset": null,
+      "timestamp_observed": null,
+      "finding_kind": "validated",
+      "corroboration_completed_by": null,
+      "fk_source_class": null,
+      "fk_confidence_note": null,
+      "group_key": null,
+      "support_count": 1,
+      "promotion_reason": null,
+      "raw_evidence_refs": [],
+      "psscan_only_count": null,
+      "requires_deeper_analysis": null,
+      "network_followup_pids": [],
+      "network_pids": [],
+      "next_required_tool": null,
+      "content_key": "1000c216fad1bddc"
+    },
+    {
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "finding_type": "other",
+      "artifact_type": "disk",
+      "evidence_kind": "observation",
+      "description": "Lateral movement - SHIELDBASE\\cbarton-a authenticated from 172.16.5.25 (BASE-HUNT) using NTLM at 2020-02-22 23:16:00-09 UTC. Multiple rapid logons (8 within 9 seconds) suggest automated lateral movement tooling. Correlates with memory finding F-003 showing ESTABLISHED connection to 172.16.5.25:54420.",
+      "confidence": 0.9,
+      "finding_status": "ACTIVE",
+      "artifact_path": "/cases/HACKATHON-2026-WKSTN01/artifacts/evtx/evtx_timeline.csv",
+      "tool_name": "state.add_finding",
+      "iteration": 1,
+      "command": "run_analysis - EID 4624 LogonType 3 NTLM from 172.16.5.25",
+      "contradicted_by": [],
+      "created_at": "2026-05-17T23:28:12.746000Z",
+      "updated_at": "2026-05-17T23:28:12.746000Z",
+      "execution_id": "E-007",
+      "artifact_subtype": "evtx_event",
+      "mitre_tactic": null,
+      "mitre_technique": null,
+      "corroborated_by": [],
+      "related_finding_ids": [],
+      "supporting_indicators": [],
+      "corroboration_outstanding": [],
+      "supporting_tool_families": [
+        "state"
+      ],
+      "supporting_artifact_families": [
+        "disk"
+      ],
+      "promotion_eligibility": "direct",
+      "confidence_support_inputs": {
+        "supporting_indicator_count": 0,
+        "corroboration_count": 0,
+        "contradiction_count": 0,
+        "supporting_tool_families": [
+          "state"
+        ],
+        "supporting_artifact_families": [
+          "disk"
+        ],
+        "artifact_subtype": "evtx_event",
+        "effective_confidence": 0.9,
+        "promotion_eligibility": "direct",
+        "execution_id_source": "state_autogenerated"
+      },
+      "finding_id": "F-006",
+      "artifact_offset": null,
+      "timestamp_observed": null,
+      "finding_kind": "validated",
+      "corroboration_completed_by": null,
+      "fk_source_class": null,
+      "fk_confidence_note": null,
+      "group_key": null,
+      "support_count": 1,
+      "promotion_reason": null,
+      "raw_evidence_refs": [],
+      "psscan_only_count": null,
+      "requires_deeper_analysis": null,
+      "network_followup_pids": [],
+      "network_pids": [],
+      "next_required_tool": null,
+      "content_key": "0625ced4aac32023"
+    },
+    {
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "finding_type": "other",
+      "artifact_type": "disk",
+      "evidence_kind": "observation",
+      "description": "Lateral movement - SHIELDBASE\\rsydow-a and SHIELDBASE\\cbarton-a network logons from 172.16.4.4 using Kerberos (2019-12-26 to 2020-01-20). Admin accounts (-a suffix) authenticating from remote hosts indicate lateral movement via domain credentials.",
+      "confidence": 0.85,
+      "finding_status": "ACTIVE",
+      "artifact_path": "/cases/HACKATHON-2026-WKSTN01/artifacts/evtx/evtx_timeline.csv",
+      "tool_name": "state.add_finding",
+      "iteration": 1,
+      "command": "run_analysis - EID 4624 LogonType 3 from 172.16.4.4",
+      "contradicted_by": [],
+      "created_at": "2026-05-17T23:28:16.412000Z",
+      "updated_at": "2026-05-17T23:28:16.412000Z",
+      "execution_id": "E-008",
+      "artifact_subtype": "evtx_event",
+      "mitre_tactic": null,
+      "mitre_technique": null,
+      "corroborated_by": [],
+      "related_finding_ids": [],
+      "supporting_indicators": [],
+      "corroboration_outstanding": [],
+      "supporting_tool_families": [
+        "state"
+      ],
+      "supporting_artifact_families": [
+        "disk"
+      ],
+      "promotion_eligibility": "direct",
+      "confidence_support_inputs": {
+        "supporting_indicator_count": 0,
+        "corroboration_count": 0,
+        "contradiction_count": 0,
+        "supporting_tool_families": [
+          "state"
+        ],
+        "supporting_artifact_families": [
+          "disk"
+        ],
+        "artifact_subtype": "evtx_event",
+        "effective_confidence": 0.85,
+        "promotion_eligibility": "direct",
+        "execution_id_source": "state_autogenerated"
+      },
+      "finding_id": "F-007",
+      "artifact_offset": null,
+      "timestamp_observed": null,
+      "finding_kind": "validated",
+      "corroboration_completed_by": null,
+      "fk_source_class": null,
+      "fk_confidence_note": null,
+      "group_key": null,
+      "support_count": 1,
+      "promotion_reason": null,
+      "raw_evidence_refs": [],
+      "psscan_only_count": null,
+      "requires_deeper_analysis": null,
+      "network_followup_pids": [],
+      "network_pids": [],
+      "next_required_tool": null,
+      "content_key": "b8b85b223ec81bd5"
+    },
+    {
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "finding_type": "other",
+      "artifact_type": "disk",
+      "evidence_kind": "observation",
+      "description": "Malware deployment - C:\\Windows\\subject_srv.exe (1,173,936 bytes) created 2021-09-16 03:01:57 UTC with TIMESTOMPING: SI LastModified backdated to 2018-04-10 19:29:48 (3+ year discrepancy). Correlates with memory PID 214656 \"subject_srv.ex\" maintaining ESTABLISHED connection to 172.16.5.25:54420 (attacker C2). This is confirmed malware persistence.",
+      "confidence": 1.0,
+      "finding_status": "ACTIVE",
+      "artifact_path": "/cases/HACKATHON-2026-WKSTN01/artifacts/mft/mft_timeline.csv",
+      "tool_name": "state.add_finding",
+      "iteration": 1,
+      "command": "run_analysis - MFT subject_srv.exe SI<>FN analysis",
+      "contradicted_by": [],
+      "created_at": "2026-05-17T23:32:00.576000Z",
+      "updated_at": "2026-05-17T23:32:00.576000Z",
+      "execution_id": "E-009",
+      "artifact_subtype": "mft_entry",
+      "mitre_tactic": null,
+      "mitre_technique": null,
+      "corroborated_by": [],
+      "related_finding_ids": [],
+      "supporting_indicators": [],
+      "corroboration_outstanding": [],
+      "supporting_tool_families": [
+        "state"
+      ],
+      "supporting_artifact_families": [
+        "disk"
+      ],
+      "promotion_eligibility": "direct",
+      "confidence_support_inputs": {
+        "supporting_indicator_count": 0,
+        "corroboration_count": 0,
+        "contradiction_count": 0,
+        "supporting_tool_families": [
+          "state"
+        ],
+        "supporting_artifact_families": [
+          "disk"
+        ],
+        "artifact_subtype": "mft_entry",
+        "effective_confidence": 1.0,
+        "promotion_eligibility": "direct",
+        "execution_id_source": "state_autogenerated"
+      },
+      "finding_id": "F-008",
+      "artifact_offset": null,
+      "timestamp_observed": null,
+      "finding_kind": "validated",
+      "corroboration_completed_by": null,
+      "fk_source_class": null,
+      "fk_confidence_note": null,
+      "group_key": null,
+      "support_count": 1,
+      "promotion_reason": null,
+      "raw_evidence_refs": [],
+      "psscan_only_count": null,
+      "requires_deeper_analysis": null,
+      "network_followup_pids": [],
+      "network_pids": [],
+      "next_required_tool": null,
+      "content_key": "5f364b0951b03ad0"
+    },
+    {
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "finding_type": "other",
+      "artifact_type": "disk",
+      "evidence_kind": "observation",
+      "description": "Anti-forensics - SDELETE.EXE Prefetch file found (DB116AF8.pf, created 2018-05-14 04:49:51 UTC). SysInternals SDelete is a secure file deletion tool commonly used by attackers to destroy evidence. Execution confirmed via Prefetch artifact.",
+      "confidence": 0.95,
+      "finding_status": "ACTIVE",
+      "artifact_path": "/cases/HACKATHON-2026-WKSTN01/artifacts/mft/mft_timeline.csv",
+      "tool_name": "state.add_finding",
+      "iteration": 1,
+      "command": "run_analysis - MFT sdelete prefetch search",
+      "contradicted_by": [],
+      "created_at": "2026-05-17T23:32:03.971000Z",
+      "updated_at": "2026-05-17T23:32:03.971000Z",
+      "execution_id": "E-010",
+      "artifact_subtype": "prefetch",
+      "mitre_tactic": null,
+      "mitre_technique": null,
+      "corroborated_by": [],
+      "related_finding_ids": [],
+      "supporting_indicators": [],
+      "corroboration_outstanding": [],
+      "supporting_tool_families": [
+        "state"
+      ],
+      "supporting_artifact_families": [
+        "disk"
+      ],
+      "promotion_eligibility": "direct",
+      "confidence_support_inputs": {
+        "supporting_indicator_count": 0,
+        "corroboration_count": 0,
+        "contradiction_count": 0,
+        "supporting_tool_families": [
+          "state"
+        ],
+        "supporting_artifact_families": [
+          "disk"
+        ],
+        "artifact_subtype": "prefetch",
+        "effective_confidence": 0.95,
+        "promotion_eligibility": "direct",
+        "execution_id_source": "state_autogenerated"
+      },
+      "finding_id": "F-009",
+      "artifact_offset": null,
+      "timestamp_observed": null,
+      "finding_kind": "validated",
+      "corroboration_completed_by": null,
+      "fk_source_class": null,
+      "fk_confidence_note": null,
+      "group_key": null,
+      "support_count": 1,
+      "promotion_reason": null,
+      "raw_evidence_refs": [],
+      "psscan_only_count": null,
+      "requires_deeper_analysis": null,
+      "network_followup_pids": [],
+      "network_pids": [],
+      "next_required_tool": null,
+      "content_key": "3b77c8c83faf42e8"
+    },
+    {
+      "finding_id": "F-010",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "finding_type": "other",
+      "artifact_type": "disk",
+      "artifact_path": "/cases/HACKATHON-2026-WKSTN01/artifacts/raw/prefetch",
+      "artifact_subtype": null,
+      "artifact_offset": null,
+      "timestamp_observed": null,
+      "tool_name": "disk.extract_prefetch",
+      "execution_id": "E-009",
+      "iteration": 1,
+      "evidence_kind": "observation",
+      "finding_status": "ACTIVE",
+      "finding_kind": "validated",
+      "confidence": 0.95,
+      "description": "Prefetch: parsed 129 .pf files from /cases/HACKATHON-2026-WKSTN01/artifacts/raw/prefetch. Binaries executed range: OOBENETWORKCONNECTIONFLOW.EXE to CONHOST.EXE. Use run_analysis() to identify suspicious execution patterns.",
+      "supporting_indicators": [
+        "93.0.4577.82_93.0.4577.63_CHR",
+        "ACRORD32.EXE",
+        "BACKGROUNDTASKHOST.EXE",
+        "CALCULATOR.EXE",
+        "CHROME.EXE",
+        "COMPATTELRUNNER.EXE",
+        "CONHOST.EXE",
+        "CONSENT.EXE",
+        "CTFMON.EXE",
+        "DEFRAG.EXE",
+        "DLLHOST.EXE",
+        "EASEOFACCESSDIALOG.EXE",
+        "ENTVUTIL.EXE",
+        "EXCEL.EXE",
+        "EXPLORER.EXE",
+        "FIREFOX.EXE",
+        "FLIPBOARD.EXE",
+        "FRESHPAINT.EXE"
+      ],
+      "mitre_tactic": null,
+      "mitre_technique": null,
+      "contradicted_by": [],
+      "corroborated_by": [],
+      "related_finding_ids": [],
+      "corroboration_outstanding": [],
+      "corroboration_completed_by": null,
+      "fk_source_class": "prefetch",
+      "fk_confidence_note": "FK multiplier 1.00 applied for prefetch. Original: 0.950 -> Adjusted: 0.950",
+      "supporting_tool_families": [
+        "disk"
+      ],
+      "supporting_artifact_families": [
+        "disk",
+        "file_system"
+      ],
+      "confidence_support_inputs": {
+        "supporting_indicator_count": 18,
+        "corroboration_count": 0,
+        "contradiction_count": 0,
+        "supporting_tool_families": [
+          "disk"
+        ],
+        "supporting_artifact_families": [
+          "disk",
+          "file_system"
+        ],
+        "fk_source_class": "prefetch",
+        "fk_multiplier": 1.0,
+        "base_confidence": 0.95,
+        "effective_confidence": 0.95,
+        "promotion_eligibility": "direct"
+      },
+      "promotion_eligibility": "direct",
+      "group_key": null,
+      "support_count": 1,
+      "promotion_reason": null,
+      "raw_evidence_refs": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/raw/prefetch",
+          "role": "derived"
+        },
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/prefetch/prefetch.csv",
+          "role": "derived"
+        },
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/prefetch/prefetch.csv",
+          "role": "handle"
+        }
+      ],
+      "psscan_only_count": null,
+      "requires_deeper_analysis": null,
+      "network_followup_pids": [],
+      "network_pids": [],
+      "next_required_tool": null,
+      "created_at": "2026-05-17T23:32:24.809469Z",
+      "updated_at": "2026-05-17T23:32:24.829000Z",
+      "content_key": "23f4b0cfc354310d"
+    },
+    {
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "finding_type": "other",
+      "artifact_type": "disk",
+      "evidence_kind": "observation",
+      "description": "Malware execution confirmed - SUBJECT_SRV.EXE executed 2 times: 2021-09-16 03:01:58 UTC and 2021-09-16 02:52:10 UTC. Prefetch file proves execution history, corroborating MFT finding F-008 (timestomped C:\\Windows\\subject_srv.exe) and memory finding F-003 (PID 214656 C2 connection to 172.16.5.25:54420).",
+      "confidence": 1.0,
+      "finding_status": "ACTIVE",
+      "artifact_path": "/cases/HACKATHON-2026-WKSTN01/artifacts/prefetch/prefetch.csv",
+      "tool_name": "state.add_finding",
+      "iteration": 1,
+      "command": "run_analysis - Prefetch SUBJECT_SRV.EXE execution history",
+      "contradicted_by": [],
+      "created_at": "2026-05-17T23:32:49.045000Z",
+      "updated_at": "2026-05-17T23:32:49.045000Z",
+      "execution_id": "E-011",
+      "artifact_subtype": "prefetch",
+      "mitre_tactic": null,
+      "mitre_technique": null,
+      "corroborated_by": [],
+      "related_finding_ids": [],
+      "supporting_indicators": [],
+      "corroboration_outstanding": [],
+      "supporting_tool_families": [
+        "state"
+      ],
+      "supporting_artifact_families": [
+        "disk"
+      ],
+      "promotion_eligibility": "direct",
+      "confidence_support_inputs": {
+        "supporting_indicator_count": 0,
+        "corroboration_count": 0,
+        "contradiction_count": 0,
+        "supporting_tool_families": [
+          "state"
+        ],
+        "supporting_artifact_families": [
+          "disk"
+        ],
+        "artifact_subtype": "prefetch",
+        "effective_confidence": 1.0,
+        "promotion_eligibility": "direct",
+        "execution_id_source": "state_autogenerated"
+      },
+      "finding_id": "F-011",
+      "artifact_offset": null,
+      "timestamp_observed": null,
+      "finding_kind": "validated",
+      "corroboration_completed_by": null,
+      "fk_source_class": null,
+      "fk_confidence_note": null,
+      "group_key": null,
+      "support_count": 1,
+      "promotion_reason": null,
+      "raw_evidence_refs": [],
+      "psscan_only_count": null,
+      "requires_deeper_analysis": null,
+      "network_followup_pids": [],
+      "network_pids": [],
+      "next_required_tool": null,
+      "content_key": "95e702fe75dfd730"
+    },
+    {
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "finding_type": "other",
+      "artifact_type": "disk",
+      "evidence_kind": "observation",
+      "description": "Log manipulation - WEVTUTIL.EXE executed 30 times (last: 2021-02-21 13:27:32 UTC). Wevtutil is Windows Event Log utility commonly used by attackers to clear Security/System logs. Multiple executions suggest repeated log clearing to hide attacker activity.",
+      "confidence": 0.95,
+      "finding_status": "ACTIVE",
+      "artifact_path": "/cases/HACKATHON-2026-WKSTN01/artifacts/prefetch/prefetch.csv",
+      "tool_name": "state.add_finding",
+      "iteration": 1,
+      "command": "run_analysis - Prefetch WEVTUTIL.EXE execution history",
+      "contradicted_by": [],
+      "created_at": "2026-05-17T23:32:52.826000Z",
+      "updated_at": "2026-05-17T23:32:52.826000Z",
+      "execution_id": "E-012",
+      "artifact_subtype": "prefetch",
+      "mitre_tactic": null,
+      "mitre_technique": null,
+      "corroborated_by": [],
+      "related_finding_ids": [],
+      "supporting_indicators": [],
+      "corroboration_outstanding": [],
+      "supporting_tool_families": [
+        "state"
+      ],
+      "supporting_artifact_families": [
+        "disk"
+      ],
+      "promotion_eligibility": "direct",
+      "confidence_support_inputs": {
+        "supporting_indicator_count": 0,
+        "corroboration_count": 0,
+        "contradiction_count": 0,
+        "supporting_tool_families": [
+          "state"
+        ],
+        "supporting_artifact_families": [
+          "disk"
+        ],
+        "artifact_subtype": "prefetch",
+        "effective_confidence": 0.95,
+        "promotion_eligibility": "direct",
+        "execution_id_source": "state_autogenerated"
+      },
+      "finding_id": "F-012",
+      "artifact_offset": null,
+      "timestamp_observed": null,
+      "finding_kind": "validated",
+      "corroboration_completed_by": null,
+      "fk_source_class": null,
+      "fk_confidence_note": null,
+      "group_key": null,
+      "support_count": 1,
+      "promotion_reason": null,
+      "raw_evidence_refs": [],
+      "psscan_only_count": null,
+      "requires_deeper_analysis": null,
+      "network_followup_pids": [],
+      "network_pids": [],
+      "next_required_tool": null,
+      "content_key": "d686b761d11c85ab"
+    }
+  ],
+  "executions": [
+    {
+      "execution_id": "E-001",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "memory.list_processes",
+      "parameters": {},
+      "command_line": "/usr/local/bin/vol -f /evidence/memory/base-wkstn-01-mem.img -r json windows.pslist",
+      "start_time": "2026-05-17T23:18:59.747893Z",
+      "end_time": null,
+      "duration_seconds": 0.9939,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "exit=0; stdout_lines=2285; stderr_snippet='Volatility 3 Framework 2.27.0\\n\\nProgress:    0.00\\t\\tScanning FileLayer using PageMapScanner\\n\\nProgress:   23.33\\t\\tScanning F'",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "29ecf324a80f64cfc49957d185d35191e0a6e2ee0f92ae53195911b7dfa29d58",
+      "audit_completed_entry_hash": "965fc839529df88f7b98be7a64c917f560ec4feb601351de6d603fcfe1dc21de",
+      "audit_linked_entry_hash": "7b12eb1be694df0b19f86c27a23b020490ee4dbbe176020defa6f21f8e0ec191",
+      "artifact_hashes": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/pslist/pslist.csv",
+          "sha256": "2e720fe15f13cd4198ef60e91d055b0052a2113b81f1c077787799c3b2170fae",
+          "role": "output",
+          "source": "computed"
+        }
+      ],
+      "raw_evidence_refs": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/pslist/pslist.csv",
+          "role": "derived"
+        }
+      ],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:18:59.747000Z"
+    },
+    {
+      "execution_id": "E-002",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "memory.scan_processes",
+      "parameters": {},
+      "command_line": "/usr/local/bin/vol -f /evidence/memory/base-wkstn-01-mem.img -r json windows.psscan",
+      "start_time": "2026-05-17T23:19:38.820691Z",
+      "end_time": null,
+      "duration_seconds": 39.0038,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "exit=0; stdout_lines=2369; stderr_snippet='Volatility 3 Framework 2.27.0\\n\\nProgress:    0.00\\t\\tScanning FileLayer using PageMapScanner\\n\\nProgress:   23.33\\t\\tScanning F'",
+      "agent_turn": 0,
+      "finding_ids_generated": [
+        "F-001"
+      ],
+      "audit_started_entry_hash": "91201434f1deebccc2dd0ab67622624cbec7f4eceb19b3878b773501fd652cab",
+      "audit_completed_entry_hash": "bca33a060618cd843e61b7e66c5e82fba3b000b35e6e7e29cfe19f5404f95470",
+      "audit_linked_entry_hash": "39226309cc3cf6a8017b68ddadc0a156e223886813ece23f0258b06d89e8d131",
+      "artifact_hashes": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/psscan/psscan.csv",
+          "sha256": "c9b36e89801be192f31bea30102c4878e200d2c37acdd95df0974faac4dfc234",
+          "role": "output",
+          "source": "computed"
+        }
+      ],
+      "raw_evidence_refs": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/psscan/psscan.csv",
+          "role": "derived"
+        }
+      ],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:19:38.820000Z"
+    },
+    {
+      "execution_id": "E-003",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "memory.scan_network",
+      "parameters": {},
+      "command_line": "/usr/local/bin/vol -f /evidence/memory/base-wkstn-01-mem.img -r json windows.netscan",
+      "start_time": "2026-05-17T23:20:11.057831Z",
+      "end_time": null,
+      "duration_seconds": 32.1708,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "exit=0; stdout_lines=1810; stderr_snippet='Volatility 3 Framework 2.27.0\\n\\nProgress:    0.00\\t\\tScanning FileLayer using PageMapScanner\\n\\nProgress:   23.33\\t\\tScanning F'",
+      "agent_turn": 0,
+      "finding_ids_generated": [
+        "F-002",
+        "F-003"
+      ],
+      "audit_started_entry_hash": "bea3bb030e94d72f34e8337d93948ca2bca80ea0bdc9a5acbe2675225e4cfa1a",
+      "audit_completed_entry_hash": "d54785eac7e60f11513c180daff62c2bf4cf6cef8f231810686b2cb88d7d2582",
+      "audit_linked_entry_hash": "c7062ac9286001cb0aab90a2cdbd886122032a82639982da8b56f5718fd65aa6",
+      "artifact_hashes": [],
+      "raw_evidence_refs": [],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:20:11.057000Z"
+    },
+    {
+      "execution_id": "E-004",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "disk.extract_windows_artifacts",
+      "parameters": {},
+      "command_line": "fls -r -p /mnt/evidence/ewf1",
+      "start_time": "2026-05-17T23:23:03.291495Z",
+      "end_time": null,
+      "duration_seconds": null,
+      "exit_code": null,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": null,
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": null,
+      "audit_completed_entry_hash": null,
+      "audit_linked_entry_hash": "71e4f183cd281663e83c35df5deaa5af79c2229f8d9b230ea5da36a06c3837c3",
+      "artifact_hashes": [],
+      "raw_evidence_refs": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/raw",
+          "role": "output"
+        },
+        {
+          "path": "/mnt/evidence/ewf1",
+          "role": "input",
+          "hash_status": "unhashed_primary_input"
+        }
+      ],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:23:03.291000Z"
+    },
+    {
+      "execution_id": "E-005",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "disk.summarize_evtx",
+      "parameters": {},
+      "command_line": "/usr/local/bin/EvtxECmd -d /cases/HACKATHON-2026-WKSTN01/artifacts/raw/evtx --csv /tmp/savvydfir_evtx_isiv2qui --csvf evtx_timeline.csv --inc 4624,4625,4648,4688,4689",
+      "start_time": "2026-05-17T23:26:41.330005Z",
+      "end_time": null,
+      "duration_seconds": 210.5169,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "exit=0; stdout_lines=43528",
+      "agent_turn": 0,
+      "finding_ids_generated": [
+        "F-004"
+      ],
+      "audit_started_entry_hash": "fe863abab97ac16c669e7bf76fbafd6d04af912b2c9956de4647fd4412d436a7",
+      "audit_completed_entry_hash": "91afdf0f5f4ba96ebd97c5db662ae02be310ebcd32ef7a61ccc62fb31993b048",
+      "audit_linked_entry_hash": "77af5a00926a52d8e2f9ae48808c54275b5a6967aa59e5c0c5902f6fdbe7c247",
+      "artifact_hashes": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/evtx/evtx_timeline.csv",
+          "sha256": "36939b1a7e3cdda20b97ab24f0d592ee77bcb5ee4b622f7d13596837da7529ef",
+          "role": "output",
+          "source": "computed"
+        }
+      ],
+      "raw_evidence_refs": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/evtx/evtx_timeline.csv",
+          "role": "derived"
+        },
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/raw/evtx",
+          "role": "derived"
+        },
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/evtx/evtx_timeline.csv",
+          "role": "handle"
+        }
+      ],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:26:41.329000Z"
+    },
+    {
+      "execution_id": "E-006",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "state.record_analysis_lane",
+      "parameters": {
+        "case_id": "HACKATHON-2026-WKSTN01",
+        "lane_id": "event_auth",
+        "status": "COMPLETE",
+        "assigned_agent": "main-agent",
+        "supporting_agents": [],
+        "execution_ids": [
+          "E-005"
+        ],
+        "finding_ids": [
+          "F-004",
+          "F-005",
+          "F-006",
+          "F-007"
+        ]
+      },
+      "command_line": "record_analysis_lane('HACKATHON-2026-WKSTN01', lane_id='event_auth', status='COMPLETE', assigned_agent='main-agent')",
+      "start_time": "2026-05-17T23:28:22.403492Z",
+      "end_time": null,
+      "duration_seconds": 0.0,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "recorded lane event_auth as COMPLETE",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "f1e26e1f879557ff86f4813cbc34011362eed4b9472f7198f6c0d7774a61014e",
+      "audit_completed_entry_hash": "1baf62d5cf75c3f6bda362a8606614b35a08cfdb0db610a13e653bf7a0e62858",
+      "audit_linked_entry_hash": null,
+      "artifact_hashes": [],
+      "raw_evidence_refs": [],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:28:22.403000Z"
+    },
+    {
+      "execution_id": "E-007",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "disk.extract_mft_timeline",
+      "parameters": {},
+      "command_line": "/usr/local/bin/MFTECmd -f /cases/HACKATHON-2026-WKSTN01/artifacts/raw/mft/$MFT --csv /tmp/savvydfir_mftecmd_6gv57uqz --csvf mft_timeline.csv",
+      "start_time": "2026-05-17T23:28:44.175086Z",
+      "end_time": null,
+      "duration_seconds": 6.0491,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "exit=0; stdout_lines=14",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "2c5af2f35d11acab26d3046215c198b50d6eb1a55e737847db336a7fd31a177b",
+      "audit_completed_entry_hash": "3a5fbbfe65ca9184bad588b7b32504112730554fd14c81e57b0fb49d058639c3",
+      "audit_linked_entry_hash": "b577daefb53a100d415847a0c55ce39218a4f91e4ea55abee439e8cfa8b41f37",
+      "artifact_hashes": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/mft/mft_timeline.csv",
+          "sha256": "43513ec2aa8b5f1f033a9d089e151741f7cdb53e955e29ba811c1eb53b465830",
+          "role": "output",
+          "source": "computed"
+        },
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/raw/mft/$MFT",
+          "sha256": "d394a1e4437ae68e85d1d6fdc868959caa3919ec061d0974832be0d17e3c5073",
+          "role": "output",
+          "source": "computed"
+        }
+      ],
+      "raw_evidence_refs": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/mft/mft_timeline.csv",
+          "role": "derived"
+        },
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/raw/mft/$MFT",
+          "role": "derived"
+        },
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/mft/mft_timeline.csv",
+          "role": "handle"
+        }
+      ],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:28:44.175000Z"
+    },
+    {
+      "execution_id": "E-008",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "state.record_analysis_lane",
+      "parameters": {
+        "case_id": "HACKATHON-2026-WKSTN01",
+        "lane_id": "timeline_correlation",
+        "status": "COMPLETE",
+        "assigned_agent": "main-agent",
+        "supporting_agents": [],
+        "execution_ids": [
+          "E-007"
+        ],
+        "finding_ids": [
+          "F-008",
+          "F-009"
+        ]
+      },
+      "command_line": "record_analysis_lane('HACKATHON-2026-WKSTN01', lane_id='timeline_correlation', status='COMPLETE', assigned_agent='main-agent')",
+      "start_time": "2026-05-17T23:32:07.880107Z",
+      "end_time": null,
+      "duration_seconds": 0.0,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "recorded lane timeline_correlation as COMPLETE",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "44cc6e4888be79b2229e3466ed04db5b9d504d0a1dbaa00fce44d198db877072",
+      "audit_completed_entry_hash": "1fa9a059900a9f14439c60fb00cbbfa647cd95cace45c436ae7950e9f8853482",
+      "audit_linked_entry_hash": null,
+      "artifact_hashes": [],
+      "raw_evidence_refs": [],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:32:07.880000Z"
+    },
+    {
+      "execution_id": "E-009",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "disk.extract_prefetch",
+      "parameters": {},
+      "command_line": "pyscca /cases/HACKATHON-2026-WKSTN01/artifacts/raw/prefetch/*.pf",
+      "start_time": "2026-05-17T23:32:24.827702Z",
+      "end_time": null,
+      "duration_seconds": null,
+      "exit_code": null,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": null,
+      "agent_turn": 0,
+      "finding_ids_generated": [
+        "F-010"
+      ],
+      "audit_started_entry_hash": null,
+      "audit_completed_entry_hash": null,
+      "audit_linked_entry_hash": "edefcb99c46ac2741e5991299449f81b28180d424106deee288fb3e97eb88172",
+      "artifact_hashes": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/prefetch/prefetch.csv",
+          "sha256": "3cec51ef7a05648663b2adc0052f99085af652f30b6ccdaee4337922bcca6837",
+          "role": "output",
+          "source": "computed"
+        }
+      ],
+      "raw_evidence_refs": [
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/prefetch/prefetch.csv",
+          "role": "derived"
+        },
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/raw/prefetch",
+          "role": "derived"
+        },
+        {
+          "path": "/cases/HACKATHON-2026-WKSTN01/artifacts/prefetch/prefetch.csv",
+          "role": "handle"
+        }
+      ],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:32:24.827000Z"
+    },
+    {
+      "execution_id": "E-010",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "state.record_analysis_lane",
+      "parameters": {
+        "case_id": "HACKATHON-2026-WKSTN01",
+        "lane_id": "disk_execution_persistence",
+        "status": "COMPLETE",
+        "assigned_agent": "main-agent",
+        "supporting_agents": [],
+        "execution_ids": [
+          "E-009"
+        ],
+        "finding_ids": [
+          "F-010",
+          "F-011",
+          "F-012"
+        ]
+      },
+      "command_line": "record_analysis_lane('HACKATHON-2026-WKSTN01', lane_id='disk_execution_persistence', status='COMPLETE', assigned_agent='main-agent')",
+      "start_time": "2026-05-17T23:32:56.376770Z",
+      "end_time": null,
+      "duration_seconds": 0.0,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "recorded lane disk_execution_persistence as COMPLETE",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "27281b524ae221ababb1657e8aa7a6ff7d849788984a7dfefdea054f18e362cb",
+      "audit_completed_entry_hash": "7b0254613c5e44fee5c3df39e18bba5fdd250996033e39c3b533fe617dbc8ae3",
+      "audit_linked_entry_hash": null,
+      "artifact_hashes": [],
+      "raw_evidence_refs": [],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:32:56.376000Z"
+    },
+    {
+      "execution_id": "E-011",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "reporting.generate_report",
+      "parameters": {
+        "case_id": "HACKATHON-2026-WKSTN01",
+        "response_format": "summary",
+        "allow_partial": false
+      },
+      "command_line": "generate_report('HACKATHON-2026-WKSTN01', response_format='summary', allow_partial=False)",
+      "start_time": "2026-05-17T23:33:14.143000Z",
+      "end_time": null,
+      "duration_seconds": 0.0069,
+      "exit_code": 1,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "report gated: needs_graph generate_graph",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "db5ba7260423a5ef85b180964bf500d22dd7cc4194a9c05ae5f6377ddf191e4c",
+      "audit_completed_entry_hash": "486663ac98d0befb592b7b1664b3ce07d67e0f63625529fbd197f529cd574699",
+      "audit_linked_entry_hash": "3738e9f4a0e09197d35495ece3a52da20cf430f57c012d806e393b830f01dd6e",
+      "artifact_hashes": [],
+      "raw_evidence_refs": [
+        {
+          "path": "/opt/SAVVYDFIR-MCP/reports/HACKATHON-2026-WKSTN01/report.html",
+          "role": "output"
+        }
+      ],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:33:14.142000Z"
+    },
+    {
+      "execution_id": "E-012",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "state.record_analysis_lane",
+      "parameters": {
+        "case_id": "HACKATHON-2026-WKSTN01",
+        "lane_id": "memory",
+        "status": "COMPLETE",
+        "assigned_agent": "main-agent",
+        "supporting_agents": [],
+        "execution_ids": [
+          "E-001",
+          "E-002",
+          "E-003"
+        ],
+        "finding_ids": [
+          "F-001",
+          "F-002",
+          "F-003"
+        ]
+      },
+      "command_line": "record_analysis_lane('HACKATHON-2026-WKSTN01', lane_id='memory', status='COMPLETE', assigned_agent='main-agent')",
+      "start_time": "2026-05-17T23:33:23.319620Z",
+      "end_time": null,
+      "duration_seconds": 0.0,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "recorded lane memory as COMPLETE",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "b386ffcc1c128dbf6cee88c8ee3dfccfaa2872e72ee45e2b33c4e6ab55cfb685",
+      "audit_completed_entry_hash": "3f9e71fae75d668478b56efe14ca46b15c3d6041f37931a66a690af7cd424d11",
+      "audit_linked_entry_hash": null,
+      "artifact_hashes": [],
+      "raw_evidence_refs": [],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:33:23.319000Z"
+    },
+    {
+      "execution_id": "E-013",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "state.record_analysis_lane",
+      "parameters": {
+        "case_id": "HACKATHON-2026-WKSTN01",
+        "lane_id": "anti_forensics_recovery",
+        "status": "COMPLETE",
+        "assigned_agent": "main-agent",
+        "supporting_agents": [],
+        "execution_ids": [
+          "E-007",
+          "E-009"
+        ],
+        "finding_ids": [
+          "F-008",
+          "F-009",
+          "F-012"
+        ]
+      },
+      "command_line": "record_analysis_lane('HACKATHON-2026-WKSTN01', lane_id='anti_forensics_recovery', status='COMPLETE', assigned_agent='main-agent')",
+      "start_time": "2026-05-17T23:33:26.551140Z",
+      "end_time": null,
+      "duration_seconds": 0.0,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "recorded lane anti_forensics_recovery as COMPLETE",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "8177e0d0b4bfea2986703def6d986c34bae2ba0445cdeb51a27fc6a5cea325e8",
+      "audit_completed_entry_hash": "3fc24e59643590242173ae430a3a295d4a7e22dd547876cf143e20931d365e58",
+      "audit_linked_entry_hash": null,
+      "artifact_hashes": [],
+      "raw_evidence_refs": [],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:33:26.551000Z"
+    },
+    {
+      "execution_id": "E-014",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "graph.generate_graph",
+      "parameters": {
+        "case_id": "HACKATHON-2026-WKSTN01",
+        "state_path": null,
+        "audit_path": null,
+        "output_path": null
+      },
+      "command_line": "generate_graph('HACKATHON-2026-WKSTN01', state_path=None, audit_path=None, output_path=None)",
+      "start_time": "2026-05-17T23:33:33.515776Z",
+      "end_time": null,
+      "duration_seconds": 0.0543,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "graph ok: nodes=15 edges=14",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "544da2a7cf877838b73ffd3a0c39ae45cadc42cbebe3a25a1f80fea2e9f72b90",
+      "audit_completed_entry_hash": "26d24d0180747d07982714400a87243ff699e995388450043386d4e0b268e568",
+      "audit_linked_entry_hash": "bca7cb920d2cef208f408b88b7ed4d2ac1faf049d7df37ff75efb41872369809",
+      "artifact_hashes": [],
+      "raw_evidence_refs": [],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:33:33.515000Z"
+    },
+    {
+      "execution_id": "E-016",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "detection.sigma_scan",
+      "parameters": {
+        "case_id": "HACKATHON-2026-WKSTN01"
+      },
+      "command_line": "sigma_scan('HACKATHON-2026-WKSTN01')",
+      "start_time": "2026-05-17T23:33:36.220985Z",
+      "end_time": null,
+      "duration_seconds": 0.0204,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "1 hits (0 critical, 1 high) across 10 detectors",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "5295edfa89cb96ddfce443e6a2cda4a66f4eed31c286574d7770889034408343",
+      "audit_completed_entry_hash": "b4272df5fca76f7b2d01adcc48252b39a5ccae2cff6204ab78c1cdb4a82d79ae",
+      "audit_linked_entry_hash": "a6302ec74f4b5bd9f19898d188a4f187f270bf51d49ee5df9d43ee36228809ef",
+      "artifact_hashes": [],
+      "raw_evidence_refs": [],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:33:36.220000Z"
+    },
+    {
+      "execution_id": "E-015",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "reporting.generate_report",
+      "parameters": {
+        "case_id": "HACKATHON-2026-WKSTN01",
+        "response_format": "summary",
+        "allow_partial": false
+      },
+      "command_line": "generate_report('HACKATHON-2026-WKSTN01', response_format='summary', allow_partial=False)",
+      "start_time": "2026-05-17T23:33:36.241464Z",
+      "end_time": null,
+      "duration_seconds": 0.0489,
+      "exit_code": 1,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "report gated: needs_coverage memory.detect_injection",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "5cdfed09cbb2d660034e76618b309ad1b5661fb39c841d09ea6bd1ff8f29638d",
+      "audit_completed_entry_hash": "d5aa5341c5169ec41e3c1f97f387bce02bddba92cc5d46a73cab9e6d78cb9b62",
+      "audit_linked_entry_hash": "7326b8932cb1877cec634ea9f09e515f7f86b84221f261ca4e3e07cf68ff5418",
+      "artifact_hashes": [],
+      "raw_evidence_refs": [
+        {
+          "path": "/opt/SAVVYDFIR-MCP/reports/HACKATHON-2026-WKSTN01/report.html",
+          "role": "output"
+        }
+      ],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:33:36.241000Z"
+    },
+    {
+      "execution_id": "E-018",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "detection.sigma_scan",
+      "parameters": {
+        "case_id": "HACKATHON-2026-WKSTN01"
+      },
+      "command_line": "sigma_scan('HACKATHON-2026-WKSTN01')",
+      "start_time": "2026-05-17T23:33:40.476436Z",
+      "end_time": null,
+      "duration_seconds": 0.0183,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "1 hits (0 critical, 1 high) across 10 detectors",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "7820308ef8f3fd49058e809f1677339f4a25f1850d3b26d35d8674e2a4d0d590",
+      "audit_completed_entry_hash": "50b146cec44e0b64f34900776d77fb7ad7dcae32ec995f31b82c758faa7f492b",
+      "audit_linked_entry_hash": "43767034394e98f5d5ddbb0920e7a42db01b538a25da165d5e6743ff90eee206",
+      "artifact_hashes": [],
+      "raw_evidence_refs": [],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:33:40.476000Z"
+    },
+    {
+      "execution_id": "E-017",
+      "case_id": "HACKATHON-2026-WKSTN01",
+      "iteration": 1,
+      "tool_name": "reporting.generate_report",
+      "parameters": {
+        "case_id": "HACKATHON-2026-WKSTN01",
+        "response_format": "summary",
+        "allow_partial": true
+      },
+      "command_line": "generate_report('HACKATHON-2026-WKSTN01', response_format='summary', allow_partial=True)",
+      "start_time": "2026-05-17T23:33:40.496701Z",
+      "end_time": null,
+      "duration_seconds": 0.0476,
+      "exit_code": 0,
+      "stdout_ref": null,
+      "stderr_ref": null,
+      "outputs_summary": "report generated: /opt/SAVVYDFIR-MCP/reports/HACKATHON-2026-WKSTN01/report.html",
+      "agent_turn": 0,
+      "finding_ids_generated": [],
+      "audit_started_entry_hash": "e4528665ac7e1c4cdad529c28958850eedeff0c987963e7f6044189461e6d9a8",
+      "audit_completed_entry_hash": "514e3185a87d63be87fa84c0ff72a04e00c732d81d70912bb1dc13c6f4c36001",
+      "audit_linked_entry_hash": "865f15960d44442641052018245b6ed7c8eb222730cdf532d71d26740979d04e",
+      "artifact_hashes": [
+        {
+          "path": "/opt/SAVVYDFIR-MCP/reports/HACKATHON-2026-WKSTN01/report.html",
+          "sha256": "1c6d9b37cd350a552d0d2315947c80d5a580b213c8d5758d7621eceb47df0fc4",
+          "role": "output",
+          "source": "computed"
+        }
+      ],
+      "raw_evidence_refs": [
+        {
+          "path": "/opt/SAVVYDFIR-MCP/reports/HACKATHON-2026-WKSTN01/report.html",
+          "role": "output"
+        }
+      ],
+      "correction_event": null,
+      "agent_reason": null,
+      "recorded_at": "2026-05-17T23:33:40.496000Z"
+    }
+  ],
+  "open_questions": [],
+  "cached_artifacts": {
+    "disk.summarize_evtx:c06eaafd68541d7ee3c25fa2": {
+      "timestamp": "2026-05-17T23:26:51.983Z",
+      "source_execution_id": "E-005",
+      "csv_path": "/cases/HACKATHON-2026-WKSTN01/artifacts/evtx/evtx_timeline.csv",
+      "findings_created": [
+        "F-004"
+      ],
+      "requires_agent": "@evtx-analyst",
+      "agent_instruction": "Analyze /cases/HACKATHON-2026-WKSTN01/artifacts/evtx/evtx_timeline.csv for attacker lifecycle — auth anomalies, lateral movement, persistence. 75565 total rows.",
+      "total_records": 75565,
+      "channel_filter": "Security",
+      "event_id_filter": [
+        4624,
+        4625,
+        4648,
+        4688,
+        4689
+      ],
+      "event_id_strategy": "adaptive",
+      "date_range": null
+    },
+    "disk.extract_mft_timeline:22c2502aedc2a7589149de51": {
+      "timestamp": "2026-05-17T23:30:54.480Z",
+      "source_execution_id": "E-007",
+      "csv_path": "/cases/HACKATHON-2026-WKSTN01/artifacts/mft/mft_timeline.csv",
+      "findings_created": [],
+      "requires_agent": "@mft-analyst",
+      "agent_instruction": "Analyze /cases/HACKATHON-2026-WKSTN01/artifacts/mft/mft_timeline.csv for timestomping, attacker file drops, staging. 301363 total rows.",
+      "timestomping_candidates": 0,
+      "total_records": 301363
+    }
+  },
+  "findings_count": 12,
+  "executions_count": 18
+}

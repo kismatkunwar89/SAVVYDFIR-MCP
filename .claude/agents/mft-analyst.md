@@ -13,7 +13,19 @@ skills:
 
 # NTFS MFT Forensic Analyst
 
-You are a specialist in NTFS Master File Table forensics working with MFTECmd CSV output.
+## How this file is used
+
+This is a **forensic-heuristic knowledge base**, not a procedural playbook.
+The main investigator agent reads this file as **reference context** when
+analyzing the relevant artifact. Apply heuristics where they fit the case
+context — do not execute them as a fixed sequence.
+
+For court-defensible findings: cite the specific tool execution and raw
+evidence that supports each claim. Use `submit_finding()` with structured
+provenance (execution_id, evidence_excerpt, contradictions, corroborations).
+
+The user-authored heuristics below were preserved verbatim during the
+2026-05-23 Phase 3 overlay removal.
 
 ## Forensic Ground Rules
 - NEVER load raw CSV rows into context — write targeted Pandas queries via run_analysis only
@@ -72,6 +84,124 @@ The `$I` deletion timestamp proves WHEN a file was deleted, not just that it was
 
 **USN Journal contradictions** — the USN Journal retains entries for files that were created and subsequently deleted, providing an audit trail of activity no longer visible in the active MFT; contradictions with $SI timestamps confirm backdating
 
+## Professional Patterns (from DFIR & Training Materials)
+
+### Multi-Layer Timestomping Detection
+Apply ALL checks — stacking anomalies defeats sophisticated attackers:
+
+**Layer 1: $SI vs $FN Discrepancy**:
+```python
+# $SI Created < $FN Created = user-level timestomping
+df['timestomp_si_fn'] = df['Created0x10'] < df['Created0x30']
+```
+
+**Layer 2: Fractional Seconds Zeroing**:
+```python
+# Natural timestamps have 100-nanosecond resolution
+# Timestomping tools often zero out sub-seconds → .000000
+df['created_subsec'] = pd.to_datetime(df['Created0x10']).dt.microsecond
+df['timestomp_zeros'] = (df['created_subsec'] == 0)
+```
+
+**Layer 3: Entry Number Clustering**:
+```python
+# Files created simultaneously have contiguous EntryNumbers
+# If $SI shows old date but EntryNumber is recent = timestomped
+df_sorted = df.sort_values('EntryNumber')
+df_sorted['entry_cluster'] = (df_sorted['EntryNumber'].diff() < 10).cumsum()
+# Within each cluster, $SI timestamps should be similar
+# If cluster has mixed old/new $SI dates = timestomping
+```
+
+**Layer 4: PE Compile Time vs $SI**:
+```python
+# Amcache LinkDate (PE compile time) > MFT $SI timestamp = logically impossible
+# Requires cross-referencing with Amcache findings:
+amcache_findings = get_findings(artifact_type="amcache_entry")
+for amcache in amcache_findings:
+    link_date = amcache['LinkDate']
+    file_path = amcache['FilePath']
+    # Find matching MFT entry
+    mft_entry = df[df['FullPath'].str.lower() == file_path.lower()]
+    if not mft_entry.empty:
+        si_created = mft_entry.iloc[0]['Created0x10']
+        if link_date > si_created:
+            add_finding(f"Timestomping confirmed: {file_path} compile time {link_date} > MFT creation {si_created}", confidence=1.00)
+```
+
+### Lateral Movement Detection (M timestamp < B timestamp)
+```python
+# File copied over SMB inherits source Modified time but gets new Birth time
+df['lateral_movement'] = df['Modified0x10'] < df['Created0x10']
+lateral_files = df[df['lateral_movement'] & df['Extension'].isin(['.exe', '.dll', '.sys', '.ps1', '.bat'])]
+
+for row in lateral_files.itertuples():
+    time_diff = (row.Created0x10 - row.Modified0x10).days
+    if time_diff > 1:  # Modified time significantly older than birth
+        add_finding(
+            f"Lateral movement: {row.FullPath} - Modified {row.Modified0x10} predates Birth {row.Created0x10} by {time_diff} days",
+            confidence=0.95,
+            technique="T1570"
+        )
+```
+
+### VSS Correlation (Check if Deleted Files Exist in Snapshots)
+```python
+# InUse=False files may exist in VSS snapshots
+# Cross-reference with VSS findings:
+deleted_files = df[df['InUse'] == False]
+vss_findings = get_findings(artifact_type="vss_snapshot")
+
+if vss_findings:
+    for deleted in deleted_files.itertuples():
+        add_finding(
+            f"Deleted file {deleted.FullPath} may be recoverable from VSS snapshot {vss_findings[0]['id']}",
+            confidence=0.80,
+            recommended_action="Extract file from VSS for analysis"
+        )
+```
+
+### Staging Directory Sequential Drops
+```python
+# Attacker drops multiple files → contiguous EntryNumbers in staging dirs
+staging_dirs = ['\\Temp\\', '\\AppData\\', '\\ProgramData\\', '\\Public\\']
+staging_files = df[df['FullPath'].str.contains('|'.join(staging_dirs), case=False, na=False)]
+
+# Group by directory and check EntryNumber clustering
+for dir_path in staging_files['ParentPath'].unique():
+    dir_files = staging_files[staging_files['ParentPath'] == dir_path].sort_values('EntryNumber')
+    entry_gaps = dir_files['EntryNumber'].diff()
+    
+    # If 3+ files with <10 entry gap = simultaneous drop
+    clustered = (entry_gaps < 10).sum()
+    if clustered >= 2:
+        add_finding(
+            f"Sequential file drop detected in {dir_path}: {clustered+1} files with contiguous EntryNumbers",
+            confidence=0.90,
+            technique="T1105"
+        )
+```
+
+### Recycle Bin Deletion Timestamp Precision
+```python
+# $I files contain exact deletion timestamp
+recycle_files = df[df['FullPath'].str.contains('\\$Recycle.Bin\\', case=False, na=False)]
+i_files = recycle_files[recycle_files['FileName'].str.startswith('$I')]
+
+for i_file in i_files.itertuples():
+    deletion_time = i_file.Modified0x10  # $I file Modified = deletion timestamp
+    original_path = extract_original_path_from_i_file(i_file.FullPath)  # Parse $I metadata
+    
+    # Check if deleted file was executable
+    if original_path.endswith(('.exe', '.dll', '.sys', '.bat', '.ps1')):
+        add_finding(
+            f"Executable deleted at {deletion_time}: {original_path}",
+            confidence=0.95,
+            artifact_path=i_file.FullPath,
+            deletion_timestamp=deletion_time
+        )
+```
+
 ## Query Pattern (schema-first, then hunt)
 ```python
 # Step 0 — always run this first
@@ -100,5 +230,48 @@ Return to main investigator — max 20 lines:
 - System directory drops
 - Deleted tools
 - Suggested cross-references to EVTX/Amcache findings
-## Machine-Enforced Final Response
-End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.
+
+---
+
+## Systematic Coverage Pattern
+
+Run these five query primitives via `run_analysis()` before declaring analysis complete. These primitives reduce coverage debt and produce defensible documentation — they cannot guarantee zero blind spots.
+
+### A. Pivot Points (Known Suspicious → ±5 min Window)
+For every existing finding in `get_findings()` with a timestamp, extract all MFT entries within ±5 minutes of that timestamp.
+
+### B. Occurrence Stacking (Least Frequency)
+Group by `(ParentDir, Extension, InUse)` and `.value_counts()`. Filter to count ≤ 3 — rare directory+extension combinations surface malware drops without loading 300K rows.
+
+### C. Known-Good Filtering
+Before stacking, filter OUT: `\Windows\WinSxS\*`, `\Windows\Installer\*`, `*.tmp`, `\Windows\SoftwareDistribution\*`. These account for ~80% of MFT noise.
+
+### D. Time-Slicing (Attack Window Only)
+Pull attack window from `read_state()`. Apply `df = df[(df['Created0x10'] >= start) & (df['Created0x10'] <= end)]` as the first filter.
+
+### E. Multi-Level Grouping
+Group by `(ParentDir, Extension, InUse)`. Sort by count ascending. Top 20 rarest combinations are primary triage candidates.
+
+### Timestomping Detection (Specialist-Specific)
+Always check: `df['SI_Created'] - df['FN_Created'] > pd.Timedelta('1h')` — a $SI timestamp >1 hour earlier than $FN indicates timestomping. Corroborate with USN Journal (authoritative, cannot be forged).
+
+### After Each Hit
+1. Call `add_finding()` IMMEDIATELY — do not batch
+2. Run one follow-up `run_analysis()` querying that path's full MFT history
+
+### Coverage Self-Check (required before exit)
+```python
+run_analysis(data_path=csv_path, query="""
+print('Total rows:', len(df))
+print('Rows in attack window:', len(df_window) if 'df_window' in dir() else 'not sliced')
+# findings raised: track via your own get_findings(case_id) result count after the session
+# untriaged buckets: count rows in your rare-bucket Series before exit; report in final summary
+""")
+```
+
+### Residual Risk Categories
+Document in your return summary:
+- `evidence_present` — anomaly raised, `add_finding()` called
+- `evidence_absent` — concrete test performed, artifact not found
+- `untriaged` — rare buckets surfaced but not fully investigated (open coverage debt)
+- `tool_failed` — MFT CSV was absent or MFTECmd errored

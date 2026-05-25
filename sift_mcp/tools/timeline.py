@@ -112,6 +112,10 @@ def _build_timeline_contract_payload(
     ]
     return build_contract_response(
         response,
+        case_id=case_id,
+        execution_id=response.get("execution_id"),
+        state_manager=_state_mgr,
+        audit_logger=_audit,
         tool_name="timeline.build_timeline",
         summary=(
             f"Timeline storage ready for case {case_id}. "
@@ -179,6 +183,10 @@ def _query_timeline_contract_payload(
     )
     return build_contract_response(
         response,
+        case_id=case_id,
+        execution_id=response.get("execution_id"),
+        state_manager=_state_mgr,
+        audit_logger=_audit,
         tool_name="timeline.query_timeline",
         summary=(
             f"Timeline query returned {response.get('event_count', len(events))} events from {plaso_path}. "
@@ -371,7 +379,7 @@ def build_timeline(
             "execution_id": result.execution_id,
         }
 
-    # Try to extract event count from stdout
+    # Try to extract event count from log2timeline stdout
     event_count: str = "unknown"
     for line in result.stdout.splitlines():
         # Plaso prints something like: "Completed processing ... 1234567 events"
@@ -380,6 +388,47 @@ def build_timeline(
             event_count = m.group(1).replace(",", "")
             break
 
+    # B.3: Validate the .plaso file with pinfo.py before claiming success.
+    # log2timeline can return exit 0 yet produce a storage file with zero
+    # events (empty input, all parsers failed silently, corrupted source).
+    # Without this check, the @timeline-analyst would be spawned to query
+    # an empty timeline and burn tokens for no value.
+    pinfo_event_count: Optional[int] = None
+    pinfo_error: Optional[str] = None
+    try:
+        pinfo_result = _runner.pinfo(storage_file=storage_path, tool_name=tool)
+        if pinfo_result.ok:
+            # pinfo prints "Total number of events: N" — parse it
+            for line in pinfo_result.stdout.splitlines():
+                m = re.search(r"Total number of events[^\d]*([\d,]+)", line, re.IGNORECASE)
+                if m:
+                    pinfo_event_count = int(m.group(1).replace(",", ""))
+                    break
+            if pinfo_event_count is None:
+                # Couldn't parse — fall back to permissive (don't block on parse failure)
+                pinfo_error = "pinfo.py succeeded but event count unparseable"
+        else:
+            pinfo_error = (
+                f"pinfo.py validation failed (exit {pinfo_result.exit_code}): "
+                f"{(pinfo_result.stderr or '')[:300]}"
+            )
+    except Exception as exc:
+        pinfo_error = f"pinfo.py invocation raised: {type(exc).__name__}: {exc}"
+
+    if pinfo_event_count == 0:
+        return {
+            "status": "error",
+            "error": (
+                f"log2timeline produced a Plaso file with zero events at {storage_path}. "
+                "Source path is empty, parsers failed silently, or the source "
+                "was unreadable. Inspect log2timeline stderr and re-run."
+            ),
+            "storage_path": storage_path,
+            "exit_code": 0,
+            "execution_id": result.execution_id,
+            "pinfo_validated": True,
+        }
+
     response = {
         "status": "ok",
         "storage_path": storage_path,
@@ -387,6 +436,10 @@ def build_timeline(
         "source_path": source_path,
         "case_id": case_id,
         "estimated_event_count": event_count,
+        # B.3: pinfo-verified event count (authoritative); event_count above
+        # is the log2timeline stdout-scraped value (informational only).
+        "verified_event_count": pinfo_event_count,
+        "pinfo_validation_error": pinfo_error,
         "duration_seconds": round(result.duration_seconds, 2),
         "execution_id": result.execution_id,
         "cache_hit": False,
@@ -394,8 +447,21 @@ def build_timeline(
         "requires_agent": "@timeline-analyst",
         "agent_instruction": (
             f"Use {storage_path} to run bounded timeline queries and correlate cross-artifact activity."
+            + (
+                f" Pinfo reports {pinfo_event_count} events."
+                if pinfo_event_count is not None
+                else ""
+            )
         ),
     }
+
+    # Fix 4: Record storage_path in execution record for coverage gate
+    # The gate requires storage_path field to validate timeline completion.
+    # Without this, build_timeline succeeds but gate still blocks.
+    _state_mgr.augment_execution(
+        execution_id=result.execution_id,
+        storage_path=storage_path,
+    )
     _state_mgr.cache_artifact(
         cache_key,
         {

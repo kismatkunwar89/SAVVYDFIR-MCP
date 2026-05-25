@@ -1,20 +1,147 @@
 {
-  "case_id": "HACKATHON-2026-WKSTN01",
+  "_doc_header": "SAVVYDFIR-MCP investigation manifest TEMPLATE. Replace every <PLACEHOLDER> with your case-specific values before launching claude. Copy this file to a case-specific name if you want to keep multiple cases.",
+  "case_id": "<YOUR-CASE-ID-here-no-spaces>",
   "mode": "blind",
   "investigation_goal": "Identify initial access vector, persistence mechanisms, lateral movement paths, credential theft, and data exfiltration. Document all findings with evidence artifacts.",
+  "investigative_taxonomy": {
+    "side": "victim",
+    "_side_options": [
+      "attacker",
+      "victim",
+      "neutral"
+    ],
+    "dispute_type": "intrusion_response",
+    "_dispute_type_examples": [
+      "intrusion_response",
+      "ransomware",
+      "insider_threat",
+      "credential_theft",
+      "data_exfiltration",
+      "financial_fraud",
+      "policy_violation"
+    ],
+    "expected_attack_class": "unknown",
+    "_attack_class_examples": [
+      "unknown",
+      "ransomware",
+      "credential_theft",
+      "lateral_movement",
+      "data_exfil",
+      "supply_chain",
+      "living_off_the_land"
+    ],
+    "os_in_scope": [
+      "Windows 10/11",
+      "Windows Server 2019/2022"
+    ],
+    "initial_keywords": [],
+    "_keywords_note": "Optional seed terms (process names, IPs, users, file paths) known prior to investigation. LLM uses these for first-pivot anchoring per DFIR + Diamond Model methodology."
+  },
   "disk_images": [
     {
-      "path": "/evidence/disk/base-wkstn-01-c-drive.E01",
-      "host": "wkstn-01",
+      "path": "/evidence/disk/<your-image-name>.E01",
+      "host": "<your-host-shortname>",
       "image_type": "E01"
     }
   ],
   "memory_dumps": [
     {
-      "path": "/evidence/memory/base-wkstn-01-mem.img",
-      "host": "wkstn-01"
+      "path": "/evidence/memory/<your-memory-image>.img",
+      "host": "<your-host-shortname>"
     }
   ],
   "known_iocs": [],
-  "max_iterations": 4
+  "max_iterations": 4,
+  "workflow_guidance": {
+    "description": "Staged-flow investigation per W1.7 (CR12 tri-agent consensus). Main-agent inline analysis is PRIMARY; specialist Task spawn is opt-in for cross-artifact isolation only. dotnet disk tools MUST run sequentially on 4-vCPU SIFT (repo-enforced via _recommended_batch_mode_for_tool).",
+    "phase_0_dip": {
+      "label": "Digital Investigative Plan",
+      "action": "Read investigative_taxonomy above. Form initial hypothesis seed from intel/scope. Defines investigation destination (prevents rabbit holes per Advanced Digital Forensics methodology).",
+      "duration": "~30 seconds"
+    },
+    "phase_1_volatile": {
+      "label": "Volatile Capture (RFC 3227 order \u2014 parallel-safe)",
+      "tools": [
+        "load_memory",
+        "list_processes",
+        "scan_processes",
+        "detect_injection",
+        "scan_network",
+        "list_dlls"
+      ],
+      "note": "Run in one batch. RFC 3227: CPU registers (microseconds) \u2192 process command lines, DLLs, open files (lost on restart) \u2192 disk. Memory analysis is the primary way to defeat Trojan-defense per DFIR; courts view failure to capture memory as negligent."
+    },
+    "phase_2_disk_staging": {
+      "label": "Disk Staging (SEQUENTIAL \u2014 dotnet 4-vCPU constraint)",
+      "tools_ordered": [
+        "mount_image",
+        "extract_mft_timeline",
+        "extract_usn_journal",
+        "summarize_evtx",
+        "extract_prefetch",
+        "get_amcache",
+        "extract_shimcache",
+        "extract_registry_run_keys",
+        "extract_srum",
+        "extract_windows_artifacts"
+      ],
+      "note": "Never run two dotnet tools in parallel. USN rolls over \u2014 do not delay. Each extraction injects relevant heuristic slice via Tier-1 (CR13 Option X) \u2014 agent receives forensic context with the data."
+    },
+    "phase_3_detection_anchors": {
+      "label": "Detection Anchors (deterministic)",
+      "tools": [
+        "sigma_hunt",
+        "hayabusa_hunt",
+        "analyze_vss"
+      ],
+      "note": "sigma_hunt MANDATORY (2,278 community rules). hayabusa_hunt OPTIONAL (3,700+ rules, MITRE matrix) \u2014 cross-engine validation when both run. analyze_vss only if sigma finds EID 1102 (log cleared)."
+    },
+    "phase_4_hypothesis_formation": {
+      "label": "AI Hypothesis Formation (LLM brain step)",
+      "tools": [
+        "prepare_hypothesis_context",
+        "record_hypotheses"
+      ],
+      "note": "Call prepare_hypothesis_context(case_id) to receive a bundle: taxonomy + volatile summary + detection_anchors (top-N, NOT raw 502) + execution_anomalies + open_corrections + data_gaps + applicable_heuristics (heuristic slices from .claude/agents/*-analyst.md with CTX provenance refs). Form 2-5 ranked hypotheses with attack_class + initial_pivot + expected_evidence_chain + source_context_refs. Persist via record_hypotheses(case_id, hypotheses=[...])."
+    },
+    "phase_5_pivot_loop": {
+      "label": "Diamond Model Pivot Loop",
+      "tools": [
+        "run_analysis",
+        "get_findings",
+        "find_temporal_clusters",
+        "get_heuristic",
+        "submit_finding"
+      ],
+      "note": "Per top hypothesis: drill targeted query around its pivot point via run_analysis. Vertical correlation (drill single Activity Thread) OR horizontal correlation (sweep across victims/artifacts). Call get_heuristic(artifact, topic) for on-demand DFIR depth. Cite heuristic_context_refs (CTX-NNN) on every finding for court-defensible provenance. Iterate until evidence chain converges OR all leads exhausted."
+    },
+    "phase_6_activity_thread": {
+      "label": "Activity Thread Mapping + Contradiction Resolution",
+      "tools": [
+        "compare_disk_and_memory",
+        "find_temporal_clusters"
+      ],
+      "note": "compare_disk_and_memory is MANDATORY (10 anti-forensics checks). Contradictions trigger CorrectionEvent audit rows (W1.5) \u2014 the structural self-correction proof for criterion #1 tiebreaker. Findings map to Cyber Kill Chain phases via mitre_techniques; empty phase = blindspot (Diamond Axiom 4 \u2014 every phase must have evidence)."
+    },
+    "phase_7_reporting": {
+      "label": "Reporting (TTP-first narrative)",
+      "tools": [
+        "generate_report",
+        "generate_graph",
+        "merge_host_graphs",
+        "build_reports_index"
+      ],
+      "note": "Report headlines TTP-level findings (per Pyramid of Pain \u2014 hunt TTPs > IOCs). Activity Thread section shows filled vs empty kill-chain phases (blindspot reporting). Mermaid evidence chain DAG cites CTX-NNN heuristic provenance + execution_id linkage for criterion #5 audit trail."
+    },
+    "opt_in_specialist_task_spawn": {
+      "label": "Cross-artifact subagent escape hatch",
+      "when": "synthesis or corroboration that benefits from context isolation",
+      "agents_available": [
+        "synthesis-analyst",
+        "corroboration-analyst",
+        "timeline-analyst"
+      ],
+      "note": "Subagents have a 32K output-token ceiling (anthropics/claude-code#25569). Use only when isolation outweighs the truncation risk. Artifact-level analysis stays inline."
+    }
+  }
 }

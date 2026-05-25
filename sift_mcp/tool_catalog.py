@@ -102,6 +102,9 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "disk.extract_mft_timeline": _entry(
         "disk.extract_mft_timeline", "disk", ("disk", "file_system", "timeline"), "artifact"
     ),
+    "disk.extract_usn_journal": _entry(
+        "disk.extract_usn_journal", "disk", ("disk", "file_system", "timeline"), "artifact"
+    ),
     "disk.list_deleted_files": _entry(
         "disk.list_deleted_files", "disk", ("disk", "file_system"), "artifact"
     ),
@@ -206,6 +209,12 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         "finding_candidates",
         query_tool="query_sigma_results",
     ),
+    "detection.hayabusa_hunt": _entry(
+        "detection.hayabusa_hunt",
+        "detection",
+        ("event_logs", "registry", "file_system", "network", "memory"),
+        "finding_candidates",
+    ),
     "detection.query_sigma_results": _entry(
         "detection.query_sigma_results",
         "detection",
@@ -253,6 +262,24 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     ),
     "analysis.run_analysis": _entry(
         "analysis.run_analysis", "analysis", ("state", "reporting"), "analysis"
+    ),
+    "correlation.find_temporal_clusters": _entry(
+        "correlation.find_temporal_clusters",
+        "correlation",
+        ("state", "timeline"),
+        "correlation",
+    ),
+    "analysis.prepare_hypothesis_context": _entry(
+        "analysis.prepare_hypothesis_context",
+        "analysis",
+        ("state", "reporting"),
+        "analysis",
+    ),
+    "state.record_hypotheses": _entry(
+        "state.record_hypotheses", "state", ("state",), "state"
+    ),
+    "analysis.get_heuristic": _entry(
+        "analysis.get_heuristic", "analysis", ("reporting",), "analysis"
     ),
 }
 

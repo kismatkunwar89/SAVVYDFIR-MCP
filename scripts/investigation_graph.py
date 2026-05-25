@@ -404,7 +404,48 @@ class GraphBuilder:
             self._add_edge(case_id, src_id, "contains", "contains")
 
         # ---- 3. Finding nodes + provenance edges ----------------------
-        for finding in findings:
+        # Noise filter: exclude raw_detector_hit (per-rule sigma_hunt hits)
+        # and low-confidence observations. A graph with 555 nodes /
+        # 564 edges (Run-8) was 95% Sigma raw hits, drowning the real
+        # attack chain. Keep: CONFIRMED, PROBABLE (>=0.80 confidence), or
+        # any non-raw_detector_hit with explicit ATT&CK tags.
+        filtered_findings: list[dict[str, Any]] = []
+        suppressed_count: int = 0
+        for f in findings:
+            kind = (f.get("finding_kind") or "").lower()
+            status = (f.get("finding_status") or "").upper()
+            conf = float(f.get("confidence") or 0.0)
+            mitre = (f.get("mitre_technique") or "").strip()
+            # Drop raw Sigma rule hits — preserve only the per-severity
+            # summary findings (which have finding_type=threat_detection
+            # and finding_kind=raw_detector_hit but represent thousands
+            # of underlying hits as a single rolled-up node).
+            is_raw_sigma = kind == "raw_detector_hit" and f.get("tool_name") == "sigma_hunt"
+            # Keep per-severity summary findings (they describe a bucket
+            # of hits, not a single rule) by checking the description
+            # text for the bucket marker.
+            description = f.get("description") or ""
+            is_severity_summary = is_raw_sigma and "severity bucket" in description.lower()
+            if is_raw_sigma and not is_severity_summary:
+                suppressed_count += 1
+                continue
+            # Drop low-confidence single-source observations unless they
+            # carry an ATT&CK tag (i.e., the analyst flagged them as
+            # significant despite low confidence).
+            if conf < 0.80 and status not in ("CONFIRMED", "PROBABLE") and not mitre:
+                suppressed_count += 1
+                continue
+            filtered_findings.append(f)
+        # Attach the suppression count to graph metadata so the HTML
+        # sidebar can show "X findings hidden by noise filter".
+        self._graph_meta = {  # used downstream in build() output
+            "total_findings": len(findings),
+            "graphed_findings": len(filtered_findings),
+            "suppressed_low_signal": suppressed_count,
+            "noise_filter": "raw_detector_hit (non-summary) + conf<0.80 + no ATT&CK",
+        }
+
+        for finding in filtered_findings:
             fid: str = finding.get("finding_id", "F-???")
             kind: str = (finding.get("evidence_kind") or "observation").upper()
             ftype: str = finding.get("finding_type", "unknown")

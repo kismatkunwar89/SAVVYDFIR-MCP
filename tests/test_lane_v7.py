@@ -895,6 +895,61 @@ class LaneV7Tests(unittest.TestCase):
                 any(g.get("classification") == "graph_missing" for g in updated["data_gaps"])
             )
 
+    def test_build_timeline_gate_blocks_without_successful_run(self) -> None:
+        """H.2 fix: build_timeline must complete successfully before report finalization."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state_path = Path(tmp_dir) / "state.json"
+            manager = CaseStateManager(str(state_path))
+            manager.load("CASE-TIMELINE-GATE")
+
+            # Scenario 1: No build_timeline execution at all
+            result = evaluate_ir_coverage_gate(
+                findings=[],
+                executions=[
+                    {"tool_name": "memory.list_processes", "exit_code": 0, "duration_seconds": 1.0,
+                     "audit_completed_entry_hash": "abc123"}
+                ],
+                sigma_result={},
+            )
+            self.assertFalse(result["ok"])
+            self.assertTrue(any(m["tool"] == "timeline.build_timeline" for m in result["missing"]))
+
+            # Scenario 2: build_timeline ran but failed (exit_code != 0)
+            result2 = evaluate_ir_coverage_gate(
+                findings=[],
+                executions=[
+                    {"tool_name": "timeline.build_timeline", "exit_code": 1, "duration_seconds": 5.0,
+                     "audit_completed_entry_hash": "def456", "storage_path": "/cases/x.plaso"}
+                ],
+                sigma_result={},
+            )
+            self.assertFalse(result2["ok"])
+            self.assertTrue(any(m["tool"] == "timeline.build_timeline" for m in result2["missing"]))
+
+            # Scenario 3: build_timeline succeeded but no storage_path
+            result3 = evaluate_ir_coverage_gate(
+                findings=[],
+                executions=[
+                    {"tool_name": "timeline.build_timeline", "exit_code": 0, "duration_seconds": 5.0,
+                     "audit_completed_entry_hash": "ghi789"}
+                ],
+                sigma_result={},
+            )
+            self.assertFalse(result3["ok"])
+            self.assertTrue(any(m["tool"] == "timeline.build_timeline" for m in result3["missing"]))
+
+            # Scenario 4: build_timeline succeeded with storage_path → gate passes
+            result4 = evaluate_ir_coverage_gate(
+                findings=[],
+                executions=[
+                    {"tool_name": "timeline.build_timeline", "exit_code": 0, "duration_seconds": 10.0,
+                     "audit_completed_entry_hash": "jkl012", "storage_path": "/cases/CASE-X/analysis/timeline.plaso"}
+                ],
+                sigma_result={},
+            )
+            # Gate won't be fully OK (missing other mandatory tools), but build_timeline shouldn't be in missing
+            self.assertFalse(any(m["tool"] == "timeline.build_timeline" for m in result4["missing"]))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,6 @@
 ---
 name: investigation-workflow
-description: Load when starting a new investigation or when unsure what phase to execute next. Defines the 5-phase DFIR methodology from evidence mounting through report generation, with decision points and quality gates.
+description: REQUIRED when the user says "start investigation", "investigate", "analyze case", "Read case-templates/manifest.json", references a manifest.json, or provides a SAVVYDFIR-MCP case_id. Defines the 5-phase DFIR methodology from evidence mounting through report generation, with mandatory tools, decision points, and quality gates that the report coverage gate enforces.
 allowed-tools:
   - Bash
 ---
@@ -8,6 +8,23 @@ allowed-tools:
 # Investigation Workflow - 5-Phase DFIR Methodology
 
 This workflow is an investigation loop, not a checklist. The parent agent keeps the case hypothesis, decides pivots, and writes the narrative. Specialist analysts handle large artifact context through durable CSV/storage handles.
+
+## MANDATORY TOOLS (gate-enforced — report will not finalize without these)
+
+The `evaluate_ir_coverage_gate` enforces tool coverage before `generate_report`. Enforcement strength varies by tool:
+
+| Tool | Enforcement | Why it's mandatory | Common skip-pattern that we explicitly reject |
+|------|-------------|-------------------|----------------------------------------------|
+| `list_processes`, `scan_processes`, `scan_network` | **Presence + opportunistic success** (failed retry triggers re-run) | Universal memory baseline | Skipping any breaks DKOM detection |
+| `extract_mft_timeline`, `summarize_evtx`, `extract_registry_run_keys`, `get_amcache`, `extract_prefetch` | **Presence + opportunistic success** | Universal disk baseline | "Memory was enough" reasoning |
+| **`sigma_hunt`** (Chainsaw rule engine) | **Hard success** — requires exit_code 0, duration > 0, audit completion hash, AND durable Chainsaw output (output_path or finding_ids_generated populated) | Rule-based EVTX detection. `sigma_scan` is an internal anomaly post-processor — NOT a substitute. Run2 evidence: calling only `sigma_scan` produces zero rule-based detections. | Calling `sigma_scan` and skipping `sigma_hunt` |
+| Conditional `detect_injection`, `list_dlls`, `analyze_vss`, `extract_shimcache`, `extract_srum` | Triggered by psscan-only PIDs, network followup PIDs, anti-forensics signals | Same enforcement as their class above | Ignoring `next_required_tool` returned by earlier tools |
+
+**Enforcement specifics**:
+- **Hard success** (sigma_hunt): the gate's `_needs_sigma_hunt_run` rejects failed, timed-out, zero-duration, or output-less runs. There is no presence-only fallback.
+- **Presence + opportunistic success** (everything else): the gate accepts the tool if its name appears in executions. BUT if any matching execution has populated success metadata (exit_code/duration_seconds) AND none of them succeeded, the gate demands a retry. This protects legacy fixtures while still catching new failures.
+
+If the parent agent attempts `generate_report` before these are satisfied, the gate returns `next_required_tool` — call THAT tool, do not retry generate_report.
 
 ## Non-Negotiables
 - Use MCP tools for forensic work. Shell fallback is only for classifying a tool gap.
@@ -17,6 +34,93 @@ This workflow is an investigation loop, not a checklist. The parent agent keeps 
 - If a parser returns `needs_extract_windows_artifacts=true`, call `extract_windows_artifacts(...)` and rerun the parser on the durable `/cases/<case_id>/artifacts/raw/...` path.
 - If `artifact_persistence.status="transient"` but `csv_path` exists, the CSV is still the data handle. Delegate on the handle; do not manually extract with `icat` or direct `dotnet`.
 - Full integrity hashing is deferred in fast IR unless manifest hashes exist, evidence access is inconsistent, or the operator asks for it.
+
+## Analysis Orchestration Contract (DO NOT STALL)
+
+The hook system blocks the parent's next non-bypass tool call until the artifact's
+lane is **recorded** via `record_analysis_lane(...)`. Main-agent inline analysis
+is the **primary path** per W1.6.1 + W1.7 architecture; specialist Task spawn is
+opt-in for cross-artifact isolation only (synthesis/corroboration). Always finish
+with the recording step in the same turn.
+
+### Primary path — Main-agent inline analysis
+
+1. Read the **`applicable_heuristics`** block in the extraction tool's response.
+   The W1.7 heuristic-injection layer delivers the relevant DFIR slice from
+   `.claude/agents/<artifact>-analyst.md` directly in the payload, with a
+   `ctx_id` (CTX-NNN) for provenance.
+2. Read the durable handle (`csv_path`, `storage_path`, raw artifact directory).
+3. Run focused `run_analysis(data_path=<handle>, query=...)` queries shaped by
+   the heuristics. Each call gets an `execution_id` + audit row.
+4. Persist evidence-backed conclusions via `submit_finding(...)` or
+   `add_finding(...)`. Cite the heuristic via `heuristic_context_refs=["CTX-N"]`.
+5. Call `record_analysis_lane(case_id=..., lane_id=<exact id from the hook>,
+   status="COMPLETE" or "COMPLETE_WITH_GAPS", assigned_agent="main-agent",
+   execution_ids=[...], finding_ids=[...], summary=<one sentence>)`.
+
+For multi-artifact hypothesis formation: call `prepare_hypothesis_context(case_id)`
+to receive a ranked bundle (volatile + detection + heuristic CTX-cited slices),
+then `record_hypotheses(case_id, hypotheses=[...])` to persist your hypotheses
+for audit. For pivot-loop depth, call `get_heuristic(artifact, topic)`.
+
+### Synthesis SOP — main-agent inline (MANDATORY before generate_report)
+
+Per W1.7 Run 2 consensus 2026-05-24 (peer reviewer+peer reviewer signed) — delegate synthesis
+is opt-in; do not wait for `@synthesis-analyst`. Run 2 produced 0 CONFIRMED
+because the specialist Task hung and the operator was forced into
+`allow_partial=True`, which previously bypassed quality gates.
+
+After all 4 prereq lanes (`memory`, `disk_execution_persistence`, `event_auth`,
+`timeline_correlation`) reach `COMPLETE` or `COMPLETE_WITH_GAPS`:
+
+1. `compare_disk_and_memory(case_id)` — MANDATORY.
+2. `find_temporal_clusters(case_id, window_seconds=300, min_sources=2, min_events=3)`.
+3. For each 3+ source cluster, promote via `submit_finding(...)` with:
+   `evidence_kind="inference"` (NOT `"corroborated"` — valid enum is
+   `OBSERVATION` / `INFERENCE` / `HYPOTHESIS` / `REJECTED` only),
+   `corroborated_by=[<F-NNN finding_ids>]`,
+   `status="CONFIRMED"`,
+   `source_execution_id=<resolved audit row>`,
+   `alternative_hypothesis=<benign explanation>`,
+   `evidence_against_it=[<specific observations>]`,
+   `disposition="ruled_out"` (or `"not_applicable"` + reason).
+   `not_resolved` / `partially_plausible` will NOT promote to CONFIRMED.
+   Response includes `confirmed_eligibility: {eligible, missing, gate_blocks}`
+   — read it; resubmit if `eligible: false` and you wanted CONFIRMED.
+4. `record_analysis_lane(lane_id="synthesis_corroboration", assigned_agent="main-agent", status="COMPLETE", execution_ids=[...], finding_ids=[<promoted ids>], summary=...)`.
+
+### Opt-in escape hatch — Task subagent spawn
+
+ONLY for cross-artifact synthesis or corroboration that benefits from context
+isolation:
+
+1. Spawn `@synthesis-analyst`, `@corroboration-analyst`, or `@timeline-analyst`
+   via `Task(...)` **synchronously** (`run_in_background=false`). When Task returns,
+   the subagent has finished — there is no "still running" state.
+2. Parse the subagent's JSON and call `record_analysis_lane(...,
+   assigned_agent=<that-specialist>, ...)` in the same response.
+
+Do NOT spawn artifact specialists (`@mft-analyst`, `@evtx-analyst`, etc.) —
+they're retired from default orchestration per W1.6.1 (32K Task ceiling caused
+truncation in 7/8 prior runs). Artifact analysis stays inline.
+
+### Hard rules (apply to BOTH paths)
+
+- **Strict lane match.** The hook clears the lane only when the recorded `lane_id`
+  equals the pending `lane_id` exactly. Wrong lane = trigger unprocessed = next
+  non-bypass tool call blocks again.
+- **Same turn.** Run analysis + `record_analysis_lane` in the same response.
+- **No artifact collection before recording.** Once a lane is pending, do not call
+  `extract_*`, `summarize_*`, `get_amcache`, etc. until the lane is recorded.
+- **Multiple lanes queue serially.** If after recording one lane another is pending
+  (e.g. `summarize_evtx` triggers `event_auth`), handle that next.
+- **Free-text "investigation summary" is not a completion.** Producing a chat
+  summary instead of `generate_report(...)` leaves the case `IN_PROGRESS` with no
+  `report.json`. The acceptance criterion is `reports/{case_id}/report.html`
+  written by `generate_report`.
+
+If you ever feel "I should wait for the user before checking" — you are wrong.
+Run the analysis, record the lane, and continue.
 
 ## Specialist Contract
 Specialists return compact JSON, not prose dumps. The `SubagentStop` hook enforces this contract when a delegate is pending.

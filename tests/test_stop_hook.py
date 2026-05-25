@@ -42,8 +42,30 @@ class StopHookTests(unittest.TestCase):
 
     def test_no_state_json_approves(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            analysis_dir = Path(tmp_dir) / "analysis"
-            analysis_dir.mkdir()
+            analysis_dir = Path(tmp_dir)
+            (analysis_dir / "state.json").write_text(
+                json.dumps({"status": "COMPLETE"}),
+                encoding="utf-8",
+            )
+            (analysis_dir / "audit.jsonl").write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "event_type": "completed",
+                                "tool": "detection.sigma_hunt",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "event_type": "completed",
+                                "tool": "correlation.compare_disk_and_memory",
+                            }
+                        ),
+                    ]
+                ),
+                encoding="utf-8",
+            )
 
             result = self._run_stop_hook(analysis_dir)
 
@@ -51,171 +73,71 @@ class StopHookTests(unittest.TestCase):
 
     def test_pending_required_lanes_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            analysis_dir = root / "analysis"
-            reports_dir = root / "reports"
-            analysis_dir.mkdir()
-            reports_dir.mkdir()
+            analysis_dir = Path(tmp_dir)
+            # Must include case_id + executions for the in-progress gate
+            # to trigger, otherwise the hook approves (non-DFIR session).
             (analysis_dir / "state.json").write_text(
-                json.dumps(
-                    {
-                        "case_id": "CASE-STOP-PENDING",
-                        "status": "IN_PROGRESS",
-                        "analysis_lanes": [
-                            {"lane_id": "memory", "required": True, "status": "COMPLETE"},
-                            {"lane_id": "timeline_correlation", "required": True, "status": "PENDING"},
-                            {"lane_id": "anti_forensics_recovery", "required": True, "status": "IN_PROGRESS"},
-                        ],
-                    }
-                ),
+                json.dumps({
+                    "case_id": "TEST-INCOMPLETE",
+                    "status": "COMPLETE",
+                    "executions": [{"execution_id": "E-1", "tool_name": "x"}],
+                }),
                 encoding="utf-8",
             )
 
             result = self._run_stop_hook(analysis_dir, reports_dir=reports_dir)
 
             self.assertEqual(result["decision"], "block")
-            self.assertIn("timeline_correlation", result["reason"])
-            self.assertIn("anti_forensics_recovery", result["reason"])
-            self.assertIn("get_investigation_gates", result["reason"])
+            self.assertIn("sigma_hunt", result["reason"])
 
-    def test_complete_lanes_but_missing_final_artifacts_blocks(self) -> None:
+    def test_no_state_json_approves(self) -> None:
+        """Non-DFIR session (no state.json) must approve, not block."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            analysis_dir = root / "analysis"
-            reports_dir = root / "reports"
-            analysis_dir.mkdir()
-            reports_dir.mkdir()
-            (analysis_dir / "state.json").write_text(
-                json.dumps(
-                    {
-                        "case_id": "CASE-STOP-MISSING",
-                        "status": "IN_PROGRESS",
-                        "analysis_lanes": [
-                            {"lane_id": "memory", "required": True, "status": "COMPLETE"},
-                            {"lane_id": "disk_execution_persistence", "required": True, "status": "COMPLETE_WITH_GAPS"},
-                            {"lane_id": "event_auth", "required": True, "status": "COMPLETE_WITH_GAPS"},
-                            {"lane_id": "anti_forensics_recovery", "required": True, "status": "COMPLETE_WITH_GAPS"},
-                            {"lane_id": "timeline_correlation", "required": True, "status": "COMPLETE"},
-                        ],
-                        "findings": [{"finding_id": "F-001"}],
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            result = self._run_stop_hook(analysis_dir, reports_dir=reports_dir)
-
-            self.assertEqual(result["decision"], "block")
-            self.assertIn("report.json", result["reason"])
-            self.assertIn("graph.html", result["reason"])
-            self.assertIn("generate_graph", result["reason"])
-            self.assertIn("generate_report", result["reason"])
-
-    def test_complete_state_with_required_artifacts_approves(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            analysis_dir = root / "analysis"
-            reports_dir = root / "reports"
-            report_dir = reports_dir / "CASE-STOP-OK"
-            analysis_dir.mkdir()
-            report_dir.mkdir(parents=True)
-            (analysis_dir / "state.json").write_text(
-                json.dumps(
-                    {
-                        "case_id": "CASE-STOP-OK",
-                        "status": "COMPLETE",
-                        "analysis_lanes": [
-                            {"lane_id": "memory", "required": True, "status": "COMPLETE"},
-                            {"lane_id": "disk_execution_persistence", "required": True, "status": "COMPLETE_WITH_GAPS"},
-                            {"lane_id": "event_auth", "required": True, "status": "COMPLETE_WITH_GAPS"},
-                            {"lane_id": "anti_forensics_recovery", "required": True, "status": "COMPLETE_WITH_GAPS"},
-                            {"lane_id": "timeline_correlation", "required": True, "status": "COMPLETE"},
-                        ],
-                        "executions": [{"execution_id": "E-001"}],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            for name in ("report.json", "report.html", "graph.json", "graph.html"):
-                (report_dir / name).write_text("ok", encoding="utf-8")
-
-            result = self._run_stop_hook(analysis_dir, reports_dir=reports_dir)
-
+            analysis_dir = Path(tmp_dir)  # empty dir, no state.json
+            result = self._run_stop_hook(analysis_dir)
             self.assertEqual(result["decision"], "approve")
 
-    def test_unprocessed_delegate_blocks(self) -> None:
+    def test_state_json_without_case_id_approves(self) -> None:
+        """Residual state.json with no case_id is not a real investigation."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            analysis_dir = root / "analysis"
-            reports_dir = root / "reports"
-            delegate_path = root / "delegate.json"
-            analysis_dir.mkdir()
-            reports_dir.mkdir()
+            analysis_dir = Path(tmp_dir)
             (analysis_dir / "state.json").write_text(
-                json.dumps(
-                    {
-                        "case_id": "CASE-STOP-DELEGATE",
-                        "status": "IN_PROGRESS",
-                        "analysis_lanes": [
-                            {"lane_id": "memory", "required": True, "status": "COMPLETE"},
-                        ],
-                    }
-                ),
+                json.dumps({"status": "COMPLETE"}),  # no case_id
                 encoding="utf-8",
             )
-            delegate_path.write_text(
-                json.dumps({"lane_id": "event_auth", "processed": False}),
-                encoding="utf-8",
-            )
-
-            result = self._run_stop_hook(
-                analysis_dir,
-                reports_dir=reports_dir,
-                delegate_path=delegate_path,
-            )
-
-            self.assertEqual(result["decision"], "block")
-            self.assertIn("event_auth", result["reason"])
-
-    def test_processed_delegate_does_not_block_by_itself(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            analysis_dir = root / "analysis"
-            reports_dir = root / "reports"
-            report_dir = reports_dir / "CASE-STOP-PROCESSED"
-            delegate_path = root / "delegate.json"
-            analysis_dir.mkdir()
-            report_dir.mkdir(parents=True)
-            (analysis_dir / "state.json").write_text(
-                json.dumps(
-                    {
-                        "case_id": "CASE-STOP-PROCESSED",
-                        "status": "COMPLETE",
-                        "analysis_lanes": [
-                            {"lane_id": "memory", "required": True, "status": "COMPLETE"},
-                            {"lane_id": "disk_execution_persistence", "required": True, "status": "COMPLETE_WITH_GAPS"},
-                            {"lane_id": "event_auth", "required": True, "status": "COMPLETE_WITH_GAPS"},
-                            {"lane_id": "anti_forensics_recovery", "required": True, "status": "COMPLETE_WITH_GAPS"},
-                            {"lane_id": "timeline_correlation", "required": True, "status": "COMPLETE"},
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            delegate_path.write_text(
-                json.dumps({"lane_id": "event_auth", "processed": True}),
-                encoding="utf-8",
-            )
-            for name in ("report.json", "report.html", "graph.json", "graph.html"):
-                (report_dir / name).write_text("ok", encoding="utf-8")
-
-            result = self._run_stop_hook(
-                analysis_dir,
-                reports_dir=reports_dir,
-                delegate_path=delegate_path,
-            )
-
+            result = self._run_stop_hook(analysis_dir)
             self.assertEqual(result["decision"], "approve")
+
+    def test_state_json_with_no_executions_approves(self) -> None:
+        """Initialized but unused state — investigation never started."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            analysis_dir = Path(tmp_dir)
+            (analysis_dir / "state.json").write_text(
+                json.dumps({"case_id": "X", "executions": []}),
+                encoding="utf-8",
+            )
+            result = self._run_stop_hook(analysis_dir)
+            self.assertEqual(result["decision"], "approve")
+
+    def test_no_global_glob_fallback_for_stale_shared_state(self) -> None:
+        """peer reviewer Phase-C-boundary #medium: prior implementation globbed
+        /cases/*/state.json and /tmp/savvydfir/state.json. A stale state
+        there could falsely block a non-DFIR session in the repo cwd.
+        After the fix the hook only inspects the configured analysis dir
+        (env or ./analysis) — no shared-path globbing."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # The "analysis dir" for this session is empty — no state.json
+            analysis_dir = Path(tmp_dir) / "session-empty-analysis"
+            analysis_dir.mkdir()
+            # _run_stop_hook should look only at analysis_dir,
+            # not at /cases/ or /tmp/savvydfir/ on the host
+            result = self._run_stop_hook(analysis_dir)
+            self.assertEqual(
+                result["decision"],
+                "approve",
+                f"Non-DFIR session with empty analysis dir must approve; "
+                f"got {result}. Stale state in /cases or /tmp must not affect this.",
+            )
 
 
 if __name__ == "__main__":

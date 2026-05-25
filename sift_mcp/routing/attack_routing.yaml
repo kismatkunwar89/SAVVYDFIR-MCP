@@ -1,0 +1,120 @@
+# ATT&CK Technique → Artifact Collection Routing
+# Schema: technique_id → {name, tactics, required_artifacts, corroboration_sources, detection_notes}
+#
+# Purpose: Case-agnostic playbook for artifact-driven investigation routing.
+# When Claude identifies an ATT&CK technique, this maps to the artifacts needed
+# for confirmation and the corroboration sources that stack evidence.
+
+T1566.001:
+  name: "Phishing: Spearphishing Attachment"
+  tactics:
+    - TA0001  # Initial Access
+  required_artifacts:
+    - disk.extract_prefetch         # Execution of email client + attachment handlers
+    - disk.get_amcache              # SHA-1 hash of delivered attachment
+    - disk.extract_mft_timeline     # File creation timestamps for attachments
+    - disk.summarize_evtx           # EID 4688 (process creation) for email client
+    - memory.list_processes         # Running email client + spawned children
+    - memory.scan_network           # Email server connections
+  corroboration_sources:
+    - EVTX: "Security.evtx EID 4688 process creation with parent=outlook.exe/thunderbird"
+    - Prefetch: "Execution count + last run timestamp for attachment .exe/.ps1"
+    - Amcache: "Program entry with File Path matching attachment temp location"
+    - MFT: "$SI vs $FN timestamp mismatch (timestomping of delivered file)"
+    - Network: "Established connections to SMTP/IMAP servers during incident window"
+  detection_notes: |
+    Negative space: No Prefetch for suspicious binary → launched via script or deleted immediately.
+    Absent EVTX 4688 → audit policy disabled or logs cleared → run analyze_vss for shadow copy recovery.
+    Corroboration threshold: 3+ sources required (email artifact delivery is highly anti-forensic).
+
+T1059.001:
+  name: "Command and Scripting Interpreter: PowerShell"
+  tactics:
+    - TA0002  # Execution
+  required_artifacts:
+    - disk.extract_prefetch         # powershell.exe / powershell_ise.exe execution
+    - disk.summarize_evtx           # EID 4104 (script block logging), 4103 (module logging)
+    - disk.extract_registry_run_keys # PowerShell profile persistence
+    - memory.list_processes         # powershell.exe running with suspicious parent
+    - memory.detect_injection       # Reflective PE injection common in PS malware
+    - detection.extract_srum        # Bytes sent per powershell.exe process (exfil quantification)
+  corroboration_sources:
+    - EVTX: "Microsoft-Windows-PowerShell/Operational EID 4104 script block with encoded commands"
+    - Prefetch: "POWERSHELL.EXE-*.pf with last run timestamp in incident window"
+    - Registry: "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run with powershell.exe command"
+    - Memory: "powershell.exe child of winword.exe / excel.exe (macro execution)"
+    - SRUM: "Network usage for powershell.exe with >10MB bytes_sent (C2 exfil)"
+  detection_notes: |
+    Encoded commands: base64 in EVTX 4104 → decode before analyzing.
+    DownloadString pattern: look for System.Net.WebClient in script blocks.
+    Absent script block logging: Group Policy was not enabled → only module logging (EID 4103) available.
+    Process tree context: powershell.exe parent matters — winlogon/services suspicious, explorer.exe normal.
+
+T1003.001:
+  name: "OS Credential Dumping: LSASS Memory"
+  tactics:
+    - TA0006  # Credential Access
+  required_artifacts:
+    - disk.summarize_evtx           # EID 4656 (handle to lsass.exe), EID 10 (process access)
+    - memory.list_processes         # mimikatz / procdump / comsvcs.dll in process list
+    - memory.detect_injection       # Code injection into lsass.exe
+    - memory.scan_processes         # Unsigned processes accessing lsass handle
+    - disk.extract_mft_timeline     # Creation of lsass.dmp or similar dump files
+    - detection.extract_srum        # Network activity post-credential dump (lateral movement)
+  corroboration_sources:
+    - EVTX: "Security.evtx EID 4656 Object_Name='\\Device\\HarddiskVolume*\\Windows\\System32\\lsass.exe'"
+    - EVTX: "Sysmon EID 10 TargetImage=lsass.exe with GrantedAccess=0x1010/0x1410 (PROCESS_VM_READ)"
+    - Memory: "mimikatz.exe / procdump.exe / rundll32.exe comsvcs.dll in pslist"
+    - MFT: "lsass*.dmp file created with FN timestamp matching incident window"
+    - Registry: "ShimCache entry for mimikatz.exe (proves file existed on disk)"
+  detection_notes: |
+    Handle 0x1010/0x1410 = PROCESS_VM_READ + PROCESS_VM_OPERATION → credential dump.
+    comsvcs.dll MiniDumpW: legitimate Windows DLL abused via rundll32 → harder to detect.
+    Absent Sysmon: Security.evtx EID 4656 may not have Object_Name detail → correlation weak.
+    Post-dump: lateral movement within 10 minutes → use SRUM + scan_network to quantify.
+
+T1021.001:
+  name: "Remote Services: Remote Desktop Protocol"
+  tactics:
+    - TA0008  # Lateral Movement
+  required_artifacts:
+    - disk.summarize_evtx           # EID 4624 (logon type 10), EID 4778/4779 (RDP session)
+    - disk.extract_registry_run_keys # Terminal Services keys (RDP history)
+    - memory.scan_network           # Established RDP connections (port 3389)
+    - disk.extract_mft_timeline     # Bitmap cache files in user profile
+    - detection.extract_shimcache   # mstsc.exe execution (client-side evidence)
+  corroboration_sources:
+    - EVTX: "Security.evtx EID 4624 Logon_Type=10 Source_Network_Address=<external IP>"
+    - EVTX: "Security.evtx EID 4778 Session_Name='RDP-Tcp#*' with external source"
+    - Registry: "HKCU\\Software\\Microsoft\\Terminal Server Client\\Servers (MRU list)"
+    - Memory: "Established TCP connections on port 3389 to/from unexpected IPs"
+    - MFT: "Bitmap cache files in AppData\\Local\\Microsoft\\Terminal Server Client\\Cache"
+  detection_notes: |
+    Logon Type 10 = Remote Interactive (RDP) — distinguish from Type 3 (network share).
+    EID 4778: session reconnect. EID 4779: session disconnect. Pair these for session duration.
+    Bitmap cache: thumbnail images of attacker's screen rendered on victim → visual evidence.
+    Missing EVTX 4624: logs cleared → use registry MRU + bitmap cache as backup corroboration.
+    Cross-host: same source IP in 4624 logs on multiple hosts → confirmed lateral movement.
+
+T1070.001:
+  name: "Indicator Removal: Clear Windows Event Logs"
+  tactics:
+    - TA0005  # Defense Evasion
+  required_artifacts:
+    - disk.summarize_evtx           # EID 1102 (Security log cleared), EID 104 (System log cleared)
+    - detection.analyze_vss         # Volume Shadow Copy enumeration for intact logs
+    - disk.extract_mft_timeline     # Deletion timestamps for .evtx files
+    - disk.extract_registry_run_keys # Registry keys holding log retention policy
+    - memory.list_processes         # wevtutil.exe / powershell.exe running during incident
+  corroboration_sources:
+    - EVTX: "Security.evtx EID 1102 with Subject_Security_ID (who cleared the log)"
+    - EVTX: "System.evtx EID 104 (log cleared event from System log)"
+    - VSS: "Shadow copy with creation timestamp pre-dating EID 1102 → intact Security.evtx"
+    - MFT: "Security.evtx $FN record shows deletion timestamp → attacker deleted file, not just cleared"
+    - Prefetch: "WEVTUTIL.EXE-*.pf with last run timestamp matching EID 1102 timestamp"
+  detection_notes: |
+    EID 1102 records WHO cleared the log (Subject_Security_ID) — critical attribution.
+    VSS analysis: if shadow copy exists, extract Security.evtx from shadow store for log recovery.
+    Cleared vs Deleted: EID 1102 = wevtutil cl, file still exists. Missing .evtx file = attacker rm.
+    Post-clearing: attacker often clears logs AFTER lateral movement → use VSS to recover pre-attack state.
+    Cross-artifact: Prefetch for wevtutil.exe corroborates execution timeline.

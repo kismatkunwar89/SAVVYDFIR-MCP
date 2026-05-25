@@ -71,6 +71,12 @@ class Phase6ToolCatalogTests(unittest.TestCase):
 
                         return _decorator
 
+                    def resource(self, *args, **kwargs):
+                        def _decorator(func):
+                            return func
+
+                        return _decorator
+
                 sys.modules["fastmcp"] = types.SimpleNamespace(FastMCP=_FakeFastMCP)
             if "sift_mcp.server" in sys.modules:
                 server = importlib.reload(sys.modules["sift_mcp.server"])

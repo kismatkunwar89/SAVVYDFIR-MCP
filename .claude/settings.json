@@ -1,5 +1,6 @@
 {
   "permissions": {
+    "defaultMode": "auto",
     "allow": [
       "Bash(fls:*)",
       "Bash(mmls:*)",
@@ -41,6 +42,8 @@
       "Bash(tar:*)",
       "Bash(python3:*)",
       "Bash(python3.10:*)",
+      "Bash(pytest:*)",
+      "Bash(python3 -m pytest:*)",
       "Bash(head:*)",
       "Bash(tail:*)",
       "Bash(wc:*)",
@@ -57,7 +60,14 @@
       "Bash(python3 scripts/run_investigation.py *)",
       "Bash(python3 scripts/merge_graphs.py *)",
       "Bash(python3 scripts/build_index.py *)",
-      "Bash(sshpass -p 'SiftR00t2026!' ssh -o StrictHostKeyChecking=no root@5.78.204.232 \"cat /root/analysis/audit.jsonl | jq -r 'select\\(.command_line!=null\\) | .command_line' | grep -E 'analyst|agent' || echo 'No agent invocations found'\")"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(rm -f analysis/.savvydfir_waiver)",
+      "Bash(rm -f analysis/.savvydfir_waiver.*)",
+      "mcp__savvydfir__*",
+      "Agent",
+      "Agent(*)"
     ],
     "deny": [
       "Bash(rm:*)",
@@ -75,6 +85,28 @@
   },
   "model": "claude-sonnet-4-5",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/session-start.py"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__savvydfir__generate_report|mcp__savvydfir__record_analysis_lane",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/hooks/workflow-enforce-pre.py"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|Bash",
@@ -86,22 +118,20 @@
         ]
       },
       {
-        "matcher": "",
+        "matcher": "mcp__savvydfir__mount_image|mcp__savvydfir__extract_mft_timeline|mcp__savvydfir__extract_usn_journal|mcp__savvydfir__summarize_evtx|mcp__savvydfir__extract_prefetch|mcp__savvydfir__get_amcache|mcp__savvydfir__extract_shimcache|mcp__savvydfir__extract_registry_run_keys|mcp__savvydfir__extract_srum|mcp__savvydfir__sigma_hunt|mcp__savvydfir__compare_disk_and_memory",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 scripts/agent_trigger.py"
+            "command": "python3 .claude/hooks/workflow-enforce-post.py"
           }
         ]
-      }
-    ],
-    "SubagentStop": [
+      },
       {
         "matcher": "",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 scripts/agent_trigger.py --subagent-stop"
+            "command": "python3 scripts/agent_trigger.py"
           }
         ]
       }

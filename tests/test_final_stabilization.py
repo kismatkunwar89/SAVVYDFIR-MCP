@@ -27,6 +27,12 @@ class _DummyFastMCP:
 
         return decorator
 
+    def resource(self, *args, **kwargs):
+        def decorator(func):
+            return func
+
+        return decorator
+
 
 def _load_server_for_test(analysis_dir: Path):
     sys.modules.pop("sift_mcp.server", None)

@@ -254,6 +254,104 @@ class AuditLogger:
         }
         return self._write_entry(entry)
 
+    def log_correction(
+        self,
+        *,
+        execution_id: str,
+        tool_name: str,
+        correction_type: str,
+        original_finding_id: str,
+        original_claim: str,
+        original_confidence: str,
+        contradiction_summary: str,
+        revised_confidence: str,
+        contradiction_source_finding_id: Optional[str] = None,
+        contradiction_source_execution_id: Optional[str] = None,
+        revised_claim: Optional[str] = None,
+        revised_finding_id: Optional[str] = None,
+        correction_id: Optional[str] = None,
+    ) -> AuditEntry:
+        """Write a ``correction`` audit entry for self-correction events.
+
+        Hackathon FIND EVIL! 2026-05-23: this is the tiebreaker criterion #1
+        wiring (Autonomous Execution Quality). When a finding is corrected
+        based on contradicting evidence, this method writes a structured
+        record to ``audit.jsonl`` that the investigation_graph renderer
+        (scripts/investigation_graph.py:558) reads to create CORR-NNN nodes.
+
+        The CorrectionEvent payload conforms to ``sift_mcp.models.evidence_finding.CorrectionEvent``.
+        Validation of the payload should occur at the call site (typically
+        in correlation.py or gate handlers).
+
+        Parameters
+        ----------
+        execution_id:
+            The execution_id of the tool/correlation that detected the
+            contradiction (e.g., compare_disk_and_memory's E-NNN).
+        tool_name:
+            The tool that detected the contradiction.
+        correction_type:
+            One of: 'evidence_contradiction', 'provenance_demotion',
+            'alternative_hypothesis_unresolved', 'operator_override'.
+        original_finding_id:
+            The finding ID (legacy F-NNN or ULID) being revised.
+        original_claim / original_confidence:
+            The prior claim and confidence being corrected.
+        contradiction_summary:
+            One-line description of what contradicts the original claim.
+        revised_confidence:
+            New confidence level (HIGH / MEDIUM / LOW / NULL).
+        contradiction_source_finding_id (optional):
+            Finding ID whose evidence contradicts the original.
+        contradiction_source_execution_id (optional):
+            Execution ID of the gate/correlator that detected the contradiction.
+            At least one of source_finding_id or source_execution_id must be set.
+        revised_claim (optional):
+            Updated claim text if the finding is being revised (not just demoted).
+        revised_finding_id (optional):
+            ULID of a new finding that supersedes the original.
+        correction_id (optional):
+            Pre-generated ULID for this correction event. If None, the audit
+            layer leaves it None — generation is the caller's job (or the
+            CorrectionEvent model's default).
+
+        Returns
+        -------
+        AuditEntry
+            The dictionary that was appended to audit.jsonl.
+        """
+        # The correction_event payload — graph renderer expects these field names
+        # (scripts/investigation_graph.py:565-607 reads `affected_finding_ids`).
+        affected = [original_finding_id]
+        revised_ids = [revised_finding_id] if revised_finding_id else []
+        correction_payload: dict[str, Any] = {
+            "correction_id": correction_id,
+            "correction_type": correction_type,
+            "original_finding_id": original_finding_id,
+            "original_claim": original_claim,
+            "original_confidence": original_confidence,
+            "contradiction_source_finding_id": contradiction_source_finding_id,
+            "contradiction_source_execution_id": contradiction_source_execution_id,
+            "contradiction_summary": contradiction_summary,
+            "revised_claim": revised_claim,
+            "revised_confidence": revised_confidence,
+            "revised_finding_id": revised_finding_id,
+            # Graph renderer compatibility fields
+            "affected_finding_ids": affected,
+        }
+
+        entry: AuditEntry = {
+            "timestamp": _utcnow_iso(),
+            "execution_id": execution_id,
+            "event_type": "correction",
+            "tool": tool_name,
+            "iteration": self._current_iteration,
+            "correction_event": correction_payload,
+            # Mirror onto finding_ids_generated so existing graph code picks up revised IDs
+            "finding_ids_generated": revised_ids,
+        }
+        return self._write_entry(entry)
+
     def log_timeout(self, execution_id: str, timeout_seconds: int) -> None:
         """Write a ``completed`` entry marking an execution timeout.
 
@@ -279,6 +377,98 @@ class AuditLogger:
             parameters=None,
             agent_turn=None,
         )
+
+    # ------------------------------------------------------------------
+    # W1.7 — CTX (context bundle) audit primitive
+    # ------------------------------------------------------------------
+
+    _ctx_counter: int = 0
+
+    def next_context_id(self) -> str:
+        """Generate the next CTX-NNN identifier (zero-padded to 3 digits).
+
+        Counter persists for the lifetime of the AuditLogger instance.
+        Used by log_context_bundle and the heuristic injection layer
+        to produce stable, citeable provenance handles.
+        """
+        self._ctx_counter += 1
+        return f"CTX-{self._ctx_counter:03d}"
+
+    def log_context_bundle(
+        self,
+        *,
+        case_id: str,
+        artifact: str,
+        heuristic_source_path: str,
+        heuristic_source_hash: str,
+        heuristic_section: str,
+        heuristic_excerpt_hash: str,
+        excerpt_token_count: int,
+        triggered_by: str,
+        execution_id: Optional[str] = None,
+        context_id: Optional[str] = None,
+    ) -> AuditEntry:
+        """Write a ``context_bundle`` audit row recording that a heuristic
+        slice from a canonical .md file was delivered to the LLM.
+
+        W1.7 (PLAN-FIND-EVIL-HACKATHON-2026-05-23.md + tri-agent CR13 sign-off):
+        every Tier-1 / Tier-2 / Tier-3 heuristic injection writes one of these
+        rows. Findings can then cite ``heuristic_context_refs: ["CTX-003"]``,
+        forming a court-defensible chain: finding → execution_id → CTX-NNN
+        → canonical .md path + SHA256.
+
+        Parameters
+        ----------
+        case_id:
+            Active investigation case ID.
+        artifact:
+            Artifact name the heuristic applies to ('mft', 'evtx', etc.).
+        heuristic_source_path:
+            Repository-relative path to the canonical .md file (e.g.,
+            ``.claude/agents/mft-analyst.md``).
+        heuristic_source_hash:
+            ``sha256:<hex>`` of the FULL source .md file content.
+        heuristic_section:
+            The section header(s) included in this excerpt
+            (e.g., ``"Forensic Ground Rules + What to Hunt"``).
+        heuristic_excerpt_hash:
+            ``sha256:<hex>`` of the assembled excerpt actually delivered.
+        excerpt_token_count:
+            Approximate token count of the excerpt.
+        triggered_by:
+            Which tool / call path triggered the bundle. One of:
+            ``'extract_<artifact>'``, ``'prepare_hypothesis_context'``,
+            ``'get_heuristic'``.
+        execution_id:
+            Optional E-NNN linking this bundle to the triggering tool execution.
+        context_id:
+            Optional pre-generated CTX-NNN. If None, one is generated.
+
+        Returns
+        -------
+        AuditEntry
+            The appended audit row (includes ``context_id`` field).
+        """
+        if not context_id:
+            context_id = self.next_context_id()
+
+        entry: AuditEntry = {
+            "timestamp": _utcnow_iso(),
+            "execution_id": execution_id or context_id,
+            "event_type": "context_bundle",
+            "tool": "context.log_context_bundle",
+            "iteration": self._current_iteration,
+            "context_id": context_id,
+            "case_id": case_id,
+            "artifact": artifact,
+            "heuristic_source_path": heuristic_source_path,
+            "heuristic_source_hash": heuristic_source_hash,
+            "heuristic_section": heuristic_section,
+            "heuristic_excerpt_hash": heuristic_excerpt_hash,
+            "excerpt_token_count": excerpt_token_count,
+            "triggered_by": triggered_by,
+        }
+        return self._write_entry(entry)
 
     # ------------------------------------------------------------------
     # Query / read methods

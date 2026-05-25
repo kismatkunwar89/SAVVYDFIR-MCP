@@ -164,6 +164,13 @@ def init_all_tools(audit_logger, state_manager) -> None:
 
     Called once at server startup by :mod:`sift_mcp.server`.
 
+    W1.7 (Run 2 consensus 2026-05-24, peer reviewer Q1+C / peer reviewer amendment): also
+    register runtime deps with sift_mcp.tools._contracts so the CONTRACT
+    path (build_contract_response → _attach_heuristic_slice) has live
+    singletons WITHOUT a lazy ``from sift_mcp.server import ...``. The
+    lazy-import pattern caused Run 2's BUG-4 (silent state-write loss
+    on 5 of 8 heuristic injections).
+
     Parameters
     ----------
     audit_logger:
@@ -171,6 +178,11 @@ def init_all_tools(audit_logger, state_manager) -> None:
     state_manager:
         The process-wide :class:`~sift_mcp.state.CaseStateManager`.
     """
+    # W1.7 BUG-4 fix — register before per-module init so any tool
+    # invoked during init can already use heuristic injection cleanly.
+    from sift_mcp.tools._contracts import set_runtime_deps
+    set_runtime_deps(state_manager=state_manager, audit_logger=audit_logger)
+
     _init_evidence(state_manager=state_manager, audit_logger=audit_logger)
     _init_disk(state_manager=state_manager, audit_logger=audit_logger)
     _init_memory(audit_logger=audit_logger, state_manager=state_manager)

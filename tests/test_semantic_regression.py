@@ -69,6 +69,18 @@ class SemanticRegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
             manager.load("CASE-SEM-PROMOTE")
+            # peer reviewer provenance gate (A1): the finding's cited execution_id
+            # must resolve to a real execution row before promotion to
+            # CONFIRMED can survive validation. Record the audit row that
+            # this finding will reference.
+            manager.add_execution(
+                {
+                    "execution_id": "E-001",
+                    "tool_name": "disk.extract_shimcache",
+                    "event_type": "completed",
+                    "iteration": 1,
+                }
+            )
             finding_id = manager.add_finding(
                 {
                     "case_id": "CASE-SEM-PROMOTE",
@@ -83,6 +95,15 @@ class SemanticRegressionTests(unittest.TestCase):
                     "confidence": 0.9,
                     "description": "ShimCache shows execution of evil.exe from AppData.",
                     "supporting_indicators": [r"C:\Users\Alice\AppData\Roaming\evil.exe"],
+                    # peer reviewer alternative-hypothesis gate (A2): the
+                    # promotion path requires structured alt-hypothesis
+                    # disposition to keep CONFIRMED status.
+                    "alternative_hypothesis": "Legitimate user-installed utility from AppData",
+                    "evidence_against_it": [
+                        "evil.exe is not present in any vendor catalog",
+                        "AppData\\Roaming is not a standard install location for trusted software",
+                    ],
+                    "disposition": "ruled_out",
                 }
             )
 
@@ -98,7 +119,12 @@ class SemanticRegressionTests(unittest.TestCase):
             self.assertEqual(finding["finding_status"], "CONFIRMED")
             self.assertIn("prefetch", finding["corroborated_by"])
             self.assertEqual(finding["corroboration_completed_by"], "prefetch")
-            self.assertAlmostEqual(finding["confidence"], 0.78, places=3)
+            # Execution hierarchy: {prefetch, shimcache} both fall in
+            # execution_sources → _derive_execution_confidence returns
+            # 0.85 ("probable_execution_prefetch"). Prior 0.78 expectation
+            # was unreachable before the peer reviewer A1/A2 gates because the
+            # status was being silently kept ACTIVE on missing provenance.
+            self.assertAlmostEqual(finding["confidence"], 0.85, places=3)
             self.assertEqual(finding["promotion_eligibility"], "confirmed")
             self.assertIn("disk", finding["supporting_tool_families"])
             self.assertIn("disk", finding["supporting_artifact_families"])

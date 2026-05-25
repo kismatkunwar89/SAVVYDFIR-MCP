@@ -221,14 +221,20 @@ class LaneControlToolTests(unittest.TestCase):
                     "command_line": "detect_injection()",
                 }
             )
-            delegate_path = Path(tmp_dir) / "delegate.json"
+            # H.1 fix: Use per-lane queue format instead of single delegate file
+            delegate_path = Path(tmp_dir) / "delegate_queue.json"
             delegate_path.write_text(
                 json.dumps(
                     {
-                        "processed": False,
-                        "lane_id": "memory",
-                        "case_id": "",
-                        "subagent_type": "memory-analyst",
+                        "memory": [
+                            {
+                                "processed": False,
+                                "lane_id": "memory",
+                                "case_id": "",
+                                "subagent_type": "memory-analyst",
+                                "created_at": "2026-05-18T00:00:00Z",
+                            }
+                        ]
                     }
                 ),
                 encoding="utf-8",
@@ -236,7 +242,7 @@ class LaneControlToolTests(unittest.TestCase):
 
             with mock.patch.dict(
                 os.environ,
-                {"SAVVYDFIR_DELEGATE_PATH": str(delegate_path)},
+                {"SAVVYDFIR_DELEGATE_QUEUE_PATH": str(delegate_path)},
                 clear=False,
             ):
                 result = server.record_analysis_lane(
@@ -249,8 +255,9 @@ class LaneControlToolTests(unittest.TestCase):
                 )
 
             self.assertEqual(result["status"], "ok")
+            # After processing, the memory lane queue should be empty (delegate popped)
             payload = json.loads(delegate_path.read_text(encoding="utf-8"))
-            self.assertTrue(payload["processed"])
+            self.assertFalse(payload.get("memory", []))  # Queue should be empty or lane removed
 
     def test_extract_windows_artifacts_writes_only_durable_raw_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

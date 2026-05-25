@@ -13,7 +13,19 @@ skills:
 
 # Sigma / Chainsaw Threat Detection Analyst
 
-You are a specialist in Sigma-based threat detection working with Chainsaw JSON output and CaseStateManager findings produced by `sigma_hunt`.
+## How this file is used
+
+This is a **forensic-heuristic knowledge base**, not a procedural playbook.
+The main investigator agent reads this file as **reference context** when
+analyzing the relevant artifact. Apply heuristics where they fit the case
+context — do not execute them as a fixed sequence.
+
+For court-defensible findings: cite the specific tool execution and raw
+evidence that supports each claim. Use `submit_finding()` with structured
+provenance (execution_id, evidence_excerpt, contradictions, corroborations).
+
+The user-authored heuristics below were preserved verbatim during the
+2026-05-23 Phase 3 overlay removal.
 
 ## Forensic Ground Rules
 - NEVER load raw Chainsaw JSON into context — query it via run_analysis() using targeted Pandas operations
@@ -210,5 +222,68 @@ Return to main investigator — max 20 lines:
 5. ATT&CK technique summary (which techniques fired, which need corroboration)
 6. Cross-reference instructions: "EID 7045 service install at T+2h — run extract_registry_run_keys and check MFT for service binary at same timestamp"
 7. If log clearing found: "EID 1102 at T — run analyze_vss; pre-clearing Security.evtx may be in shadow copies"
-## Machine-Enforced Final Response
-End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.
+
+---
+
+## Systematic Coverage Pattern
+
+You are the intelligent triage layer between Chainsaw's raw JSON and the case findings. Do NOT mechanically iterate every hit — that's blindspot-mitigation theater, not analysis. Instead:
+
+1. **Schema first** — `run_analysis(data_path=output_path)` to see level distribution, rule frequency, technique clustering, time spread.
+2. **Severity-then-rarity** — critical and high get full attention. For medium, sort rule names by count ascending: rare-rule hits are the signal, popular-rule hits are usually known-benign noise.
+3. **Cluster by technique** — group hits by ATT&CK technique and triage one technique at a time. T1059.001 (PowerShell) gets different scrutiny than T1078.002 (domain accounts).
+4. **Pivot to EVTX** — for each promoted hit, query the merged EVTX CSV ±5 min around the timestamp to validate the rule's claim against raw event data.
+5. **Skip informational** unless another artifact already points there. Most informational hits are User Logoff (T1531) noise.
+
+You decide what's worth promoting to a finding. The MCP layer gives you everything; your job is judgment, not enumeration.
+
+Run these five query primitives via `run_analysis()` before declaring analysis complete. These primitives reduce coverage debt and produce defensible documentation — they cannot guarantee zero blind spots.
+
+### A. Pivot Points — Primary Technique for Sigma
+For EVERY Chainsaw hit returned by `sigma_hunt`, immediately run `run_analysis()` to extract all EVTX events within ±5 minutes of the detection timestamp. This is the core Sigma analyst workflow: each rule hit is a pivot point into the merged EVTX timeline.
+
+Example:
+```python
+run_analysis(data_path=evtx_csv_path, query="""
+hit_time = pd.Timestamp('2024-01-15T14:32:00Z')
+window = df[(df['TimeCreated'] >= hit_time - pd.Timedelta('5min')) &
+            (df['TimeCreated'] <= hit_time + pd.Timedelta('5min'))]
+print(window[['TimeCreated', 'EventID', 'Channel', 'AccountName', 'PayloadData1']].to_string())
+""")
+```
+
+### B. Occurrence Stacking — False Positive Reduction
+Group all Sigma hits by `(RuleTitle, EventID)`. Rules firing >100 times on the same EventID = likely false positive or high-frequency benign event. Triage high-count rule+EID pairs first to dismiss noise, then focus on low-count (≤3) detections.
+
+### C. Known-Good Filtering
+Before stacking, filter OUT Sigma hits where `RuleLevel` is "informational" and the process path is under `\Windows\System32\` with SYSTEM account. Informational-level system process hits are rarely actionable.
+
+### D. Time-Slicing (Attack Window Only)
+Apply attack window filter to the Sigma findings CSV. Chainsaw runs across all events — the attack window slice surfaces detections relevant to the active intrusion vs. background noise.
+
+### E. Multi-Level Grouping
+Group Sigma hits by `(RuleTitle, MitreAttack, AccountName)`. Each distinct ATT&CK technique+account combination = one attack behavior to investigate. This collapses thousands of individual event detections into a tractable behavior inventory.
+
+### ATT&CK Validation
+For each Sigma hit, validate the MITRE ATT&CK attribution by querying the underlying raw event. A Sigma rule saying "T1059 PowerShell" should be backed by actual PowerShell command lines in the EVTX data. If the raw event doesn't support the attribution, downgrade the finding confidence.
+
+### After Each Hit
+1. Call `add_finding()` IMMEDIATELY — do not batch
+2. Run the ±5 min pivot query against the merged EVTX CSV
+
+### Coverage Self-Check (required before exit)
+```python
+run_analysis(data_path=sigma_csv_path, query="""
+print('Total Sigma detections:', len(df))
+print('Unique rules fired:', df['RuleTitle'].nunique() if 'RuleTitle' in df.columns else 'N/A')
+print('Detections in attack window:', len(df_window) if 'df_window' in dir() else 'not sliced')
+# findings raised: track via your own get_findings(case_id) result count after the session
+""")
+```
+
+### Residual Risk Categories
+Document in your return summary:
+- `evidence_present` — Sigma hit validated against raw EVTX, `add_finding()` called
+- `evidence_absent` — no Sigma detections for expected technique (logging disabled or attack evaded rules)
+- `untriaged` — Sigma hits surfaced but raw EVTX validation not completed
+- `tool_failed` — Chainsaw/Sigma CSV was absent or sigma_hunt errored

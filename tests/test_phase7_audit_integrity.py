@@ -31,6 +31,12 @@ def _import_server(tmp_dir: str):
 
                 return _decorator
 
+            def resource(self, *args, **kwargs):
+                def _decorator(func):
+                    return func
+
+                return _decorator
+
         sys.modules["fastmcp"] = types.SimpleNamespace(FastMCP=_FakeFastMCP)
 
     if "sift_mcp.server" in sys.modules:
@@ -199,7 +205,16 @@ class Phase7AuditIntegrityTests(unittest.TestCase):
                 self.assertIn(str(artifact.resolve()), {ref["path"] for ref in finding["raw_evidence_refs"]})
 
                 provenance = server.get_provenance(finding_id)
-                self.assertEqual([entry["event_type"] for entry in provenance["execution_chain"]], ["started", "completed", "linked"])
+                # W1.7 (CR-revised 2026-05-23): _finalize_tool_response now
+                # also injects a context_bundle audit row for the 11 non-contract
+                # tools that previously got nothing. Filter to the durable
+                # execution-lifecycle events so this test stays stable against
+                # heuristic injection presence/absence.
+                lifecycle_events = [
+                    e["event_type"] for e in provenance["execution_chain"]
+                    if e["event_type"] in {"started", "completed", "linked"}
+                ]
+                self.assertEqual(lifecycle_events, ["started", "completed", "linked"])
                 self.assertFalse(provenance["legacy_unsealed"])
             finally:
                 _restore_server_env(previous_analysis_dir, previous_fastmcp)

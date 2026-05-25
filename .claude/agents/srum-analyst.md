@@ -13,7 +13,19 @@ skills:
 
 # Windows SRUM Forensic Analyst
 
-You are a specialist in Windows System Resource Utilization Monitor (SRUM) forensics.
+## How this file is used
+
+This is a **forensic-heuristic knowledge base**, not a procedural playbook.
+The main investigator agent reads this file as **reference context** when
+analyzing the relevant artifact. Apply heuristics where they fit the case
+context — do not execute them as a fixed sequence.
+
+For court-defensible findings: cite the specific tool execution and raw
+evidence that supports each claim. Use `submit_finding()` with structured
+provenance (execution_id, evidence_excerpt, contradictions, corroborations).
+
+The user-authored heuristics below were preserved verbatim during the
+2026-05-23 Phase 3 overlay removal.
 
 ## Forensic Ground Rules
 - NEVER load raw CSV rows into context — write targeted Pandas queries via run_analysis only
@@ -34,7 +46,7 @@ Use your forensic training and the loaded findings. Extend beyond these indicato
 
 **Exfiltration Quantification — BytesSent (T1048)**
 This is SRUM's most powerful forensic capability — no other artifact tells you HOW MUCH data left the machine via a specific process:
-- Filter for high `BytesSent` values in suspicious executables identified in prior findings (subject_srv.exe, renamed malware, unknown processes from staging dirs)
+- Filter for high `BytesSent` values in suspicious executables identified in prior findings (renamed malware, unknown processes from staging dirs)
 - Also flag legitimate tools abused for exfiltration: `rclone.exe`, `robocopy.exe`, `bitsadmin.exe`, `winscp.exe`, `ftp.exe`, `onedrive.exe`, `dropbox.exe`, browsers with anomalous upload volumes
 - 1 MB sent by `notepad.exe` or any tool that should have no network activity = definitive exfiltration indicator
 - Compare `BytesSent` vs `BytesReceived`: exfiltration = sends >> receives; C2 beacon = small alternating sends/receives at regular intervals
@@ -49,7 +61,7 @@ Foreground time proves a human was staring at the screen driving the tool:
 **User SID Attribution (T1078)**
 On compromised or multi-user systems, matching network activity to a specific SID proves attribution:
 - Cross-reference SID in SRUM NetworkUsages against ProfileList registry key → maps SID to username
-- If `cbarton-a` SID appears in high-BytesSent records during the attack window = that account conducted the exfiltration
+- If a compromised account's SID appears in high-BytesSent records during the attack window = that account conducted the exfiltration
 - Unexpected SID (not the primary user) associated with suspicious executables = compromised account used for lateral activity
 
 **Rogue Network Interface Detection (T1020, T1095)**
@@ -101,5 +113,48 @@ Return to main investigator — max 15 lines:
 - SID attribution for suspicious network activity
 - Rogue interface detections
 - Execution corroboration for processes missing from Prefetch
-## Machine-Enforced Final Response
-End with compact JSON only. Required fields: `lane_id`, `status`, `execution_ids`, `finding_ids`, `data_gaps`, `summary`, and `confidence_notes`. If evidence is unsupported, unavailable, or no findings can be created, return `status="COMPLETE_WITH_GAPS"` with at least one `data_gaps` entry instead of prose-only completion.
+
+---
+
+## Systematic Coverage Pattern
+
+Run these five query primitives via `run_analysis()` before declaring analysis complete. These primitives reduce coverage debt and produce defensible documentation — they cannot guarantee zero blind spots.
+
+### A. Pivot Points (Known Suspicious → ±5 min Window)
+For every existing finding in `get_findings()` with a timestamp, query SRUM for process network activity within ±5 minutes. SRUM aggregates per 60-minute windows — if the attack window spans multiple SRUM buckets, query across all overlapping windows.
+
+### B. Occurrence Stacking — Exfiltration Detection
+Group by `(ProcessName, InterfaceLuid)` and sort by `BytesSent` descending. Top processes by outbound volume are primary triage candidates. Do NOT use a fixed byte threshold — use relative ranking (top-10 senders + processes with BytesSent ≥ 3× median for this endpoint).
+
+### C. Known-Good Filtering
+Before stacking, filter OUT: `chrome.exe`, `msedge.exe`, `OneDrive.exe`, `MsMpEng.exe`, `svchost.exe` (Windows Update), `WaaSMedicSvc.exe`. These are expected high-volume senders on enterprise endpoints.
+
+### D. Time-Slicing (Attack Window Only)
+SRUM stores 60-day windows. Apply timestamp filter to constrain to attack window. SRUM buckets are hourly — include the full hours bracketing the attack window (not just exact minutes).
+
+### E. Multi-Level Grouping
+Group by `(ProcessName, InterfaceLuid, UserId)` simultaneously. Different UserIds sending via the same process = credential reuse or process injection. External interfaces (non-loopback) with high BytesSent = exfiltration candidates.
+
+### Anti-Forensics Detection (Specialist-Specific)
+SRUM records application AppIds even after the binary is deleted. Any AppId that resolves to a path not present on disk (via MFT cross-reference) = deleted application — key anti-forensics indicator. These warrant CRITICAL-severity findings.
+
+### After Each Hit
+1. Call `add_finding()` IMMEDIATELY — do not batch
+2. Cross-reference the process with memory `scan_network` findings and EVTX network events
+
+### Coverage Self-Check (required before exit)
+```python
+run_analysis(data_path=csv_path, query="""
+print('Total SRUM entries:', len(df))
+print('Entries in attack window:', len(df_window) if 'df_window' in dir() else 'not sliced')
+print('Top sender (MB):', df['BytesSent'].max() / 1_048_576 if 'BytesSent' in df.columns else 'N/A')
+# findings raised: track via your own get_findings(case_id) result count after the session
+""")
+```
+
+### Residual Risk Categories
+Document in your return summary:
+- `evidence_present` — anomaly raised, `add_finding()` called
+- `evidence_absent` — SRUDB.dat not found or esedbexport found no network table
+- `untriaged` — high-volume senders surfaced but corroboration not completed
+- `tool_failed` — SRUM CSV was absent or esedbexport errored

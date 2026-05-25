@@ -32,3 +32,28 @@ referencemdfiles/
 # Auto-generated docs
 AGENTS.md
 GEMINI.md
+*.phase3-backup
+
+
+# === Internal planning / handoff / consensus (KEEP LOCALLY, do not commit) ===
+# Per tri-agent consensus 2026-05-25: these are project-development artifacts
+# (planning history, consensus session transcripts, run evaluations) preserved
+# on local disk for project continuity but excluded from the public main branch.
+runs/
+HANDOFF.md
+PLAN*.md
+plannext.md
+planforsubagents.md
+planforsubagents-v2.md
+IMPLEMENTATION_PLAN.md
+scratch.md
+review-*.md
+DECISION-*.md
+RUN*_*.md
+savvydfir_baseline*.md
+INDEPTHTECHNICALMOVE.md
+docs/RUN7-OPERATIONAL-PLAN.md
+GEMINI.md
+AGENTS.md
+n
+.archive/

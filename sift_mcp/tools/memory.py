@@ -168,30 +168,73 @@ def _normalize_response_format(response_format: str) -> Optional[str]:
     return None
 
 
+def _dump_identifier(dump_path: str) -> str:
+    """Derive a filename-safe identifier from a memory dump path.
+
+    E.1 (peer reviewer round-1 P2): in multi-dump cases (enterprise scope with
+    one .img per host), pslist/psscan artifacts must be partitioned per
+    dump so the gate's psscan_only_count comparison pairs the right
+    pslist with the right psscan. Identifier is the basename minus
+    extension, with non-safe characters replaced.
+    """
+    name = Path(dump_path or "").stem or "dump"
+    import re as _re
+    return _re.sub(r"[^A-Za-z0-9._-]", "_", name)[:64] or "dump"
+
+
 def _persist_rows_as_csv(
     rows: list[dict[str, Any]],
     *,
     tool_short_name: str,
     filename: str,
+    dump_path: Optional[str] = None,
 ) -> Optional[str]:
-    """Persist structured rows as a reusable CSV artifact."""
+    """Persist structured rows as a reusable CSV artifact.
+
+    E.1: when `dump_path` is provided, the CSV is written under a
+    dump-keyed subdirectory so a multi-dump case keeps each dump's
+    artifacts separate. The legacy `<tool>/<filename>` path is also
+    updated to point at the latest run (best-effort) for backwards
+    compatibility with anything still reading the legacy filename.
+    """
     import csv
-    import tempfile
 
     try:
         cid = _case_id()
         base = Path(os.environ.get("OUTPUT_BASE", "/cases")) / cid / "artifacts" / tool_short_name
         base.mkdir(parents=True, exist_ok=True)
-        dest = base / filename
+
+        # Dump-keyed destination (E.1) — primary write target.
+        dump_id = _dump_identifier(dump_path) if dump_path else None
+        if dump_id:
+            dump_dest = base / dump_id / filename
+            dump_dest.parent.mkdir(parents=True, exist_ok=True)
+            dest = dump_dest
+        else:
+            dest = base / filename
+
         if not rows:
             dest.write_text("", encoding="utf-8")
-            return str(dest)
-        fieldnames = list(rows[0].keys())
-        with dest.open("w", encoding="utf-8", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({k: row.get(k, "") for k in fieldnames})
+        else:
+            fieldnames = list(rows[0].keys())
+            with dest.open("w", encoding="utf-8", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=fieldnames)
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow({k: row.get(k, "") for k in fieldnames})
+
+        # Backwards-compat: also expose at the legacy <tool>/<filename>
+        # path. In a single-dump case this is a no-op; in multi-dump
+        # cases it is overwritten by the latest call (callers that need
+        # dump-specific data must read the dump-keyed path).
+        if dump_id:
+            legacy = base / filename
+            try:
+                import shutil as _shutil
+                _shutil.copy2(str(dest), str(legacy))
+            except Exception:
+                pass
+
         return str(dest)
     except Exception:
         return None
@@ -238,6 +281,10 @@ def _detect_injection_contract_payload(
     )
     return build_contract_response(
         response,
+        case_id=_case_id(),
+        execution_id=response.get("execution_id"),
+        state_manager=_state,
+        audit_logger=_audit,
         tool_name="memory.detect_injection",
         summary=(
             f"Malfind returned {response.get('injection_count', len(records))} suspicious memory regions "
@@ -819,10 +866,45 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
             fid = _state.add_finding(finding.model_dump(mode="json"))
             finding_ids.append(fid)
 
-    # Persist all rows to CSV for run_analysis() queries
+    # peer reviewer round-7 P2: emit a baseline pslist finding carrying pslist_pids
+    # so the report gate's _needs_detect_injection can recompute the
+    # psscan-pslist delta when scan_processes ran before list_processes.
+    # Without this, a stored psscan_unverified=True finding cannot be
+    # paired with the eventual pslist baseline.
+    baseline_finding = Finding(
+        case_id=_case_id(),
+        finding_type="other",
+        artifact_type="memory",
+        artifact_path=dump_path,
+        tool_name=tool,
+        execution_id=result.execution_id,
+        iteration=_current_iteration(),
+        evidence_kind=EvidenceKind.OBSERVATION,
+        finding_status=FindingStatus.ACTIVE,
+        confidence=1.0,
+        description=(
+            f"Pslist baseline: {len(records)} active processes from {dump_path}."
+        ),
+        supporting_indicators=[
+            f"total_processes={len(records)}",
+            dump_path,
+        ],
+        pslist_pids=sorted(r.pid for r in records),
+    )
+    try:
+        baseline_fid = _state.add_finding(baseline_finding.model_dump(mode="json"))
+        finding_ids.append(baseline_fid)
+    except Exception:
+        pass  # baseline finding is a follow-up aid; suspicious findings are primary
+
+    # Persist all rows to CSV for run_analysis() queries.
+    # E.1: include dump_path so the CSV lands under a dump-keyed dir.
     all_rows = [r.model_dump(mode="json") for r in records]
     csv_path = _persist_rows_as_csv(
-        all_rows, tool_short_name="pslist", filename="pslist.csv"
+        all_rows,
+        tool_short_name="pslist",
+        filename="pslist.csv",
+        dump_path=dump_path,
     )
 
     response: dict[str, Any] = {
@@ -861,6 +943,54 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
 # ---------------------------------------------------------------------------
 # Tool: scan_processes
 # ---------------------------------------------------------------------------
+
+
+def _load_pslist_pids_for_case(dump_path: Optional[str] = None) -> Optional[set[int]]:
+    """Load PID set from the pslist CSV that matches the SAME dump.
+
+    E.1 (peer reviewer round-1 P2): a multi-dump case stores each dump's pslist
+    at artifacts/pslist/<dump_id>/pslist.csv. The matching psscan run
+    must read its own dump's pslist, not whichever pslist was written
+    most recently (which would silently compare PIDs across dumps).
+
+    Resolution:
+      1. If `dump_path` is provided, try artifacts/pslist/<dump_id>/pslist.csv first.
+      2. Fall back to legacy artifacts/pslist/pslist.csv only if the
+         dump-keyed file does not exist (single-dump cases pre-E.1).
+      3. Return None if neither exists.
+    """
+    if _state is None:
+        return None
+    cid = _case_id()
+    base = Path(os.environ.get("OUTPUT_BASE", "/cases")) / cid / "artifacts" / "pslist"
+
+    candidates: list[Path] = []
+    if dump_path:
+        candidates.append(base / _dump_identifier(dump_path) / "pslist.csv")
+    candidates.append(base / "pslist.csv")
+
+    csv_path: Optional[Path] = None
+    for cand in candidates:
+        if cand.is_file():
+            csv_path = cand
+            break
+    if csv_path is None:
+        return None
+
+    import csv as _csv
+    pids: set[int] = set()
+    try:
+        with csv_path.open(encoding="utf-8", newline="") as fh:
+            reader = _csv.DictReader(fh)
+            for row in reader:
+                raw = row.get("pid") or row.get("PID") or row.get("Pid") or 0
+                try:
+                    pids.add(int(raw))
+                except (TypeError, ValueError):
+                    continue
+    except OSError:
+        return None
+    return pids
 
 
 def scan_processes(dump_path: str, response_format: str = "summary") -> dict[str, Any]:
@@ -921,6 +1051,27 @@ def scan_processes(dump_path: str, response_format: str = "summary") -> dict[str
     rows = _parse_json_output(result.stdout)
     records = _parse_process_rows(rows, source="psscan")
 
+    # E.1: pass the current scan's dump_path so we pair with THAT dump's
+    # pslist baseline, not a stale pslist from a different memory dump.
+    pslist_pids = _load_pslist_pids_for_case(dump_path=dump_path)
+    psscan_pids = {r.pid for r in records}
+    # peer reviewer round-7 P2: prior implementation set psscan_only_count to
+    # len(psscan_pids) when pslist absent, forcing detect_injection on every
+    # run even with no actual hidden processes (false positive). Original
+    # Run2 set it to 0 (false negative when scan_processes runs first).
+    # Correct behavior: report a real delta only when pslist exists, mark
+    # the result unverified otherwise. The report gate is patched to
+    # recompute the delta from current state at evaluation time, so a
+    # later list_processes run satisfies the gate without re-running
+    # scan_processes.
+    if pslist_pids is not None:
+        psscan_only_count = len(psscan_pids - pslist_pids)
+        psscan_unverified = False
+    else:
+        psscan_only_count = 0
+        psscan_unverified = True
+    requires_deeper = bool(psscan_only_count > 0)
+
     # Create a summary finding
     finding_ids: list[str] = []
     if records:
@@ -942,16 +1093,27 @@ def scan_processes(dump_path: str, response_format: str = "summary") -> dict[str
             ),
             supporting_indicators=[
                 f"total_processes={len(records)}",
+                f"psscan_only_count={psscan_only_count}",
+                f"psscan_unverified={psscan_unverified}",
                 dump_path,
             ],
+            psscan_only_count=psscan_only_count,
+            psscan_unverified=psscan_unverified,
+            psscan_pids=sorted(psscan_pids),
+            requires_deeper_analysis=requires_deeper,
+            next_required_tool=("detect_injection" if requires_deeper else None),
         )
         fid = _state.add_finding(finding.model_dump(mode="json"))
         finding_ids.append(fid)
 
-    # Persist all rows to CSV
+    # Persist all rows to CSV.
+    # E.1: include dump_path so a multi-dump case keeps each dump's psscan separate.
     all_rows = [r.model_dump(mode="json") for r in records]
     csv_path = _persist_rows_as_csv(
-        all_rows, tool_short_name="psscan", filename="psscan.csv"
+        all_rows,
+        tool_short_name="psscan",
+        filename="psscan.csv",
+        dump_path=dump_path,
     )
 
     response: dict[str, Any] = {
@@ -1154,6 +1316,7 @@ def scan_network(dump_path: str, case_id: Optional[str] = None, max_results: int
         ports = compact_unique(str(m["remote_port"]) for m in members)
         local_endpoints = compact_unique(f"{m['local_addr']}:{m['local_port']}" for m in members)
         owner_name = representative["owner"] or "unknown"
+        follow_pid = int(representative["pid"])
         finding = Finding(
             case_id=_case_id(),
             finding_type="data_exfil",
@@ -1188,6 +1351,9 @@ def scan_network(dump_path: str, case_id: Optional[str] = None, max_results: int
             group_key=group_key,
             support_count=count,
             promotion_reason="established_external",
+            network_followup_pids=[follow_pid],
+            network_pids=[follow_pid],
+            next_required_tool="list_dlls",
         )
         fid = _state.add_finding(finding.model_dump(mode="json"))
         finding_ids.append(fid)
@@ -1649,6 +1815,31 @@ def list_dlls(dump_path: str, pid: int) -> dict[str, Any]:
                 f"dll_count={len(records)}",
                 f"suspicious_dll_count={len(suspicious_dlls)}",
             ] + [r.dll_path for r in suspicious_dlls[:10]],
+            # E.2: structured PID field so the report gate can verify
+            # per-PID coverage of network_followup_pids rather than
+            # treating any list_dlls execution as full coverage.
+            dlllist_covered_pid=int(pid),
+        )
+        fid = _state.add_finding(finding.model_dump(mode="json"))
+        finding_ids.append(fid)
+    else:
+        # I.1 fix: Zero-row result — still mark PID as covered to satisfy report gate
+        # Without this, successful list_dlls with 0 DLLs (exited process, empty load list)
+        # permanently blocks report finalization even though the required follow-up executed.
+        finding = Finding(
+            case_id=_case_id(),
+            finding_type="other",
+            artifact_type="memory",
+            artifact_path=dump_path,
+            tool_name=tool,
+            execution_id=result.execution_id,
+            iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION,
+            finding_status=FindingStatus.ACTIVE,
+            confidence=0.9,
+            description=f"PID {pid}: No DLLs loaded (process exited or empty load list)",
+            supporting_indicators=[f"pid={pid}", "dll_count=0"],
+            dlllist_covered_pid=int(pid),
         )
         fid = _state.add_finding(finding.model_dump(mode="json"))
         finding_ids.append(fid)

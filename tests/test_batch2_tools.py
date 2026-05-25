@@ -182,7 +182,11 @@ class Batch2ToolTests(unittest.TestCase):
                 for line in Path(tmp_dir, "audit.jsonl").read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
-            self.assertEqual(len(entries), 4)
+            # W1.7 (Run 2 consensus): _finalize_tool_response now also writes
+            # context_bundle audit rows. Filter to durable execution-lifecycle
+            # events so this assertion stays stable.
+            lifecycle = [e for e in entries if e.get("event_type") in {"started", "completed", "linked"}]
+            self.assertEqual(len(lifecycle), 4)
 
     def test_summarize_evtx_reruns_when_cached_csv_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
