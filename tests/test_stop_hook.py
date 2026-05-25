@@ -74,6 +74,8 @@ class StopHookTests(unittest.TestCase):
     def test_pending_required_lanes_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             analysis_dir = Path(tmp_dir)
+            reports_dir = analysis_dir / "reports"
+            reports_dir.mkdir(parents=True, exist_ok=True)
             # Must include case_id + executions for the in-progress gate
             # to trigger, otherwise the hook approves (non-DFIR session).
             (analysis_dir / "state.json").write_text(
@@ -88,7 +90,14 @@ class StopHookTests(unittest.TestCase):
             result = self._run_stop_hook(analysis_dir, reports_dir=reports_dir)
 
             self.assertEqual(result["decision"], "block")
-            self.assertIn("sigma_hunt", result["reason"])
+            # W1.7 merge: block reason no longer mentions sigma_hunt by name
+            # (it lists next-required tool generically). Assert the block
+            # is for an investigation-completeness reason.
+            self.assertTrue(
+                any(keyword in result["reason"].lower() for keyword in
+                    ("sigma_hunt", "next required", "incomplete", "pending")),
+                f"unexpected block reason: {result['reason']}"
+            )
 
     def test_no_state_json_approves(self) -> None:
         """Non-DFIR session (no state.json) must approve, not block."""
