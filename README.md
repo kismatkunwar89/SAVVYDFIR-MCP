@@ -147,6 +147,8 @@ Framework operational properties:
 - PreToolUse Phase 2 → Phase 3 transition gate prevents agent from running detection tools before mandatory disk extraction completes
 - Memory-hygiene mitigations (stdout/stderr drop post-audit, gc.collect after heavy tools) — validated under 7.6 GB RAM constraint with 4 GB swap
 - Per-tool Vol3 timeout (malfind: 900 s, overrideable via `SAVVYDFIR_MALFIND_TIMEOUT`)
+- Vol3 `incompatible_profile` classification → `tool_incompatible` outputs_summary marker; coverage gate treats this as a legitimate gap (no zombie retries when the image's kernel build has no matching symbols)
+- `EvidenceFinding.timestamp_observed` populated by detectors with artifact event-time in scope (MFT timestomping $SI_created, Sigma hit `system_time`); `find_temporal_clusters` prefers event-time over finding creation-time
 - IOC categorizer aligned with STIX 2.1 / MISP attribute types (IP, hostname, URL, hash, file path/name, account, email, registry) — drops tooling internals
 - `COMPLETE_WITH_GAPS` remains an expected investigation outcome when unresolved forensic discrepancies are documented (anti-forensics-induced gaps); it is not treated as a report-generation failure
 
