@@ -32,6 +32,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any, Optional
 from typing import Any
 
 # Mandatory tools per the Run7 coverage gate.
@@ -198,6 +199,85 @@ def _check_path_b_gate(event: dict[str, Any], repo_root: Path) -> None:
     return
 
 
+# Phase 3 entry tools — sigma_hunt / compare_disk_and_memory / hayabusa_hunt
+# are the detection/correlation calls that should NOT run before Phase 2 disk
+# extraction is complete. Run-8 ROCBA proved the existing generate_report
+# gate fires too late: agent ran sigma_hunt (301s) and compare_disk_and_memory
+# while USN / SRUDB / ShimCache / Registry / Security.evtx were still missing,
+# then MCP died at the next heavy call before report time. Per peer reviewer + peer reviewer
+# consensus 2026-05-26: gate Phase 3 entry on Phase 2 completion.
+PHASE3_ENTRY_TOOLS = {
+    "mcp__savvydfir__sigma_hunt",
+    "mcp__savvydfir__hayabusa_hunt",
+    "mcp__savvydfir__compare_disk_and_memory",
+}
+
+# Phase 2 disk tools that must be satisfied before Phase 3 entry. Subset of
+# MANDATORY above — the memory tools are checked separately by Phase 1.
+PHASE2_DISK_REQUIRED: tuple[str, ...] = (
+    "disk.extract_mft_timeline",
+    "disk.extract_usn_journal",
+    "disk.summarize_evtx",
+    "disk.extract_prefetch",
+    "disk.get_amcache",
+    "disk.extract_shimcache",
+    "disk.extract_registry_run_keys",
+    "disk.extract_srum",
+)
+
+
+def _check_phase3_entry_gate(state: dict) -> Optional[str]:
+    """Return deny-reason if Phase 3 entry tool is attempted with Phase 2 incomplete.
+
+    "Satisfied" means the same as for the generate_report gate: clean exit_code
+    OR an explicit ``artifact_absent`` / ``no_data`` absence marker. Anything
+    else (timeouts, crashes, never-invoked) is unsatisfied.
+
+    Override the gate with ``SAVVYDFIR_SKIP_PHASE3_GATE=1`` for advanced
+    operator workflows (e.g., evidence partial-acquisition cases).
+    """
+    if os.environ.get("SAVVYDFIR_SKIP_PHASE3_GATE", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return None
+
+    attempts: dict[str, list[tuple[Any, str]]] = {}
+    for exe in state.get("executions") or []:
+        tn = exe.get("tool_name") or ""
+        if not tn:
+            continue
+        ec = exe.get("exit_code")
+        out = str(exe.get("outputs_summary") or "").lower()
+        attempts.setdefault(tn, []).append((ec, out))
+
+    missing: list[str] = []
+    for full in PHASE2_DISK_REQUIRED:
+        runs = attempts.get(full) or []
+        if not runs:
+            missing.append(full)
+            continue
+        if any(ec in (0, None) for ec, _ in runs):
+            continue
+        if any(any(m in summary for m in ABSENCE_MARKERS) for _, summary in runs):
+            continue
+        missing.append(full)
+
+    if not missing:
+        return None
+
+    return (
+        "BLOCKED: Phase 3 detection/correlation tools cannot run until Phase 2 "
+        "disk extraction is complete. The agent must call all 8 mandatory disk "
+        "tools (or mark them as artifact_absent / no_data) BEFORE invoking "
+        "sigma_hunt / compare_disk_and_memory / hayabusa_hunt.\n\n"
+        "MISSING (or failed without absence marker):\n  - " +
+        "\n  - ".join(missing) +
+        "\n\nIf the disk is not mounted at /mnt/disk, first call "
+        "extract_windows_artifacts(case_id, image_path) to stage raw hives, "
+        "SRUDB.dat, and the USN journal. Then re-run each missing extractor.\n\n"
+        "Override (advanced operator only — partial-acquisition cases): "
+        "set SAVVYDFIR_SKIP_PHASE3_GATE=1 in the environment."
+    )
+
+
 def main() -> None:
     try:
         event = json.load(sys.stdin)
@@ -219,6 +299,21 @@ def main() -> None:
         except Exception:
             pass
         return  # this hook only governs record_analysis_lane and generate_report
+
+    # Phase 3 entry gate (Run-8 fix): block detection/correlation tools when
+    # Phase 2 disk extraction is incomplete. Fail-soft on missing state.
+    if tool_name in PHASE3_ENTRY_TOOLS:
+        try:
+            state_path = repo_root / "analysis" / "state.json"
+            if state_path.exists():
+                state = json.loads(state_path.read_text())
+                deny_reason = _check_phase3_entry_gate(state)
+                if deny_reason:
+                    _deny(deny_reason)
+                    return  # _deny exits the process
+        except Exception:
+            pass  # fail-open on state read errors
+        return
 
     if tool_name != "mcp__savvydfir__generate_report":
         # Not our target — let the call through.

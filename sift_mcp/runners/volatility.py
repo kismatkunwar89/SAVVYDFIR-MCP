@@ -53,6 +53,23 @@ VOL_PATH = next(
 #: dump can take several minutes; malfind on a large dump can take longer.
 DEFAULT_TIMEOUT = 300  # seconds
 
+#: Malfind-specific timeout.  ``windows.malfind`` scans every VAD region in
+#: every process — on an 18 GB image with 100+ processes (e.g. ROCBA's cloud
+#: sync sprawl), the default 300 s is insufficient.  Per Run-8 consensus
+#: (2026-05-26, peer reviewer + peer reviewer signed): keep the global timeout tight,
+#: lift malfind specifically.  Override via ``SAVVYDFIR_MALFIND_TIMEOUT`` env.
+def _resolve_malfind_timeout() -> int:
+    raw = __import__('os').environ.get("SAVVYDFIR_MALFIND_TIMEOUT", "").strip()
+    if not raw:
+        return 900
+    try:
+        v = int(raw)
+        return v if v >= 60 else 900
+    except (TypeError, ValueError):
+        return 900
+
+MALFIND_TIMEOUT = _resolve_malfind_timeout()
+
 
 # ---------------------------------------------------------------------------
 # VolatilityRunner
@@ -221,7 +238,7 @@ class VolatilityRunner(SafeRunner):
         dump_path: str,
         pid: Optional[int] = None,
         tool_name: Optional[str] = None,
-        timeout: int = DEFAULT_TIMEOUT,
+        timeout: Optional[int] = None,
     ) -> RunResult:
         """Detect injected code in process VAD regions (``windows.malfind``).
 
@@ -247,13 +264,14 @@ class VolatilityRunner(SafeRunner):
         extra: List[str] = []
         if pid is not None:
             extra = ["--pid", str(pid)]
+        effective_timeout = timeout if timeout is not None else MALFIND_TIMEOUT
         return self.run_plugin(
             dump_path=dump_path,
             plugin="windows.malfind",
             extra_args=extra or None,
             output_format="json",
             tool_name=tool_name,
-            timeout=timeout,
+            timeout=effective_timeout,
         )
 
     def dlllist(

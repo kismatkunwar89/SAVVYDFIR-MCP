@@ -800,12 +800,66 @@ function buildTimeline() {
 buildTimeline();
 
 // ===== IOC TAB =====
-function categorizeIOC(ioc) {
-  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ioc)) return 'IP Addresses';
-  if (/^(C:\\|\/)/.test(ioc) || /^[a-zA-Z]:\\/.test(ioc)) return 'File Paths';
-  if (/^[a-fA-F0-9]{32,40}$/.test(ioc)) return 'Hashes (MD5/SHA-1)';
-  if (/\\/.test(ioc) && /^(HKLM|HKCU|HKEY_|HKU|HKCR)/i.test(ioc)) return 'Registry Keys';
-  return 'Other';
+// IOC filter + categorizer aligned with STIX 2.1 / MISP attribute types.
+// Reject tooling internals + free-text descriptions; keep only actionable
+// atomic indicators that defenders can use to detect the same activity
+// elsewhere (IPs, hashes, paths, domains, accounts, registry, email, URLs).
+function isAtomicIOC(s) {
+  if (!s || typeof s !== 'string') return false;
+  s = s.trim();
+  if (!s || s.length > 200) return false;
+
+  // Tooling internals — Volatility / detector field=value strings
+  if (/^(vad|pid|support_count|target|process|protection|total_regions|total_processes|mft_correlated|csv|dll_count|mz_regions|netscan|psscan|pslist|malfind|row_count|sigma_level)=/i.test(s)) return false;
+  if (/^(LogonId|DhcpDomain|SIGN\.MEDIA)\s*[:=]/i.test(s)) return false;
+
+  // SAVVYDFIR internal paths (not part of the case, framework artifacts)
+  if (/^\/(cases|evidence|tmp\/savvydfir|opt\/SAVVYDFIR)/i.test(s)) return false;
+
+  // Naked timestamps — atomic indicators always need context
+  if (/^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?(\.\d+)?(\s*UTC|Z| EDT| EST)?)?$/i.test(s)) return false;
+
+  // MITRE technique codes alone are TTPs, not IOCs (separate section)
+  if (/^T\d{4}(\.\d{3})?$/.test(s)) return false;
+
+  // Free-text descriptions: spaces + length without IOC-looking chars
+  if (s.includes(' ') && s.length > 60 && !/^https?:\/\//i.test(s)) return false;
+
+  // Sentences (multiple-word, sentence-cased, no path/domain markers)
+  if (/^[A-Z][a-z]+ [a-z]+ /.test(s) && !/[\\\/@]/.test(s) && !/^\d/.test(s)) return false;
+
+  return true;
+}
+
+function categorizeIOC(s) {
+  if (!isAtomicIOC(s)) return null;
+  s = s.trim();
+
+  // Network
+  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(s)) return 'IP Addresses';
+  if (/^https?:\/\//i.test(s)) return 'URLs';
+  // Domains / FQDNs (e.g. base-rd-08.shieldbase.lan, download.sysinternals.com)
+  if (/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+\.(com|net|org|lan|local|io|gov|edu|info|biz|me|co\.uk|ru|cn)$/i.test(s)) return 'Hostnames / Domains';
+
+  // Hashes (split MD5 / SHA-1 / SHA-256 per STIX hash types)
+  if (/^[a-f0-9]{64}$/i.test(s)) return 'File Hashes (SHA-256)';
+  if (/^[a-f0-9]{40}$/i.test(s)) return 'File Hashes (SHA-1)';
+  if (/^[a-f0-9]{32}$/i.test(s)) return 'File Hashes (MD5)';
+
+  // Identity
+  if (/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(s)) return 'Email Addresses';
+  if (/^[A-Z][A-Z0-9._-]{1,20}\\[a-zA-Z0-9._-]+$/.test(s)) return 'User Accounts';
+
+  // Registry
+  if (/^(HKLM|HKCU|HKEY_[A-Z_]+|HKU|HKCR|ROOT\\)/i.test(s)) return 'Registry Keys';
+
+  // File paths (full paths only — drives + at least one separator)
+  if (/^[a-zA-Z]:[\\\/]/.test(s) || /^\\\\[a-zA-Z0-9]/.test(s)) return 'File Paths';
+
+  // Atomic filenames with executable / persistence extensions
+  if (/^[A-Za-z0-9_$.~()\-\[\]+ ]+\.(exe|dll|bat|cmd|ps1|vbs|js|jar|zip|7z|pst|lnk|sys|tmp|scr|hta)$/i.test(s) && s.length < 80) return 'File Names';
+
+  return null;
 }
 
 function buildIOCs() {
@@ -834,10 +888,12 @@ function buildIOCs() {
   searchInput.type = 'text';
   container.appendChild(searchInput);
 
-  // Group
+  // Group — categorizeIOC returns null for non-IOC strings; those are dropped.
   const groups = {};
+  let droppedCount = 0;
   allIOCs.forEach(ioc => {
     const cat = categorizeIOC(ioc);
+    if (cat === null) { droppedCount++; return; }
     if (!groups[cat]) groups[cat] = [];
     groups[cat].push(ioc);
   });
@@ -846,7 +902,20 @@ function buildIOCs() {
   sectionsContainer.style.cssText = 'display:flex;flex-direction:column;gap:8px';
   container.appendChild(sectionsContainer);
 
-  const sectionOrder = ['IP Addresses','File Paths','Hashes (MD5/SHA-1)','Registry Keys','Other'];
+  // STIX/MISP-aligned ordering: network → file → identity → host
+  const sectionOrder = [
+    'IP Addresses',
+    'Hostnames / Domains',
+    'URLs',
+    'File Hashes (SHA-256)',
+    'File Hashes (SHA-1)',
+    'File Hashes (MD5)',
+    'File Paths',
+    'File Names',
+    'Email Addresses',
+    'User Accounts',
+    'Registry Keys',
+  ];
   const sectionEls = {};
 
   sectionOrder.forEach(cat => {

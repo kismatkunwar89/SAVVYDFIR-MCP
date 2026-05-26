@@ -135,15 +135,20 @@ cd /opt/SAVVYDFIR-MCP/reports && python3 -m http.server 8080
 
 ## Validation Status
 
-Validated in live remote SIFT-host runs:
+Validated end-to-end on two published Windows intrusion datasets:
 
-- Single-host investigation flow against a published Windows intrusion dataset
-- Audit-backed completion for `compare_disk_and_memory`, `sigma_scan`, and `generate_report`
-- Summary-first MCP responses for heavy disk tools
-- Report and graph generation to `reports/{case_id}/`
-- EVTX cache/idempotency fix under repeated workflow use
-- v7 lane orchestration hardening at commit `bdffba4`: all required lanes reached `COMPLETE`, specialist lane writeback cleared stale delegates, and final `report.json`, `report.html`, `graph.json`, and `graph.html` were produced on the remote SIFT host
-- `COMPLETE_WITH_GAPS` remains an expected investigation outcome when unresolved forensic discrepancies are still documented; it is not treated as a report-generation failure
+- **HACKATHON-2026-WKSTN01** (Runs 1–7): F-Response Subject Agent deployment, BYOVD driver activity, NTLM lateral movement. Run 7 produced 3 CONFIRMED findings with full corroborated_by + alternative-hypothesis disposition. Framework engine + agnostic posture validated.
+- **ROCBA-2020-FREDS-LAPTOP** (Run 9): RDP brute-force breach → cloud-sync IP theft → lateral movement → SDelete/VSS anti-forensics. 63 findings, 3 CONFIRMED, all five case-briefing questions answered. Different attack class than HACKATHON; framework adapted correctly without contamination.
+
+Framework operational properties:
+
+- Audit-backed completion for `sigma_hunt`, `compare_disk_and_memory`, `find_temporal_clusters`, `generate_report`
+- Summary-first MCP responses for heavy disk tools (csv_path + run_analysis mediation)
+- PreToolUse Phase 2 → Phase 3 transition gate prevents agent from running detection tools before mandatory disk extraction completes
+- Memory-hygiene mitigations (stdout/stderr drop post-audit, gc.collect after heavy tools) — validated under 7.6 GB RAM constraint with 4 GB swap
+- Per-tool Vol3 timeout (malfind: 900 s, overrideable via `SAVVYDFIR_MALFIND_TIMEOUT`)
+- IOC categorizer aligned with STIX 2.1 / MISP attribute types (IP, hostname, URL, hash, file path/name, account, email, registry) — drops tooling internals
+- `COMPLETE_WITH_GAPS` remains an expected investigation outcome when unresolved forensic discrepancies are documented (anti-forensics-induced gaps); it is not treated as a report-generation failure
 
 Still pending broader end-to-end validation:
 

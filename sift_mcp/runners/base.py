@@ -83,6 +83,30 @@ class RunResult:
         """``True`` when the process exited 0 and was not timed out or denied."""
         return self.exit_code == 0 and not self.timed_out
 
+    def drop_captured_output(self, keep_chars: int = 8192) -> None:
+        """Truncate stdout/stderr to short head + tail samples.
+
+        Run-8 OOM root cause: dotnet/EvtxECmd captures multi-MB stdout into
+        Python str objects. After the audit log has persisted the
+        ``outputs_summary`` (already a bounded projection), the full captured
+        text is no longer needed by typical callers — the actual artifact
+        data lives in CSVs on disk. Keep a small head + tail for debug only.
+
+        Called by ``SafeRunner.run()`` AFTER audit + state writes, BEFORE the
+        result is returned to the tool layer. Tools that genuinely need full
+        stdout can disable this via ``SAVVYDFIR_KEEP_CAPTURED_OUTPUT=1``.
+        """
+        for attr in ("stdout", "stderr"):
+            value = getattr(self, attr, "") or ""
+            if len(value) <= keep_chars * 2:
+                continue
+            head = value[:keep_chars]
+            tail = value[-keep_chars:]
+            object.__setattr__(
+                self, attr,
+                head + f"\n... [{len(value)-keep_chars*2} chars truncated post-audit] ...\n" + tail,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Custom exceptions
@@ -504,7 +528,7 @@ class SafeRunner:
         # ------------------------------------------------------------------
         # 6. Return structured result
         # ------------------------------------------------------------------
-        return RunResult(
+        result = RunResult(
             stdout=stdout,
             stderr=stderr,
             exit_code=exit_code,
@@ -513,6 +537,33 @@ class SafeRunner:
             execution_id=execution_id,
             timed_out=timed_out,
         )
+
+        # Run-8 OOM mitigation (peer reviewer + peer reviewer consensus 2026-05-26): drop the
+        # full captured stdout/stderr buffers from the returned RunResult once
+        # the audit log + state row have persisted their bounded outputs_summary.
+        # Multi-MB dotnet/EvtxECmd captures otherwise live in the Python heap
+        # across the whole investigation and accumulate toward the 7.6 GB OOM
+        # threshold. Opt out via SAVVYDFIR_KEEP_CAPTURED_OUTPUT=1 for debug.
+        # Also drop local stdout/stderr names so they become eligible for GC
+        # without waiting for the next allocation pressure point.
+        if not os.environ.get("SAVVYDFIR_KEEP_CAPTURED_OUTPUT", "").strip():
+            try:
+                result.drop_captured_output(keep_chars=8192)
+            except Exception:
+                pass
+        # Free function-local references — they're large for chatty tools.
+        stdout = ""
+        stderr = ""
+        # Encourage immediate reclamation after heavy tools (dotnet, Vol3
+        # malfind, Plaso). gc is otherwise generational and may delay
+        # collection of multi-MB temporaries past the next tool's allocation.
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+
+        return result
 
     # ------------------------------------------------------------------
     # Overridable hook for subclasses
