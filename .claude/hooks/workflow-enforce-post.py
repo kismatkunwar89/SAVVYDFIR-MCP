@@ -52,7 +52,9 @@ def _emit(additional_context: str) -> None:
 
 # Explicit structured markers only — match workflow-enforce-pre.py.
 # peer reviewer review removed broad substring matching and the 3-attempt bypass.
-_ABSENCE_MARKERS = ("artifact_absent", "no_data")
+# Run 9 fix: added "tool_incompatible" (Vol3 profile mismatch / missing symbols
+# → tool genuinely cannot run on this image; gate should treat as satisfied).
+_ABSENCE_MARKERS = ("artifact_absent", "no_data", "tool_incompatible")
 
 
 def _called_tools(state_path: Path) -> set[str]:

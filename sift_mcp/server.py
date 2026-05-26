@@ -3963,6 +3963,13 @@ def sigma_hunt(
             f"Computer: {computer} | User: {subject_user}"
         )
 
+        # Artifact event-time for find_temporal_clusters (Run 9 fix).
+        # system_time = EVTX TimeCreated; Chainsaw emits ISO-8601.
+        # Skip "unknown" / missing — leave timestamp_observed None.
+        _observed_ts = str(system_time) if (
+            system_time and str(system_time) != "unknown"
+        ) else None
+
         finding_dict = {
             "case_id": case_id,
             "finding_type": "threat_detection",
@@ -3974,6 +3981,7 @@ def sigma_hunt(
             "finding_status": "active",
             "finding_kind": "raw_detector_hit",
             "confidence": confidence,
+            "timestamp_observed": _observed_ts,
             "description": description,
             "supporting_indicators": [
                 rule_name,

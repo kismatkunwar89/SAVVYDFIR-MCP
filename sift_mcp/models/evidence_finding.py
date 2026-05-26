@@ -180,6 +180,17 @@ class EvidenceFinding(BaseModel):
     # Core identity
     finding_id: str = Field(default_factory=generate_ulid, description="ULID, 26 chars Crockford base32")
     timestamp: Optional[str] = Field(default=None, description="ISO-8601 UTC when finding was recorded")
+    timestamp_observed: Optional[str] = Field(
+        default=None,
+        description=(
+            "ISO-8601 UTC of the artifact event the finding describes "
+            "(not when the finding was recorded). Populated by detectors "
+            "when an artifact timestamp is available (e.g., MFT $SI created, "
+            "EVTX TimeCreated, Prefetch last_run). Used by find_temporal_clusters "
+            "for event-time clustering. Optional — detectors without artifact "
+            "event timestamps in scope leave this None."
+        ),
+    )
 
     # Source provenance (R4: structural enforcement)
     source_mcp_server: str = Field(default="savvydfir", description="Which MCP server emitted the finding")

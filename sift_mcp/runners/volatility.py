@@ -359,7 +359,8 @@ class VolatilityRunner(SafeRunner):
     # Error classification
     # ------------------------------------------------------------------
 
-    def classify_error(self, result: RunResult) -> str:
+    @staticmethod
+    def classify_error(result: RunResult) -> str:
         """Classify a failed ``RunResult`` for the self-correction loop.
 
         Parameters
@@ -373,6 +374,10 @@ class VolatilityRunner(SafeRunner):
             One of:
 
             * ``"missing_symbols"`` — ISF/symbol table not found.
+            * ``"incompatible_profile"`` — kernel/profile mismatch; Vol3
+              cannot construct a memory layer for this image. Distinct from
+              ``corrupted_dump`` (image structurally valid but Vol3 can't
+              interpret it given the available symbol set).
             * ``"unsupported_plugin"`` — plugin name unknown to this build.
             * ``"corrupted_dump"`` — Volatility cannot validate the image.
             * ``"tool_not_found"`` — ``python3`` or ``vol.py`` is missing.
@@ -388,6 +393,56 @@ class VolatilityRunner(SafeRunner):
             return "missing_symbols"
         if "unsupported" in stderr or "no plugin" in stderr:
             return "unsupported_plugin"
+        # Run 9 fix: profile / memory-layer mismatch. peer reviewer-tightened patterns
+        # — multi-token matches required to avoid colliding with corrupt-dump
+        # errors. Arm placed AFTER missing_symbols (so transient symbol-server
+        # failures still classify as missing_symbols), BEFORE corrupted_dump
+        # (so legitimate profile mismatch isn't bucketed as corruption).
+        # Bare "profile" is intentionally NOT a trigger — too broad.
+        if (
+            ("unable to construct" in stderr and (
+                "layer" in stderr or "kernel" in stderr or "profile" in stderr
+            ))
+            or "no_kernel_layer" in stderr
+            or ("incompatible" in stderr and (
+                "kernel" in stderr or "profile" in stderr or "image" in stderr
+            ))
+        ):
+            return "incompatible_profile"
         if "unable to validate" in stderr or "invalid" in stderr:
             return "corrupted_dump"
         return "unknown"
+
+    # ------------------------------------------------------------------
+    # Outputs-summary override (Run 9 fix)
+    # ------------------------------------------------------------------
+    # Inject a "tool_incompatible: <code>" prefix into the audit-log
+    # outputs_summary when classify_error returns missing_symbols or
+    # incompatible_profile. The PreToolUse / generate_report gates do
+    # substring matching on outputs_summary; this lets them recognize
+    # "Vol3 can't run on this evidence" as a legitimate-gap satisfaction
+    # rather than a real failure. See plan: toasty-squishing-thompson.md
+    # Fix 2 (peer reviewer-tightened tool_incompatible disposition).
+
+    def _build_outputs_summary(
+        self, stdout: str, stderr: str, exit_code: int, timed_out: bool
+    ) -> str:
+        base_summary = super()._build_outputs_summary(stdout, stderr, exit_code, timed_out)
+        # Only consider classification when there was a real failure.
+        if timed_out or exit_code == 0:
+            return base_summary
+        # Reconstruct a minimal RunResult so we can reuse the canonical
+        # classify_error logic (no duplication of substring patterns).
+        synthetic = RunResult(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=exit_code,
+            duration_seconds=0.0,
+            command_line="",
+            execution_id="",
+            timed_out=timed_out,
+        )
+        code = self.classify_error(synthetic)
+        if code in {"missing_symbols", "incompatible_profile"}:
+            return f"tool_incompatible: {code}; {base_summary}"[:500]
+        return base_summary

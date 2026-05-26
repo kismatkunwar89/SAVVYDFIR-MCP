@@ -61,8 +61,12 @@ MANDATORY: dict[str, str] = {
 # exit (including path errors, dotnet crashes, transient I/O) is a
 # real failure that must be retried or escalated.
 ABSENCE_MARKERS: tuple[str, ...] = (
-    "artifact_absent",  # MCP tools set status="artifact_absent" when source missing on image
-    "no_data",          # MCP tools set status="no_data" when tool ran but artifact empty
+    "artifact_absent",   # MCP tools set status="artifact_absent" when source missing on image
+    "no_data",           # MCP tools set status="no_data" when tool ran but artifact empty
+    "tool_incompatible", # Run 9 fix: VolatilityRunner._build_outputs_summary prepends
+                         # "tool_incompatible: <code>" when Vol3 cannot run on this image
+                         # (missing_symbols / incompatible_profile). peer reviewer-signed; multi-
+                         # token regex in classify_error guards against corruption-error collision.
 )
 
 # Phase 3b/3c (peer reviewer consensus 2026-05-19): Path B authorization is

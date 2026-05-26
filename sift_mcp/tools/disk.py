@@ -1518,6 +1518,11 @@ def _build_mft_records(
                         evidence_kind=EvidenceKind.OBSERVATION,
                         finding_status=FindingStatus.ACTIVE,
                         confidence=0.8,
+                        # Artifact event-time for find_temporal_clusters (Run 9 fix).
+                        # Use $SI created — the timestamp the attacker manipulated;
+                        # $FN created is preserved on disk but reflects file-creation
+                        # not the timestomping action.
+                        timestamp_observed=si_created,
                         description=(
                             f"Possible timestomping detected for MFT entry {entry_num} "
                             f"({file_path_val or 'unknown path'}). "

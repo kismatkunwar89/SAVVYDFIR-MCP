@@ -1443,8 +1443,13 @@ def find_temporal_clusters(
     # Extract timestamped events
     timestamped_events = []
     for finding in all_findings:
-        # Try multiple timestamp fields
+        # Run 9 fix: prefer artifact event-time (timestamp_observed) over
+        # finding creation-time (timestamp). timestamp_observed is set by
+        # detectors that have a single event-time in scope (MFT timestomping
+        # $SI_created, Sigma hit system_time, Prefetch last_run, etc.).
+        # Fall back to timestamp + indicator-extraction for legacy findings.
         timestamp = (
+            finding.get("timestamp_observed") or
             finding.get("timestamp") or
             _extract_timestamp_indicator(finding, "timestamp") or
             _extract_timestamp_indicator(finding, "$SI_Modified") or
