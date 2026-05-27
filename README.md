@@ -57,42 +57,69 @@ SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns 
 
 | Requirement | Detail |
 |---|---|
-| **SIFT Workstation** | Ubuntu 22.04 x86-64 with Volatility 3, EZ Tools, Sleuth Kit, Plaso, YARA pre-installed |
-| **Claude Code** | Install via `curl -fsSL https://claude.ai/install.sh | bash` |
-| **Claude authentication** | Run `claude` and complete browser login; `ANTHROPIC_API_KEY` is mainly for automation |
-| **Python 3.10+** | Included with SIFT Workstation |
-| **.NET Runtime** | Required for EZ Tools (MFTECmd, EvtxECmd, etc.) |
+| **OS** | Ubuntu 22.04+ x86-64. **Primary tested:** SANS SIFT Workstation 2024 (Ubuntu 24.04 LTS). Ubuntu 22.04 works but is not the primary test target. |
+| **CPU + RAM** | 4 vCPU, **8 GB RAM minimum** (16 GB recommended). The framework's Phase 2 disk extraction can spike to ~6 GB; 4 GB swap is required if you stay at 8 GB RAM. |
+| **Disk** | 80 GB free minimum (evidence + Plaso super-timeline + Vol3 symbol cache + audit logs) |
+| **Shell** | bash, sudo, git, curl, `python3` (3.10+) — `install.sh` installs everything else automatically |
+| **Internet (install time)** | needed for `pipx install volatility3`, the Chainsaw release binary, and the Sigma rules clone. Investigations themselves do **not** require internet beyond Anthropic Claude API access. |
+
+**Note on SIFT 2024:** A clean SIFT Workstation 2024 install ships with EZ Tools, Sleuth Kit (`fls`/`mmls`/`icat`), Plaso, ewfmount, esedbexport, dotnet, and Python 3.12. It does **not** ship with Volatility 3, Chainsaw, or the Sigma rules corpus — `install.sh` installs all three.
 
 ---
 
 ## Installation
 
+One-line install (recommended):
+
 ```bash
-# 1. Clone the repository
 git clone https://github.com/kismatkunwar89/SAVVYDFIR-MCP.git
 cd SAVVYDFIR-MCP
+bash install.sh
+```
 
-# 2. Install Python dependencies
-pip3 install -r requirements.txt
+`install.sh` is idempotent — safe to re-run. It will:
 
-# 3. Install to /opt (production deployment)
-sudo cp -r . /opt/SAVVYDFIR-MCP/
+1. **Verify** Python 3.10+, pip, git are present.
+2. **Install** apt prerequisites: `python3-venv`, `tmux`, `libfuse2t64` (or `libfuse2`), `libewf-dev`, `build-essential`, `pipx`, `curl`, `jq`.
+3. **Install Volatility 3** via `pipx install volatility3` (creates `vol` on PATH).
+4. **Install Chainsaw** — downloads the latest pre-built binary from GitHub releases to `/usr/local/bin/chainsaw`.
+5. **Clone Sigma rules** to `/opt/sigma` (the corpus Chainsaw runs against).
+6. **Install Claude Code** via the native installer (`curl -fsSL https://claude.ai/install.sh | bash`) if not already present.
+7. **Ensure `~/.local/bin` is on PATH** (writes to `~/.bashrc` once).
+8. **Optional: install Protocol SIFT** — skip with `SKIP_PROTOCOL_SIFT=1 bash install.sh` if you don't need the SANS framework.
+9. **Create venv** at `./venv/` and install `requirements.txt`.
+10. **Deploy Claude Code config** (`CLAUDE.md`, `settings.json`, skills) to `~/.claude/`.
+11. **Create directories**: `/cases/{analysis,exports,reports}` and `/evidence/{disk,memory}` (with sudo) or `~/cases` + `~/evidence` fallback.
+12. **Verify** the Python environment by importing fastmcp + pydantic.
 
-# 4. Install Claude Code (recommended native installer)
-curl -fsSL https://claude.ai/install.sh | bash
+After install completes:
 
-# 5. Verify the install
-claude --version
+```bash
+# 1. Pick up new PATH (claude + vol + chainsaw + pipx-installed bins)
+source ~/.bashrc
 
-# 6. Authenticate
+# 2. Authenticate Claude Code (browser flow)
 claude
+
+# 3. Activate venv for direct Python use (optional — MCP starts it automatically via .mcp.json)
+source venv/bin/activate
+
+# 4. Verify the framework imports
+python -c "import sift_mcp.server; print('OK')"
+```
+
+For a production deployment to `/opt/SAVVYDFIR-MCP/` (so any user on the box can run investigations), copy after the local install verifies:
+
+```bash
+sudo cp -r . /opt/SAVVYDFIR-MCP/
+sudo chown -R $USER:$USER /opt/SAVVYDFIR-MCP/
 ```
 
 Notes:
 
 - Anthropic now recommends the native Claude Code installer on macOS, Linux, and WSL. It auto-updates in the background.
 - `npm install -g @anthropic-ai/claude-code` still exists, but Anthropic documents it as deprecated in favor of the native installer.
-- For interactive use, the normal authentication flow is to run `claude` and complete the browser login. `ANTHROPIC_API_KEY` is still useful for API-key-based automation, but it is no longer the best default onboarding step for humans.
+- For interactive use, run `claude` and complete the browser login. `ANTHROPIC_API_KEY` is useful for API-key automation but is no longer the best default for humans.
 
 ---
 

@@ -55,16 +55,127 @@ check_bin() {
     ok "Found: $bin ($(command -v "$bin"))"
 }
 
-check_bin python3  "Install Python 3.8+ from https://www.python.org/"
+check_bin python3  "Install Python 3.10+ from https://www.python.org/"
 check_bin pip3     "Install pip: python3 -m ensurepip --upgrade"
 check_bin git      "Install git: sudo apt-get install git"
 
-# Claude CLI check (non-fatal — warn if missing)
+# Claude CLI check (non-fatal — installer can fetch later)
 if ! command -v claude &>/dev/null; then
-    warn "Claude CLI not found. Install it with: npm install -g @anthropic-ai/claude-code"
-    warn "You can continue the install, but you will need Claude Code before running investigations."
+    warn "Claude CLI not found — will install via native installer below."
+    NEED_CLAUDE_INSTALL=1
 else
     ok "Found: claude ($(command -v claude))"
+    NEED_CLAUDE_INSTALL=0
+fi
+
+# ---------------------------------------------------------------------------
+# 1b. APT prerequisites (Ubuntu/Debian — SIFT Workstation 2024 baseline)
+# ---------------------------------------------------------------------------
+if command -v apt-get >/dev/null 2>&1; then
+    info "Installing apt prerequisites (python3-venv, tmux, libfuse2t64, build-essential, pipx)..."
+    if ! sudo -n true 2>/dev/null; then
+        warn "sudo will prompt for your password to install apt packages."
+    fi
+    sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || \
+        warn "apt-get update returned non-zero — continuing anyway"
+    # libfuse2t64 is the Ubuntu 24.04 name; libfuse2 is the older 22.04 name.
+    APT_PKGS=(
+        python3-venv python3-dev tmux libewf-dev build-essential pipx curl jq
+    )
+    if apt-cache show libfuse2t64 >/dev/null 2>&1; then
+        APT_PKGS+=(libfuse2t64)
+    elif apt-cache show libfuse2 >/dev/null 2>&1; then
+        APT_PKGS+=(libfuse2)
+    fi
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${APT_PKGS[@]}" >/dev/null 2>&1 || \
+        warn "Some apt packages failed to install — re-run manually if needed"
+    ok "APT prerequisites installed."
+fi
+
+# ---------------------------------------------------------------------------
+# 1c. Volatility 3 (memory forensics; missing on SIFT 2024)
+# ---------------------------------------------------------------------------
+if ! command -v vol >/dev/null 2>&1 && ! command -v vol3 >/dev/null 2>&1; then
+    info "Volatility 3 not found — installing via pipx..."
+    if command -v pipx >/dev/null 2>&1; then
+        pipx install volatility3 >/dev/null 2>&1 || \
+            warn "pipx install volatility3 failed — install manually: pipx install volatility3"
+        # Ensure pipx PATH is set
+        pipx ensurepath >/dev/null 2>&1 || true
+        export PATH="$HOME/.local/bin:$PATH"
+        if command -v vol >/dev/null 2>&1; then
+            ok "Volatility 3 installed: $(command -v vol)"
+        else
+            warn "vol still not on PATH — run 'source ~/.bashrc' after install completes"
+        fi
+    else
+        warn "pipx not available — install Vol3 manually: pip install volatility3 (in venv) or pipx install volatility3"
+    fi
+else
+    ok "Volatility 3 already present."
+fi
+
+# ---------------------------------------------------------------------------
+# 1d. Chainsaw + Sigma rules (gate-mandatory for sigma_hunt)
+# ---------------------------------------------------------------------------
+if ! command -v chainsaw >/dev/null 2>&1; then
+    info "Chainsaw not found — installing pre-built binary..."
+    CHAINSAW_TMP="$(mktemp -d)"
+    cd "$CHAINSAW_TMP"
+    CHAINSAW_URL="$(curl -s https://api.github.com/repos/WithSecureLabs/chainsaw/releases/latest \
+        | jq -r '.assets[] | select(.name | endswith("x86_64-unknown-linux-musl.tar.gz")) | .browser_download_url' \
+        | head -1)"
+    if [[ -n "$CHAINSAW_URL" ]]; then
+        curl -sL "$CHAINSAW_URL" -o chainsaw.tar.gz
+        tar xzf chainsaw.tar.gz
+        sudo install -m 755 chainsaw*/chainsaw /usr/local/bin/chainsaw 2>/dev/null || \
+            warn "Could not install chainsaw to /usr/local/bin — copy chainsaw binary manually"
+        ok "Chainsaw installed: $(command -v chainsaw)"
+    else
+        warn "Could not resolve Chainsaw download URL — install manually from https://github.com/WithSecureLabs/chainsaw/releases"
+    fi
+    cd "$SCRIPT_DIR"
+    rm -rf "$CHAINSAW_TMP"
+else
+    ok "Chainsaw already present: $(command -v chainsaw)"
+fi
+
+if [[ ! -d /opt/sigma/rules/windows ]]; then
+    info "Sigma rules not found at /opt/sigma — cloning..."
+    sudo git clone --depth=1 https://github.com/SigmaHQ/sigma.git /opt/sigma >/dev/null 2>&1 && \
+        ok "Sigma rules installed at /opt/sigma" || \
+        warn "Sigma clone failed — clone manually: sudo git clone https://github.com/SigmaHQ/sigma.git /opt/sigma"
+else
+    ok "Sigma rules already present at /opt/sigma."
+fi
+
+# ---------------------------------------------------------------------------
+# 1e. Claude Code (native installer, if missing)
+# ---------------------------------------------------------------------------
+if [[ "${NEED_CLAUDE_INSTALL:-0}" == "1" ]]; then
+    info "Installing Claude Code (native installer)..."
+    if curl -fsSL https://claude.ai/install.sh | bash; then
+        export PATH="$HOME/.local/bin:$PATH"
+        if command -v claude >/dev/null 2>&1; then
+            ok "Claude Code installed: $(command -v claude)"
+        else
+            warn "claude not on PATH yet — add 'export PATH=\"\$HOME/.local/bin:\$PATH\"' to ~/.bashrc and re-source"
+        fi
+    else
+        warn "Claude Code install failed — run manually: curl -fsSL https://claude.ai/install.sh | bash"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 1f. Ensure ~/.local/bin on PATH (for pipx + claude)
+# ---------------------------------------------------------------------------
+if ! echo ":$PATH:" | grep -q ":$HOME/.local/bin:"; then
+    if ! grep -q '.local/bin' "$HOME/.bashrc" 2>/dev/null; then
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+        ok "Added ~/.local/bin to PATH in ~/.bashrc"
+        warn "Run 'source ~/.bashrc' after install completes to pick up new PATH."
+    fi
+    export PATH="$HOME/.local/bin:$PATH"
 fi
 
 # ---------------------------------------------------------------------------
@@ -72,15 +183,17 @@ fi
 # ---------------------------------------------------------------------------
 PROTOCOL_SIFT_MARKER="$HOME/.claude/CLAUDE.md"
 
-if [[ -f "$PROTOCOL_SIFT_MARKER" ]] && grep -q "Principal DFIR Orchestrator" "$PROTOCOL_SIFT_MARKER" 2>/dev/null; then
+if [[ "${SKIP_PROTOCOL_SIFT:-0}" == "1" ]]; then
+    warn "SKIP_PROTOCOL_SIFT=1 — skipping Protocol SIFT (optional external framework)."
+elif [[ -f "$PROTOCOL_SIFT_MARKER" ]] && grep -q "Principal DFIR Orchestrator" "$PROTOCOL_SIFT_MARKER" 2>/dev/null; then
     ok "Protocol SIFT already installed — skipping."
 else
-    info "Installing Protocol SIFT (SANS Claude Code DFIR framework)..."
-    info "Running: curl -fsSL https://raw.githubusercontent.com/teamdfir/protocol-sift/main/install.sh | bash"
+    info "Installing Protocol SIFT (optional SANS Claude Code DFIR framework)..."
+    info "Skip with: SKIP_PROTOCOL_SIFT=1 bash install.sh"
     if curl -fsSL https://raw.githubusercontent.com/teamdfir/protocol-sift/main/install.sh | bash; then
         ok "Protocol SIFT installed successfully."
     else
-        die "Protocol SIFT installation failed. Check network connectivity and retry."
+        warn "Protocol SIFT install failed — continuing (it's optional). Re-run separately if you need it."
     fi
 fi
 
@@ -150,11 +263,14 @@ fi
 # ---------------------------------------------------------------------------
 # 5. Create case directory structure
 # ---------------------------------------------------------------------------
-info "Creating case directories at /cases/..."
-sudo mkdir -p /cases/{analysis,exports,reports} 2>/dev/null || \
-    mkdir -p "${HOME}/cases/{analysis,exports,reports}" && \
-    warn "Could not create /cases/ (no sudo). Created ${HOME}/cases/ instead."
-ok "Case directories ready."
+info "Creating case + evidence directories..."
+sudo mkdir -p /cases/{analysis,exports,reports} /evidence/{disk,memory} 2>/dev/null && \
+    sudo chown -R "$USER:$USER" /cases /evidence && \
+    ok "Created /cases/ and /evidence/ (owned by $USER)" || {
+    mkdir -p "${HOME}/cases/"{analysis,exports,reports} "${HOME}/evidence/"{disk,memory}
+    warn "Could not create /cases/ /evidence/ (no sudo). Used ${HOME}/cases/ and ${HOME}/evidence/ instead."
+    warn "If you keep evidence at the home-relative paths, update case-templates/manifest.json image paths accordingly."
+}
 
 # ---------------------------------------------------------------------------
 # 6. Verify installation
