@@ -122,8 +122,10 @@ if ! command -v chainsaw >/dev/null 2>&1; then
     info "Chainsaw not found — installing pre-built binary..."
     CHAINSAW_TMP="$(mktemp -d)"
     cd "$CHAINSAW_TMP"
+    # Chainsaw publishes either musl or gnu Linux x86_64 builds depending on version.
+    # Match both to survive future renames.
     CHAINSAW_URL="$(curl -s https://api.github.com/repos/WithSecureLabs/chainsaw/releases/latest \
-        | jq -r '.assets[] | select(.name | endswith("x86_64-unknown-linux-musl.tar.gz")) | .browser_download_url' \
+        | jq -r '.assets[] | select(.name | test("x86_64-unknown-linux-(gnu|musl).tar.gz$")) | .browser_download_url' \
         | head -1)"
     if [[ -n "$CHAINSAW_URL" ]]; then
         curl -sL "$CHAINSAW_URL" -o chainsaw.tar.gz
@@ -250,15 +252,28 @@ else
     warn "claude_config/settings.json not found — skipping."
 fi
 
-# 4c. Skills directory
-if [[ -d "${SCRIPT_DIR}/skills" ]]; then
+# 4c. Skills directory — repo has them at .claude/skills/ (user-invocable)
+#     and .agents/skills/ (deferred-agent). Deploy the .claude/skills set to
+#     ~/.claude/skills/ so the agent picks them up at session start.
+if [[ -d "${SCRIPT_DIR}/.claude/skills" ]]; then
+    info "Deploying .claude/skills/ to ${CLAUDE_DIR}/skills/..."
+    backup_if_exists "${CLAUDE_DIR}/skills"
+    cp -r "${SCRIPT_DIR}/.claude/skills" "${CLAUDE_DIR}/skills"
+    ok "Skills deployed ($(ls "${CLAUDE_DIR}/skills" | wc -l) skill(s))."
+elif [[ -d "${SCRIPT_DIR}/skills" ]]; then
+    # Legacy path for older layouts
     info "Deploying skills/ to ${CLAUDE_DIR}/skills/..."
     backup_if_exists "${CLAUDE_DIR}/skills"
     cp -r "${SCRIPT_DIR}/skills" "${CLAUDE_DIR}/skills"
-    ok "Skills deployed."
+    ok "Skills deployed (legacy path)."
 else
-    warn "skills/ directory not found — skipping."
+    warn "No skills directory found — investigation skill will not be available."
 fi
+
+# 4d. Hooks — agent_trigger + workflow-enforce-pre/post + stop hook + session-start
+#     The repo ships these at .claude/hooks/ already, but for any user-level
+#     hook overrides, mirror to ~/.claude/hooks/ here. Currently a no-op — the
+#     .mcp.json at the repo root points hooks at the repo path.
 
 # ---------------------------------------------------------------------------
 # 5. Create case directory structure
