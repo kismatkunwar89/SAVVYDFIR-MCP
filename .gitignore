@@ -57,3 +57,9 @@ GEMINI.md
 AGENTS.md
 n
 .archive/
+
+# Local screenshots and scratch artifacts that should never be tracked
+Screenshot*.png
+report.png
+runreview
+paper/abstract-draft-*.md
