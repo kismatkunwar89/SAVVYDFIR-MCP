@@ -1,0 +1,8 @@
+# Force LF endings on shell scripts, Python, and config — Windows clones must
+# not convert these to CRLF (bash and python both fail on CR in shebang lines).
+*.sh   text eol=lf
+*.py   text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.md   text eol=lf
