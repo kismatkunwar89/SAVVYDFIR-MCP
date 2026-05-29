@@ -3211,7 +3211,13 @@ def list_deleted_files(
     records: list[DeletedFile] = []
     finding_ids: list[str] = []
 
-    for line in result.stdout.splitlines():
+    # OOM mitigation — fls stdout on a full MFT is multi-MB. Materialize the
+    # line list once and immediately release the raw buffer so the heap
+    # doesn't carry it through the per-line scoring loop below.
+    _fls_lines = result.stdout.splitlines()
+    if hasattr(result, "release_stdout"): result.release_stdout()
+
+    for line in _fls_lines:
         line = line.strip()
         if not line:
             continue

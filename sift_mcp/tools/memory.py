@@ -559,6 +559,7 @@ def detect_profile(dump_path: str) -> dict[str, Any]:
         }
 
     rows = _parse_json_output(result.stdout)
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation — free the multi-MB stdout now that we have parsed rows
 
     # windows.info emits key-value rows or a single object.
     # Fields: NtMajorVersion, NtMinorVersion, NtBuildLab, SystemTime,
@@ -810,6 +811,7 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
         }
 
     rows = _parse_json_output(result.stdout)
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation — free the multi-MB stdout now that we have parsed rows
     records = _parse_process_rows(rows, source="pslist")
 
     # Build a pid → name map for parent-name resolution
@@ -1049,6 +1051,7 @@ def scan_processes(dump_path: str, response_format: str = "summary") -> dict[str
         }
 
     rows = _parse_json_output(result.stdout)
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation — free the multi-MB stdout now that we have parsed rows
     records = _parse_process_rows(rows, source="psscan")
 
     # E.1: pass the current scan's dump_path so we pair with THAT dump's
@@ -1198,6 +1201,7 @@ def scan_network(dump_path: str, case_id: Optional[str] = None, max_results: int
         }
 
     rows = _parse_json_output(result.stdout)
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation — free the multi-MB stdout now that we have parsed rows
     records: list[NetworkArtifact] = []
     finding_ids: list[str] = []
     established_count = 0
@@ -1451,6 +1455,7 @@ def detect_injection(
         }
 
     rows = _parse_json_output(result.stdout)
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation — free the multi-MB stdout now that we have parsed rows
     records: list[InjectionIndicator] = []
     finding_ids: list[str] = []
     mz_header_count = 0
@@ -1714,6 +1719,7 @@ def list_dlls(dump_path: str, pid: int) -> dict[str, Any]:
         }
 
     rows = _parse_json_output(result.stdout)
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation — free the multi-MB stdout now that we have parsed rows
     records: list[DllRecord] = []
     finding_ids: list[str] = []
 

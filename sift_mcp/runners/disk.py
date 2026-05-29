@@ -840,7 +840,12 @@ def list_deleted_files(
     records: list[DeletedFile] = []
     finding_ids: list[str] = []
 
-    for line in result.stdout.splitlines():
+    # OOM mitigation — fls stdout is multi-MB on big partitions
+    _fls_lines = result.stdout.splitlines()
+    if hasattr(result, "release_stdout"):
+        result.release_stdout()
+
+    for line in _fls_lines:
         line = line.strip()
         if not line:
             continue

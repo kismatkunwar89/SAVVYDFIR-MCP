@@ -165,6 +165,7 @@ def scan_files(
         }
 
     matches = _parse_yara_output(result.stdout)
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation
 
     return {
         "status": "ok",
@@ -271,6 +272,7 @@ def scan_memory(
         }
 
     matches = _parse_yara_output(result.stdout)
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation
 
     return {
         "status": "ok",

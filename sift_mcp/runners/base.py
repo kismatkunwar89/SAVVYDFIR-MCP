@@ -107,6 +107,32 @@ class RunResult:
                 head + f"\n... [{len(value)-keep_chars*2} chars truncated post-audit] ...\n" + tail,
             )
 
+    def release_stdout(self) -> None:
+        """Explicitly drop stdout from memory after the caller has parsed it.
+
+        Run 11 OOM (2026-05-29): runners like VolatilityRunner that need
+        full stdout to parse JSON output set
+        ``DROP_CAPTURED_OUTPUT_AFTER_AUDIT=False``, which keeps stdout in
+        heap for the lifetime of every RunResult. Over a 60-90min
+        investigation this accumulates to multiple GB — the framework OOM-killed
+        a real ROCBA run mid-Phase-2.
+
+        Callers MUST call ``result.release_stdout()`` immediately after
+        parsing (e.g. right after ``_parse_json_output(result.stdout)``).
+        Tradeoff: result.stdout becomes a small marker string, but the
+        parsed data is already in caller-owned variables. ``outputs_summary``,
+        ``execution_id``, ``exit_code`` are all preserved.
+
+        Idempotent: safe to call multiple times.
+        """
+        original_len = len(self.stdout) if self.stdout else 0
+        if original_len > 8192:
+            object.__setattr__(
+                self,
+                "stdout",
+                f"[stdout released post-parse: {original_len} chars freed]",
+            )
+
 
 # ---------------------------------------------------------------------------
 # Custom exceptions

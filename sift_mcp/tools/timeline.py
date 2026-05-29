@@ -380,6 +380,7 @@ def build_timeline(
         }
 
     # Try to extract event count from log2timeline stdout
+    # OOM mitigation — plaso stdout can run hundreds of MB; release after parse.
     event_count: str = "unknown"
     for line in result.stdout.splitlines():
         # Plaso prints something like: "Completed processing ... 1234567 events"
@@ -387,6 +388,7 @@ def build_timeline(
         if m:
             event_count = m.group(1).replace(",", "")
             break
+    if hasattr(result, "release_stdout"): result.release_stdout()
 
     # B.3: Validate the .plaso file with pinfo.py before claiming success.
     # log2timeline can return exit 0 yet produce a storage file with zero
@@ -404,6 +406,7 @@ def build_timeline(
                 if m:
                     pinfo_event_count = int(m.group(1).replace(",", ""))
                     break
+            if hasattr(pinfo_result, "release_stdout"): pinfo_result.release_stdout()  # OOM mitigation
             if pinfo_event_count is None:
                 # Couldn't parse — fall back to permissive (don't block on parse failure)
                 pinfo_error = "pinfo.py succeeded but event count unparseable"

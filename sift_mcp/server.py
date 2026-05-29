@@ -1174,10 +1174,82 @@ def _record_tool_success_audit(
     return eid
 
 
+_MEM_WATCHDOG_WARN_MB = 4096   # log a warning row at 4 GB RSS
+_MEM_WATCHDOG_CRIT_MB = 6144   # log a critical row + force gc at 6 GB RSS
+_MEM_WATCHDOG_STATE: dict[str, Any] = {"last_warn_tool": "", "last_crit_tool": ""}
+
+
+def _read_rss_mb() -> int:
+    """Return the current process RSS in MiB. Returns 0 if /proc not available."""
+    try:
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    # e.g. "VmRSS:   1234567 kB"
+                    parts = line.split()
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        return int(parts[1]) // 1024
+                    return 0
+    except (OSError, IOError):
+        pass
+    return 0
+
+
+def _memory_watchdog(tool_name: str) -> None:
+    """Run 11 OOM postmortem (2026-05-29): the kernel killed the MCP server at
+    7.3 GB RSS without warning. This watchdog logs a warning row to audit.jsonl
+    when RSS crosses thresholds so operators see the climb instead of getting
+    silently kill -9'd. At CRITICAL it also forces a gc.collect().
+
+    Fires once per tool call (called from _finalize_tool_response). Cheap —
+    /proc read + integer compare.
+    """
+    rss_mb = _read_rss_mb()
+    if rss_mb == 0:
+        return
+    try:
+        if rss_mb >= _MEM_WATCHDOG_CRIT_MB:
+            # Always log at critical (even if same tool repeats)
+            if _audit_logger is not None:
+                _audit_logger.log_execution(
+                    tool="memory.watchdog",
+                    status="critical",
+                    duration_seconds=0.0,
+                    exit_code=0,
+                    outputs_summary=(
+                        f"CRITICAL: MCP process RSS={rss_mb} MB after {tool_name}; "
+                        f"force gc.collect(). OOM kill imminent."
+                    ),
+                )
+            import gc
+            gc.collect()
+            _MEM_WATCHDOG_STATE["last_crit_tool"] = tool_name
+        elif rss_mb >= _MEM_WATCHDOG_WARN_MB:
+            # Throttle: only log warn if the tool changed since the last warn
+            if _MEM_WATCHDOG_STATE.get("last_warn_tool") != tool_name and _audit_logger is not None:
+                _audit_logger.log_execution(
+                    tool="memory.watchdog",
+                    status="warning",
+                    duration_seconds=0.0,
+                    exit_code=0,
+                    outputs_summary=(
+                        f"warning: MCP process RSS={rss_mb} MB after {tool_name}; "
+                        f"approaching {_MEM_WATCHDOG_CRIT_MB} MB critical threshold."
+                    ),
+                )
+                _MEM_WATCHDOG_STATE["last_warn_tool"] = tool_name
+    except Exception:
+        # Watchdog must never block tool returns
+        pass
+
+
 def _finalize_tool_response(tool_name: str, response: Any) -> Any:
     """Append the Phase 7 linked audit event and reconcile execution provenance."""
     if not isinstance(response, dict):
         return response
+    # Watchdog fires before audit work — if we're near OOM, the warning row
+    # gets written even if the audit/link work below throws.
+    _memory_watchdog(tool_name)
     response = _canonicalize_response_artifact_paths(response)
     response.setdefault("recommended_batch_mode", _recommended_batch_mode_for_tool(tool_name))
     if response.get("status") == "error":
@@ -5148,6 +5220,10 @@ def analyze_vss(
     if current_shadow:
         shadow_copies.append(current_shadow)
 
+    # OOM mitigation — vshadowinfo output not needed after parse
+    if hasattr(vsi_result, "release_stdout"):
+        vsi_result.release_stdout()
+
     total_shadows = len(shadow_copies)
 
     # ------------------------------------------------------------------
@@ -6938,7 +7014,14 @@ def extract_windows_artifacts(
         failures: list[dict[str, Any]] = []
         seen_targets: set[str] = set()
 
-        for raw_line in fls_result.stdout.splitlines():
+        # OOM mitigation — fls output on full NTFS can be 100+ MB.
+        # Materialize the line list once, then release the raw buffer so the
+        # heap doesn't carry it through the icat per-file extraction loop.
+        _fls_lines = fls_result.stdout.splitlines()
+        if hasattr(fls_result, "release_stdout"):
+            fls_result.release_stdout()
+
+        for raw_line in _fls_lines:
             parsed = _parse_fls_record(raw_line)
             if parsed is None:
                 continue
