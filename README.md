@@ -88,7 +88,11 @@ bash install.sh
 7. **Ensure `~/.local/bin` is on PATH** (writes to `~/.bashrc` once).
 8. **Optional: install Protocol SIFT** — skip with `SKIP_PROTOCOL_SIFT=1 bash install.sh` if you don't need the SANS framework.
 9. **Create venv** at `./venv/` and install `requirements.txt`.
-10. **Deploy Claude Code config** (`CLAUDE.md`, `settings.json`, skills) to `~/.claude/`.
+10. **Deploy Claude Code global config** (`CLAUDE.md` + skills) to `~/.claude/`.
+    Hooks, permissions, and MCP server registration live in the **project-local** `.claude/settings.json`
+    inside the repo — they take effect automatically when you launch `claude` from the repo directory.
+    `install.sh` does **not** write a `~/.claude/settings.json`, so it cannot drift out of sync with the
+    Claude Code schema your installed version expects.
 11. **Create directories**: `/cases/{analysis,exports,reports}` and `/evidence/{disk,memory}` (with sudo) or `~/cases` + `~/evidence` fallback.
 12. **Verify** the Python environment by importing fastmcp + pydantic.
 
@@ -98,7 +102,10 @@ After install completes:
 # 1. Pick up new PATH (claude + vol + chainsaw + pipx-installed bins)
 source ~/.bashrc
 
-# 2. Authenticate Claude Code (browser flow)
+# 2. Authenticate Claude Code (browser flow — one-time)
+#    IMPORTANT: stay INSIDE the SAVVYDFIR-MCP directory so the project-local
+#    .claude/settings.json (hooks + MCP server + permissions) gets picked up.
+cd SAVVYDFIR-MCP   # if you aren't already here
 claude
 
 # 3. Activate venv for direct Python use (optional — MCP starts it automatically via .mcp.json)
@@ -107,6 +114,12 @@ source venv/bin/activate
 # 4. Verify the framework imports
 python -c "import sift_mcp.server; print('OK')"
 ```
+
+> **Why no `~/.claude/settings.json`?** Earlier versions of this installer deployed a global
+> settings file that could fall out of sync with the Claude Code schema (e.g. `claude login` would
+> error on `hooks.PostToolUse[0].hooks: Expected array, but received undefined`). The project-local
+> `.claude/settings.json` at the repo root is now the single source of truth and is committed to
+> git alongside the code that depends on it — schema and hooks stay in lockstep.
 
 For a production deployment to `/opt/SAVVYDFIR-MCP/` (so any user on the box can run investigations), copy after the local install verifies:
 

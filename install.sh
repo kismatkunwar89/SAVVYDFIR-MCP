@@ -242,15 +242,14 @@ else
     warn "claude_config/CLAUDE.md not found — skipping."
 fi
 
-# 4b. settings.json (permissions)
-if [[ -f "${SCRIPT_DIR}/claude_config/settings.json" ]]; then
-    info "Deploying settings.json to ${CLAUDE_DIR}/settings.json..."
-    backup_if_exists "${CLAUDE_DIR}/settings.json"
-    cp "${SCRIPT_DIR}/claude_config/settings.json" "${CLAUDE_DIR}/settings.json"
-    ok "settings.json deployed."
-else
-    warn "claude_config/settings.json not found — skipping."
-fi
+# 4b. settings.json — INTENTIONALLY NOT DEPLOYED TO ~/.claude/
+#     The project-local .claude/settings.json (in the repo root) is the
+#     source of truth for hooks + permissions + MCP server registration.
+#     Claude Code picks it up automatically when launched from inside the
+#     repo. Deploying a HOME-level settings.json risks schema drift and
+#     can break `claude login` if formats change between Claude Code
+#     versions. Always launch `claude` from inside the SAVVYDFIR-MCP
+#     directory so the project-local config takes effect.
 
 # 4c. Skills directory — repo has them at .claude/skills/ (user-invocable)
 #     and .agents/skills/ (deferred-agent). Deploy the .claude/skills set to
