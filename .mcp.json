@@ -2,15 +2,12 @@
   "mcpServers": {
     "savvydfir": {
       "type": "stdio",
-      "command": "python3",
-      "args": [
-        "/opt/SAVVYDFIR-MCP/sift_mcp/server.py"
-      ],
+      "command": "./venv/bin/python3",
+      "args": ["-m", "sift_mcp.server"],
       "env": {
         "EVIDENCE_BASE": "/evidence",
         "MOUNT_BASE": "/mnt",
         "OUTPUT_BASE": "/cases",
-        "PYTHONPATH": "/opt/SAVVYDFIR-MCP",
         "MCP_TOOL_TIMEOUT": "1800000"
       }
     }
