@@ -72,6 +72,11 @@ class SleuthKitRunner(SafeRunner):
     TSK resolves the rest automatically.
     """
 
+    # fls / mmls / istat all emit table data on stdout that callers parse
+    # line-by-line (sift_mcp/tools/disk.py:3214, sift_mcp/server.py:6941, etc).
+    # See SafeRunner.DROP_CAPTURED_OUTPUT_AFTER_AUDIT.
+    DROP_CAPTURED_OUTPUT_AFTER_AUDIT: bool = False
+
     # ------------------------------------------------------------------
     # EWF (EnCase) image tools
     # ------------------------------------------------------------------

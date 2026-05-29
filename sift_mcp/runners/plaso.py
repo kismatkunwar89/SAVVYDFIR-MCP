@@ -100,6 +100,10 @@ class PlasoRunner(SafeRunner):
     any attempt to write back to the evidence directory.
     """
 
+    # pinfo and psort emit table data on stdout that callers parse line-by-line
+    # (sift_mcp/tools/timeline.py:384, 402). See SafeRunner.DROP_CAPTURED_OUTPUT_AFTER_AUDIT.
+    DROP_CAPTURED_OUTPUT_AFTER_AUDIT: bool = False
+
     # ------------------------------------------------------------------
     # log2timeline
     # ------------------------------------------------------------------

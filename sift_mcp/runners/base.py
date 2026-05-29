@@ -235,6 +235,15 @@ class SafeRunner:
         "shred",
     ]
 
+    #: When True, drop captured stdout/stderr from the returned RunResult
+    #: after the audit row + outputs_summary are persisted. Default True
+    #: (Run-8 OOM mitigation for multi-MB dotnet captures that write CSV
+    #: to disk anyway). Subclasses whose stdout IS the parsed data — most
+    #: notably :class:`VolatilityRunner` — must override to ``False``, or
+    #: callers parse an empty/truncated buffer (Run 11 ROCBA: pslist
+    #: returned 0 processes from a healthy 2,186-row memory image).
+    DROP_CAPTURED_OUTPUT_AFTER_AUDIT: bool = True
+
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
@@ -546,7 +555,15 @@ class SafeRunner:
         # threshold. Opt out via SAVVYDFIR_KEEP_CAPTURED_OUTPUT=1 for debug.
         # Also drop local stdout/stderr names so they become eligible for GC
         # without waiting for the next allocation pressure point.
-        if not os.environ.get("SAVVYDFIR_KEEP_CAPTURED_OUTPUT", "").strip():
+        #
+        # Run 11 (2026-05-29): added DROP_CAPTURED_OUTPUT_AFTER_AUDIT class
+        # attribute so subclasses whose stdout IS the parsed data (Volatility 3
+        # JSON renderer in particular) can opt out per-runner. Without this,
+        # a 731 KB pslist JSON gets sliced to 16 KB head+tail and parses to
+        # 0 rows, silently destroying the entire memory pillar.
+        if self.DROP_CAPTURED_OUTPUT_AFTER_AUDIT and not os.environ.get(
+            "SAVVYDFIR_KEEP_CAPTURED_OUTPUT", ""
+        ).strip():
             try:
                 result.drop_captured_output(keep_chars=8192)
             except Exception:

@@ -102,6 +102,13 @@ class VolatilityRunner(SafeRunner):
 
     VOL_PATH: str = VOL_PATH
 
+    # Vol3's JSON renderer emits the parsed data directly on stdout, and
+    # callers like list_processes() parse from result.stdout. The base-class
+    # OOM-mitigation truncation (8192 head + 8192 tail) destroys multi-hundred-KB
+    # pslist/psscan/netscan JSON output, so this runner opts out of it.
+    # See SafeRunner.DROP_CAPTURED_OUTPUT_AFTER_AUDIT for the full rationale.
+    DROP_CAPTURED_OUTPUT_AFTER_AUDIT: bool = False
+
     # ------------------------------------------------------------------
     # Generic plugin runner
     # ------------------------------------------------------------------

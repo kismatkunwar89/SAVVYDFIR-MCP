@@ -103,6 +103,10 @@ class YaraRunner(SafeRunner):
     ``scan_memory()`` for details.
     """
 
+    # YARA's stdout IS the match list — _parse_yara_output reads it directly.
+    # See SafeRunner.DROP_CAPTURED_OUTPUT_AFTER_AUDIT.
+    DROP_CAPTURED_OUTPUT_AFTER_AUDIT: bool = False
+
     # ------------------------------------------------------------------
     # File / directory scanning
     # ------------------------------------------------------------------

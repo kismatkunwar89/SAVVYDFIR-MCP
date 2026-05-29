@@ -91,7 +91,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/session-start.py"
+            "command": "./venv/bin/python3 .claude/hooks/session-start.py"
           }
         ]
       }
@@ -102,7 +102,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/workflow-enforce-pre.py"
+            "command": "./venv/bin/python3 .claude/hooks/workflow-enforce-pre.py"
           }
         ]
       }
@@ -122,7 +122,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/workflow-enforce-post.py"
+            "command": "./venv/bin/python3 .claude/hooks/workflow-enforce-post.py"
           }
         ]
       },
@@ -131,7 +131,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 scripts/agent_trigger.py"
+            "command": "./venv/bin/python3 scripts/agent_trigger.py"
           }
         ]
       }
@@ -142,7 +142,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/stop.py"
+            "command": "./venv/bin/python3 .claude/hooks/stop.py"
           }
         ]
       }
