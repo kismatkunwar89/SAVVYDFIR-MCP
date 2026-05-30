@@ -1,0 +1,1 @@
+{"execution_id": "E-001", "tool_name": "synthetic", "started_at": "2026-05-30T00:00:00Z", "completed_at": "2026-05-30T00:00:01Z", "duration_seconds": 1, "command_line": "synthetic fixture", "exit_code": 0}

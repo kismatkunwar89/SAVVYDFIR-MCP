@@ -1,0 +1,132 @@
+{
+  "case_id": "SYNTHETIC-BUCKET-FIXTURE",
+  "status": "COMPLETE",
+  "case_manifest": {
+    "disk_images": [
+      {"host": "synthetic-host", "path": "(synthetic evidence disk)", "image_type": "synthetic"}
+    ],
+    "memory_dumps": []
+  },
+  "findings": [
+    {
+      "finding_id": "F-001",
+      "finding_type": "case_001_missing_artifact_type",
+      "description": "Case 1: finding without artifact_type or artifact_subtype. Should fall through to Uncategorized.",
+      "evidence_kind": "OBSERVATION",
+      "confidence": 0.95,
+      "finding_status": "CONFIRMED",
+      "tool_name": "synthetic",
+      "mitre_technique": "T0000.001"
+    },
+    {
+      "finding_id": "F-002",
+      "finding_type": "case_002_empty_details",
+      "description": "Case 2: empty artifact_type. Should fall through to Uncategorized.",
+      "artifact_type": "",
+      "artifact_subtype": "",
+      "evidence_kind": "OBSERVATION",
+      "confidence": 0.95,
+      "finding_status": "CONFIRMED",
+      "tool_name": "synthetic",
+      "mitre_technique": "T0000.002"
+    },
+    {
+      "finding_id": "F-003",
+      "finding_type": "case_003_disk_no_subtype",
+      "description": "Case 3: disk artifact_type, empty subtype. Should land in Other / Disk.",
+      "artifact_type": "disk",
+      "artifact_subtype": "",
+      "evidence_kind": "OBSERVATION",
+      "confidence": 0.95,
+      "finding_status": "CONFIRMED",
+      "tool_name": "synthetic",
+      "mitre_technique": "T0000.003"
+    },
+    {
+      "finding_id": "F-004",
+      "finding_type": "case_004_disk_unknown_subtype",
+      "description": "Case 4: disk artifact_type, unmapped subtype. Should land in Other / Disk.",
+      "artifact_type": "disk",
+      "artifact_subtype": "future_unknown_subtype",
+      "evidence_kind": "OBSERVATION",
+      "confidence": 0.95,
+      "finding_status": "CONFIRMED",
+      "tool_name": "synthetic",
+      "mitre_technique": "T0000.004"
+    },
+    {
+      "finding_id": "F-005",
+      "finding_type": "case_005_unknown_family",
+      "description": "Case 5: unknown artifact_type family (cloud). Should land in Uncategorized.",
+      "artifact_type": "cloud",
+      "artifact_subtype": "",
+      "evidence_kind": "OBSERVATION",
+      "confidence": 0.95,
+      "finding_status": "CONFIRMED",
+      "tool_name": "synthetic",
+      "mitre_technique": "T0000.005"
+    },
+    {
+      "finding_id": "F-006",
+      "finding_type": "case_006_rule_detection_sigma",
+      "description": "Case 6a: disk:sigma. Should land in Rule Detection (sub: Sigma).",
+      "artifact_type": "disk",
+      "artifact_subtype": "sigma",
+      "evidence_kind": "INFERENCE",
+      "confidence": 0.95,
+      "finding_status": "CONFIRMED",
+      "tool_name": "disk.sigma_hunt",
+      "mitre_technique": "T0000.006"
+    },
+    {
+      "finding_id": "F-007",
+      "finding_type": "case_006_rule_detection_hayabusa",
+      "description": "Case 6b: disk:hayabusa. Should land in Rule Detection (sub: Hayabusa).",
+      "artifact_type": "disk",
+      "artifact_subtype": "hayabusa",
+      "evidence_kind": "INFERENCE",
+      "confidence": 0.95,
+      "finding_status": "CONFIRMED",
+      "tool_name": "disk.hayabusa_hunt",
+      "mitre_technique": "T0000.007"
+    },
+    {
+      "finding_id": "F-008",
+      "finding_type": "case_006_rule_detection_yara",
+      "description": "Case 6c: yara artifact_type. Should land in Rule Detection (sub: YARA).",
+      "artifact_type": "yara",
+      "artifact_subtype": "",
+      "evidence_kind": "INFERENCE",
+      "confidence": 0.95,
+      "finding_status": "CONFIRMED",
+      "tool_name": "yara_scan",
+      "mitre_technique": "T0000.008"
+    },
+    {
+      "finding_id": "F-009",
+      "finding_type": "case_007_evtx_flat",
+      "description": "Case 7: disk:evtx_event. Should land in Event Logs / EVTX (flat — no channel sub-grouping).",
+      "artifact_type": "disk",
+      "artifact_subtype": "evtx_event",
+      "evidence_kind": "OBSERVATION",
+      "confidence": 0.95,
+      "finding_status": "CONFIRMED",
+      "tool_name": "disk.summarize_evtx",
+      "mitre_technique": "T0000.009"
+    },
+    {
+      "finding_id": "F-010",
+      "finding_type": "case_008_tool_name_fallback_registry",
+      "description": "Bonus: empty subtype, but tool_name=disk.extract_registry_run_keys. Should bucket as Registry via TOOL_NAME_TO_SUBTYPE fallback.",
+      "artifact_type": "disk",
+      "artifact_subtype": "",
+      "evidence_kind": "OBSERVATION",
+      "confidence": 0.95,
+      "finding_status": "CONFIRMED",
+      "tool_name": "disk.extract_registry_run_keys",
+      "mitre_technique": "T0000.010"
+    }
+  ],
+  "executions": [],
+  "analysis_lanes": []
+}

@@ -56,9 +56,31 @@ input{font:inherit;color:inherit}
 .filter-group{display:flex;flex-direction:column;gap:6px}
 .filter-item{display:flex;align-items:center;gap:8px;font-size:13px;color:#cbd5e1;cursor:pointer}
 .filter-item input[type="checkbox"]{accent-color:#3b82f6;width:14px;height:14px}
+.filter-item .count-badge{margin-left:auto;font-size:11px;color:#64748b;font-variant-numeric:tabular-nums}
 .legend-group{display:flex;flex-direction:column;gap:5px}
 .legend-item{display:flex;align-items:center;gap:8px;font-size:12px;color:#94a3b8}
+.legend-item .count-badge{margin-left:auto;font-size:11px;color:#64748b;font-variant-numeric:tabular-nums}
 .legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+/* tree rows — artifact-type / analysis-layers section */
+.tree-row{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:4px;cursor:pointer;font-size:13px;color:#cbd5e1;transition:background 120ms ease}
+.tree-row:hover{background:#263045}
+.tree-row.active{background:#1e3a5f;color:#60a5fa}
+.tree-row .tree-caret{width:12px;font-size:10px;color:#64748b;flex-shrink:0;text-align:center}
+.tree-row .tree-caret.empty{visibility:hidden}
+.tree-row .tree-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-row .count-badge{font-size:11px;color:#64748b;font-variant-numeric:tabular-nums}
+.tree-sub{display:none;flex-direction:column;gap:2px;margin-left:18px;padding-left:6px;border-left:1px solid #334155}
+.tree-sub.open{display:flex}
+.tree-sub .tree-row{padding:3px 6px;font-size:12px}
+/* canvas chrome — view chip + status line + show-all */
+.canvas-chrome{position:absolute;top:12px;left:12px;right:12px;display:flex;align-items:center;gap:12px;z-index:10;pointer-events:none}
+.canvas-chrome > *{pointer-events:auto}
+.canvas-chip{padding:5px 12px;background:#1e293b;border:1px solid #334155;border-radius:9999px;font-size:12px;color:#cbd5e1;font-weight:500;white-space:nowrap}
+.canvas-chip .chip-label{color:#64748b;margin-right:4px}
+.canvas-chip .chip-fid{font-family:'SF Mono',SFMono-Regular,Consolas,monospace;color:#60a5fa}
+.canvas-status{padding:5px 12px;background:#1e293b;border:1px solid #334155;border-radius:6px;font-size:11px;color:#94a3b8;font-variant-numeric:tabular-nums}
+.canvas-reset{margin-left:auto;padding:5px 12px;background:#1e293b;border:1px solid #334155;border-radius:6px;color:#cbd5e1;font-size:12px;cursor:pointer;transition:background 120ms ease}
+.canvas-reset:hover{background:#334155}
 .graph-canvas{flex:1;position:relative;overflow:hidden;background:#0f172a}
 .graph-canvas svg{width:100%;height:100%}
 .zoom-controls{position:absolute;bottom:16px;right:16px;display:flex;flex-direction:column;gap:4px;z-index:10}
@@ -218,8 +240,16 @@ input{font:inherit;color:inherit}
             <input type="text" class="search-input" id="graph-search" placeholder="Search nodes...">
           </div>
           <div>
-            <h3>Node Types</h3>
-            <div class="filter-group" id="type-filters"></div>
+            <h3>Artifact Type</h3>
+            <div class="filter-group" id="artifact-tree"></div>
+          </div>
+          <div>
+            <h3>Analysis Layers</h3>
+            <div class="filter-group" id="analysis-tree"></div>
+          </div>
+          <div>
+            <h3>Node Roles</h3>
+            <div class="filter-group" id="role-filters"></div>
           </div>
           <div>
             <h3>Evidence Kind</h3>
@@ -227,6 +257,11 @@ input{font:inherit;color:inherit}
           </div>
         </div>
         <div class="graph-canvas" id="graph-canvas">
+          <div class="canvas-chrome">
+            <div class="canvas-chip" id="view-chip"><span class="chip-label">View:</span><span id="view-name">Findings Overview</span></div>
+            <div class="canvas-status" id="view-status">Visible: 0 / 0</div>
+            <button class="canvas-reset" id="btn-reset-canvas">↺ Show all</button>
+          </div>
           <svg id="graph-svg"></svg>
           <div class="zoom-controls">
             <button class="zoom-btn" id="zoom-in" title="Zoom in">+</button>
@@ -521,16 +556,29 @@ $('#zoom-out').addEventListener('click', () => svg.transition().duration(300).ca
 $('#zoom-fit').addEventListener('click', fitGraph);
 
 function fitGraph() {
-  if (!nodes.length) return;
-  const pad = 60;
+  // Bound the fit to the currently-visible (filtered) subset only.
+  // Iterating the full corpus included hidden-but-stale x/y from prior
+  // simulations, which made small filters compute huge bounds and tiny
+  // scale. Pull from simulation.nodes() instead — the simulation always
+  // holds the current visible array.
+  const visible = simulation ? simulation.nodes() : nodes;
+  if (!visible.length) return;
+  const pad = 80;
   let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
-  nodes.forEach(n => {
+  visible.forEach(n => {
     if (n.x!==undefined) { x0=Math.min(x0,n.x); y0=Math.min(y0,n.y); x1=Math.max(x1,n.x); y1=Math.max(y1,n.y); }
   });
   if (!isFinite(x0)) return;
   const w = width(), h = height();
   const dx = x1-x0||1, dy = y1-y0||1;
-  const scale = Math.min(0.9, Math.min((w-2*pad)/dx, (h-2*pad)/dy));
+  // Cap raised from 0.9 → 3.0 so small filters (5–14 nodes) auto-zoom IN
+  // instead of staying at 90% of a mostly-empty canvas.
+  let scale = Math.min(3.0, Math.min((w-2*pad)/dx, (h-2*pad)/dy));
+  // Floor the zoom for sparse subsets — if you only see a handful of
+  // nodes, you want them BIG, not "technically fitted at 1.04x".
+  if (visible.length <= 6)  scale = Math.max(scale, 2.5);
+  else if (visible.length <= 15) scale = Math.max(scale, 1.8);
+  else if (visible.length <= 30) scale = Math.max(scale, 1.3);
   const tx = (w-scale*(x0+x1))/2;
   const ty = (h-scale*(y0+y1))/2;
   svg.transition().duration(500).call(zoomBehavior.transform, d3.zoomIdentity.translate(tx,ty).scale(scale));
@@ -540,22 +588,120 @@ function fitGraph() {
 const linkG = g.append('g').attr('class','links');
 const nodeG = g.append('g').attr('class','nodes');
 
-const visibleTypes = new Set(['case','evidence_source','finding','correction']);
-let searchTerm = '';
+// === BUCKET_MAP — artifact_type + artifact_subtype → category bucket ===
+// Keyed on canonical framework enums (sift_mcp/models/finding.py). Unknown
+// subtype falls through to bare artifact_type; unknown family → "Uncategorized".
+const BUCKET_MAP = {
+  'memory':         { section: 'artifact', bucket: 'Memory' },
+  'disk:mft':       { section: 'artifact', bucket: 'Filesystem', sub: 'MFT' },
+  'disk:usn':       { section: 'artifact', bucket: 'Filesystem', sub: 'USN' },
+  'disk:evtx':         { section: 'artifact', bucket: 'Event Logs / EVTX' },
+  'disk:evtx_event':   { section: 'artifact', bucket: 'Event Logs / EVTX' },
+  'disk:evtx_summary': { section: 'artifact', bucket: 'Event Logs / EVTX' },
+  'disk:prefetch':  { section: 'artifact', bucket: 'Execution Artifacts', sub: 'Prefetch' },
+  'disk:amcache':   { section: 'artifact', bucket: 'Execution Artifacts', sub: 'Amcache' },
+  'disk:shimcache': { section: 'artifact', bucket: 'Execution Artifacts', sub: 'ShimCache' },
+  'disk:registry':  { section: 'artifact', bucket: 'Registry' },
+  'disk:pca':       { section: 'artifact', bucket: 'Registry', sub: 'PCA' },
+  'disk:srum':      { section: 'artifact', bucket: 'Network / SRUM' },
+  'disk:vss':       { section: 'analysis', bucket: 'Correlation', sub: 'VSS' },
+  'disk:sigma':     { section: 'analysis', bucket: 'Rule Detection', sub: 'Sigma' },
+  'disk:hayabusa':  { section: 'analysis', bucket: 'Rule Detection', sub: 'Hayabusa' },
+  'correlation':    { section: 'analysis', bucket: 'Correlation' },
+  'timeline':       { section: 'analysis', bucket: 'Correlation' },
+  'yara':           { section: 'analysis', bucket: 'Rule Detection', sub: 'YARA' },
+  'disk':           { section: 'artifact', bucket: 'Other / Disk' },
+};
+const CATCH_ALL = { section: 'artifact', bucket: 'Uncategorized' };
+
+// Recover subtype from tool_name when the agent left artifact_subtype blank.
+// This is a graph-layer fallback; the framework should populate the field
+// at submit_finding time, but legacy state.json files predate that.
+const TOOL_NAME_TO_SUBTYPE = {
+  'extract_mft_timeline':       'mft',
+  'extract_usn_journal':        'usn',
+  'summarize_evtx':             'evtx_event',
+  'sigma_hunt':                 'sigma',
+  'hayabusa_hunt':              'hayabusa',
+  'extract_prefetch':           'prefetch',
+  'get_amcache':                'amcache',
+  'extract_shimcache':          'shimcache',
+  'extract_registry_run_keys':  'registry',
+  'extract_pca':                'pca',
+  'extract_srum':               'srum',
+  'analyze_vss':                'vss',
+  'compare_disk_and_memory':    '',   // correlation — handled by artifact_type
+  'find_temporal_clusters':     '',
+  'build_timeline':             '',
+};
+
+function bucketFor(node) {
+  if (node.type !== 'finding') return null;
+  const det = node.details || {};
+  const at = String(det.artifact_type || '').trim().toLowerCase();
+  let sub = String(det.artifact_subtype || '').trim().toLowerCase();
+  // Fallback: derive subtype from tool_name when missing. The framework
+  // stores tool_name with a category prefix (e.g. "disk.extract_registry_run_keys")
+  // so we strip the prefix before lookup.
+  if (!sub) {
+    let tn = String(det.tool_name || '').trim().toLowerCase();
+    if (tn.includes('.')) tn = tn.split('.').pop();
+    if (tn && TOOL_NAME_TO_SUBTYPE[tn]) sub = TOOL_NAME_TO_SUBTYPE[tn];
+  }
+  if (!at) return CATCH_ALL;
+  if (sub) {
+    const key = at + ':' + sub;
+    if (BUCKET_MAP[key]) return BUCKET_MAP[key];
+  }
+  if (BUCKET_MAP[at]) return BUCKET_MAP[at];
+  return CATCH_ALL;
+}
+
+// === State ===
+const state = {
+  searchTerm: '',
+  // Per-bucket filter: empty Set = no bucket filter active. When non-empty,
+  // ONLY findings in selected buckets are visible.
+  selectedBuckets: new Set(),
+  // Node roles — all four checked by default. Evidence Source visibility is
+  // what shows the disk/memory lineage edges; users want that on first load.
+  visibleRoles: new Set(['case','evidence_source','finding','correction']),
+};
 
 function getFilteredData() {
-  const fn = nodes.filter(n => {
-    if (!visibleTypes.has(n.type)) return false;
-    if (searchTerm && !(n.label||n.id).toLowerCase().includes(searchTerm)) return false;
+  // When the user has drilled into a subset (bucket filter), Evidence
+  // Sources are force-shown — provenance is the whole point of the drill.
+  // The Node Roles checkbox remains visually OFF; this override is purely
+  // internal to the filter.
+  const drilling = state.selectedBuckets.size > 0;
+  const effectiveRoles = drilling
+      ? new Set([...state.visibleRoles, 'evidence_source'])
+      : state.visibleRoles;
+
+  // ---- node filter ----
+  let visible = nodes.filter(n => {
+    if (!effectiveRoles.has(n.type)) return false;
+    if (state.searchTerm && !(n.label||n.id).toLowerCase().includes(state.searchTerm)) return false;
     return true;
   });
-  const fnIds = new Set(fn.map(n=>n.id));
+
+  // Bucket filter (Artifact Type + Analysis Layers): only applies to
+  // Finding nodes. Empty selection = show all findings.
+  if (state.selectedBuckets.size > 0) {
+    visible = visible.filter(n => {
+      if (n.type !== 'finding') return true;
+      const b = bucketFor(n);
+      return b && state.selectedBuckets.has(b.bucket);
+    });
+  }
+
+  const fnIds = new Set(visible.map(n=>n.id));
   const fe = edges.filter(e => {
     const s = typeof e.source === 'object' ? e.source.id : e.source;
     const t = typeof e.target === 'object' ? e.target.id : e.target;
     return fnIds.has(s) && fnIds.has(t);
   });
-  return {nodes: fn, edges: fe};
+  return {nodes: visible, edges: fe};
 }
 
 let simulation;
@@ -598,7 +744,17 @@ function renderGraph() {
       const kind = (d.details||{}).evidence_kind || 'OBSERVATION';
       el.append('circle').attr('r',sz/2).attr('fill', kindColors[kind]||'#64748b').attr('opacity',0.85).attr('stroke','rgba(255,255,255,.15)').attr('stroke-width',1);
     }
-    el.append('text').attr('class','node-label').attr('dy', sz/2+14).text(truncate(d.label||d.id, 22));
+    // Per-shape label offset — rectangles (Case/Evidence Source) are taller
+    // than circles, so the label needs to clear the rect bottom edge.
+    let labelDy;
+    if (d.type === 'case' || d.type === 'evidence_source') {
+      labelDy = sz*0.7 + 16;  // rect bottom is at sz*0.7
+    } else if (d.type === 'correction') {
+      labelDy = sz*0.9 + 14;  // diamond bottom point
+    } else {
+      labelDy = sz/2 + 14;    // circle bottom
+    }
+    el.append('text').attr('class','node-label').attr('dy', labelDy).text(truncate(d.label||d.id, 22));
   });
 
   // Drag
@@ -608,20 +764,42 @@ function renderGraph() {
     .on('end', (e,d) => { if(!e.active) simulation.alphaTarget(0); d.fx=null; d.fy=null; })
   );
 
-  // Click
+  // Click — select + open detail panel.
   nodeEnter.on('click', (e,d) => {
     e.stopPropagation();
     highlightNode(d);
     showDetail(d);
   });
 
-  // Simulation
+  // Simulation — force strengths scale with visible node count so that
+  // small filters (5-15 nodes) cluster tightly at center instead of being
+  // flung to the canvas corners by forces tuned for 60+ nodes.
   if (simulation) simulation.stop();
+  const fnCount = fn.length;
+  const chargeStrength = fnCount > 40 ? -300 : fnCount > 15 ? -150 : -60;
+  const linkDistance   = fnCount > 40 ? 100 : fnCount > 15 ? 70  :  50;
+  // Collision radius MUST account for the label height — labels sit
+  // ~22px below each node, so a circle below within ~40px of center
+  // ends up sitting ON another node's label. Bumping the pad keeps
+  // labels off neighboring circles.
+  const collisionPad   = fnCount > 40 ? 38  : fnCount > 15 ? 44  :  50;
+  // Clear stale positions from prior simulation. D3 preserves x,y across
+  // simulation rebuilds, so a 6-node filter would otherwise keep the
+  // positions those nodes had when they were 1-of-60 (i.e. canvas corners).
+  // Reset around the center with small random jitter for the layout to
+  // actually re-converge.
+  const cx = width()/2, cy = height()/2;
+  fn.forEach((n, i) => {
+    n.x  = cx + (Math.cos(i * 2 * Math.PI / fn.length) * 40);
+    n.y  = cy + (Math.sin(i * 2 * Math.PI / fn.length) * 40);
+    n.vx = 0; n.vy = 0;
+  });
   simulation = d3.forceSimulation(fn)
-    .force('link', d3.forceLink(fe).id(d=>d.id).distance(100))
-    .force('charge', d3.forceManyBody().strength(-300))
+    .alpha(1).alphaDecay(0.05)
+    .force('link', d3.forceLink(fe).id(d=>d.id).distance(linkDistance))
+    .force('charge', d3.forceManyBody().strength(chargeStrength))
     .force('center', d3.forceCenter(width()/2, height()/2))
-    .force('collision', d3.forceCollide().radius(d=>(d.size||16)/2+8))
+    .force('collision', d3.forceCollide().radius(d=>(d.size||16)/2+collisionPad))
     .on('tick', () => {
       linkG.selectAll('.edge line')
         .attr('x1',d=>d.source.x).attr('y1',d=>d.source.y)
@@ -632,7 +810,15 @@ function renderGraph() {
       nodeG.selectAll('.node').attr('transform',d=>'translate('+d.x+','+d.y+')');
     });
 
-  setTimeout(fitGraph, 800);
+  updateStatusLine(fn.length);
+  // Fit the viewport AFTER the force simulation has settled (large graphs
+  // need more than the old fixed 800ms timeout — at that point the bounds
+  // are still over-spread, which makes fitGraph zoom way out and the
+  // canvas looks like a starfield). Hook fit to 'end', with one extra
+  // settle pass for safety in case the simulation alpha bumps again.
+  simulation.on('end', () => { fitGraph(); setTimeout(fitGraph, 200); });
+  // Fallback in case the simulation never reaches alpha=0 with 60+ nodes.
+  setTimeout(fitGraph, 2500);
 }
 
 function restartSimulation() {
@@ -641,7 +827,12 @@ function restartSimulation() {
 
 function updateLabelsVisibility() {
   nodeG.selectAll('.node-label').attr('display', currentZoom > 0.5 ? null : 'none');
-  linkG.selectAll('.edge-label').attr('display', currentZoom > 0.8 ? null : 'none');
+  // Hide edge labels when zoom is too low to read them OR when zoomed in
+  // enough that they pile up on neighboring nodes. The middle band
+  // (0.8 < zoom < 1.6) is where edge text is actually readable AND
+  // informative — outside that band it's noise.
+  linkG.selectAll('.edge-label').attr('display',
+    (currentZoom > 0.8 && currentZoom < 1.6) ? null : 'none');
 }
 
 function highlightNode(d) {
@@ -666,41 +857,186 @@ svg.on('click', () => {
   linkG.selectAll('.edge').classed('edge-dimmed', false).classed('edge-highlighted', false);
 });
 
-// Filters
-const typeNames = {case:'Case', evidence_source:'Evidence Source', finding:'Finding', correction:'Correction'};
-const typeFilters = $('#type-filters');
-Object.keys(typeNames).forEach(t => {
-  const label = document.createElement('label');
-  label.className = 'filter-item';
-  const cb = document.createElement('input');
-  cb.type = 'checkbox'; cb.checked = true; cb.dataset.type = t;
-  cb.addEventListener('change', () => {
-    if (cb.checked) visibleTypes.add(t); else visibleTypes.delete(t);
-    linkG.selectAll('.edge').remove();
-    nodeG.selectAll('.node').remove();
-    renderGraph();
+// === Sidebar — Artifact Type / Analysis Layers / Node Roles ===
+//
+// Counts are computed once from the corpus and stay STATIC during focus /
+// chain / search (peer reviewer guardrail D3 #5). Canvas status line shows the
+// dynamic visible count separately.
+
+const corpusCounts = computeCorpusCounts();
+
+function computeCorpusCounts() {
+  const out = {
+    bySection: { artifact: new Map(), analysis: new Map() },
+    bySubBucket: new Map(),  // bucket name → Map(sub → count)
+    byRole: { case:0, evidence_source:0, finding:0, correction:0 },
+    byKind: { OBSERVATION:0, INFERENCE:0, HYPOTHESIS:0, REJECTED:0 },
+  };
+  nodes.forEach(n => {
+    if (out.byRole[n.type] !== undefined) out.byRole[n.type]++;
+    if (n.type === 'finding') {
+      const b = bucketFor(n);
+      if (b) {
+        const m = out.bySection[b.section];
+        m.set(b.bucket, (m.get(b.bucket) || 0) + 1);
+        if (b.sub) {
+          if (!out.bySubBucket.has(b.bucket)) out.bySubBucket.set(b.bucket, new Map());
+          const sm = out.bySubBucket.get(b.bucket);
+          sm.set(b.sub, (sm.get(b.sub) || 0) + 1);
+        }
+      }
+      const k = (n.details || {}).evidence_kind;
+      if (k && out.byKind[k] !== undefined) out.byKind[k]++;
+    }
   });
-  label.appendChild(cb);
-  label.append(' ' + typeNames[t]);
-  typeFilters.appendChild(label);
-});
+  return out;
+}
 
-// Kind legend
-const kindLegend = $('#kind-legend');
-Object.entries(kindColors).forEach(([k,c]) => {
-  const div = document.createElement('div');
-  div.className = 'legend-item';
-  div.innerHTML = '<span class="legend-dot" style="background:'+c+'"></span>'+k;
-  kindLegend.appendChild(div);
-});
+function buildBucketTree(containerId, section) {
+  const container = $('#' + containerId);
+  container.innerHTML = '';
+  const buckets = corpusCounts.bySection[section];
+  // Sort by count desc, then name asc (deterministic + density-aware)
+  const entries = Array.from(buckets.entries()).sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0]));
+  entries.forEach(([bucket, count]) => {
+    const subs = corpusCounts.bySubBucket.get(bucket);
+    const hasSubs = subs && subs.size > 0;
 
-// Search
-$('#graph-search').addEventListener('input', e => {
-  searchTerm = e.target.value.toLowerCase();
+    const row = document.createElement('div');
+    row.className = 'tree-row';
+    row.dataset.bucket = bucket;
+    row.innerHTML =
+      '<span class="tree-caret' + (hasSubs ? '' : ' empty') + '">' + (hasSubs ? '▸' : '') + '</span>'
+      + '<span class="tree-label">' + escHtml(bucket) + '</span>'
+      + '<span class="count-badge">' + count + '</span>';
+    container.appendChild(row);
+
+    // Caret click = expand only (peer reviewer guardrail D4 #1 — never filter)
+    if (hasSubs) {
+      const subContainer = document.createElement('div');
+      subContainer.className = 'tree-sub';
+      const subEntries = Array.from(subs.entries()).sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0]));
+      subEntries.forEach(([sub, c]) => {
+        const sr = document.createElement('div');
+        sr.className = 'tree-row';
+        sr.dataset.sub = sub;
+        sr.innerHTML = '<span class="tree-caret empty"></span><span class="tree-label">' + escHtml(sub) + '</span><span class="count-badge">' + c + '</span>';
+        sr.addEventListener('click', e => { e.stopPropagation(); /* sub-rows are informational only — parent bucket controls filtering */ });
+        subContainer.appendChild(sr);
+      });
+      container.appendChild(subContainer);
+
+      const caret = row.querySelector('.tree-caret');
+      caret.addEventListener('click', e => {
+        e.stopPropagation();
+        const open = subContainer.classList.toggle('open');
+        caret.textContent = open ? '▾' : '▸';
+      });
+    }
+
+    // Row click = filter to this bucket (toggle)
+    row.addEventListener('click', () => {
+      if (state.selectedBuckets.has(bucket)) {
+        state.selectedBuckets.delete(bucket);
+        row.classList.remove('active');
+      } else {
+        state.selectedBuckets.add(bucket);
+        row.classList.add('active');
+      }
+      updateViewChip();
+      rerender();
+    });
+  });
+}
+
+function buildRoleFilters() {
+  const container = $('#role-filters');
+  container.innerHTML = '';
+  const roleNames = { case:'Case', evidence_source:'Evidence Source', finding:'Finding', correction:'Correction' };
+  Object.keys(roleNames).forEach(role => {
+    const label = document.createElement('label');
+    label.className = 'filter-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = state.visibleRoles.has(role);
+    cb.dataset.role = role;
+    cb.addEventListener('change', () => {
+      if (cb.checked) state.visibleRoles.add(role);
+      else state.visibleRoles.delete(role);
+      rerender();
+    });
+    label.appendChild(cb);
+    label.append(' ' + roleNames[role]);
+    const count = document.createElement('span');
+    count.className = 'count-badge';
+    count.textContent = corpusCounts.byRole[role] || 0;
+    label.appendChild(count);
+    container.appendChild(label);
+  });
+}
+
+function buildKindLegend() {
+  const container = $('#kind-legend');
+  container.innerHTML = '';
+  Object.entries(kindColors).forEach(([k,c]) => {
+    const div = document.createElement('div');
+    div.className = 'legend-item';
+    div.innerHTML = '<span class="legend-dot" style="background:'+c+'"></span>'+k
+      + '<span class="count-badge">' + (corpusCounts.byKind[k] || 0) + '</span>';
+    container.appendChild(div);
+  });
+}
+
+buildBucketTree('artifact-tree', 'artifact');
+buildBucketTree('analysis-tree', 'analysis');
+buildRoleFilters();
+buildKindLegend();
+
+// === Canvas reset (Show all) ===
+const btnResetCanvas = $('#btn-reset-canvas');
+
+function showAll() {
+  state.selectedBuckets.clear();
+  document.querySelectorAll('#artifact-tree .tree-row.active, #analysis-tree .tree-row.active').forEach(r => r.classList.remove('active'));
+  updateViewChip();
+  rerender();
+}
+btnResetCanvas.addEventListener('click', showAll);
+
+function updateViewChip() {
+  const chip = $('#view-name');
+  if (state.selectedBuckets.size === 1) {
+    chip.textContent = Array.from(state.selectedBuckets)[0];
+  } else if (state.selectedBuckets.size > 1) {
+    chip.textContent = state.selectedBuckets.size + ' buckets selected';
+  } else {
+    chip.textContent = 'Findings Overview';
+  }
+}
+
+function updateStatusLine(visibleCount) {
+  $('#view-status').textContent = 'Visible: ' + visibleCount + ' / ' + nodes.length;
+}
+
+function rerender() {
   linkG.selectAll('.edge').remove();
   nodeG.selectAll('.node').remove();
   renderGraph();
+  // Force a fit pass after the simulation has had time to settle on the
+  // new filtered subset. Small subsets (5–14 nodes) settle quickly; the
+  // 600ms timer + the existing simulation.on('end') hook + the 2500ms
+  // fallback in renderGraph together guarantee the view snaps in.
+  setTimeout(fitGraph, 600);
+}
+
+// Search
+$('#graph-search').addEventListener('input', e => {
+  state.searchTerm = e.target.value.toLowerCase();
+  rerender();
 });
+
+// Initial UI state
+updateViewChip();
 
 // Initial render
 renderGraph();

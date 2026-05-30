@@ -494,6 +494,7 @@ class GraphBuilder:
                     "finding_id":          fid,
                     "finding_type":        ftype,
                     "artifact_type":       art_type,
+                    "artifact_subtype":    finding.get("artifact_subtype", ""),
                     "artifact_path":       finding.get("artifact_path", ""),
                     "artifact_offset":     finding.get("artifact_offset", ""),
                     "evidence_kind":       kind,
