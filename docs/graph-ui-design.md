@@ -104,6 +104,29 @@ When a new MCP tool emits findings with a new `artifact_type` or `artifact_subty
 
 ---
 
+## Publish-safety: infra-path redaction (judge-facing artifacts)
+
+Both `reports/<case_id>/graph.html` and `graph.json` are self-contained, publishable artifacts served by the static HTTP server. Embedded node fields (`artifact_path`, `provenance.command_line`, `supporting_indicators`, `embedding_text`, `outputs_summary`, etc.) can carry operator-side paths copied out of `state.json` / `audit.jsonl` — e.g. `/opt/SAVVYDFIR-MCP/...`, `/home/<operator>/...`, `/cases/<id>/...`. Those reveal the install location and operator, and **fail the judge-facing agnostic bar** (peer reviewer consensus 2026-05-30, `consensus-graph-remote-ready-2026-05-30.md`).
+
+`scripts/investigation_graph.py` runs a **recursive infra-path redaction pass** (`_redact_infra_paths` over the whole `graph_data` structure, applied before BOTH graph.json and graph.html are written). It scrubs ONLY infrastructure path prefixes:
+
+| Prefix | Placeholder |
+|--------|-------------|
+| `/opt/SAVVYDFIR-MCP/`, `~/SAVVYDFIR-MCP/`, `/home/<user>/SAVVYDFIR-MCP/` | `<install>/` |
+| `~/` (operator home), `/home/<user>/` | `<home>/` |
+| `/cases/<case_id>/` (and any `/cases/*/`) | `<case-dir>/` |
+| `/evidence/<dataset>/` | `<evidence>/` |
+| `/mnt/<x>/` | `<mount>/` |
+| `/tmp/<random-tail>` | `<tmp>` |
+
+**Preserved (forensic evidence — never touched):** case-side emails, attacker/victim IPs, Windows registry paths (`ROOT\...`), hostnames from the image, finding IDs, the case_id as a label (not a path), MITRE technique IDs, tool names.
+
+**Why recursive (peer reviewer carry-forward):** a fixed field list misses `supporting_indicators` / `outputs_summary` / `agent_reason` / future fields. The pass walks every string in the payload.
+
+**Agnostic:** all patterns derive from `os.path` / `Path.home()` + the `case_id` arg — zero hardcoded operator/host/case tokens. The regression probe is fixture finding F-011 (see `tests/fixtures/graph_bucket_synthetic/`).
+
+**Acceptance grep on rendered output** (must be ZERO): `/opt/SAVVYDFIR`, `/home/`, `venv`, the VM IP, `/cases/`, `/evidence/`, `/mnt/`. Must still be PRESENT: case emails, registry paths, attacker IPs.
+
 ## Agnostic guarantee
 
 Every value driving the sidebar is computed from `GRAPH_DATA` at render time. There are zero hardcoded case identifiers, finding IDs, hostnames, IPs, dates, or MITRE technique IDs in either changed file. The grep gate enforces this mechanically:

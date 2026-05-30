@@ -125,6 +125,25 @@
       "finding_status": "CONFIRMED",
       "tool_name": "disk.extract_registry_run_keys",
       "mitre_technique": "T0000.010"
+    },
+    {
+      "finding_id": "F-011",
+      "finding_type": "case_009_infra_path_redaction",
+      "description": "Redaction probe: artifact_path carries infra prefixes that MUST be scrubbed in the rendered graph (judge-facing publish safety). Case-side email investigator@example.test MUST be preserved.",
+      "artifact_type": "disk",
+      "artifact_subtype": "mft",
+      "artifact_path": "/opt/SAVVYDFIR-MCP/analysis/SYNTHETIC-BUCKET-FIXTURE/mft/timeline.csv",
+      "evidence_kind": "OBSERVATION",
+      "confidence": 0.95,
+      "finding_status": "CONFIRMED",
+      "tool_name": "disk.extract_mft_timeline",
+      "mitre_technique": "T0000.011",
+      "supporting_indicators": [
+        "/cases/SYNTHETIC-BUCKET-FIXTURE/artifacts/mft/raw.bin",
+        "/evidence/synthetic-dataset/disk/image.e01",
+        "investigator@example.test",
+        "ROOT\\ControlSet001\\Services\\bam\\State"
+      ]
     }
   ],
   "executions": [],

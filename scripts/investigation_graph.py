@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -685,8 +686,86 @@ def _load_html_template(template_path: Path) -> str:
     )
 
 
-def _inject_graph_data(html: str, graph_data: dict[str, Any]) -> str:
+def _build_infra_redactions(case_id: str) -> list[tuple[re.Pattern[str], str]]:
+    """Return (regex, replacement) pairs that scrub OPERATOR/INFRASTRUCTURE
+    path prefixes from the rendered graph — and NOTHING that is forensic
+    evidence.
+
+    The rendered ``graph.html`` is a self-contained, judge-facing artifact.
+    Embedded node fields (artifact_path, provenance.command_line,
+    embedding_text, supporting_indicators, etc.) can carry operator-side
+    paths copied out of ``audit.jsonl`` / ``state.json`` — e.g.
+    ``/opt/SAVVYDFIR-MCP/...``, ``/home/<operator>/...``, ``/cases/<id>/...``.
+    Those reveal where the framework is installed and who is running it; they
+    are not part of the case. This pass replaces ONLY those prefixes with
+    neutral placeholders.
+
+    What is deliberately preserved (forensic evidence — never touched):
+    case-side emails, attacker/victim IP addresses, Windows registry paths
+    (``ROOT\\...``), hostnames from the disk image, finding IDs, the case_id
+    token itself in non-path contexts, MITRE technique IDs, tool names.
+
+    Agnostic: every pattern is derived from ``os.path`` / ``Path.home()`` and
+    the ``case_id`` argument — there are NO hardcoded operator, host, or case
+    tokens. Works for any operator, any install location, any case.
+    """
+    pairs: list[tuple[re.Pattern[str], str]] = []
+    home = str(Path.home())
+    safe_case = re.escape(case_id)
+
+    # Longest / most-specific prefixes first so a broad rule doesn't shadow a
+    # narrow one (e.g. <case-dir> before <evidence> before <home>).
+    # 1. Install prefixes.
+    pairs.append((re.compile(r"/opt/SAVVYDFIR-MCP/"), "<install>/"))
+    pairs.append((re.compile(r"/opt/SAVVYDFIR-MCP\b"), "<install>"))
+    # 2. Operator home (this user OR any /home/<user>/SAVVYDFIR-MCP layout).
+    pairs.append((re.compile(re.escape(home + "/SAVVYDFIR-MCP") + r"/"), "<install>/"))
+    pairs.append((re.compile(re.escape(home + "/SAVVYDFIR-MCP") + r"\b"), "<install>"))
+    pairs.append((re.compile(r"/home/[^/\s\"']+/SAVVYDFIR-MCP/"), "<install>/"))
+    pairs.append((re.compile(re.escape(home) + r"/"), "<home>/"))
+    pairs.append((re.compile(re.escape(home) + r"\b"), "<home>"))
+    pairs.append((re.compile(r"/home/[^/\s\"']+/"), "<home>/"))
+    # 3. Framework RBAC base paths (case + evidence + mount).
+    pairs.append((re.compile(r"/cases/" + safe_case + r"/"), "<case-dir>/"))
+    pairs.append((re.compile(r"/cases/" + safe_case + r"\b"), "<case-dir>"))
+    pairs.append((re.compile(r"/cases/[^/\s\"']+/"), "<case-dir>/"))
+    pairs.append((re.compile(r"/evidence/[^/\s\"']+/"), "<evidence>/"))
+    pairs.append((re.compile(r"/evidence/"), "<evidence>/"))
+    pairs.append((re.compile(r"/mnt/[^/\s\"']+/"), "<mount>/"))
+    pairs.append((re.compile(r"/mnt/"), "<mount>/"))
+    # 4. tmp scratch with random tails (not the literal /tmp/ word boundary).
+    pairs.append((re.compile(r"/tmp/[A-Za-z0-9_.-]+"), "<tmp>"))
+    return pairs
+
+
+def _redact_infra_paths(value: Any, redactions: list[tuple[re.Pattern[str], str]]) -> Any:
+    """Recursively apply *redactions* to every string in *value*.
+
+    Walks dicts, lists, and scalars. Only strings are transformed; numbers,
+    booleans, and None pass through untouched. Covers current and future
+    string fields in the graph payload without enumerating a field list
+    (peer reviewer carry-forward 2026-05-30: a fixed field list misses
+    supporting_indicators / outputs_summary / agent_reason / future fields).
+    """
+    if isinstance(value, str):
+        for pat, repl in redactions:
+            value = pat.sub(repl, value)
+        return value
+    if isinstance(value, dict):
+        return {k: _redact_infra_paths(v, redactions) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_infra_paths(v, redactions) for v in value]
+    return value
+
+
+def _inject_graph_data(html: str, graph_data: dict[str, Any],
+                       case_id: str = "") -> str:
     """Replace the ``/*GRAPH_DATA_PLACEHOLDER*/`` marker with *graph_data*.
+
+    Before serialisation, a recursive infrastructure-path redaction pass runs
+    over the whole graph payload so the rendered HTML is safe to publish (no
+    operator install paths, home dirs, case/evidence/mount prefixes). Forensic
+    evidence (emails, IPs, registry paths, hostnames) is preserved.
 
     Parameters
     ----------
@@ -694,11 +773,14 @@ def _inject_graph_data(html: str, graph_data: dict[str, Any]) -> str:
         Raw HTML string containing the placeholder.
     graph_data:
         The graph dict (nodes, edges, meta) to serialise and inject.
+    case_id:
+        Case identifier — used to scope the ``/cases/<case_id>/`` redaction.
+        Optional; an empty value still scrubs install/home/evidence prefixes.
 
     Returns
     -------
     str
-        HTML with the placeholder replaced by the JSON payload.
+        HTML with the placeholder replaced by the redacted JSON payload.
 
     Raises
     ------
@@ -715,7 +797,9 @@ def _inject_graph_data(html: str, graph_data: dict[str, Any]) -> str:
             "Ensure the graph.html template contains:\n"
             "  const GRAPH_DATA = /*GRAPH_DATA_PLACEHOLDER*/null;"
         )
-    json_payload = json.dumps(graph_data, indent=2, default=str)
+    redactions = _build_infra_redactions(case_id)
+    redacted = _redact_infra_paths(graph_data, redactions)
+    json_payload = json.dumps(redacted, indent=2, default=str)
     return html.replace(placeholder, json_payload, 1)
 
 
@@ -841,6 +925,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     edge_count = len(graph_data["edges"])
     print(f"  nodes: {node_count}   edges: {edge_count}")
 
+    # ---- Infrastructure-path redaction (judge-facing publish safety) -----
+    # Both graph.json and graph.html are self-contained, publishable artifacts
+    # served from reports/<case_id>/. Scrub operator/infra path prefixes from
+    # the payload BEFORE writing either file so neither leaks install paths,
+    # operator home dirs, or RBAC base paths. Forensic evidence (emails, IPs,
+    # registry paths, hostnames) is preserved. Agnostic — see
+    # _build_infra_redactions(). case_id scopes the /cases/<id>/ rule.
+    _case_id = str((graph_data.get("meta") or {}).get("case_id") or "")
+    _redactions = _build_infra_redactions(_case_id)
+    graph_data = _redact_infra_paths(graph_data, _redactions)
+
     # ---- Write graph.json alongside the HTML output ----------------------
     output_path.parent.mkdir(parents=True, exist_ok=True)
     json_output = output_path.with_name("graph.json")
@@ -851,10 +946,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"Wrote graph.json: {json_output}")
 
     # ---- Load template and inject data -----------------------------------
+    # graph_data is already redacted above; _inject_graph_data re-applies the
+    # same pass idempotently (regex on already-substituted placeholders is a
+    # no-op), so the HTML is guaranteed clean regardless of call path.
     print(f"Loading template: {template_path}")
     html_template = _load_html_template(template_path)
     try:
-        html_out = _inject_graph_data(html_template, graph_data)
+        html_out = _inject_graph_data(html_template, graph_data, case_id=_case_id)
     except ValueError as exc:
         print(f"ERROR injecting graph data: {exc}", file=sys.stderr)
         return 1

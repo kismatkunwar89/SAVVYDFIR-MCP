@@ -24,6 +24,25 @@ peer reviewer D5 carry-forward from `consensus-graph-impl-plan-2026-05-30.md`. V
 | F-008 | `yara` | `""` | `yara_scan` | **Rule Detection / YARA** |
 | F-009 | `disk` | `evtx_event` | `disk.summarize_evtx` | **Event Logs / EVTX** (flat — no channel sub-grouping) |
 | F-010 | `disk` | `""` | `disk.extract_registry_run_keys` | **Registry** (subtype empty → tool_name fallback wins) |
+| F-011 | `disk` | `mft` | `disk.extract_mft_timeline` | **Filesystem** + infra-path REDACTION probe (artifact_path + supporting_indicators carry `/opt/SAVVYDFIR-MCP/`, `/cases/`, `/evidence/` prefixes that MUST be scrubbed; `investigator@example.test` + `ROOT\...` registry path MUST be preserved) |
+
+## Redaction validation (judge-facing publish safety)
+
+F-011 doubles as the infra-path redaction regression case. After rendering:
+
+```bash
+# INFRA prefixes MUST be ZERO in the rendered graph.html:
+grep -c "/opt/SAVVYDFIR\|/cases/SYNTHETIC\|/evidence/synthetic" /tmp/.../graph.html   # → 0
+
+# Evidence MUST be preserved:
+grep -c "investigator@example.test" /tmp/.../graph.html   # → >0
+grep -c "ControlSet001" /tmp/.../graph.html               # → >0 (registry path)
+
+# Placeholders MUST appear:
+grep -c "<install>\|<case-dir>\|<evidence>" /tmp/.../graph.html  # → >0
+```
+
+The redaction is a recursive pass over the entire graph payload (`_redact_infra_paths` in `scripts/investigation_graph.py`) applied before BOTH graph.json and graph.html are written — see `docs/graph-ui-design.md`.
 
 ## How to run the validation
 
