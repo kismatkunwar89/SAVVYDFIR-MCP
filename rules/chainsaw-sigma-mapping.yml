@@ -1,294 +1,440 @@
 ---
-# SAVVYDFIR-MCP default Chainsaw sigma-mapping (compatible with Chainsaw 2.16+)
-# Bundled with the repo so sigma_hunt works for any fresh-clone user without
-# requiring them to hand-author a mapping after Chainsaw 2.16 dropped the
-# bundled default. Based on the canonical WithSecureLabs/chainsaw
-# sigma-event-logs-all.yml format.
+# SAVVYDFIR-MCP default Chainsaw sigma-mapping (Chainsaw 2.16+)
 #
-# Run-11 fix (2026-05-29): Operator debrief from ROCBA run reported
-# `sigma_hunt` failed with "required arguments were not provided: --mapping"
-# because Chainsaw 2.16 no longer ships a default mapping path. install.sh
-# copies this file to ~/.config/chainsaw/mappings/ and the server's
-# sigma_hunt resolver looks here first.
+# Run-11 (2026-05-30) — harvested + extended from the working version the
+# agent hand-authored mid-run when the original bundled mapping (which used
+# `kind: !sigma` + flat `rules:` list) was rejected by Chainsaw 2.16's parser.
+# The agent's working format: `kind: !evtx` + `groups:` list with each group
+# tagged `!evtx`, top-level `rules:` accepting `!sigma` or `!chainsaw`.
+#
+# Channel inclusion rule (agent sign-off):
+#   If a channel is zero-cost when absent and high-value when present, it
+#   belongs in the mapping unconditionally. Chainsaw silently skips channels
+#   with no matching files, so adding Sysmon, TerminalServices, WMI, WinRM,
+#   SMB etc. costs nothing on a host that doesn't run them — but on hosts
+#   that do, they become some of the highest-signal channels in the
+#   investigation (Sysmon: process w/ hashes + network + DNS + image load;
+#   TS-RCM Operational: EID 1149 RDP auth with source IP; WMI: persistence
+#   T1546.003; SMBServer: lateral movement evidence).
+#
+# Agnostic across cases — every field path and channel name here is
+# Windows-standard. No case_id, hostname, IP, user, or timestamp references.
 
-name: Chainsaw Sigma Event Logs - SAVVYDFIR Default
-kind: !sigma
-rules:
-  - !sigma
+name: Windows Event Logs - SAVVYDFIR Default
+kind: !evtx
+groups:
+  - !evtx
     name: "Security Channel"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: Security
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      Provider: Event.System.Provider_attributes.Name
-      EventRecordID: Event.System.EventRecordID
-      SubjectUserName: Event.EventData.SubjectUserName
-      SubjectDomainName: Event.EventData.SubjectDomainName
-      SubjectLogonId: Event.EventData.SubjectLogonId
-      TargetUserName: Event.EventData.TargetUserName
-      TargetDomainName: Event.EventData.TargetDomainName
-      TargetLogonId: Event.EventData.TargetLogonId
-      LogonType: Event.EventData.LogonType
-      LogonProcessName: Event.EventData.LogonProcessName
-      AuthenticationPackageName: Event.EventData.AuthenticationPackageName
-      WorkstationName: Event.EventData.WorkstationName
-      IpAddress: Event.EventData.IpAddress
-      IpPort: Event.EventData.IpPort
-      ProcessName: Event.EventData.ProcessName
-      ProcessId: Event.EventData.ProcessId
-      ParentProcessName: Event.EventData.ParentProcessName
-      CommandLine: Event.EventData.CommandLine
-      ObjectName: Event.EventData.ObjectName
-      ObjectType: Event.EventData.ObjectType
-      AccessMask: Event.EventData.AccessMask
-      ServiceName: Event.EventData.ServiceName
-      ServiceFileName: Event.EventData.ServiceFileName
-      ImagePath: Event.EventData.ImagePath
-      Image: Event.EventData.Image
-      User: Event.EventData.User
-      MemberName: Event.EventData.MemberName
-
-  - !sigma
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+      - name: SubjectUserName
+        from: Event.EventData.SubjectUserName
+        to: SubjectUserName
+        visible: true
+      - name: TargetUserName
+        from: Event.EventData.TargetUserName
+        to: TargetUserName
+        visible: true
+      - name: LogonType
+        from: Event.EventData.LogonType
+        to: LogonType
+        visible: true
+      - name: IpAddress
+        from: Event.EventData.IpAddress
+        to: IpAddress
+        visible: true
+      - name: ProcessName
+        from: Event.EventData.ProcessName
+        to: ProcessName
+        visible: true
+      - name: CommandLine
+        from: Event.EventData.CommandLine
+        to: CommandLine
+        visible: true
+      - name: ServiceName
+        from: Event.EventData.ServiceName
+        to: ServiceName
+        visible: true
+      - name: Image
+        from: Event.EventData.Image
+        to: Image
+        visible: true
+      - name: TargetLogonId
+        from: Event.EventData.TargetLogonId
+        to: TargetLogonId
+        visible: true
+      - name: WorkstationName
+        from: Event.EventData.WorkstationName
+        to: WorkstationName
+        visible: true
+      - name: LogonProcessName
+        from: Event.EventData.LogonProcessName
+        to: LogonProcessName
+        visible: true
+      - name: AuthenticationPackageName
+        from: Event.EventData.AuthenticationPackageName
+        to: AuthenticationPackageName
+        visible: true
+      - name: ObjectName
+        from: Event.EventData.ObjectName
+        to: ObjectName
+        visible: true
+      - name: AccessMask
+        from: Event.EventData.AccessMask
+        to: AccessMask
+        visible: true
+  - !evtx
     name: "System Channel"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: System
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      Provider: Event.System.Provider_attributes.Name
-      EventRecordID: Event.System.EventRecordID
-      ServiceName: Event.EventData.param1
-      ServiceFileName: Event.EventData.param2
-      ServiceType: Event.EventData.param3
-      ServiceStartType: Event.EventData.param4
-      ServiceAccount: Event.EventData.param5
-
-  - !sigma
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+      - name: ServiceName
+        from: Event.EventData.param1
+        to: ServiceName
+        visible: true
+      - name: ImagePath
+        from: Event.EventData.param3
+        to: ImagePath
+        visible: true
+  - !evtx
     name: "Application Channel"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: Application
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      Provider: Event.System.Provider_attributes.Name
-
-  - !sigma
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+  - !evtx
+    # Sysmon-Operational: highest-value detection channel when present.
+    # Skipped silently when the host doesn't run Sysmon.
     name: "Sysmon Operational"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: Microsoft-Windows-Sysmon/Operational
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      Provider: Event.System.Provider_attributes.Name
-      UtcTime: Event.EventData.UtcTime
-      ProcessGuid: Event.EventData.ProcessGuid
-      ProcessId: Event.EventData.ProcessId
-      Image: Event.EventData.Image
-      FileVersion: Event.EventData.FileVersion
-      Description: Event.EventData.Description
-      Product: Event.EventData.Product
-      Company: Event.EventData.Company
-      OriginalFileName: Event.EventData.OriginalFileName
-      CommandLine: Event.EventData.CommandLine
-      CurrentDirectory: Event.EventData.CurrentDirectory
-      User: Event.EventData.User
-      LogonGuid: Event.EventData.LogonGuid
-      LogonId: Event.EventData.LogonId
-      TerminalSessionId: Event.EventData.TerminalSessionId
-      IntegrityLevel: Event.EventData.IntegrityLevel
-      Hashes: Event.EventData.Hashes
-      ParentProcessGuid: Event.EventData.ParentProcessGuid
-      ParentProcessId: Event.EventData.ParentProcessId
-      ParentImage: Event.EventData.ParentImage
-      ParentCommandLine: Event.EventData.ParentCommandLine
-      ParentUser: Event.EventData.ParentUser
-      TargetFilename: Event.EventData.TargetFilename
-      CreationUtcTime: Event.EventData.CreationUtcTime
-      PreviousCreationUtcTime: Event.EventData.PreviousCreationUtcTime
-      RuleName: Event.EventData.RuleName
-      Protocol: Event.EventData.Protocol
-      Initiated: Event.EventData.Initiated
-      SourceIsIpv6: Event.EventData.SourceIsIpv6
-      SourceIp: Event.EventData.SourceIp
-      SourceHostname: Event.EventData.SourceHostname
-      SourcePort: Event.EventData.SourcePort
-      SourcePortName: Event.EventData.SourcePortName
-      DestinationIsIpv6: Event.EventData.DestinationIsIpv6
-      DestinationIp: Event.EventData.DestinationIp
-      DestinationHostname: Event.EventData.DestinationHostname
-      DestinationPort: Event.EventData.DestinationPort
-      DestinationPortName: Event.EventData.DestinationPortName
-      ImageLoaded: Event.EventData.ImageLoaded
-      Signed: Event.EventData.Signed
-      Signature: Event.EventData.Signature
-      SignatureStatus: Event.EventData.SignatureStatus
-      SourceImage: Event.EventData.SourceImage
-      SourceProcessGuid: Event.EventData.SourceProcessGuid
-      SourceProcessId: Event.EventData.SourceProcessId
-      SourceThreadId: Event.EventData.SourceThreadId
-      SourceUser: Event.EventData.SourceUser
-      TargetImage: Event.EventData.TargetImage
-      TargetProcessGuid: Event.EventData.TargetProcessGuid
-      TargetProcessId: Event.EventData.TargetProcessId
-      TargetObject: Event.EventData.TargetObject
-      Details: Event.EventData.Details
-      NewName: Event.EventData.NewName
-      EventType: Event.EventData.EventType
-      QueryName: Event.EventData.QueryName
-      QueryStatus: Event.EventData.QueryStatus
-      QueryResults: Event.EventData.QueryResults
-      IsExecutable: Event.EventData.IsExecutable
-      PipeName: Event.EventData.PipeName
-      Operation: Event.EventData.Operation
-      Type: Event.EventData.Type
-      State: Event.EventData.State
-      Configuration: Event.EventData.Configuration
-      ConfigurationFileHash: Event.EventData.ConfigurationFileHash
-
-  - !sigma
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+      - name: Image
+        from: Event.EventData.Image
+        to: Image
+        visible: true
+      - name: CommandLine
+        from: Event.EventData.CommandLine
+        to: CommandLine
+        visible: true
+      - name: ParentImage
+        from: Event.EventData.ParentImage
+        to: ParentImage
+        visible: true
+      - name: ParentCommandLine
+        from: Event.EventData.ParentCommandLine
+        to: ParentCommandLine
+        visible: true
+      - name: User
+        from: Event.EventData.User
+        to: User
+        visible: true
+      - name: Hashes
+        from: Event.EventData.Hashes
+        to: Hashes
+        visible: true
+      - name: TargetFilename
+        from: Event.EventData.TargetFilename
+        to: TargetFilename
+        visible: true
+      - name: ImageLoaded
+        from: Event.EventData.ImageLoaded
+        to: ImageLoaded
+        visible: true
+      - name: DestinationIp
+        from: Event.EventData.DestinationIp
+        to: DestinationIp
+        visible: true
+      - name: DestinationPort
+        from: Event.EventData.DestinationPort
+        to: DestinationPort
+        visible: true
+      - name: SourceIp
+        from: Event.EventData.SourceIp
+        to: SourceIp
+        visible: true
+      - name: SourcePort
+        from: Event.EventData.SourcePort
+        to: SourcePort
+        visible: true
+      - name: QueryName
+        from: Event.EventData.QueryName
+        to: QueryName
+        visible: true
+      - name: TargetObject
+        from: Event.EventData.TargetObject
+        to: TargetObject
+        visible: true
+  - !evtx
     name: "PowerShell Operational"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: Microsoft-Windows-PowerShell/Operational
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      Provider: Event.System.Provider_attributes.Name
-      ScriptBlockText: Event.EventData.ScriptBlockText
-      Path: Event.EventData.Path
-      MessageNumber: Event.EventData.MessageNumber
-      MessageTotal: Event.EventData.MessageTotal
-      ScriptBlockId: Event.EventData.ScriptBlockId
-      HostName: Event.EventData.HostName
-      HostVersion: Event.EventData.HostVersion
-      HostApplication: Event.EventData.HostApplication
-      EngineVersion: Event.EventData.EngineVersion
-      RunspaceId: Event.EventData.RunspaceId
-      PipelineId: Event.EventData.PipelineId
-      CommandName: Event.EventData.CommandName
-      CommandType: Event.EventData.CommandType
-      ContextInfo: Event.EventData.ContextInfo
-      Payload: Event.EventData.Payload
-
-  - !sigma
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+      - name: ScriptBlockText
+        from: Event.EventData.ScriptBlockText
+        to: ScriptBlockText
+        visible: true
+      - name: CommandLine
+        from: Event.EventData.CommandLine
+        to: CommandLine
+        visible: true
+      - name: HostName
+        from: Event.EventData.HostName
+        to: HostName
+        visible: true
+      - name: HostApplication
+        from: Event.EventData.HostApplication
+        to: HostApplication
+        visible: true
+  - !evtx
+    # Catches PowerShell on hosts where Operational is disabled or rotated.
     name: "PowerShell Classic"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: Windows PowerShell
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      EngineVersion: Event.EventData.EngineVersion
-      HostName: Event.EventData.HostName
-      HostApplication: Event.EventData.HostApplication
-      CommandLine: Event.EventData.CommandLine
-
-  - !sigma
-    name: "Microsoft-Windows-TerminalServices-LocalSessionManager"
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+      - name: HostApplication
+        from: Event.EventData.HostApplication
+        to: HostApplication
+        visible: true
+  - !evtx
+    # RDP session connect/disconnect (EID 21, 23, 24, 25). Always present
+    # on hosts that accept RDP. Adds disconnect-timestamp coverage that
+    # Security channel EID 4624/4634 alone may not catch precisely.
+    name: "TerminalServices LocalSessionManager"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: Microsoft-Windows-TerminalServices-LocalSessionManager/Operational
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      User: Event.UserData.EventXML.User
-      SessionID: Event.UserData.EventXML.SessionID
-      Address: Event.UserData.EventXML.Address
-
-  - !sigma
-    name: "Microsoft-Windows-TerminalServices-RemoteConnectionManager"
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+      - name: User
+        from: Event.UserData.EventXML.User
+        to: User
+        visible: true
+      - name: SessionID
+        from: Event.UserData.EventXML.SessionID
+        to: SessionID
+        visible: true
+      - name: Address
+        from: Event.UserData.EventXML.Address
+        to: Address
+        visible: true
+  - !evtx
+    # RDP connection-broker / auth events. EID 1149 = successful RDP auth
+    # with source IP — primary source-IP-at-auth-time evidence on
+    # RDP-heavy cases. Often the Operational variant isn't staged by default
+    # extraction; including it here means it's covered when the agent
+    # specifically routes it in.
+    name: "TerminalServices RemoteConnectionManager Operational"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      Param1: Event.UserData.EventXML.Param1
-      Param2: Event.UserData.EventXML.Param2
-      Param3: Event.UserData.EventXML.Param3
-
-  - !sigma
-    name: "Task Scheduler Operational"
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+      - name: User
+        from: Event.UserData.EventXML.User
+        to: User
+        visible: true
+      - name: Param1
+        from: Event.UserData.EventXML.Param1
+        to: Param1
+        visible: true
+      - name: Param2
+        from: Event.UserData.EventXML.Param2
+        to: Param2
+        visible: true
+      - name: Param3
+        from: Event.UserData.EventXML.Param3
+        to: Param3
+        visible: true
+  - !evtx
+    name: "TaskScheduler Operational"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: Microsoft-Windows-TaskScheduler/Operational
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      TaskName: Event.EventData.TaskName
-      UserName: Event.EventData.UserName
-      UserContext: Event.EventData.UserContext
-      ActionName: Event.EventData.ActionName
-
-  - !sigma
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+      - name: TaskName
+        from: Event.EventData.TaskName
+        to: TaskName
+        visible: true
+      - name: UserName
+        from: Event.EventData.UserName
+        to: UserName
+        visible: true
+      - name: ActionName
+        from: Event.EventData.ActionName
+        to: ActionName
+        visible: true
+  - !evtx
     name: "Windows Defender Operational"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: Microsoft-Windows-Windows Defender/Operational
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      Path: Event.EventData.Path
-      ProcessName: Event.EventData.ProcessName
-
-  - !sigma
-    name: "WMI-Activity Operational"
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+      - name: Path
+        from: Event.EventData.Path
+        to: Path
+        visible: true
+      - name: ProcessName
+        from: Event.EventData.ProcessName
+        to: ProcessName
+        visible: true
+  - !evtx
+    # WMI persistence (T1546.003) and lateral movement. Stock Windows hosts
+    # often have a handful of benign events; on insider-threat / APT cases
+    # the Operation_ClientFailure branch surfaces unusual WMI consumer
+    # registrations.
+    name: "WMI Activity Operational"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: Microsoft-Windows-WMI-Activity/Operational
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      Operation: Event.UserData.Operation_ClientFailure.Operation
-      User: Event.UserData.Operation_ClientFailure.User
-      ClientMachine: Event.UserData.Operation_ClientFailure.ClientMachine
-
-  - !sigma
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+      - name: Operation
+        from: Event.UserData.Operation_ClientFailure.Operation
+        to: Operation
+        visible: true
+      - name: User
+        from: Event.UserData.Operation_ClientFailure.User
+        to: User
+        visible: true
+      - name: ClientMachine
+        from: Event.UserData.Operation_ClientFailure.ClientMachine
+        to: ClientMachine
+        visible: true
+  - !evtx
+    # PowerShell Remoting / WinRM lateral movement. Light event volume on
+    # hosts that don't use WS-Management; on shops that do, primary lateral
+    # movement evidence.
     name: "WinRM Operational"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: Microsoft-Windows-WinRM/Operational
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-
-  - !sigma
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+  - !evtx
+    # SMB share access / named pipe activity. Lateral movement evidence on
+    # any host accepting SMB connections.
     name: "SMBServer Operational"
     timestamp: Event.System.TimeCreated_attributes.SystemTime
     filter:
       Event.System.Channel: Microsoft-Windows-SMBServer/Operational
     fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      ShareName: Event.EventData.ShareName
-      ClientName: Event.EventData.ClientName
-      UserName: Event.EventData.UserName
-
-  - !sigma
-    name: "Microsoft-Windows-Sysmon"
-    timestamp: Event.System.TimeCreated_attributes.SystemTime
-    filter:
-      Event.System.Provider_attributes.Name: Microsoft-Windows-Sysmon
-    fields:
-      EventID: Event.System.EventID
-      Computer: Event.System.Computer
-      UtcTime: Event.EventData.UtcTime
-      ProcessGuid: Event.EventData.ProcessGuid
-      ProcessId: Event.EventData.ProcessId
-      Image: Event.EventData.Image
-      CommandLine: Event.EventData.CommandLine
-      User: Event.EventData.User
-      ParentImage: Event.EventData.ParentImage
-      ParentCommandLine: Event.EventData.ParentCommandLine
-      Hashes: Event.EventData.Hashes
-      TargetFilename: Event.EventData.TargetFilename
-      ImageLoaded: Event.EventData.ImageLoaded
-      DestinationIp: Event.EventData.DestinationIp
-      DestinationPort: Event.EventData.DestinationPort
-      QueryName: Event.EventData.QueryName
-      TargetObject: Event.EventData.TargetObject
+      - name: EventID
+        from: Event.System.EventID
+        to: EventID
+        visible: true
+      - name: Computer
+        from: Event.System.Computer
+        to: Computer
+        visible: true
+      - name: ShareName
+        from: Event.EventData.ShareName
+        to: ShareName
+        visible: true
+      - name: ClientName
+        from: Event.EventData.ClientName
+        to: ClientName
+        visible: true
+      - name: UserName
+        from: Event.EventData.UserName
+        to: UserName
+        visible: true
+rules: !sigma
