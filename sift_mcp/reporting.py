@@ -2200,7 +2200,7 @@ def render_report_html(payload: dict[str, Any]) -> str:
 <body>
 <main>
   <h1>SAVVYDFIR-MCP Investigation Report</h1>
-  <div class="subtitle">{html.escape(payload['case_id'])} · Generated {html.escape(str(payload.get('report_generated_at', '')))}</div>
+  <div class="subtitle">{html.escape(payload['case_id'])} · Generated {html.escape(str(payload.get('report_generated_at', '')))}{' · <a href="trace.html" style="color: var(--accent); text-decoration: none;">View Agent Session Trace</a>' if payload.get('trace_path') else ''}</div>
 
   <section class="grid">
     <div class="card"><div class="metric-label">Case Status</div><div class="metric-value accent">{html.escape(summary.get('status', 'UNKNOWN'))}</div></div>
@@ -2739,6 +2739,13 @@ def generate_report_payload(
         "report_json_path": str(report_json_path),
         "graph_path": str(graph_html_path) if graph_html_path.exists() else None,
         "graph_json_path": str(graph_json_path) if graph_json_path.exists() else None,
+        # Run-11 trace integration (peer reviewer sign-off): mark trace.html present
+        # only when the sibling file actually exists. The renderer treats this
+        # as a boolean signal — the href is rendered as a fixed relative
+        # string "trace.html" (NOT interpolated from this field) to avoid
+        # href-injection via report state. The trace itself is produced by
+        # `scripts/render_session_trace.py`, an operator-explicit helper.
+        "trace_path": "trace.html" if (report_dir / "trace.html").exists() else None,
         "next_required_tool": "generate_graph" if graph_missing else None,
     }
     payload["top_confirmed_findings"] = [

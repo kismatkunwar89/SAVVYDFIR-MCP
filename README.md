@@ -171,6 +171,36 @@ cd /opt/SAVVYDFIR-MCP/reports && python3 -m http.server 8080
 # Open: http://<server>:8080/index.html
 ```
 
+### Optional: agent-session trace alongside the report
+
+`report.html` carries the forensic narrative. The framework also lets you
+render the Claude Code agent's step-by-step session as a `trace.html`
+companion using the open-source `claude-code-log` tool (pinned to v1.3.0 in
+`requirements.txt`). The helper script applies a layered redaction pass —
+operator filesystem paths, API/credential shapes, session UUIDs, operator-LAN
+IPs — and writes the result into the same `reports/<case_id>/` directory
+served by the static HTTP server above. The link automatically appears in
+`report.html` once the trace file exists.
+
+**Always pass `--session-jsonl` explicitly** (safer than auto-discovery, which
+picks the most-recent JSONL by mtime). **`--detail high` is opt-in for internal
+audit prep only** — the default `--detail low` is the safer disclosure level
+for any public submission. **Mandatory eyeball pass** in a browser before
+publishing: redaction is best-effort.
+
+```bash
+# One-time: install the optional dependency
+./venv/bin/pip install claude-code-log==1.3.0
+
+# Render (default detail=low)
+./venv/bin/python3 scripts/render_session_trace.py \
+    --case-id MY-CASE-001 \
+    --session-jsonl ~/.claude/projects/<hash>/<session-id>.jsonl
+
+# Then re-run generate_report to surface the "View Agent Session Trace" link
+# in report.html. The link is rendered only when trace.html actually exists.
+```
+
 ---
 
 ## Validation Status
