@@ -678,6 +678,23 @@ def evaluate_investigation_success_gate(
     }
 
 
+def _count_correction_events(state_manager: Any) -> int:
+    """Count CorrectionEvent rows in audit.jsonl for the current case.
+
+    Run-11 polish — surfaces the W1.5 criterion-#1 tiebreaker signal
+    (self-correction count) into the report metrics grid. The canonical
+    predicate is ``row.get("correction_event") is not None`` per
+    ``sift_mcp/audit.py:171`` where the field defaults to None and is set
+    only when an execution produced a structural correction. Reuses the
+    existing ``_read_audit_jsonl`` iterator so no new file path resolution
+    is introduced. Returns 0 if audit.jsonl is missing or unreadable.
+    """
+    rows = _read_audit_jsonl(state_manager)
+    if not rows:
+        return 0
+    return sum(1 for row in rows if isinstance(row, dict) and row.get("correction_event") is not None)
+
+
 def _read_audit_jsonl(state_manager: Any) -> list[dict[str, Any]]:
     """Best-effort read of audit.jsonl alongside the state file."""
     try:
@@ -751,7 +768,14 @@ def _short_description(value: Any, limit: int = 140) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
         return text
-    return text[: limit - 3] + "..."
+    cut = text[: limit - 3]
+    # Rewind to last whitespace ONLY if it sits past the half-limit floor.
+    # Long single-token strings (hashes, paths, registry keys, IDs) fall
+    # through to the original hard cut so they never collapse to just "...".
+    last_space = cut.rfind(" ")
+    if last_space >= limit // 2:
+        cut = cut[:last_space]
+    return cut + "..."
 
 
 def _rank_findings(findings: list[dict[str, Any]], *, limit: int = 25) -> list[dict[str, Any]]:
@@ -848,15 +872,32 @@ def _finding_quality_summary(findings: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _render_findings_rows(findings: list[dict[str, Any]]) -> str:
+def _render_findings_rows(
+    findings: list[dict[str, Any]],
+    evidence_col: str = "tool",
+) -> str:
+    """Render finding rows for a report table.
+
+    ``evidence_col`` controls the third-from-last column:
+      * ``"tool"`` (default) — shows ``tool_name``; used by Top Active Leads.
+      * ``"corroborated_by"`` — shows comma-joined ``F-NNN`` IDs; used by Top
+        Confirmed Findings to surface the multi-source corroboration that
+        the framework's self-correction story rests on.
+    Unknown values fall back to the tool column for safety.
+    """
     rows: list[str] = []
     for finding in findings:
+        if evidence_col == "corroborated_by":
+            corroborated = finding.get("corroborated_by") or []
+            evidence_cell = ", ".join(str(x) for x in corroborated) if corroborated else "—"
+        else:
+            evidence_cell = str(finding.get("tool_name", ""))
         rows.append(
             "<tr>"
             f"<td>{html.escape(str(finding.get('finding_id', '')))}</td>"
             f"<td>{html.escape(_status_label(finding.get('finding_status')))}</td>"
             f"<td>{float(finding.get('confidence', 0.0) or 0.0):.3f}</td>"
-            f"<td>{html.escape(str(finding.get('tool_name', '')))}</td>"
+            f"<td>{html.escape(evidence_cell)}</td>"
             f"<td>{html.escape(_short_description(finding.get('description', '')))}</td>"
             "</tr>"
         )
@@ -902,13 +943,38 @@ def _render_leads(leads: list[dict[str, Any]]) -> str:
 
 
 def _render_warning_items(items: list[dict[str, Any]]) -> str:
+    """Render a list of warning-shaped dicts to <li> rows.
+
+    Handles two label vocabularies (data_gaps + anti_forensics_warnings) and
+    falls back to a safe JSON-encoded dump when no message field is present,
+    so the rendered HTML never shows a raw ``{'k': 'v'}`` Python repr.
+    """
     if not items:
         return "<li>None recorded.</li>"
-    return "".join(
-        f"<li><strong>{html.escape(str(item.get('type') or item.get('detector') or 'warning'))}</strong>: "
-        f"{html.escape(str(item.get('message') or item.get('description') or item))}</li>"
-        for item in items
-    )
+    rendered: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            rendered.append(f"<li>{html.escape(str(item))}</li>")
+            continue
+        label = (
+            item.get("type")
+            or item.get("detector")
+            or item.get("artifact_family")
+            or item.get("classification")
+            or "warning"
+        )
+        message = (
+            item.get("message")
+            or item.get("description")
+            or item.get("reason")
+        )
+        if message is None:
+            message = json.dumps(item, sort_keys=True, default=str)
+        rendered.append(
+            f"<li><strong>{html.escape(str(label))}</strong>: "
+            f"{html.escape(str(message))}</li>"
+        )
+    return "".join(rendered)
 
 
 def _render_json_items(items: list[dict[str, Any]]) -> str:
@@ -2039,6 +2105,15 @@ def render_report_html(payload: dict[str, Any]) -> str:
     status_breakdown = payload.get("status_breakdown", {})
     evidence_kind_breakdown = payload.get("evidence_kind_breakdown", {})
     triage_status = payload.get("triage_status", summary.get("triage_status", "UNKNOWN"))
+    # Run-11 polish #8: explicit allowlist for triage-status color class —
+    # defaults to ``warn`` (amber) so future unknown statuses are NEVER
+    # accidentally rendered green.
+    _TRIAGE_STATUS_CLASSES = {
+        "TRIAGE_COMPLETE": "good",
+        "COMPLETE_WITH_GAPS": "good",
+        "TRIAGE_INCOMPLETE": "warn",
+    }
+    triage_status_class = _TRIAGE_STATUS_CLASSES.get(str(triage_status), "warn")
     status_flags = payload.get("status_flags", {})
     actionable_leads = payload.get("actionable_leads", [])
     anti_forensics_warnings = payload.get("anti_forensics_warnings", [])
@@ -2116,17 +2191,23 @@ def render_report_html(payload: dict[str, Any]) -> str:
   th {{ color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; }}
   ul {{ margin: 0.3rem 0 0; padding-left: 1.2rem; }}
 </style>
+<!-- Run-11 polish #1: render the Activity Thread Mermaid diagram. The
+     existing <pre class="mermaid"> block stays readable as a fallback if
+     the CDN is unreachable. -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>if (typeof mermaid !== 'undefined') {{ mermaid.initialize({{ startOnLoad: true }}); }}</script>
 </head>
 <body>
 <main>
   <h1>SAVVYDFIR-MCP Investigation Report</h1>
-  <div class="subtitle">{html.escape(payload['case_id'])} · {html.escape(str(payload['report_path']))}</div>
+  <div class="subtitle">{html.escape(payload['case_id'])} · Generated {html.escape(str(payload.get('report_generated_at', '')))}</div>
 
   <section class="grid">
     <div class="card"><div class="metric-label">Case Status</div><div class="metric-value accent">{html.escape(summary.get('status', 'UNKNOWN'))}</div></div>
-    <div class="card"><div class="metric-label">Triage Status</div><div class="metric-value warn">{html.escape(str(triage_status))}</div></div>
+    <div class="card"><div class="metric-label">Triage Status</div><div class="metric-value {triage_status_class}">{html.escape(str(triage_status))}</div></div>
     <div class="card"><div class="metric-label">Findings</div><div class="metric-value">{summary.get('findings_count', 0)}</div></div>
     <div class="card"><div class="metric-label">Confirmed</div><div class="metric-value good">{summary.get('confirmed_count', 0)}</div></div>
+    <div class="card"><div class="metric-label">Correction Events</div><div class="metric-value accent">{payload.get('correction_events_count', 0)}</div></div>
     <div class="card"><div class="metric-label">Unresolved</div><div class="metric-value warn">{summary.get('unresolved_discrepancies', 0)}</div></div>
     <div class="card"><div class="metric-label">Sigma Hits</div><div class="metric-value danger">{sigma.get('total_hits', 0)}</div></div>
     <div class="card"><div class="metric-label">Coverage</div><div class="metric-value">{coverage.get('coverage_percent', 0):.1f}%</div></div>
@@ -2209,10 +2290,10 @@ def render_report_html(payload: dict[str, Any]) -> str:
     <h2>Top Confirmed Findings</h2>
     <table>
       <thead>
-        <tr><th>ID</th><th>Status</th><th>Confidence</th><th>Tool</th><th>Description</th></tr>
+        <tr><th>ID</th><th>Status</th><th>Confidence</th><th>Corroborated by</th><th>Description</th></tr>
       </thead>
       <tbody>
-        {_render_findings_rows(confirmed_findings) if confirmed_findings else "<tr><td colspan='5'>No confirmed findings — all evidence requires further corroboration.</td></tr>"}
+        {_render_findings_rows(confirmed_findings, evidence_col="corroborated_by") if confirmed_findings else "<tr><td colspan='5'>No confirmed findings — all evidence requires further corroboration.</td></tr>"}
       </tbody>
     </table>
   </section>
@@ -2606,6 +2687,28 @@ def generate_report_payload(
     except Exception:
         pass
 
+    # Run-11 polish:
+    #   #5 Dedupe sigma summary_markdown for display ONLY — never mutate the
+    #      underlying sigma_result hits / counts. Build a display-only copy.
+    sigma_for_display = dict(sigma_result) if isinstance(sigma_result, dict) else sigma_result
+    if isinstance(sigma_for_display, dict):
+        summary_md = sigma_for_display.get("summary_markdown")
+        if isinstance(summary_md, str) and summary_md:
+            seen: set[str] = set()
+            dedup_lines: list[str] = []
+            for line in summary_md.split("\n"):
+                key = line.strip()
+                if not key:
+                    dedup_lines.append(line)
+                    continue
+                if key in seen:
+                    continue
+                seen.add(key)
+                dedup_lines.append(line)
+            sigma_for_display["summary_markdown"] = "\n".join(dedup_lines)
+    #   #6 Surface CorrectionEvent count (criterion-#1 tiebreaker signal).
+    correction_events_count = _count_correction_events(state_manager)
+
     payload = {
         "status": "ok",
         "case_id": case_id,
@@ -2621,8 +2724,9 @@ def generate_report_payload(
         "findings_count": pre_summary.get("findings_count", 0),
         "unresolved_count": unresolved,
         "unresolved_discrepancies": unresolved_discrepancies,
+        "correction_events_count": correction_events_count,
         "open_questions": pre_summary.get("open_questions", []),
-        "sigma_scan": sigma_result,
+        "sigma_scan": sigma_for_display,
         "coverage": coverage_result,
         "artifact_coverage": coverage_result,
         "top_findings": _rank_findings(findings),
