@@ -201,6 +201,33 @@ publishing: redaction is best-effort.
 # in report.html. The link is rendered only when trace.html actually exists.
 ```
 
+### Investigation graph (graph.html)
+
+`generate_graph(case_id)` produces an interactive D3 graph at
+`reports/<case_id>/graph.html` (plus `graph.json`). The sidebar groups findings
+into an **Artifact Type** tree (Memory / Event Logs / Filesystem / Execution
+Artifacts / Registry / Network-SRUM), an **Analysis Layers** section (Rule
+Detection — Sigma/Hayabusa/YARA, Correlation), and **Node Roles** toggles, with
+an Evidence Kind legend. Click any bucket to filter; the `View:` chip + `Visible:
+X / Y` status + `↺ Show all` reset track what's shown. The `Case → Evidence
+Source → Finding` lineage (the `produced` arrows) is visible by default.
+
+Classification is data-driven and **case-agnostic**: findings bucket from their
+`artifact_type` + `artifact_subtype`; when `artifact_subtype` is blank (legacy
+findings), a `tool_name` fallback recovers it. Unknown artifact families degrade
+to `Uncategorized` — the sidebar never breaks.
+
+Both `graph.html` and `graph.json` are judge-facing artifacts, so
+`investigation_graph.py` runs a **recursive infrastructure-path redaction pass**
+before writing either: operator install paths (`/opt/SAVVYDFIR-MCP/`,
+`/home/<operator>/`), and the `/cases/`, `/evidence/`, `/mnt/` RBAC prefixes are
+replaced with `<install>/`, `<home>/`, `<case-dir>/`, `<evidence>/`, `<mount>/`.
+Forensic evidence (case emails, attacker IPs, registry paths, hostnames, finding
+IDs) is preserved. No flags needed — it runs automatically on every
+`generate_graph`. Design notes + the maintenance contract (how to add a new
+artifact family) live in [`docs/graph-ui-design.md`](docs/graph-ui-design.md);
+the bucket/redaction regression fixture is `tests/fixtures/graph_bucket_synthetic/`.
+
 ---
 
 ## Validation Status
