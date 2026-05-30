@@ -487,10 +487,21 @@ class Finding(BaseModel):
 
     @model_validator(mode="after")
     def _validate_observation_has_offset_or_path(self) -> "Finding":
-        """OBSERVATION findings SHOULD reference an artifact path."""
+        """OBSERVATION findings SHOULD reference an artifact path.
+
+        Run-11 fix (2026-05-29): expanded error message — operator's debrief
+        noted the rule was surfaced only at submit time after the agent had
+        already authored the full payload. Hint at the INFERENCE alternative
+        when the finding describes derived/aggregate analysis (which doesn't
+        bind to a single artifact).
+        """
         if self.evidence_kind == EvidenceKind.OBSERVATION and not self.artifact_path:
             raise ValueError(
-                "OBSERVATION findings must include artifact_path."
+                "OBSERVATION findings must include artifact_path "
+                "(the single evidence file/CSV/hive the observation came from). "
+                "If your finding is derived from multiple artifacts or is an "
+                "aggregate/cross-source inference, use evidence_kind=INFERENCE "
+                "instead and populate corroborated_by with the source finding IDs."
             )
         return self
 

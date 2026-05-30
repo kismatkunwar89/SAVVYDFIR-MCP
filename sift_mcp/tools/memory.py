@@ -1034,6 +1034,17 @@ def scan_processes(dump_path: str, response_format: str = "summary") -> dict[str
     except Exception as exc:
         return _runner_error(tool, exc)
 
+    # Run-11 fix (2026-05-29): on timeout, retry once with 2x timeout.
+    # Operator hit "timeout on 19 GB image; succeeded on retry" — mandatory
+    # DKOM check was silently dropped. The base psscan() already picks an
+    # adaptive timeout from image size; if even that wasn't enough, double it.
+    if not result.ok and getattr(result, "timed_out", False):
+        try:
+            _retry_timeout = _runner._psscan_adaptive_timeout(dump_path) * 2
+            result = _runner.psscan(dump_path=dump_path, tool_name=tool, timeout=_retry_timeout)
+        except Exception:
+            pass  # fall through to error path below
+
     if not result.ok:
         return {
             "tool_name": tool,

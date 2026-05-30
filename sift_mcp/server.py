@@ -7116,8 +7116,43 @@ def extract_windows_artifacts(
         amcache_hive = raw_base / "amcache" / "Amcache.hve"
         prefetch_dir = raw_base / "prefetch"
         mft_path = raw_base / "mft" / "$MFT"
+
+        # Run-11 fix (2026-05-29): honest top-line status.
+        # Prior logic flipped to "warning" if ANY failure occurred, even when
+        # $MFT + 420 EVTX + 266 prefetch + SRUDB + USN had successfully staged.
+        # The agent then saw "warning" + interpreted as "extraction failed" and
+        # chased ghosts. Now:
+        #   - status="ok"           — all expected families staged with no failures
+        #   - status="partial_success" — at least one family staged ≥1 file BUT
+        #                            either failures present or some family empty
+        #   - status="warning"      — nothing staged at all (everything failed)
+        #   - status="error"        — already returned earlier via the exception path
+        families_with_artifacts = [f for f in selected if extracted.get(f)]
+        families_empty = [f for f in selected if not extracted.get(f)]
+        total_artifacts_staged = sum(len(paths) for paths in extracted.values())
+
+        if total_artifacts_staged == 0:
+            status_value = "warning"
+        elif failures or families_empty:
+            status_value = "partial_success"
+        else:
+            status_value = "ok"
+
+        # Critical-failure promotion: a failure on a known mandatory artifact
+        # (Security.evtx, System.evtx, $MFT, NTUSER.DAT, SYSTEM hive) belongs
+        # in the summary so the agent sees it instead of digging through
+        # failures[]. Detected by source_path basename or family.
+        _CRITICAL_NAMES = {
+            "security.evtx", "system.evtx", "$mft", "ntuser.dat",
+            "system", "software", "sam", "security",
+        }
+        critical_failures = [
+            f for f in failures
+            if any(name in str(f.get("source_path", "")).lower() for name in _CRITICAL_NAMES)
+        ]
+
         response = {
-            "status": "success" if not data_gaps and not failures else "warning",
+            "status": status_value,
             "tool": tool,
             "tool_name": tool,
             "case_id": case_id,
@@ -7137,14 +7172,23 @@ def extract_windows_artifacts(
             "data_gaps": data_gaps,
             "failures": failures,
             "raw_command": command_line,
+            # Run-11: honest top-line counts so the agent sees signal first
+            "total_artifacts_staged": total_artifacts_staged,
+            "families_with_artifacts": sorted(families_with_artifacts),
+            "families_empty": sorted(families_empty),
+            "failures_count": len(failures),
+            "critical_failures": critical_failures,
+            "critical_failures_count": len(critical_failures),
         }
         duration = time.monotonic() - float(started_at)
         _audit_logger.log_result(
             execution_id=execution_id,
-            exit_code=0 if response["status"] in {"success", "warning"} else 1,
+            exit_code=0 if response["status"] in {"ok", "partial_success", "warning"} else 1,
             duration=duration,
             outputs_summary=(
-                f"extracted {sum(len(paths) for paths in extracted.values())} raw Windows artifacts"
+                f"status={response['status']} staged={total_artifacts_staged} "
+                f"families_ok={len(families_with_artifacts)}/{len(selected)} "
+                f"failures={len(failures)} critical_failures={len(critical_failures)}"
             ),
             finding_ids=[],
             tool_name=tool,

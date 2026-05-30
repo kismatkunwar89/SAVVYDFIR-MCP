@@ -193,7 +193,7 @@ class VolatilityRunner(SafeRunner):
         self,
         dump_path: str,
         tool_name: Optional[str] = None,
-        timeout: int = DEFAULT_TIMEOUT,
+        timeout: Optional[int] = None,
     ) -> RunResult:
         """Scan physical memory for EPROCESS structures (``windows.psscan``).
 
@@ -201,11 +201,19 @@ class VolatilityRunner(SafeRunner):
         walking the linked list, so it surfaces unlinked (DKOM-hidden)
         processes.
 
+        Run-11 fix (2026-05-29): psscan timeout now scales with image size
+        (base 300s + 60s per GB) because the static DEFAULT_TIMEOUT timed
+        out on a 19 GB ROCBA image first call, then succeeded on retry.
+        Mandatory DKOM check was silently dropped. On timeout the caller
+        is expected to classify_error()→"timeout" and retry once with 2x.
+
         Returns
         -------
         RunResult
             JSON array of EPROCESS records found in the memory image.
         """
+        if timeout is None:
+            timeout = self._psscan_adaptive_timeout(dump_path)
         return self.run_plugin(
             dump_path=dump_path,
             plugin="windows.psscan",
@@ -213,6 +221,18 @@ class VolatilityRunner(SafeRunner):
             tool_name=tool_name,
             timeout=timeout,
         )
+
+    def _psscan_adaptive_timeout(self, dump_path: str) -> int:
+        """Compute psscan timeout from dump file size. Base 300s + 60s per GB,
+        clamped to [DEFAULT_TIMEOUT, 1800]. Returns DEFAULT_TIMEOUT if size
+        cannot be read."""
+        try:
+            import os
+            size_bytes = os.path.getsize(dump_path)
+            size_gb = size_bytes / (1024 ** 3)
+            return max(DEFAULT_TIMEOUT, min(1800, int(300 + 60 * size_gb)))
+        except (OSError, ValueError):
+            return DEFAULT_TIMEOUT
 
     def netscan(
         self,

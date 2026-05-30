@@ -100,22 +100,39 @@ def _build_interpreter(usersyms: dict[str, Any]):
         return Interpreter(usersyms=usersyms)
 
 
-def _evaluate_query(query: str, df, np_module):
+def _evaluate_query(query: str, df, np_module, pd_module=None):
+    # Run-11 fix (2026-05-29): pre-import pd, np, and common Pandas helpers
+    # so the agent does not need `import pandas as pd` (which the blocklist
+    # rightly rejects as a sandbox escape vector). Operator hit this hard
+    # in the ROCBA debrief — was forced to drop to external python3 for
+    # any query that needed pd.to_datetime, pd.Series, pd.DataFrame, etc.
     usersyms = {
         "df": df,
         "np": np_module,
+        "pd": pd_module,  # NEW
         "len": len,
         "min": min,
         "max": max,
         "sum": sum,
         "abs": abs,
         "sorted": sorted,
+        "list": list,
+        "dict": dict,
+        "set": set,
+        "tuple": tuple,
+        "round": round,
+        "int": int,
+        "float": float,
+        "str": str,
+        "bool": bool,
     }
     interpreter = _build_interpreter(usersyms)
     if interpreter is None:
         # Fallback for minimal environments that do not ship the optional
-        # asteval dependency. The query has already passed the blocklist above;
-        # keep builtins empty and expose only the explicit dataframe symbols.
+        # asteval dependency. Python's native eval supports f-strings, which
+        # asteval blocks (FormattedValue AST node not in its allowlist). The
+        # blocklist already rejects __builtins__ escapes, import statements,
+        # and dangerous IO patterns before reaching this branch.
         try:
             return eval(compile(query, "<run_analysis>", "eval"), {"__builtins__": {}}, usersyms)
         except Exception as exc:
@@ -153,7 +170,7 @@ def run_safe_analysis(
     import numpy as np
 
     df, pd = _load_dataframe(path)
-    result_obj = _evaluate_query(query, df, np)
+    result_obj = _evaluate_query(query, df, np, pd_module=pd)
 
     if isinstance(result_obj, pd.DataFrame):
         result_df = result_obj
