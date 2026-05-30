@@ -2200,7 +2200,14 @@ def render_report_html(payload: dict[str, Any]) -> str:
 <body>
 <main>
   <h1>SAVVYDFIR-MCP Investigation Report</h1>
-  <div class="subtitle">{html.escape(payload['case_id'])} · Generated {html.escape(str(payload.get('report_generated_at', '')))}{' · <a href="trace.html" style="color: var(--accent); text-decoration: none;">View Agent Session Trace</a>' if payload.get('trace_path') else ''}</div>
+  <div class="subtitle">{html.escape(payload['case_id'])} · Generated {html.escape(str(payload.get('report_generated_at', '')))}{(
+    ' · <a href="trace-detailed.html" style="color: var(--accent); text-decoration: none;">View Agent Session Trace</a>'
+    + (' (<a href="trace.html" style="color: var(--muted); text-decoration: none;">summary</a>)' if payload.get('trace_path') else '')
+  ) if payload.get('trace_detailed_path') else (
+    ' · <a href="trace.html" style="color: var(--accent); text-decoration: none;">View Agent Session Trace</a>'
+    if payload.get('trace_path') else ''
+  )}</div>
+  {('<div style="margin: -0.5rem 0 1rem; color: var(--muted); font-size: 0.78rem;">Detailed trace preserves every session event after redaction; summary is an editorial scan-friendly view.</div>' if payload.get('trace_detailed_path') and payload.get('trace_path') else '')}
 
   <section class="grid">
     <div class="card"><div class="metric-label">Case Status</div><div class="metric-value accent">{html.escape(summary.get('status', 'UNKNOWN'))}</div></div>
@@ -2745,7 +2752,11 @@ def generate_report_payload(
         # string "trace.html" (NOT interpolated from this field) to avoid
         # href-injection via report state. The trace itself is produced by
         # `scripts/render_session_trace.py`, an operator-explicit helper.
+        # Detailed companion: `trace-detailed.html` is the FULL-detail
+        # render (`--detail full`) of the session — every event preserved
+        # post-redaction. `trace.html` is the filtered scan-friendly view.
         "trace_path": "trace.html" if (report_dir / "trace.html").exists() else None,
+        "trace_detailed_path": "trace-detailed.html" if (report_dir / "trace-detailed.html").exists() else None,
         "next_required_tool": "generate_graph" if graph_missing else None,
     }
     payload["top_confirmed_findings"] = [
