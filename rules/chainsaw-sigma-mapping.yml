@@ -1,0 +1,294 @@
+---
+# SAVVYDFIR-MCP default Chainsaw sigma-mapping (compatible with Chainsaw 2.16+)
+# Bundled with the repo so sigma_hunt works for any fresh-clone user without
+# requiring them to hand-author a mapping after Chainsaw 2.16 dropped the
+# bundled default. Based on the canonical WithSecureLabs/chainsaw
+# sigma-event-logs-all.yml format.
+#
+# Run-11 fix (2026-05-29): Operator debrief from ROCBA run reported
+# `sigma_hunt` failed with "required arguments were not provided: --mapping"
+# because Chainsaw 2.16 no longer ships a default mapping path. install.sh
+# copies this file to ~/.config/chainsaw/mappings/ and the server's
+# sigma_hunt resolver looks here first.
+
+name: Chainsaw Sigma Event Logs - SAVVYDFIR Default
+kind: !sigma
+rules:
+  - !sigma
+    name: "Security Channel"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: Security
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      Provider: Event.System.Provider_attributes.Name
+      EventRecordID: Event.System.EventRecordID
+      SubjectUserName: Event.EventData.SubjectUserName
+      SubjectDomainName: Event.EventData.SubjectDomainName
+      SubjectLogonId: Event.EventData.SubjectLogonId
+      TargetUserName: Event.EventData.TargetUserName
+      TargetDomainName: Event.EventData.TargetDomainName
+      TargetLogonId: Event.EventData.TargetLogonId
+      LogonType: Event.EventData.LogonType
+      LogonProcessName: Event.EventData.LogonProcessName
+      AuthenticationPackageName: Event.EventData.AuthenticationPackageName
+      WorkstationName: Event.EventData.WorkstationName
+      IpAddress: Event.EventData.IpAddress
+      IpPort: Event.EventData.IpPort
+      ProcessName: Event.EventData.ProcessName
+      ProcessId: Event.EventData.ProcessId
+      ParentProcessName: Event.EventData.ParentProcessName
+      CommandLine: Event.EventData.CommandLine
+      ObjectName: Event.EventData.ObjectName
+      ObjectType: Event.EventData.ObjectType
+      AccessMask: Event.EventData.AccessMask
+      ServiceName: Event.EventData.ServiceName
+      ServiceFileName: Event.EventData.ServiceFileName
+      ImagePath: Event.EventData.ImagePath
+      Image: Event.EventData.Image
+      User: Event.EventData.User
+      MemberName: Event.EventData.MemberName
+
+  - !sigma
+    name: "System Channel"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: System
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      Provider: Event.System.Provider_attributes.Name
+      EventRecordID: Event.System.EventRecordID
+      ServiceName: Event.EventData.param1
+      ServiceFileName: Event.EventData.param2
+      ServiceType: Event.EventData.param3
+      ServiceStartType: Event.EventData.param4
+      ServiceAccount: Event.EventData.param5
+
+  - !sigma
+    name: "Application Channel"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: Application
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      Provider: Event.System.Provider_attributes.Name
+
+  - !sigma
+    name: "Sysmon Operational"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: Microsoft-Windows-Sysmon/Operational
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      Provider: Event.System.Provider_attributes.Name
+      UtcTime: Event.EventData.UtcTime
+      ProcessGuid: Event.EventData.ProcessGuid
+      ProcessId: Event.EventData.ProcessId
+      Image: Event.EventData.Image
+      FileVersion: Event.EventData.FileVersion
+      Description: Event.EventData.Description
+      Product: Event.EventData.Product
+      Company: Event.EventData.Company
+      OriginalFileName: Event.EventData.OriginalFileName
+      CommandLine: Event.EventData.CommandLine
+      CurrentDirectory: Event.EventData.CurrentDirectory
+      User: Event.EventData.User
+      LogonGuid: Event.EventData.LogonGuid
+      LogonId: Event.EventData.LogonId
+      TerminalSessionId: Event.EventData.TerminalSessionId
+      IntegrityLevel: Event.EventData.IntegrityLevel
+      Hashes: Event.EventData.Hashes
+      ParentProcessGuid: Event.EventData.ParentProcessGuid
+      ParentProcessId: Event.EventData.ParentProcessId
+      ParentImage: Event.EventData.ParentImage
+      ParentCommandLine: Event.EventData.ParentCommandLine
+      ParentUser: Event.EventData.ParentUser
+      TargetFilename: Event.EventData.TargetFilename
+      CreationUtcTime: Event.EventData.CreationUtcTime
+      PreviousCreationUtcTime: Event.EventData.PreviousCreationUtcTime
+      RuleName: Event.EventData.RuleName
+      Protocol: Event.EventData.Protocol
+      Initiated: Event.EventData.Initiated
+      SourceIsIpv6: Event.EventData.SourceIsIpv6
+      SourceIp: Event.EventData.SourceIp
+      SourceHostname: Event.EventData.SourceHostname
+      SourcePort: Event.EventData.SourcePort
+      SourcePortName: Event.EventData.SourcePortName
+      DestinationIsIpv6: Event.EventData.DestinationIsIpv6
+      DestinationIp: Event.EventData.DestinationIp
+      DestinationHostname: Event.EventData.DestinationHostname
+      DestinationPort: Event.EventData.DestinationPort
+      DestinationPortName: Event.EventData.DestinationPortName
+      ImageLoaded: Event.EventData.ImageLoaded
+      Signed: Event.EventData.Signed
+      Signature: Event.EventData.Signature
+      SignatureStatus: Event.EventData.SignatureStatus
+      SourceImage: Event.EventData.SourceImage
+      SourceProcessGuid: Event.EventData.SourceProcessGuid
+      SourceProcessId: Event.EventData.SourceProcessId
+      SourceThreadId: Event.EventData.SourceThreadId
+      SourceUser: Event.EventData.SourceUser
+      TargetImage: Event.EventData.TargetImage
+      TargetProcessGuid: Event.EventData.TargetProcessGuid
+      TargetProcessId: Event.EventData.TargetProcessId
+      TargetObject: Event.EventData.TargetObject
+      Details: Event.EventData.Details
+      NewName: Event.EventData.NewName
+      EventType: Event.EventData.EventType
+      QueryName: Event.EventData.QueryName
+      QueryStatus: Event.EventData.QueryStatus
+      QueryResults: Event.EventData.QueryResults
+      IsExecutable: Event.EventData.IsExecutable
+      PipeName: Event.EventData.PipeName
+      Operation: Event.EventData.Operation
+      Type: Event.EventData.Type
+      State: Event.EventData.State
+      Configuration: Event.EventData.Configuration
+      ConfigurationFileHash: Event.EventData.ConfigurationFileHash
+
+  - !sigma
+    name: "PowerShell Operational"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: Microsoft-Windows-PowerShell/Operational
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      Provider: Event.System.Provider_attributes.Name
+      ScriptBlockText: Event.EventData.ScriptBlockText
+      Path: Event.EventData.Path
+      MessageNumber: Event.EventData.MessageNumber
+      MessageTotal: Event.EventData.MessageTotal
+      ScriptBlockId: Event.EventData.ScriptBlockId
+      HostName: Event.EventData.HostName
+      HostVersion: Event.EventData.HostVersion
+      HostApplication: Event.EventData.HostApplication
+      EngineVersion: Event.EventData.EngineVersion
+      RunspaceId: Event.EventData.RunspaceId
+      PipelineId: Event.EventData.PipelineId
+      CommandName: Event.EventData.CommandName
+      CommandType: Event.EventData.CommandType
+      ContextInfo: Event.EventData.ContextInfo
+      Payload: Event.EventData.Payload
+
+  - !sigma
+    name: "PowerShell Classic"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: Windows PowerShell
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      EngineVersion: Event.EventData.EngineVersion
+      HostName: Event.EventData.HostName
+      HostApplication: Event.EventData.HostApplication
+      CommandLine: Event.EventData.CommandLine
+
+  - !sigma
+    name: "Microsoft-Windows-TerminalServices-LocalSessionManager"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: Microsoft-Windows-TerminalServices-LocalSessionManager/Operational
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      User: Event.UserData.EventXML.User
+      SessionID: Event.UserData.EventXML.SessionID
+      Address: Event.UserData.EventXML.Address
+
+  - !sigma
+    name: "Microsoft-Windows-TerminalServices-RemoteConnectionManager"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      Param1: Event.UserData.EventXML.Param1
+      Param2: Event.UserData.EventXML.Param2
+      Param3: Event.UserData.EventXML.Param3
+
+  - !sigma
+    name: "Task Scheduler Operational"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: Microsoft-Windows-TaskScheduler/Operational
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      TaskName: Event.EventData.TaskName
+      UserName: Event.EventData.UserName
+      UserContext: Event.EventData.UserContext
+      ActionName: Event.EventData.ActionName
+
+  - !sigma
+    name: "Windows Defender Operational"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: Microsoft-Windows-Windows Defender/Operational
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      Path: Event.EventData.Path
+      ProcessName: Event.EventData.ProcessName
+
+  - !sigma
+    name: "WMI-Activity Operational"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: Microsoft-Windows-WMI-Activity/Operational
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      Operation: Event.UserData.Operation_ClientFailure.Operation
+      User: Event.UserData.Operation_ClientFailure.User
+      ClientMachine: Event.UserData.Operation_ClientFailure.ClientMachine
+
+  - !sigma
+    name: "WinRM Operational"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: Microsoft-Windows-WinRM/Operational
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+
+  - !sigma
+    name: "SMBServer Operational"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Channel: Microsoft-Windows-SMBServer/Operational
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      ShareName: Event.EventData.ShareName
+      ClientName: Event.EventData.ClientName
+      UserName: Event.EventData.UserName
+
+  - !sigma
+    name: "Microsoft-Windows-Sysmon"
+    timestamp: Event.System.TimeCreated_attributes.SystemTime
+    filter:
+      Event.System.Provider_attributes.Name: Microsoft-Windows-Sysmon
+    fields:
+      EventID: Event.System.EventID
+      Computer: Event.System.Computer
+      UtcTime: Event.EventData.UtcTime
+      ProcessGuid: Event.EventData.ProcessGuid
+      ProcessId: Event.EventData.ProcessId
+      Image: Event.EventData.Image
+      CommandLine: Event.EventData.CommandLine
+      User: Event.EventData.User
+      ParentImage: Event.EventData.ParentImage
+      ParentCommandLine: Event.EventData.ParentCommandLine
+      Hashes: Event.EventData.Hashes
+      TargetFilename: Event.EventData.TargetFilename
+      ImageLoaded: Event.EventData.ImageLoaded
+      DestinationIp: Event.EventData.DestinationIp
+      DestinationPort: Event.EventData.DestinationPort
+      QueryName: Event.EventData.QueryName
+      TargetObject: Event.EventData.TargetObject

@@ -151,6 +151,19 @@ else
     ok "Sigma rules already present at /opt/sigma."
 fi
 
+# Run-11 fix (2026-05-29): Chainsaw 2.16+ requires --mapping; default
+# bundled paths were dropped. Copy the repo-bundled mapping to a stable
+# operator location so the sigma_hunt resolver finds it regardless of
+# repo location.
+if [[ -f "${SCRIPT_DIR}/rules/chainsaw-sigma-mapping.yml" ]]; then
+    info "Deploying Chainsaw sigma-mapping.yml to ~/.config/chainsaw/mappings/..."
+    mkdir -p "$HOME/.config/chainsaw/mappings"
+    cp "${SCRIPT_DIR}/rules/chainsaw-sigma-mapping.yml" "$HOME/.config/chainsaw/mappings/sigma-mapping.yml"
+    ok "Chainsaw mapping deployed at $HOME/.config/chainsaw/mappings/sigma-mapping.yml"
+else
+    warn "rules/chainsaw-sigma-mapping.yml not found in repo — sigma_hunt may fail with 'required arguments were not provided: --mapping'"
+fi
+
 # ---------------------------------------------------------------------------
 # 1e. Claude Code (native installer, if missing)
 # ---------------------------------------------------------------------------
@@ -208,14 +221,35 @@ info "Creating Python virtual environment at ${VENV_DIR}..."
 if [[ -d "$VENV_DIR" ]]; then
     warn "venv directory already exists — skipping creation."
 else
-    python3 -m venv "$VENV_DIR"
-    ok "Virtual environment created."
+    # Run-11 fix (2026-05-29): use --system-site-packages so the venv can see
+    # system-installed C-extension forensic libs (pyscca/libscca, esedb-python,
+    # registry-python, etc.) that aren't pip-installable. extract_prefetch
+    # was failing with "pyscca not installed" because libscca-python3 lives at
+    # /usr/lib/python3/dist-packages and the clean venv didn't see it.
+    # The repo's own deps (fastmcp, pydantic) in requirements.txt still take
+    # precedence over any system copies because pip installs them inside venv.
+    python3 -m venv --system-site-packages "$VENV_DIR"
+    ok "Virtual environment created (with --system-site-packages for forensic libs)."
 fi
 
 info "Installing Python dependencies (fastmcp, pydantic>=2.0)..."
 "${VENV_DIR}/bin/pip" install --quiet --upgrade pip
 "${VENV_DIR}/bin/pip" install --quiet -r "${SCRIPT_DIR}/requirements.txt"
 ok "Dependencies installed."
+
+# Run-11 fix (2026-05-29): Defensive fallback if --system-site-packages didn't
+# pick up pyscca for some reason (e.g. installed post-venv-create). Symlink
+# the system pyscca .so into the venv site-packages directly.
+if ! "${VENV_DIR}/bin/python3" -c "import pyscca" 2>/dev/null; then
+    PYSCCA_SO="$(find /usr/lib/python3*/dist-packages -name 'pyscca*.so' 2>/dev/null | head -1)"
+    if [[ -n "$PYSCCA_SO" ]]; then
+        VENV_SITE="$(${VENV_DIR}/bin/python3 -c 'import site; print(site.getsitepackages()[0])')"
+        ln -sf "$PYSCCA_SO" "${VENV_SITE}/$(basename "$PYSCCA_SO")"
+        info "Symlinked $PYSCCA_SO into venv (pyscca was not auto-discovered)."
+    else
+        warn "pyscca .so not found on system. extract_prefetch will fail until libscca-python3 is installed: sudo apt install libscca-python3"
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # 4. Deploy Claude Code configuration

@@ -3734,13 +3734,24 @@ def sigma_hunt(
     # ------------------------------------------------------------------
     # 3. Resolve Chainsaw mapping file
     # ------------------------------------------------------------------
+    # Run-11 fix (2026-05-29): Chainsaw 2.16 dropped the bundled default
+    # mapping, breaking sigma_hunt for every fresh user with
+    # "required arguments were not provided: --mapping". We now ship a
+    # known-good mapping at <repo_root>/rules/chainsaw-sigma-mapping.yml
+    # and search there first, then operator-installed locations, then the
+    # legacy distro paths. install.sh also copies the repo mapping to
+    # ~/.config/chainsaw/mappings/ so the operator-path resolver finds it.
     mapping_file: Optional[str] = chainsaw_mapping
     if mapping_file is None:
+        # Find the repo root relative to this server.py file
+        _repo_mapping = Path(__file__).resolve().parent.parent / "rules" / "chainsaw-sigma-mapping.yml"
         for candidate in [
+            str(_repo_mapping),
+            str(Path.home() / ".config" / "chainsaw" / "mappings" / "sigma-mapping.yml"),
+            str(Path.home() / "chainsaw" / "mappings" / "sigma-mapping.yml"),
             "/opt/chainsaw/mappings/sigma-mapping.yml",
             "/usr/share/chainsaw/mappings/sigma-mapping.yml",
             "/opt/chainsaw/mappings/sigma-event-logs-all.yml",
-            str(Path.home() / "chainsaw" / "mappings" / "sigma-mapping.yml"),
         ]:
             if Path(candidate).is_file():
                 mapping_file = candidate
@@ -8095,6 +8106,7 @@ def submit_finding(
     mitre_tactic: str = "",
     mitre_technique: str = "",
     corroborated_by: Optional[list[str]] = None,
+    timestamp_observed: str = "",
 ) -> dict[str, Any]:
     """Specialist-authoritative finding registration with durable provenance.
 
@@ -8250,6 +8262,23 @@ def submit_finding(
             finding["mitre_technique"] = mitre_technique
         if source_execution_id:
             finding["execution_id"] = source_execution_id
+        if timestamp_observed:
+            # Validate ISO-8601 (with timezone or trailing Z); on parse failure
+            # warn-and-drop rather than raise — so agent typos don't kill the
+            # finding, but bad timestamps don't poison find_temporal_clusters.
+            _ts_normalized = ""
+            try:
+                _ts_candidate = timestamp_observed.strip()
+                if _ts_candidate.endswith("Z"):
+                    _ts_candidate = _ts_candidate[:-1] + "+00:00"
+                _ts_parsed = datetime.fromisoformat(_ts_candidate)
+                if _ts_parsed.tzinfo is None:
+                    _ts_parsed = _ts_parsed.replace(tzinfo=timezone.utc)
+                _ts_normalized = _ts_parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except (ValueError, AttributeError):
+                _ts_normalized = ""
+            if _ts_normalized:
+                finding["timestamp_observed"] = _ts_normalized
         if alternative_hypothesis:
             finding["alternative_hypothesis"] = alternative_hypothesis
         if evidence_that_would_support_it:

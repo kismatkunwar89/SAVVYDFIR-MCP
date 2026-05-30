@@ -202,10 +202,20 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
         meta = proc_finding.get("supporting_indicators", [])
         proc_path = _extract_indicator(meta, "path:")
 
-        if not proc_path:
-            # Try description for path hints
-            desc = proc_finding.get("description", "")
-            proc_path = _path_from_description(desc)
+        # Run-11 fix (2026-05-29): DO NOT scrape paths from free-text
+        # descriptions. The prior `_path_from_description(desc)` fallback
+        # matched any substring starting with `/`, producing false
+        # positives like `/hash`, `/Electron/XAML`, `/Protocol`. Only act
+        # on structured indicators. If a process finding lacks a `path:`
+        # supporting_indicator, the discrepancy is skipped (better silent
+        # miss than fabricated HIGH-severity alert). Detectors must populate
+        # path: explicitly to enable this check.
+
+        # Defense-in-depth — even if proc_path came from the structured
+        # field, require it to look like a real executable path before
+        # accepting it.
+        if proc_path and not _is_real_executable_path(proc_path):
+            proc_path = None
 
         if proc_path:
             if not _path_in_inventory(proc_path, disk_inventory):
@@ -250,9 +260,12 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
         exec_name = _extract_indicator(
             exec_finding.get("supporting_indicators", []), "executable:"
         )
-        if not exec_name:
-            desc = exec_finding.get("description", "")
-            exec_name = _exe_from_description(desc)
+
+        # Run-11 fix (2026-05-29): drop the description fallback. The prior
+        # `_exe_from_description(desc)` regex matched any string ending in
+        # .exe/.dll/.bat/.ps1/.vbs/.com, including bare references in prose.
+        # Only act on the `executable:` supporting_indicator. Skip silently
+        # if absent rather than fabricate.
 
         if exec_name:
             base_name = _basename_token(exec_name)
@@ -1243,16 +1256,63 @@ def _is_legitimate_path(path: str) -> bool:
     return any(norm.startswith(lp.replace("\\", "/")) for lp in _LEGITIMATE_PATHS)
 
 
+def _is_real_executable_path(path: str) -> bool:
+    """Validate that a path string is a plausible Windows or Unix executable path.
+
+    Run-11 fix (2026-05-29). Rejects prose substrings that the prior
+    `_path_from_description` helper accepted as paths, producing false
+    HIGH-severity discrepancies on compare_disk_and_memory:
+
+    Rejected:  '/hash', '/Protocol', '/Electron/XAML', '/evidence/...raw.'
+    Accepted:  'C:\\Windows\\System32\\svchost.exe',
+               'C:\\Users\\foo\\AppData\\Local\\Temp\\evil.exe',
+               '/usr/local/bin/binary', 'C:\\program.exe'
+
+    Heuristic:
+    * Windows path: starts with drive letter + ':\\\\' AND contains '\\\\'
+      AND ends in an executable extension (.exe/.dll/.bat/.cmd/.ps1/.vbs/.com/.scr/.sys).
+    * Unix path: starts with '/' AND contains at least 2 '/' separators
+      (excludes '/hash', '/Protocol') AND has either an executable
+      extension OR resides under /usr/bin, /usr/local/bin, /bin, /sbin, /opt.
+
+    Returns True if the candidate looks like a real executable path.
+    """
+    if not path or not isinstance(path, str):
+        return False
+    text = path.strip().strip('"').strip("'")
+    if not text:
+        return False
+    # Windows-style
+    if len(text) >= 3 and text[1] == ":" and text[0].isalpha() and text[2] in ("\\", "/"):
+        if "\\" not in text:
+            return False
+        return bool(re.search(r"\.(exe|dll|bat|cmd|ps1|vbs|com|scr|sys)\b", text, re.IGNORECASE))
+    # Unix-style
+    if text.startswith("/"):
+        if text.count("/") < 2:
+            return False
+        if re.search(r"\.(exe|dll|bat|cmd|ps1|vbs|com|scr|sys|so|elf|out|sh|py|bin)\b", text, re.IGNORECASE):
+            return True
+        # Or under a standard binary directory
+        unix_bin_prefixes = ("/usr/bin/", "/usr/local/bin/", "/bin/", "/sbin/", "/usr/sbin/", "/opt/")
+        return any(text.startswith(p) and len(text) > len(p) for p in unix_bin_prefixes)
+    return False
+
+
 def _path_from_description(desc: str) -> Optional[str]:
-    """Heuristically extract a Windows/Unix file path from a description string."""
-    return _extract_path_candidate(desc)
+    """DEPRECATED — Run-11 fix removed all callers (correlation.py:209, etc).
+
+    Retained as a tombstone in case external code imports it. Always returns
+    None now. See _is_real_executable_path for the replacement validation."""
+    return None
 
 
 def _exe_from_description(desc: str) -> Optional[str]:
-    """Heuristically extract an executable name from a description string."""
-    import re
-    m = re.search(r"([A-Za-z0-9_.-]+\.(?:exe|dll|bat|ps1|vbs|com))", desc, re.IGNORECASE)
-    return m.group(1) if m else None
+    """DEPRECATED — Run-11 fix removed all callers (correlation.py:245, etc).
+
+    Retained as a tombstone in case external code imports it. Always returns
+    None now. Detectors must populate `executable:` supporting_indicators."""
+    return None
 
 
 def _owner_from_description(desc: str) -> Optional[str]:
