@@ -316,6 +316,51 @@ class ArtifactSubtypePathDeriveTests(unittest.TestCase):
             )
             self.assertIn(f.get("artifact_subtype"), (None, ""))
 
+    # --- tool_name derive (auto-generated disk findings) -----------------
+
+    def test_derives_subtype_from_tool_name_when_type_already_disk(self) -> None:
+        # artifact_type="disk" is already canonical, so _canonicalize skips the
+        # tool_name -> the new tool_name derive must recover it. Registry path
+        # is a ROOT\... hive key with NO /artifacts/ segment (path derive can't).
+        cases = [
+            ("disk.extract_registry_run_keys", r"ROOT\ControlSet001\Services\bam", "registry"),
+            ("disk.summarize_evtx", r"ROOT\System\foo", "evtx"),
+            ("disk.extract_shimcache", r"C:\Windows\AppCompat\x", "shimcache"),
+        ]
+        for tool, path, expected in cases:
+            with self.subTest(tool=tool), tempfile.TemporaryDirectory() as tmp:
+                f = self._add(self._mgr(tmp), tool_name=tool, artifact_path=path)
+                self.assertEqual(f["artifact_subtype"], expected)
+
+    def test_tool_derive_wins_over_conflicting_path(self) -> None:
+        # tool_name is authoritative; it runs before path parse.
+        with tempfile.TemporaryDirectory() as tmp:
+            f = self._add(
+                self._mgr(tmp),
+                tool_name="disk.extract_registry_run_keys",
+                artifact_path="/cases/X/artifacts/mft/mft_timeline.csv",
+            )
+            self.assertEqual(f["artifact_subtype"], "registry")  # NOT mft
+
+    def test_explicit_subtype_wins_over_tool_derive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = self._add(
+                self._mgr(tmp),
+                artifact_subtype="amcache",
+                tool_name="disk.extract_registry_run_keys",
+                artifact_path=r"ROOT\ControlSet001\Services\bam",
+            )
+            self.assertEqual(f["artifact_subtype"], "amcache")
+
+    def test_unknown_tool_with_unmatched_path_stays_blank(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = self._add(
+                self._mgr(tmp),
+                tool_name="state.submit_finding",
+                artifact_path=r"ROOT\ControlSet001\Services\bam",  # no /artifacts/
+            )
+            self.assertIn(f.get("artifact_subtype"), (None, ""))
+
 
 if __name__ == "__main__":
     unittest.main()
