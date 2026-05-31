@@ -640,13 +640,37 @@ function bucketFor(node) {
   const det = node.details || {};
   const at = String(det.artifact_type || '').trim().toLowerCase();
   let sub = String(det.artifact_subtype || '').trim().toLowerCase();
-  // Fallback: derive subtype from tool_name when missing. The framework
+  // Fallback 1: derive subtype from tool_name when missing. The framework
   // stores tool_name with a category prefix (e.g. "disk.extract_registry_run_keys")
   // so we strip the prefix before lookup.
   if (!sub) {
     let tn = String(det.tool_name || '').trim().toLowerCase();
     if (tn.includes('.')) tn = tn.split('.').pop();
     if (tn && TOOL_NAME_TO_SUBTYPE[tn]) sub = TOOL_NAME_TO_SUBTYPE[tn];
+  }
+  // Fallback 2: derive subtype from artifact_path. Analyst-submitted findings
+  // (tool_name="state.submit_finding") often leave artifact_subtype blank but
+  // still point artifact_path at the staged artifact dir whose name IS the
+  // subtype: /cases/<id>/artifacts/<subtype>/...  (or, post-redaction,
+  // <case-dir>/artifacts/<subtype>/...). The /artifacts/<seg>/ segment
+  // survives redaction, so this works on both raw and published graphs.
+  // This view-layer fallback mirrors the runtime helper
+  // _derive_artifact_subtype_from_path in sift_mcp/semantics.py — it's the
+  // legacy/display backstop for state.json files that predate the runtime fix.
+  // Tier-1 only (no filename heuristics): skip an optional raw/ intermediate,
+  // allow no trailing slash, normalise backslashes. Allowlist-gated.
+  if (!sub) {
+    const ap = String(det.artifact_path || '').replace(/\\/g, '/').toLowerCase();
+    const m = ap.match(/\/artifacts\/(?:raw\/)?([a-z0-9_]+)(?:\/|$)/);
+    if (m && m[1]) {
+      const PATH_SUBTYPE = {
+        evtx: 'evtx', mft: 'mft', usn: 'usn', prefetch: 'prefetch',
+        amcache: 'amcache', shimcache: 'shimcache', registry: 'registry',
+        srum: 'srum', pca: 'pca', sigma: 'sigma', hayabusa: 'hayabusa',
+        vss: 'vss',
+      };
+      if (PATH_SUBTYPE[m[1]]) sub = PATH_SUBTYPE[m[1]];
+    }
   }
   if (!at) return CATCH_ALL;
   if (sub) {

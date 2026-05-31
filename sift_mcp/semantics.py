@@ -276,6 +276,55 @@ def _canonicalize_artifact_type(value: Any, tool_name: Any) -> tuple[str, Option
     )
 
 
+# Canonical artifact_subtype values recoverable from a staged artifact path.
+# Spelling matches what _canonicalize_artifact_type + existing tests assert
+# (e.g. staged dir "evtx" -> subtype "evtx", NOT "evtx_event"). Allowlist-
+# gated so an unrecognised dir name never produces a bogus subtype.
+_PATH_SUBTYPE_CANONICAL = {
+    "mft": "mft",
+    "usn": "usn",
+    "evtx": "evtx",
+    "prefetch": "prefetch",
+    "amcache": "amcache",
+    "shimcache": "shimcache",
+    "registry": "registry",
+    "pca": "pca",
+    "srum": "srum",
+    "vss": "vss",
+    "sigma": "sigma",
+    "hayabusa": "hayabusa",
+}
+
+# Framework staging contract: extraction tools write artifacts to
+# /cases/<case_id>/artifacts/<subtype>/...  (with an optional raw/ intermediate
+# for raw evidence). The <subtype> dir name is authoritative. Matches the raw
+# /cases/... path AND a graph-redacted <case-dir>/... path, since only the
+# /artifacts/<subtype>/ segment is needed.
+_ARTIFACTS_PATH_RE = re.compile(r"/artifacts/(?:raw/)?([a-z0-9_]+)(?:/|$)")
+
+
+def _derive_artifact_subtype_from_path(artifact_path: Any) -> Optional[str]:
+    """Recover a canonical artifact_subtype from a staged artifact_path.
+
+    Used as a LAST-RESORT fallback for analyst-submitted findings
+    (tool_name="state.submit_finding") that set artifact_type="disk" and an
+    artifact_path like ``/cases/<id>/artifacts/mft/mft_timeline.csv`` but leave
+    artifact_subtype blank. The staging-dir name is the framework's authoritative
+    subtype signal (tier-1 only; no filename-keyword heuristics — peer reviewer
+    sign-off 2026-05-30).
+
+    Returns the canonical subtype string, or None when the path has no
+    recognised ``/artifacts/<kind>/`` segment (kept blank, never guessed).
+    """
+    text = _normalize_whitespace(artifact_path).replace("\\", "/").lower()
+    if not text:
+        return None
+    match = _ARTIFACTS_PATH_RE.search(text)
+    if match:
+        return _PATH_SUBTYPE_CANONICAL.get(match.group(1))
+    return None
+
+
 def _canonicalize_evidence_kind(value: Any) -> str:
     token = _normalize_lower_token(value)
     if not token:
@@ -630,6 +679,21 @@ def validate_and_prepare_finding(
     normalized["artifact_type"] = artifact_type
     if artifact_subtype and not _normalize_whitespace(normalized.get("artifact_subtype")):
         normalized["artifact_subtype"] = artifact_subtype
+    # Source-of-truth fallback: analyst-submitted findings
+    # (tool_name="state.submit_finding") often leave artifact_subtype blank but
+    # point artifact_path at the staged /artifacts/<subtype>/ dir. Recover it
+    # here so state.json is correct for every downstream consumer (graph,
+    # report, correlation) rather than each guessing. Precedence: explicit
+    # subtype > tool_name canonicalization (above) > path derive (here) > blank.
+    # Metadata-only — does not feed fk_source_class / confidence / status gates.
+    if (
+        artifact_type == "disk"
+        and not _normalize_whitespace(normalized.get("artifact_subtype"))
+        and _normalize_whitespace(normalized.get("artifact_path"))
+    ):
+        derived_subtype = _derive_artifact_subtype_from_path(normalized.get("artifact_path"))
+        if derived_subtype:
+            normalized["artifact_subtype"] = derived_subtype
 
     normalized["mitre_tactic"] = _normalize_whitespace(normalized.get("mitre_tactic")).upper() or None
     normalized["mitre_technique"] = (

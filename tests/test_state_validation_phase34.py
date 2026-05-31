@@ -199,5 +199,123 @@ class StateValidationPhase34Tests(unittest.TestCase):
             self.assertIn("memory", updated["supporting_artifact_families"])
 
 
+class ArtifactSubtypePathDeriveTests(unittest.TestCase):
+    """Runtime source-of-truth derive: analyst findings (tool_name=
+    state.submit_finding) with blank artifact_subtype recover it from the
+    staged /artifacts/<subtype>/ segment of artifact_path. peer reviewer sign-off
+    2026-05-30 (consensus-runtime-subtype-derive-2026-05-30.md)."""
+
+    def _add(self, manager, *, artifact_type="disk", artifact_subtype=None,
+             artifact_path="", tool_name="state.submit_finding"):
+        finding = {
+            "case_id": "CASE-SUBTYPE",
+            "finding_type": "exfiltration",
+            "artifact_type": artifact_type,
+            "artifact_path": artifact_path,
+            "tool_name": tool_name,
+            "execution_id": "E-001",
+            "iteration": 1,
+            "evidence_kind": "observation",
+            "finding_status": "ACTIVE",
+            "confidence": 0.7,
+            "description": "Path-derive subtype regression fixture.",
+        }
+        if artifact_subtype is not None:
+            finding["artifact_subtype"] = artifact_subtype
+        fid = manager.add_finding(finding)
+        return manager.get_finding(fid)
+
+    def _mgr(self, tmp_dir):
+        m = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+        m.load("CASE-SUBTYPE")
+        return m
+
+    def test_derives_subtype_from_standard_and_raw_paths(self) -> None:
+        cases = [
+            ("/cases/X/artifacts/mft/mft_timeline.csv", "mft"),
+            ("/cases/X/artifacts/usn/usn_journal.csv", "usn"),
+            ("/cases/X/artifacts/evtx/evtx_timeline.csv", "evtx"),
+            ("/cases/X/artifacts/prefetch/prefetch.csv", "prefetch"),
+            ("/cases/X/artifacts/raw/srum/SRUDB.dat", "srum"),       # raw/ intermediate
+            ("/cases/X/artifacts/raw/evtx", "evtx"),                  # no trailing slash
+            ("<case-dir>/artifacts/mft/x.csv", "mft"),                # redacted prefix
+            (r"C:\cases\X\artifacts\registry\SOFTWARE", "registry"),  # windows separators
+        ]
+        for path, expected in cases:
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as tmp:
+                f = self._add(self._mgr(tmp), artifact_path=path)
+                self.assertEqual(f["artifact_subtype"], expected)
+
+    def test_unrecognized_or_missing_path_stays_blank(self) -> None:
+        # All non-empty (OBSERVATION findings require a path); none match the
+        # /artifacts/<allowed-subtype>/ contract, so subtype stays blank.
+        for path in (
+            "/cases/X/artifacts/unknown_dir/x.csv",   # dir not in allowlist
+            "<legacy-unavailable>",
+            r"ROOT\ControlSet001\Services\bam\State",  # registry path, no /artifacts/
+            "/cases/X/SYSTEM_AppCompatCache.csv",      # non-standard, no /artifacts/
+        ):
+            with self.subTest(path=path), tempfile.TemporaryDirectory() as tmp:
+                f = self._add(self._mgr(tmp), artifact_path=path)
+                self.assertIn(f.get("artifact_subtype"), (None, ""))
+
+    def test_explicit_subtype_is_never_overridden(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            f = self._add(
+                self._mgr(tmp),
+                artifact_subtype="amcache",
+                artifact_path="/cases/X/artifacts/mft/mft_timeline.csv",
+            )
+            self.assertEqual(f["artifact_subtype"], "amcache")  # explicit wins over path
+
+    def test_tool_name_canonicalization_wins_over_path(self) -> None:
+        # tool_name yields a subtype -> path derive must not run.
+        with tempfile.TemporaryDirectory() as tmp:
+            f = self._add(
+                self._mgr(tmp),
+                artifact_type="evtx",  # alias -> disk + subtype evtx via tool/type
+                tool_name="disk.summarize_evtx",
+                artifact_path="/cases/X/artifacts/prefetch/prefetch.csv",
+            )
+            self.assertEqual(f["artifact_subtype"], "evtx")  # NOT prefetch
+
+    def test_derived_subtype_is_retrievable_via_get_findings(self) -> None:
+        # Guards against the state.py exact-match split: a path-derived subtype
+        # must be queryable through get_findings(artifact_type=<subtype>).
+        with tempfile.TemporaryDirectory() as tmp:
+            m = self._mgr(tmp)
+            self._add(m, artifact_path="/cases/X/artifacts/mft/mft_timeline.csv")
+            hits = m.get_findings(artifact_type="mft")
+            self.assertEqual(len(hits), 1)
+            self.assertEqual(hits[0]["artifact_subtype"], "mft")
+
+    def test_derive_does_not_change_confidence_or_status(self) -> None:
+        # Metadata-only: deriving subtype must not shift confidence,
+        # fk_source_class, or finding_status (no fk-multiplier side effect).
+        with tempfile.TemporaryDirectory() as tmp_a, tempfile.TemporaryDirectory() as tmp_b:
+            with_path = self._add(
+                self._mgr(tmp_a),
+                artifact_path="/cases/X/artifacts/mft/mft_timeline.csv",
+            )
+            without_path = self._add(self._mgr(tmp_b), artifact_path="<legacy-unavailable>")
+            self.assertEqual(with_path["confidence"], without_path["confidence"])
+            self.assertEqual(
+                with_path.get("fk_source_class"), without_path.get("fk_source_class")
+            )
+            self.assertEqual(with_path["finding_status"], without_path["finding_status"])
+
+    def test_non_disk_findings_are_not_path_derived(self) -> None:
+        # memory/correlation findings bucket by artifact_type; a disk-looking
+        # path must not stamp a disk subtype onto them.
+        with tempfile.TemporaryDirectory() as tmp:
+            f = self._add(
+                self._mgr(tmp),
+                artifact_type="memory",
+                tool_name="memory.scan_network",
+                artifact_path="/cases/X/artifacts/mft/mft_timeline.csv",
+            )
+            self.assertIn(f.get("artifact_subtype"), (None, ""))
+
+
 if __name__ == "__main__":
     unittest.main()
