@@ -282,8 +282,8 @@ class HypothesisValidationRenderTests(unittest.TestCase):
         html_out = _render_hypothesis_validation(hyps)
         # full id preserved, verdict labels present, linked findings rendered
         for token in ("H-AAA", "H-BBB", "H-CCC", "H-DDD",
-                      "CONFIRMED — proven", "REFUTED — disproven",
-                      "SUSPENDED — inconclusive", "ACTIVE — unresolved",
+                      "CONFIRMED - proven", "REFUTED - disproven",
+                      "SUSPENDED - inconclusive", "ACTIVE - unresolved",
                       "F-088", "F-089", "F-040", "T1021.001"):
             self.assertIn(token, html_out)
         # verdict tag classes
@@ -304,8 +304,8 @@ class HypothesisValidationRenderTests(unittest.TestCase):
         html_out = _render_hypothesis_validation(hyps)  # must not raise
         self.assertIn("F-001", html_out)         # singleton string normalized
         self.assertIn("T1059", html_out)
-        self.assertIn("CONFIRMED — proven", html_out)  # case-insensitive status
-        self.assertIn("ACTIVE — unresolved", html_out)  # bare entry default
+        self.assertIn("CONFIRMED - proven", html_out)  # case-insensitive status
+        self.assertIn("ACTIVE - unresolved", html_out)  # bare entry default
 
     def test_unresolved_counter(self) -> None:
         from sift_mcp.reporting import _count_unresolved_hypotheses
@@ -342,6 +342,136 @@ class HypothesisValidationRenderTests(unittest.TestCase):
             )
             self.assertIn("hypotheses", result)
             self.assertIsInstance(result["hypotheses"], list)
+
+
+class ReportStructureRenderTests(unittest.TestCase):
+    """Golden structure checks for the rebuilt render_report_html: executive-
+    first layout, self-contained (no JS/CDN/Mermaid), color-coded sections, and
+    deterministic narrative assembled from agent-authored fields."""
+
+    def _payload(self) -> dict:
+        return {
+            "case_id": "CASE-STRUCT-1",
+            "report_generated_at": "2026-05-31T00:00:00+00:00",
+            "summary": {"status": "COMPLETE", "findings_count": 4,
+                        "confirmed_count": 1, "unresolved_discrepancies": 2},
+            "triage_status": "COMPLETE_WITH_GAPS",
+            "status_breakdown": {"CONFIRMED": 1, "ACTIVE": 3},
+            "sigma_scan": {"total_hits": 5, "critical_count": 0, "high_count": 2,
+                           "summary_markdown": "2 HIGH anomalies"},
+            "coverage": {"coverage_percent": 41.7,
+                         "covered_tactics": [{"id": "TA0010", "name": "Exfiltration"}],
+                         "uncovered_tactics": [{"id": "TA0001", "name": "Initial Access"}],
+                         "suggested_next_tools": {"TA0001": ["extract_evtx"]}},
+            "top_findings": [
+                {"finding_id": "F-001", "finding_status": "CONFIRMED", "confidence": 0.95,
+                 "mitre_tactic": "TA0010", "mitre_technique": "T1041",
+                 "description": "Exfiltration over C2 channel observed in SRUM and memory.",
+                 "corroborated_by": ["F-004", "F-005"], "timestamp_observed": None,
+                 "supporting_indicators": ["10.0.0.9 (peer)", "evil.exe C:\\\\Temp\\\\evil.exe"]},
+                {"finding_id": "F-002", "finding_status": "ACTIVE", "confidence": 0.6,
+                 "mitre_tactic": "TA0010", "mitre_technique": "T1048",
+                 "description": "Possible secondary channel.", "corroborated_by": [],
+                 "timestamp_observed": None, "supporting_indicators": ["TCP :8080"]},
+            ],
+            "top_confirmed_findings": [
+                {"finding_id": "F-001", "finding_status": "CONFIRMED", "confidence": 0.95,
+                 "mitre_tactic": "TA0010", "mitre_technique": "T1041",
+                 "description": "Exfiltration over C2 channel observed in SRUM and memory.",
+                 "corroborated_by": ["F-004", "F-005"],
+                 "supporting_indicators": ["10.0.0.9 (peer)"]},
+            ],
+            "actionable_leads": [], "anti_forensics_warnings": [], "data_gaps": [],
+            "analysis_lanes": [{"lane_id": "synthesis_corroboration", "status": "COMPLETE",
+                                "summary": "Phase 6 synthesis confirmed 1 exfil finding."}],
+            "orchestration_warnings": [], "open_questions": [], "hypotheses": [],
+            "status_flags": {}, "evidence_kind_breakdown": {},
+        }
+
+    def test_structure_and_self_contained(self) -> None:
+        from sift_mcp.reporting import render_report_html
+        out = render_report_html(self._payload())
+        # self-contained: no scripts, no CDN, no Mermaid, no dark gradient
+        self.assertNotIn("<script", out)
+        self.assertNotIn("cdn.jsdelivr", out)
+        self.assertNotIn("graph LR", out)
+        self.assertNotIn('class="mermaid"', out)
+        self.assertNotIn("radial-gradient", out)
+        # new components present
+        self.assertIn('id="executive-brief"', out)
+        self.assertIn('class="killchain"', out)
+        self.assertIn("Indicators of Compromise", out)
+        self.assertIn("Technical Appendix", out)
+        self.assertIn('class="finding"', out)
+        self.assertIn("@media print", out)
+        # narrative is assembled from agent findings, not a bare count line
+        self.assertIn("structurally confirmed finding", out)
+        self.assertIn("F-001", out)
+
+    def test_executive_first_ordering(self) -> None:
+        from sift_mcp.reporting import render_report_html
+        out = render_report_html(self._payload())
+        i_exec = out.find('id="executive-brief"')
+        i_appendix = out.find("Technical Appendix")
+        i_sigma = out.find("Sigma Anomaly Summary")
+        self.assertTrue(0 < i_exec < i_appendix, "exec brief must precede appendix")
+        self.assertTrue(i_appendix < i_sigma, "Sigma summary must be inside the appendix")
+
+    def test_zero_confirmed_branch(self) -> None:
+        from sift_mcp.reporting import render_report_html, _render_executive_summary
+        p = self._payload()
+        p["status_breakdown"] = {"ACTIVE": 4}
+        p["summary"]["confirmed_count"] = 0
+        p["top_confirmed_findings"] = []
+        narrative = _render_executive_summary(p)
+        self.assertIn("No structurally confirmed findings", narrative)
+        # must not raise and must render full document
+        self.assertIn("Executive Summary", render_report_html(p))
+
+    def test_indicator_classifier_conservative(self) -> None:
+        from sift_mcp.reporting import _classify_indicator
+        self.assertEqual(_classify_indicator("10.0.0.9 (peer)"), "ip")
+        self.assertEqual(_classify_indicator("evil.exe C:\\Temp\\evil.exe"), "path/file")
+        self.assertEqual(_classify_indicator("TCP :8080 controller"), "port")
+        self.assertEqual(_classify_indicator("something opaque"), "indicator")
+        # invalid IPv4 octets and out-of-range ports must degrade to neutral
+        self.assertEqual(_classify_indicator("999.999.999.999"), "indicator")
+        self.assertEqual(_classify_indicator("TCP :99999"), "indicator")
+        self.assertEqual(_classify_indicator("256.1.1.1 host"), "indicator")
+
+    def test_exec_summary_no_overstated_corroboration(self) -> None:
+        """A CONFIRMED finding with empty corroborated_by must not yield a
+        report-level claim of multi-source corroboration (peer reviewer adversarial)."""
+        from sift_mcp.reporting import _render_executive_summary
+        p = self._payload()
+        p["status_breakdown"] = {"CONFIRMED": 1, "ACTIVE": 1}
+        p["top_confirmed_findings"] = [
+            {"finding_id": "F-001", "finding_status": "CONFIRMED", "confidence": 0.9,
+             "description": "single-source confirmed item", "corroborated_by": []},
+        ]
+        out = _render_executive_summary(p)
+        self.assertNotIn("multiple independent artifact sources", out)
+        self.assertIn("without recorded multi-source corroboration", out)
+        # with >=2 corroborators the multi-source claim is permitted
+        p["top_confirmed_findings"][0]["corroborated_by"] = ["F-2", "F-3"]
+        out2 = _render_executive_summary(p)
+        self.assertIn("corroborated by multiple independent artifact sources", out2)
+
+    def test_no_template_emdash_only_evidence(self) -> None:
+        """Template prose has no em-dashes; evidence-derived text keeps them."""
+        from sift_mcp.reporting import render_report_html
+        p = self._payload()
+        p["top_findings"][0]["supporting_indicators"] = ["1.2.3.4 (host - evidence)"]
+        out = render_report_html(p)
+        # the only em-dash, if any, must be inside evidence content, never a heading
+        import re as _re
+        for m in _re.finditer("—", out):
+            seg = out[max(0, m.start() - 100):m.start()]
+            tag = seg[seg.rfind("<"):]
+            self.assertFalse(
+                any(x in tag for x in ("<h2", "<th", "<title", 'class="k"')),
+                f"template-label em-dash near: {tag}",
+            )
 
 
 if __name__ == "__main__":

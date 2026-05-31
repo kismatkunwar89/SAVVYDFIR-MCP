@@ -63,8 +63,9 @@
 │  │  audit.jsonl      → Per-tool-call structured execution log       │    │
 │  │  findings.json    → Authoritative finding state (all F-IDs)      │    │
 │  │  narrative.md     → Investigative narrative (timeline + analysis) │    │
-│  │  report.pdf       → WeasyPrint PDF (Protocol SIFT generator)     │    │
-│  │  graph.html       → D3.js investigation graph (stretch goal)     │    │
+│  │  report.html      → Self-contained HTML report (no JS, no CDN)   │    │
+│  │  report.pdf       → Chromium print-to-PDF (no runtime PDF dep)   │    │
+│  │  graph.html       → D3.js investigation graph                    │    │
 │  └──────────────────────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────────────┘
 ```

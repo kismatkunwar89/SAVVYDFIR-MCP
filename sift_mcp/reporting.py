@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import html
+import ipaddress
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -276,7 +278,7 @@ def _dismiss_stale_delegates(
             basis = (
                 f"lane={lane_id!r} status={status} "
                 f"assigned_agent=main-agent recorded synthesis with "
-                f"≥{_SYNTHESIS_MIN_CONFIRMED} CONFIRMED findings — "
+                f"≥{_SYNTHESIS_MIN_CONFIRMED} CONFIRMED findings - "
                 f"inline Path A satisfies @{subagent} delegate per W1.7"
             )
         else:
@@ -644,7 +646,7 @@ def evaluate_investigation_success_gate(
                 "lane_id": lane_id,
                 "expected_specialists": expected,
                 "reason": (
-                    "lane_contribution_missing — no main-agent lane record "
+                    "lane_contribution_missing - no main-agent lane record "
                     "with linked execution_id findings, no specialist "
                     "submit_finding, no repair_succeeded fallback, no "
                     "Path B allowance with inline findings."
@@ -664,7 +666,7 @@ def evaluate_investigation_success_gate(
                 "Spawn the expected specialist(s) for those lanes via Task, OR "
                 "if Path B was used, record a path_b_would_allow ledger row + "
                 "add_finding calls. Call generate_report(case_id, allow_partial=True) "
-                "to ship a report labeled as missing specialist contribution — "
+                "to ship a report labeled as missing specialist contribution - "
                 "NOT court-defensible without first-pass specialist coverage."
             ),
             "allow_partial_hint": True,
@@ -889,7 +891,7 @@ def _render_findings_rows(
     for finding in findings:
         if evidence_col == "corroborated_by":
             corroborated = finding.get("corroborated_by") or []
-            evidence_cell = ", ".join(str(x) for x in corroborated) if corroborated else "—"
+            evidence_cell = ", ".join(str(x) for x in corroborated) if corroborated else "-"
         else:
             evidence_cell = str(finding.get("tool_name", ""))
         rows.append(
@@ -908,7 +910,7 @@ def _render_tactic_tags(tactics: list[dict[str, Any]], *, class_name: str) -> st
     if not tactics:
         return "<span class='tag muted'>None</span>"
     return "".join(
-        f"<span class='tag {class_name}'>{html.escape(tactic['id'])} — {html.escape(tactic['name'])}</span>"
+        f"<span class='tag {class_name}'>{html.escape(tactic['id'])} - {html.escape(tactic['name'])}</span>"
         for tactic in tactics
     )
 
@@ -1016,11 +1018,11 @@ def _render_lane_rows(lanes: list[dict[str, Any]]) -> str:
 # palette (covered=green, uncovered=amber, muted=grey) + one added .tag.refuted
 # (red) so proven / disproven / inconclusive / unresolved are visually distinct.
 _HYPOTHESIS_VERDICT_BADGES: dict[str, tuple[str, str]] = {
-    "CONFIRMED":     ("covered",   "CONFIRMED — proven"),
-    "REFUTED":       ("refuted",   "REFUTED — disproven"),
-    "SUSPENDED":     ("uncovered", "SUSPENDED — inconclusive"),
-    "INVESTIGATING": ("muted",     "INVESTIGATING — open"),
-    "ACTIVE":        ("muted",     "ACTIVE — unresolved"),
+    "CONFIRMED":     ("covered",   "CONFIRMED - proven"),
+    "REFUTED":       ("refuted",   "REFUTED - disproven"),
+    "SUSPENDED":     ("uncovered", "SUSPENDED - inconclusive"),
+    "INVESTIGATING": ("muted",     "INVESTIGATING - open"),
+    "ACTIVE":        ("muted",     "ACTIVE - unresolved"),
 }
 _MONO = "font-family: var(--mono)"
 _TERMINAL_HYPOTHESIS_STATUSES = {"CONFIRMED", "REFUTED", "SUSPENDED"}
@@ -1055,13 +1057,13 @@ def _render_hypothesis_validation(hypotheses: list[dict[str, Any]]) -> str:
         # Defensive normalisation - state should be clean, but never assume.
         linked = h.get("related_finding_ids")
         linked = linked if isinstance(linked, list) else ([linked] if linked else [])
-        linked_text = ", ".join(html.escape(str(fid)) for fid in linked if fid) or "—"
+        linked_text = ", ".join(html.escape(str(fid)) for fid in linked if fid) or "-"
         techs = h.get("mitre_techniques") or h.get("mitre_technique")
         techs = techs if isinstance(techs, list) else ([techs] if techs else [])
-        techs_text = ", ".join(html.escape(str(t)) for t in techs if t) or "—"
-        attack = html.escape(str(h.get("attack_class") or "—"))
+        techs_text = ", ".join(html.escape(str(t)) for t in techs if t) or "-"
+        attack = html.escape(str(h.get("attack_class") or "-"))
         rank = h.get("rank")
-        rank_text = html.escape(str(rank)) if rank is not None else "—"
+        rank_text = html.escape(str(rank)) if rank is not None else "-"
         rows.append(
             "<tr>"
             f"<td style='{_MONO}' title='{html.escape(hid)}'>{html.escape(hid)}</td>"
@@ -2056,9 +2058,354 @@ def validate_report(
     }
 
 
-# W1.7 (CR13 Option X) - Activity Thread Mermaid renderer.
-# Maps the case's findings (via classified MITRE techniques) onto Cyber
-# Kill Chain phases. Empty phase = blindspot (Diamond Axiom 4).
+# ===========================================================================
+# Report-quality helpers. Deterministic, evidence-bounded, no LLM at render
+# time. Same report.json snapshot -> same HTML. See the report-rebuild
+# consensus for the full narrator policy and IOC/timeline guardrails.
+# ===========================================================================
+
+def _status_color_class(status: Any) -> str:
+    """Map a finding status to a CSS color class. Green=confirmed,
+    red=refuted/rejected, yellow=hypothesis/active, gray=everything else."""
+    s = str(status or "").upper()
+    if s == "CONFIRMED":
+        return "covered"
+    if s in ("REFUTED", "REJECTED"):
+        return "refuted"
+    if s in ("HYPOTHESIS", "ACTIVE"):
+        return "uncovered"
+    return "muted"
+
+
+def _confidence_tier(confidence: Any) -> str:
+    """Coarse confidence tier label. The Finding model has no severity field,
+    so we describe confidence directly rather than invent a severity."""
+    try:
+        c = float(confidence or 0.0)
+    except (TypeError, ValueError):
+        c = 0.0
+    if c >= 0.85:
+        return "high"
+    if c >= 0.60:
+        return "moderate"
+    return "low"
+
+
+def _classify_indicator(indicator: Any) -> str:
+    """Conservative IOC type label. Structured prefix first, then a narrow
+    regex pass, else the neutral 'indicator'. Never over-labels."""
+    s = str(indicator or "").strip()
+    low = s.lower()
+    for prefix, label in (
+        ("executable:", "executable"), ("owner_process:", "process"),
+        ("process:", "process"), ("account:", "account"),
+        ("ip:", "ip"), ("domain:", "domain"), ("hash:", "hash"),
+        ("port:", "port"),
+    ):
+        if low.startswith(prefix):
+            return label
+    ip_match = re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b", s)
+    if ip_match:
+        try:
+            ipaddress.ip_address(ip_match.group(0))
+            return "ip"
+        except ValueError:
+            pass  # malformed octets -> not a real IP; fall through to neutral
+    if re.search(r"(?i)\b(?:tcp|udp)\b", s):
+        port_match = re.search(r":(\d{2,5})\b", s)
+        if port_match and 1 <= int(port_match.group(1)) <= 65535:
+            return "port"
+    if re.search(r"[A-Za-z]:\\", s) or re.search(r"(?i)\.(?:exe|dll|sys|ps1|bat|vbs)\b", s):
+        return "path/file"
+    if re.search(r"(?i)\bpid\s*\d+", s):
+        return "process"
+    if re.search(r"(?i)\bbytes?\b|\bMB\b|\bGB\b", s):
+        return "data-volume"
+    if re.search(r"\S+\\\S+", s):
+        return "account"
+    return "indicator"
+
+
+def _render_killchain_strip(rows: list[tuple[str, str, int, str]]) -> str:
+    """Pure HTML/CSS horizontal kill-chain strip (replaces the CDN Mermaid
+    diagram). rows = (key, label, count, status in filled/partial/empty).
+    Status color reflects finding COUNT per phase, not corroboration strength."""
+    cls = {"filled": "kc-covered", "partial": "kc-partial", "empty": "kc-gap"}
+    cells: list[str] = []
+    for i, (key, label, count, status) in enumerate(rows):
+        cells.append(
+            f'<div class="kc-phase {cls.get(status, "kc-gap")}">'
+            f'<div class="kc-name">{html.escape(label)}</div>'
+            f'<div class="kc-count">{count}</div></div>'
+        )
+        if i < len(rows) - 1:
+            cells.append('<div class="kc-arrow">&rsaquo;</div>')
+    return f'<div class="killchain">{"".join(cells)}</div>'
+
+
+def _render_attack_coverage_table(
+    coverage: dict[str, Any], findings: list[dict[str, Any]]
+) -> str:
+    """Color-coded ATT&CK tactic coverage. Tactic-level is authoritative
+    (covered/uncovered from coverage payload); technique + finding columns are
+    inferred from findings and labeled as observed, not claimed authoritative."""
+    covered = coverage.get("covered_tactics") or []
+    uncovered = coverage.get("uncovered_tactics") or []
+    suggested = coverage.get("suggested_next_tools") or {}
+    by_tactic: dict[str, dict[str, set]] = {}
+    for f in findings:
+        tac = str(f.get("mitre_tactic") or "")
+        if not tac:
+            continue
+        slot = by_tactic.setdefault(tac, {"techs": set(), "fids": set()})
+        if f.get("mitre_technique"):
+            slot["techs"].add(str(f.get("mitre_technique")))
+        if f.get("finding_id"):
+            slot["fids"].add(str(f.get("finding_id")))
+
+    def _row(tac: Any, status_class: str, status_text: str) -> str:
+        tid = tac.get("id", "") if isinstance(tac, dict) else str(tac)
+        tname = tac.get("name", "") if isinstance(tac, dict) else ""
+        slot = by_tactic.get(tid, {})
+        techs = ", ".join(sorted(slot.get("techs", set()))) or "-"
+        fids = ", ".join(sorted(slot.get("fids", set()))) or "-"
+        tools = ", ".join(suggested.get(tid, [])) if isinstance(suggested, dict) else ""
+        return (
+            "<tr>"
+            f"<td><strong>{html.escape(str(tid))}</strong> {html.escape(str(tname))}</td>"
+            f'<td><span class="tag {status_class}">{status_text}</span></td>'
+            f"<td>{html.escape(techs)}</td>"
+            f'<td class="mono">{html.escape(fids)}</td>'
+            f"<td>{html.escape(tools)}</td>"
+            "</tr>"
+        )
+
+    rows = [_row(t, "covered", "covered") for t in covered]
+    rows += [_row(t, "uncovered", "gap") for t in uncovered]
+    if not rows:
+        return "<tr><td colspan='5'>No ATT&amp;CK tactic coverage recorded.</td></tr>"
+    return "\n".join(rows)
+
+
+def _render_ioc_table(findings: list[dict[str, Any]]) -> str:
+    """Deduplicated IOC table from finding supporting_indicators. Indicator
+    text is evidence-derived and rendered verbatim (em-dashes preserved)."""
+    seen: dict[str, tuple[str, str, str]] = {}
+    for f in findings:
+        fid = str(f.get("finding_id", ""))
+        status = _status_label(f.get("finding_status"))
+        tech = str(f.get("mitre_technique") or "")
+        for ind in (f.get("supporting_indicators") or []):
+            key = str(ind).strip()
+            if key and key not in seen:
+                seen[key] = (fid, status, tech)
+    if not seen:
+        return "<tr><td colspan='5'>No supporting indicators recorded.</td></tr>"
+    rows: list[str] = []
+    for ind, (fid, status, tech) in list(seen.items())[:80]:
+        rows.append(
+            "<tr>"
+            f'<td class="mono">{html.escape(ind)}</td>'
+            f'<td><span class="tag info">{html.escape(_classify_indicator(ind))}</span></td>'
+            f"<td>{html.escape(fid)}</td>"
+            f"<td>{html.escape(status)}</td>"
+            f"<td>{html.escape(tech)}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
+def _render_timeline(findings: list[dict[str, Any]]) -> str:
+    """Key event timeline from structured timestamp_observed ONLY. When no
+    finding carries a structured event time, render an honest empty state
+    rather than fabricating times from created_at (report-write time)."""
+    events: list[tuple[str, str, str, str]] = []
+    for f in findings:
+        ts = f.get("timestamp_observed")
+        if ts:
+            events.append((
+                str(ts), str(f.get("finding_id", "")),
+                _status_label(f.get("finding_status")),
+                _short_description(f.get("description", ""), 120),
+            ))
+    if not events:
+        return (
+            '<p class="muted">No structured event timestamps were captured in the report '
+            "payload. Findings carry descriptive timestamps in their evidence text, but no "
+            "normalized <span class=\"mono\">timestamp_observed</span> field is present, so a "
+            "chronological timeline is omitted rather than inferred from record-creation time.</p>"
+        )
+    events.sort(key=lambda e: e[0])
+    rows = "\n".join(
+        "<tr>"
+        f'<td class="mono">{html.escape(ts)}</td>'
+        f"<td>{html.escape(fid)}</td>"
+        f"<td>{html.escape(status)}</td>"
+        f"<td>{html.escape(desc)}</td>"
+        "</tr>"
+        for ts, fid, status, desc in events[:60]
+    )
+    return (
+        "<table><thead><tr><th>Time (UTC)</th><th>Finding</th><th>Status</th>"
+        f"<th>Event</th></tr></thead><tbody>{rows}</tbody></table>"
+    )
+
+
+def _render_finding_cards(
+    findings: list[dict[str, Any]], *, show_corroboration: bool = True
+) -> str:
+    """Finding cards with status + confidence color chrome."""
+    if not findings:
+        return "<p class='muted'>None recorded.</p>"
+    cards: list[str] = []
+    for f in findings:
+        fid = html.escape(str(f.get("finding_id", "")))
+        status = _status_label(f.get("finding_status"))
+        scls = _status_color_class(status)
+        conf = float(f.get("confidence", 0.0) or 0.0)
+        tier = _confidence_tier(conf)
+        tac = html.escape(str(f.get("mitre_tactic") or ""))
+        tech = html.escape(str(f.get("mitre_technique") or ""))
+        desc = html.escape(_short_description(f.get("description", ""), 280))
+        mitre_tag = (
+            f'<span class="tag muted">{tac}{" / " + tech if tech else ""}</span>'
+            if (tac or tech) else ""
+        )
+        corr = f.get("corroborated_by") or []
+        corr_html = ""
+        if show_corroboration and corr:
+            corr_html = (
+                '<div class="card-meta"><span class="k">Corroborated by</span> '
+                f'<span class="mono">{html.escape(", ".join(str(x) for x in corr))}</span></div>'
+            )
+        inds = f.get("supporting_indicators") or []
+        ind_html = ""
+        if inds:
+            chips = "".join(
+                f'<span class="chip">{html.escape(str(i))}</span>' for i in inds[:6]
+            )
+            ind_html = f'<div class="chips">{chips}</div>'
+        cards.append(
+            '<div class="finding">'
+            f'<div class="finding-head"><span class="fid">{fid}</span>'
+            f'<span class="tag {scls}">{html.escape(status)}</span>'
+            f'<span class="tag info">conf {conf:.2f} ({tier})</span>{mitre_tag}</div>'
+            f'<div class="finding-desc">{desc}</div>{corr_html}{ind_html}</div>'
+        )
+    return "\n".join(cards)
+
+
+def _render_executive_summary(payload: dict[str, Any]) -> str:
+    """Deterministic narrative executive summary (Item 1 = A). Assembled from
+    structured, agent-authored fields the payload already carries. No LLM at
+    render time; same snapshot -> same prose. Confirmed-only primary narrative,
+    defensible language, summarize-and-point (full detail lives in the
+    Top Confirmed Findings section), graceful zero-confirmed branch."""
+    summary = payload.get("summary", {}) or {}
+    coverage = payload.get("coverage", {}) or {}
+    sigma = payload.get("sigma_scan", {}) or {}
+    status_breakdown = payload.get("status_breakdown", {}) or {}
+    activity_thread = payload.get("activity_thread", {}) or {}
+    lanes = payload.get("analysis_lanes", []) or []
+    hypotheses = payload.get("hypotheses", []) or []
+    case_id = html.escape(str(payload.get("case_id", "")))
+    triage = html.escape(str(payload.get("triage_status", summary.get("triage_status", "UNKNOWN"))))
+    confirmed_count = status_breakdown.get("CONFIRMED", summary.get("confirmed_count", 0))
+    active_count = status_breakdown.get("ACTIVE", 0) + status_breakdown.get("HYPOTHESIS", 0)
+    unresolved = summary.get("unresolved_discrepancies", payload.get("unresolved_count", 0))
+    sig_crit = sigma.get("critical_count", 0)
+    sig_high = sigma.get("high_count", 0)
+    all_confirmed = list(payload.get("top_confirmed_findings") or [])
+    confirmed = all_confirmed[:5]
+    # Corroboration is asserted only where the finding actually carries >=2
+    # corroborating source IDs; absence is surfaced as a caveat, never claimed.
+    multi_src = sum(1 for f in all_confirmed if len(f.get("corroborated_by") or []) >= 2)
+    weak_corr = sum(1 for f in all_confirmed if not (f.get("corroborated_by") or []))
+
+    parts: list[str] = []
+    if confirmed_count and confirmed_count > 0:
+        if multi_src:
+            corr_clause = (
+                f", {multi_src} of which {'is' if multi_src == 1 else 'are'} corroborated "
+                f"by multiple independent artifact sources,"
+            )
+        else:
+            corr_clause = ""
+        parts.append(
+            f"<p>Investigation <strong>{case_id}</strong> reached triage status "
+            f"<strong>{triage}</strong> with <strong>{confirmed_count}</strong> structurally "
+            f"confirmed finding(s){corr_clause} and "
+            f"<strong>{active_count}</strong> active lead(s) pending validation.</p>"
+        )
+        bullets = []
+        for f in confirmed:
+            fid = html.escape(str(f.get("finding_id", "")))
+            conf = float(f.get("confidence", 0.0) or 0.0)
+            tac = html.escape(str(f.get("mitre_tactic") or ""))
+            tech = html.escape(str(f.get("mitre_technique") or ""))
+            mit = f" [{tac}{'/' + tech if tech else ''}]" if (tac or tech) else ""
+            d = html.escape(_short_description(f.get("description", ""), 160))
+            bullets.append(f'<li><span class="mono">{fid}</span> (conf {conf:.2f}){mit}: {d}</li>')
+        if bullets:
+            parts.append(
+                '<p class="muted" style="margin:.6rem 0 .3rem;">Confirmed activity '
+                "(full detail in Top Confirmed Findings below):</p>"
+                f"<ul>{''.join(bullets)}</ul>"
+            )
+    else:
+        parts.append(
+            f"<p>Investigation <strong>{case_id}</strong> reached triage status "
+            f"<strong>{triage}</strong>. <strong>No structurally confirmed findings</strong> "
+            f"were established; <strong>{active_count}</strong> active lead(s) remain pending "
+            f"corroboration. The items below are unconfirmed and require further validation "
+            f"before any conclusion is drawn.</p>"
+        )
+
+    resolved = [h for h in hypotheses if str(h.get("status", "")).upper() in ("CONFIRMED", "REFUTED")]
+    if resolved:
+        vl = "; ".join(
+            f"{html.escape(str(h.get('hypothesis_id', '')))} "
+            f"{html.escape(str(h.get('status', '')).upper())}"
+            for h in resolved[:4]
+        )
+        parts.append(f'<p><span class="k">Hunt verdicts:</span> {vl}.</p>')
+
+    syn = next((l for l in lanes if "synth" in str(l.get("lane_id", "")).lower()), None)
+    if syn and syn.get("summary"):
+        parts.append(
+            f'<p><span class="k">Cross-artifact synthesis:</span> '
+            f"{html.escape(_short_description(syn.get('summary', ''), 180))}</p>"
+        )
+
+    phases = activity_thread.get("phases") or {}
+    if phases:
+        empty = sum(1 for k, _ in _KILLCHAIN_DISPLAY_ORDER if len(phases.get(k, []) or []) == 0)
+        total = len(_KILLCHAIN_DISPLAY_ORDER)
+        parts.append(
+            f'<p><span class="k">Kill-chain coverage:</span> {total - empty} of {total} '
+            f"phases evidenced, {empty} blindspot(s).</p>"
+        )
+
+    caveats = []
+    if weak_corr:
+        caveats.append(
+            f"{weak_corr} confirmed finding(s) without recorded multi-source corroboration"
+        )
+    if unresolved:
+        caveats.append(f"{unresolved} unresolved cross-artifact discrepancy(ies)")
+    if sig_crit or sig_high:
+        caveats.append(f"{sig_crit} critical / {sig_high} high Sigma anomalies")
+    if caveats:
+        parts.append(
+            f'<p class="muted"><span class="k">Caveats:</span> '
+            f"{html.escape('; '.join(caveats))}.</p>"
+        )
+    return "\n".join(parts)
+
+
+# Activity Thread renderer. Maps the case's findings (via classified MITRE
+# techniques) onto Cyber Kill Chain phases. Empty phase = blindspot
+# (Diamond Axiom 4). Rendered as a pure HTML/CSS strip (no external JS).
 
 _KILLCHAIN_DISPLAY_ORDER = [
     ("reconnaissance",       "Reconnaissance"),
@@ -2095,25 +2442,6 @@ def render_activity_thread_html(activity_thread: dict[str, Any]) -> str:
     partial = sum(1 for r in rows if r[3] == "partial")
     empty = sum(1 for r in rows if r[3] == "empty")
 
-    # Mermaid graph: linear chain across kill-chain phases with coloring
-    mermaid_lines = ["graph LR"]
-    prev_id = None
-    for key, label, count, status in rows:
-        node_id = key.upper()
-        node_label = f"{label}<br/>({count})"
-        if status == "filled":
-            style = "fill:#16a34a,stroke:#15803d,color:#fff"
-        elif status == "partial":
-            style = "fill:#eab308,stroke:#a16207,color:#000"
-        else:
-            style = "fill:#dc2626,stroke:#991b1b,color:#fff"
-        mermaid_lines.append(f"  {node_id}[\"{node_label}\"]")
-        mermaid_lines.append(f"  style {node_id} {style}")
-        if prev_id is not None:
-            mermaid_lines.append(f"  {prev_id} --> {node_id}")
-        prev_id = node_id
-    mermaid_src = "\n".join(mermaid_lines)
-
     # Per-phase table rows (with blindspot notes)
     table_rows_html = []
     for key, label, count, status in rows:
@@ -2125,7 +2453,7 @@ def render_activity_thread_html(activity_thread: dict[str, Any]) -> str:
             badge_text = f"{count} finding (single source)"
         else:
             badge_class = "uncovered"
-            badge_text = "BLINDSPOT — no evidence"
+            badge_text = "BLINDSPOT - no evidence"
         note = html.escape((notes.get(key) or "")) if status == "empty" else ""
         note_html = f'<div style="color: var(--muted); font-size: 0.85em; margin-top: 0.3rem;">{note}</div>' if note else ""
         table_rows_html.append(
@@ -2136,28 +2464,29 @@ def render_activity_thread_html(activity_thread: dict[str, Any]) -> str:
 
     return f"""
   <div class="card">
-    <h2>Activity Thread — Cyber Kill Chain Coverage</h2>
+    <h2>Activity Thread - Cyber Kill Chain Coverage</h2>
     <p style="color: var(--muted); font-size: 0.92em;">
       Per Diamond Model Axiom 4, every malicious activity traverses a
       succession of kill-chain phases. Empty phases below represent
-      <strong>blindspots</strong> — areas where evidence was either not
+      <strong>blindspots</strong>: areas where evidence was either not
       extracted, not retained, or actively destroyed by anti-forensics.
+      Phase color reflects the number of findings mapped to that phase.
     </p>
-    <div class="grid">
-      <div>
+    {_render_killchain_strip(rows)}
+    <div class="grid" style="margin-top: 1rem;">
+      <div class="metric">
         <div class="metric-label">Phases with corroborated evidence</div>
         <div class="metric-value good">{filled}</div>
       </div>
-      <div>
+      <div class="metric">
         <div class="metric-label">Single-source phases</div>
         <div class="metric-value warn">{partial}</div>
       </div>
-      <div>
+      <div class="metric">
         <div class="metric-label">Blindspots (empty phases)</div>
         <div class="metric-value danger">{empty}</div>
       </div>
     </div>
-    <pre class="mermaid" style="background: rgba(255,255,255,0.04);">{html.escape(mermaid_src)}</pre>
     <table>
       <thead><tr><th>Kill-chain phase</th><th>Status</th></tr></thead>
       <tbody>
@@ -2212,203 +2541,242 @@ def render_report_html(payload: dict[str, Any]) -> str:
     no_confirmed_banner = ""
     if confirmed_count == 0:
         no_confirmed_banner = (
-            '<div class="card" style="border-color: var(--warn);">'
+            '<section style="border-color: var(--warn); border-left: 4px solid var(--warn);">'
             '<h2 style="color: var(--warn);">No Structurally Confirmed Findings</h2>'
             "<p>No findings have been independently corroborated by multiple artifact sources. "
             "All findings below are hypotheses or observations that require further validation.</p>"
-            "</div>"
+            "</section>"
         )
+
+    # Trace companion links (rendered in the header band; hidden in print).
+    _trace_d = payload.get("trace_detailed_path")
+    _trace_s = payload.get("trace_path")
+    if _trace_d:
+        trace_links = ' &middot; <a href="trace-detailed.html">Agent Session Trace</a>'
+        if _trace_s:
+            trace_links += ' (<a href="trace.html">summary</a>)'
+    elif _trace_s:
+        trace_links = ' &middot; <a href="trace.html">Agent Session Trace</a>'
+    else:
+        trace_links = ""
+
+    # By-the-numbers strip (metrics demoted below the narrative per Item 1).
+    _metrics = [
+        ("Case Status", html.escape(str(summary.get("status", "UNKNOWN"))), "accent"),
+        ("Triage", html.escape(str(triage_status)), triage_status_class),
+        ("Findings", summary.get("findings_count", 0), ""),
+        ("Confirmed", confirmed_count, "good"),
+        ("Active Leads", hypothesis_count, "warn"),
+        ("Correction Events", payload.get("correction_events_count", 0), "accent"),
+        ("Unresolved", summary.get("unresolved_discrepancies", 0), "warn"),
+        ("Sigma Hits", sigma.get("total_hits", 0), "danger"),
+        ("ATT&CK Coverage", f"{coverage.get('coverage_percent', 0):.1f}%", ""),
+    ]
+    by_numbers = "".join(
+        f'<div class="metric"><div class="metric-label">{html.escape(lbl)}</div>'
+        f'<div class="metric-value {cls}">{val}</div></div>'
+        for lbl, val, cls in _metrics
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SAVVYDFIR-MCP Report — {html.escape(payload['case_id'])}</title>
+<title>SAVVYDFIR-MCP Report - {html.escape(payload['case_id'])}</title>
 <style>
   :root {{
-    --bg: #0f172a;
-    --surface: #111827;
-    --card: #1f2937;
-    --border: #374151;
-    --text: #e5e7eb;
-    --muted: #9ca3af;
-    --accent: #38bdf8;
-    --good: #22c55e;
-    --warn: #f59e0b;
-    --danger: #ef4444;
-    --mono: 'JetBrains Mono', 'Cascadia Code', monospace;
-    --sans: 'Inter', system-ui, sans-serif;
+    --bg: #f4f6fb;
+    --surface: #ffffff;
+    --ink: #1a2230;
+    --muted: #5b6675;
+    --line: #e2e7f0;
+    --accent: #1d4ed8;
+    --good: #15803d; --good-bg: #dcfce7;
+    --warn: #b45309; --warn-bg: #fef3c7;
+    --danger: #b91c1c; --danger-bg: #fee2e2;
+    --info: #1e40af; --info-bg: #dbeafe;
+    --mono: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
+    --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   }}
-  body {{ margin: 0; background: radial-gradient(circle at top, #172554, var(--bg)); color: var(--text); font-family: var(--sans); }}
-  main {{ max-width: 1180px; margin: 0 auto; padding: 2rem; }}
-  h1, h2 {{ margin: 0 0 0.75rem; }}
-  p, li {{ color: var(--text); }}
-  .subtitle {{ color: var(--muted); margin-bottom: 1.5rem; font-family: var(--mono); }}
-  .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }}
-  .card {{ background: color-mix(in srgb, var(--card) 88%, black); border: 1px solid var(--border); border-radius: 16px; padding: 1rem 1.1rem; margin-bottom: 1.2rem; box-shadow: 0 10px 30px rgba(0,0,0,0.18); }}
-  .metric-label {{ color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; }}
-  .metric-value {{ font-size: 1.8rem; font-weight: 700; margin-top: 0.3rem; }}
-  .accent {{ color: var(--accent); }}
-  .good {{ color: var(--good); }}
-  .warn {{ color: var(--warn); }}
-  .danger {{ color: var(--danger); }}
-  .tags {{ display: flex; flex-wrap: wrap; gap: 0.45rem; }}
-  .tag {{ display: inline-block; padding: 0.25rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-family: var(--mono); }}
-  .tag.covered {{ background: rgba(34,197,94,0.15); color: #86efac; border: 1px solid rgba(34,197,94,0.25); }}
-  .tag.uncovered {{ background: rgba(245,158,11,0.15); color: #fcd34d; border: 1px solid rgba(245,158,11,0.25); }}
-  .tag.muted {{ background: rgba(156,163,175,0.12); color: var(--muted); border: 1px solid rgba(156,163,175,0.18); }}
-  .tag.refuted {{ background: rgba(239,68,68,0.15); color: #fca5a5; border: 1px solid rgba(239,68,68,0.25); }}
-  pre {{ white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(15,23,42,0.85); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; font-family: var(--mono); color: #dbeafe; }}
-  table {{ width: 100%; border-collapse: collapse; font-size: 0.92rem; }}
-  th, td {{ text-align: left; padding: 0.7rem 0.6rem; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; }}
-  th {{ color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; }}
+  * {{ box-sizing: border-box; }}
+  body {{ margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); line-height: 1.5; }}
+  main {{ max-width: 1080px; margin: 0 auto; padding: 0 1.5rem 3rem; }}
+  a {{ color: var(--accent); }}
+  h1 {{ margin: 0; font-size: 1.5rem; }}
+  h2 {{ margin: 0 0 0.8rem; font-size: 1.15rem; border-bottom: 2px solid var(--line); padding-bottom: 0.4rem; }}
+  h3 {{ margin: 0 0 0.5rem; font-size: 1rem; }}
+  p, li {{ color: var(--ink); }}
+  .mono {{ font-family: var(--mono); font-size: 0.86em; }}
+  .muted {{ color: var(--muted); }}
+  .k {{ color: var(--muted); font-weight: 600; }}
+  .banner {{ background: #0f172a; color: #e5e7eb; padding: 1.4rem 1.5rem; }}
+  .banner .wrap {{ max-width: 1080px; margin: 0 auto; display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }}
+  .banner .classification {{ font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.12em; color: #fca5a5; text-transform: uppercase; }}
+  .banner .case {{ font-family: var(--mono); color: #93c5fd; font-size: 0.85rem; margin-top: 0.3rem; }}
+  .banner .statuspill {{ font-family: var(--mono); font-size: 0.8rem; padding: 0.3rem 0.7rem; border-radius: 6px; background: rgba(255,255,255,0.1); white-space: nowrap; }}
+  section, .card {{ background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 1.1rem 1.25rem; margin: 1.1rem 0; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }}
+  .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.8rem; }}
+  .metric {{ background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem 0.8rem; }}
+  .metric-label {{ color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }}
+  .metric-value {{ font-size: 1.5rem; font-weight: 700; margin-top: 0.2rem; }}
+  .good {{ color: var(--good); }} .warn {{ color: var(--warn); }} .danger {{ color: var(--danger); }} .accent {{ color: var(--accent); }}
+  .tags {{ display: flex; flex-wrap: wrap; gap: 0.4rem; }}
+  .tag {{ display: inline-block; padding: 0.18rem 0.55rem; border-radius: 5px; font-size: 0.76rem; font-family: var(--mono); font-weight: 600; }}
+  .tag.covered {{ background: var(--good-bg); color: var(--good); }}
+  .tag.uncovered {{ background: var(--warn-bg); color: var(--warn); }}
+  .tag.refuted {{ background: var(--danger-bg); color: var(--danger); }}
+  .tag.info {{ background: var(--info-bg); color: var(--info); }}
+  .tag.muted {{ background: #eef1f6; color: var(--muted); }}
+  .killchain {{ display: flex; align-items: stretch; gap: 0.25rem; flex-wrap: wrap; margin: 0.4rem 0 0.2rem; }}
+  .kc-phase {{ flex: 1 1 0; min-width: 108px; border-radius: 6px; padding: 0.6rem 0.5rem; text-align: center; border: 1px solid var(--line); }}
+  .kc-name {{ font-size: 0.74rem; font-weight: 600; }}
+  .kc-count {{ font-size: 1.3rem; font-weight: 700; margin-top: 0.2rem; }}
+  .kc-covered {{ background: var(--good-bg); color: var(--good); border-color: #86efac; }}
+  .kc-partial {{ background: var(--warn-bg); color: var(--warn); border-color: #fcd34d; }}
+  .kc-gap {{ background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }}
+  .kc-arrow {{ display: flex; align-items: center; color: var(--muted); font-size: 1.4rem; }}
+  .finding {{ border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 6px; padding: 0.7rem 0.85rem; margin: 0.6rem 0; background: var(--bg); }}
+  .finding-head {{ display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }}
+  .finding .fid {{ font-family: var(--mono); font-weight: 700; }}
+  .finding-desc {{ margin: 0.45rem 0; }}
+  .card-meta {{ font-size: 0.82rem; color: var(--muted); }}
+  .chips {{ display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.45rem; }}
+  .chip {{ background: #eef1f6; border: 1px solid var(--line); border-radius: 4px; padding: 0.15rem 0.45rem; font-family: var(--mono); font-size: 0.72rem; color: #334155; }}
+  table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; }}
+  th, td {{ text-align: left; padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: top; }}
+  th {{ color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }}
+  pre {{ white-space: pre-wrap; overflow-wrap: anywhere; background: #f8fafc; border: 1px solid var(--line); border-radius: 6px; padding: 0.8rem; font-family: var(--mono); font-size: 0.82rem; color: #334155; }}
   ul {{ margin: 0.3rem 0 0; padding-left: 1.2rem; }}
+  .appendix-divider {{ margin-top: 2rem; border-top: 3px double var(--line); padding-top: 0.5rem; color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; }}
+  @media print {{
+    body {{ background: #fff; }}
+    main {{ max-width: none; padding: 0 0.5rem; }}
+    section, .card, .finding {{ box-shadow: none; break-inside: avoid; }}
+    .banner {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+    .tag, .kc-phase, .chip {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+    #executive-brief {{ break-after: page; }}
+    a[href^="trace"] {{ display: none; }}
+  }}
 </style>
-<!-- Run-11 polish #1: render the Activity Thread Mermaid diagram. The
-     existing <pre class="mermaid"> block stays readable as a fallback if
-     the CDN is unreachable. -->
-<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
-<script>if (typeof mermaid !== 'undefined') {{ mermaid.initialize({{ startOnLoad: true }}); }}</script>
 </head>
 <body>
+<header class="banner">
+  <div class="wrap">
+    <div>
+      <div class="classification">INTERNAL - DFIR WORK PRODUCT</div>
+      <h1>SAVVYDFIR-MCP Investigation Report</h1>
+      <div class="case">{html.escape(payload['case_id'])} &middot; Generated {html.escape(str(payload.get('report_generated_at', '')))}{trace_links}</div>
+    </div>
+    <div class="statuspill">{html.escape(str(summary.get('status', 'UNKNOWN')))} / {html.escape(str(triage_status))}</div>
+  </div>
+</header>
 <main>
-  <h1>SAVVYDFIR-MCP Investigation Report</h1>
-  <div class="subtitle">{html.escape(payload['case_id'])} · Generated {html.escape(str(payload.get('report_generated_at', '')))}{(
-    ' · <a href="trace-detailed.html" style="color: var(--accent); text-decoration: none;">View Agent Session Trace</a>'
-    + (' (<a href="trace.html" style="color: var(--muted); text-decoration: none;">summary</a>)' if payload.get('trace_path') else '')
-  ) if payload.get('trace_detailed_path') else (
-    ' · <a href="trace.html" style="color: var(--accent); text-decoration: none;">View Agent Session Trace</a>'
-    if payload.get('trace_path') else ''
-  )}</div>
-  {('<div style="margin: -0.5rem 0 1rem; color: var(--muted); font-size: 0.78rem;">Detailed trace preserves every session event after redaction; summary is an editorial scan-friendly view.</div>' if payload.get('trace_detailed_path') and payload.get('trace_path') else '')}
-
-  <section class="grid">
-    <div class="card"><div class="metric-label">Case Status</div><div class="metric-value accent">{html.escape(summary.get('status', 'UNKNOWN'))}</div></div>
-    <div class="card"><div class="metric-label">Triage Status</div><div class="metric-value {triage_status_class}">{html.escape(str(triage_status))}</div></div>
-    <div class="card"><div class="metric-label">Findings</div><div class="metric-value">{summary.get('findings_count', 0)}</div></div>
-    <div class="card"><div class="metric-label">Confirmed</div><div class="metric-value good">{summary.get('confirmed_count', 0)}</div></div>
-    <div class="card"><div class="metric-label">Correction Events</div><div class="metric-value accent">{payload.get('correction_events_count', 0)}</div></div>
-    <div class="card"><div class="metric-label">Unresolved</div><div class="metric-value warn">{summary.get('unresolved_discrepancies', 0)}</div></div>
-    <div class="card"><div class="metric-label">Sigma Hits</div><div class="metric-value danger">{sigma.get('total_hits', 0)}</div></div>
-    <div class="card"><div class="metric-label">Coverage</div><div class="metric-value">{coverage.get('coverage_percent', 0):.1f}%</div></div>
-  </section>
-
-  <section class="card">
+  <section id="executive-brief">
     <h2>Executive Summary</h2>
-    <p>Case <strong>{html.escape(payload['case_id'])}</strong> contains <strong>{summary.get('findings_count', 0)}</strong> findings, of which <strong>{confirmed_count}</strong> are confirmed and <strong>{hypothesis_count}</strong> are hypotheses/active leads. The current unresolved discrepancy count is <strong>{summary.get('unresolved_discrepancies', 0)}</strong>. Sigma preflight reported <strong>{sigma.get('critical_count', 0)}</strong> CRITICAL and <strong>{sigma.get('high_count', 0)}</strong> HIGH anomalies.</p>
+    {_render_executive_summary(payload)}
+    <div class="grid" style="margin-top: 1rem;">
+      {by_numbers}
+    </div>
   </section>
 
   {no_confirmed_banner}
 
   {render_activity_thread_html(activity_thread)}
 
-  <section class="card">
-    <h2>Recorded Hunting Hypotheses</h2>
-    <p style="color: var(--muted); font-size: 0.92em;">Each hypothesis formed during the hunt and its verdict after testing against the evidence — proven (CONFIRMED), disproven (REFUTED), or inconclusive (SUSPENDED). Distinct from finding-level evidence kinds; "Linked finding IDs" are the F-NNN that proved, refuted, or materially informed the verdict.</p>
-    {(f'<p class="tag uncovered" style="display:inline-block">⚠ Hunt loop not fully closed — {_count_unresolved_hypotheses(hypotheses)} of {len(hypotheses)} hypotheses still unresolved (ACTIVE/INVESTIGATING). Resolve each via record_hypotheses before final reporting.</p>' if _count_unresolved_hypotheses(hypotheses) else '')}
+  <section>
+    <h2>ATT&amp;CK Coverage</h2>
+    <p class="muted">Tactic-level coverage (covered / gap) is authoritative. Technique and finding columns are inferred from the findings mapped to each tactic.</p>
     <table>
-      <thead>
-        <tr><th>Hypothesis ID</th><th>Attack Class</th><th>Verdict</th><th>Linked finding IDs</th><th>MITRE</th></tr>
-      </thead>
-      <tbody>
-        {_render_hypothesis_validation(hypotheses)}
-      </tbody>
+      <thead><tr><th>Tactic</th><th>Status</th><th>Techniques observed</th><th>Findings</th><th>Suggested next tools</th></tr></thead>
+      <tbody>{_render_attack_coverage_table(coverage, top_findings)}</tbody>
     </table>
   </section>
 
-  <section class="card">
-    <h2>Sigma Anomaly Summary</h2>
-    <pre>{html.escape(str(sigma.get('summary_markdown', 'No anomalies detected.')))}</pre>
+  <section>
+    <h2>Key Event Timeline</h2>
+    {_render_timeline(top_findings)}
   </section>
 
-  <section class="card">
-    <h2>Top Actionable Leads</h2>
+  <section>
+    <h2>Top Confirmed Findings</h2>
+    {_render_finding_cards(confirmed_findings, show_corroboration=True) if confirmed_findings else "<p class='muted'>No confirmed findings; all evidence requires further corroboration.</p>"}
+  </section>
+
+  <section>
+    <h2>Active Leads &amp; Recommended Pivots</h2>
     <table>
-      <thead>
-        <tr><th>Severity</th><th>Detector</th><th>Confidence</th><th>Description</th><th>Recommended Next Pivot</th></tr>
-      </thead>
-      <tbody>
-        {_render_leads(actionable_leads)}
-      </tbody>
+      <thead><tr><th>Severity</th><th>Detector</th><th>Confidence</th><th>Description</th><th>Recommended Next Pivot</th></tr></thead>
+      <tbody>{_render_leads(actionable_leads)}</tbody>
+    </table>
+    <h3 style="margin-top: 1rem;">Active Finding Leads</h3>
+    {_render_finding_cards(active_findings, show_corroboration=False)}
+  </section>
+
+  <section>
+    <h2>Indicators of Compromise</h2>
+    <table>
+      <thead><tr><th>Indicator</th><th>Type</th><th>Source Finding</th><th>Status</th><th>Technique</th></tr></thead>
+      <tbody>{_render_ioc_table(top_findings)}</tbody>
     </table>
   </section>
 
-  <section class="card">
+  <section>
     <h2>Anti-Forensics Warnings</h2>
     <ul>{_render_warning_items(anti_forensics_warnings)}</ul>
   </section>
 
-  <section class="card">
+  <section>
     <h2>Data Gaps</h2>
     <ul>{_render_warning_items(data_gaps)}</ul>
-    <div class="metric-label" style="margin-top: 1rem;">Status Flags</div>
-    <pre>{html.escape(json.dumps(status_flags, indent=2, default=str))}</pre>
   </section>
 
-  <section class="card">
+  <div class="appendix-divider">Technical Appendix</div>
+
+  <section>
+    <h2>Sigma Anomaly Summary</h2>
+    <pre>{html.escape(str(sigma.get('summary_markdown', 'No anomalies detected.')))}</pre>
+  </section>
+
+  <section>
+    <h2>Recorded Hunting Hypotheses</h2>
+    <p class="muted" style="font-size: 0.92em;">Each hypothesis formed during the hunt and its verdict after testing against the evidence: proven (CONFIRMED), disproven (REFUTED), or inconclusive (SUSPENDED). "Linked finding IDs" are the F-NNN that proved, refuted, or materially informed the verdict.</p>
+    {(f'<p class="tag uncovered" style="display:inline-block">Hunt loop not fully closed: {_count_unresolved_hypotheses(hypotheses)} of {len(hypotheses)} hypotheses still unresolved (ACTIVE/INVESTIGATING). Resolve each via record_hypotheses before final reporting.</p>' if _count_unresolved_hypotheses(hypotheses) else '')}
+    <table>
+      <thead><tr><th>Hypothesis ID</th><th>Attack Class</th><th>Verdict</th><th>Linked finding IDs</th><th>MITRE</th></tr></thead>
+      <tbody>{_render_hypothesis_validation(hypotheses)}</tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Analysis Lanes</h2>
+    <table>
+      <thead><tr><th>Lane</th><th>Status</th><th>Required</th><th>Agents</th><th>Executions</th><th>Findings</th><th>Summary</th></tr></thead>
+      <tbody>{_render_lane_rows(analysis_lanes)}</tbody>
+    </table>
+  </section>
+
+  <section>
     <h2>Orchestration Warnings</h2>
     <ul>{_render_json_items(orchestration_warnings)}</ul>
   </section>
 
-  <section class="card">
-    <h2>Analysis Lanes</h2>
-    <table>
-      <thead>
-        <tr><th>Lane</th><th>Status</th><th>Required</th><th>Agents</th><th>Executions</th><th>Findings</th><th>Summary</th></tr>
-      </thead>
-      <tbody>
-        {_render_lane_rows(analysis_lanes)}
-      </tbody>
-    </table>
-  </section>
-
-  <section class="card">
-    <h2>ATT&amp;CK Coverage</h2>
-    <p>Coverage is currently <strong>{coverage.get('coverage_percent', 0):.1f}%</strong>.</p>
-    <div class="metric-label">Covered Tactics</div>
-    <div class="tags">{_render_tactic_tags(coverage.get('covered_tactics', []), class_name='covered')}</div>
-    <div class="metric-label" style="margin-top: 1rem;">Uncovered Tactics</div>
-    <div class="tags">{_render_tactic_tags(coverage.get('uncovered_tactics', []), class_name='uncovered')}</div>
-    <div class="metric-label" style="margin-top: 1rem;">Suggested Next Tools</div>
-    <ul>{_render_suggested_tools(coverage.get('suggested_next_tools', {}))}</ul>
-  </section>
-
-  <section class="card">
+  <section>
     <h2>Open Questions</h2>
     <ul>
       {''.join(f"<li>{html.escape(str(question))}</li>" for question in open_questions) if open_questions else '<li>No open questions recorded.</li>'}
     </ul>
   </section>
 
-  <section class="card">
-    <h2>Top Confirmed Findings</h2>
-    <table>
-      <thead>
-        <tr><th>ID</th><th>Status</th><th>Confidence</th><th>Corroborated by</th><th>Description</th></tr>
-      </thead>
-      <tbody>
-        {_render_findings_rows(confirmed_findings, evidence_col="corroborated_by") if confirmed_findings else "<tr><td colspan='5'>No confirmed findings — all evidence requires further corroboration.</td></tr>"}
-      </tbody>
-    </table>
+  <section>
+    <h2>Status Flags</h2>
+    <pre>{html.escape(json.dumps(status_flags, indent=2, default=str))}</pre>
   </section>
 
-  <section class="card">
-    <h2>Top Active Leads</h2>
-    <table>
-      <thead>
-        <tr><th>ID</th><th>Status</th><th>Confidence</th><th>Tool</th><th>Description</th></tr>
-      </thead>
-      <tbody>
-        {_render_findings_rows(active_findings)}
-      </tbody>
-    </table>
-  </section>
-
-  <section class="card">
+  <section>
     <h2>Findings Status Breakdown</h2>
     <div class="grid">
-      {''.join(f'<div class="card"><div class="metric-label">{html.escape(k)}</div><div class="metric-value">{v}</div></div>' for k, v in sorted(status_breakdown.items()))}
+      {''.join(f'<div class="metric"><div class="metric-label">{html.escape(k)}</div><div class="metric-value">{v}</div></div>' for k, v in sorted(status_breakdown.items()))}
     </div>
   </section>
 </main>
@@ -2536,7 +2904,7 @@ def generate_report_payload(
                 "reason": (
                     "A specialist delegate is pending; final report files were not written. "
                     "If this delegate keeps regenerating despite record_analysis_lane writes, "
-                    "the delegate may be stuck — call generate_report(case_id, allow_partial=True) "
+                    "the delegate may be stuck - call generate_report(case_id, allow_partial=True) "
                     "to force partial-report mode. Partial reports clearly label which findings/lanes "
                     "were incomplete and are NOT court-defensible without re-running the missing tools."
                 ),
