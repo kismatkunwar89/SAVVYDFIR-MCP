@@ -2,7 +2,7 @@
 sift_mcp.runners.volatility
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-VolatilityRunner — subprocess wrapper for **Volatility 3** on SIFT Workstation.
+VolatilityRunner - subprocess wrapper for **Volatility 3** on SIFT Workstation.
 
 Binary path (from Protocol SIFT's global/CLAUDE.md):
     python3 /opt/volatility3-2.20.0/vol.py
@@ -36,7 +36,7 @@ from sift_mcp.runners.base import RunResult, SafeRunner
 # ---------------------------------------------------------------------------
 
 #: Invocation prefix exactly as specified in Protocol SIFT's CLAUDE.md.
-# Auto-detect Volatility 3 path — try SIFT location first, fallback to common paths
+# Auto-detect Volatility 3 path - try SIFT location first, fallback to common paths
 import shutil as _shutil
 _vol_candidates = [
     "/usr/local/bin/vol",
@@ -54,9 +54,9 @@ VOL_PATH = next(
 DEFAULT_TIMEOUT = 300  # seconds
 
 #: Malfind-specific timeout.  ``windows.malfind`` scans every VAD region in
-#: every process — on an 18 GB image with 100+ processes (e.g. ROCBA's cloud
+#: every process - on an 18 GB image with 100+ processes (e.g. ROCBA's cloud
 #: sync sprawl), the default 300 s is insufficient.  Per Run-8 consensus
-#: (2026-05-26, peer reviewer + peer reviewer signed): keep the global timeout tight,
+#:: keep the global timeout tight,
 #: lift malfind specifically.  Override via ``SAVVYDFIR_MALFIND_TIMEOUT`` env.
 def _resolve_malfind_timeout() -> int:
     raw = __import__('os').environ.get("SAVVYDFIR_MALFIND_TIMEOUT", "").strip()
@@ -93,11 +93,11 @@ class VolatilityRunner(SafeRunner):
     --------------------
     ``classify_error()`` inspects ``RunResult.stderr`` and returns one of:
 
-    * ``"missing_symbols"`` — ISF symbol tables not found (common with
+    * ``"missing_symbols"`` - ISF symbol tables not found (common with
       unfamiliar Windows builds); agent should try a different profile source.
-    * ``"unsupported_plugin"`` — plugin name typo or version mismatch.
-    * ``"corrupted_dump"`` — Volatility cannot validate the dump header.
-    * ``"unknown"`` — anything else; inspect stderr manually.
+    * ``"unsupported_plugin"`` - plugin name typo or version mismatch.
+    * ``"corrupted_dump"`` - Volatility cannot validate the dump header.
+    * ``"unknown"`` - anything else; inspect stderr manually.
     """
 
     VOL_PATH: str = VOL_PATH
@@ -162,7 +162,7 @@ class VolatilityRunner(SafeRunner):
         return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
-    # Convenience wrappers — one per commonly used plugin
+    # Convenience wrappers - one per commonly used plugin
     # ------------------------------------------------------------------
 
     def pslist(
@@ -270,7 +270,7 @@ class VolatilityRunner(SafeRunner):
         """Detect injected code in process VAD regions (``windows.malfind``).
 
         Flags memory regions that are executable, writable, and anonymous
-        (no backing file on disk) — a strong indicator of process injection
+        (no backing file on disk) - a strong indicator of process injection
         or shellcode.
 
         Parameters
@@ -400,16 +400,16 @@ class VolatilityRunner(SafeRunner):
         str
             One of:
 
-            * ``"missing_symbols"`` — ISF/symbol table not found.
-            * ``"incompatible_profile"`` — kernel/profile mismatch; Vol3
+            * ``"missing_symbols"`` - ISF/symbol table not found.
+            * ``"incompatible_profile"`` - kernel/profile mismatch; Vol3
               cannot construct a memory layer for this image. Distinct from
               ``corrupted_dump`` (image structurally valid but Vol3 can't
               interpret it given the available symbol set).
-            * ``"unsupported_plugin"`` — plugin name unknown to this build.
-            * ``"corrupted_dump"`` — Volatility cannot validate the image.
-            * ``"tool_not_found"`` — ``python3`` or ``vol.py`` is missing.
-            * ``"timeout"`` — process exceeded the timeout.
-            * ``"unknown"`` — inspect ``result.stderr`` directly.
+            * ``"unsupported_plugin"`` - plugin name unknown to this build.
+            * ``"corrupted_dump"`` - Volatility cannot validate the image.
+            * ``"tool_not_found"`` - ``python3`` or ``vol.py`` is missing.
+            * ``"timeout"`` - process exceeded the timeout.
+            * ``"unknown"`` - inspect ``result.stderr`` directly.
         """
         if result.timed_out:
             return "timeout"
@@ -420,12 +420,12 @@ class VolatilityRunner(SafeRunner):
             return "missing_symbols"
         if "unsupported" in stderr or "no plugin" in stderr:
             return "unsupported_plugin"
-        # Run 9 fix: profile / memory-layer mismatch. peer reviewer-tightened patterns
-        # — multi-token matches required to avoid colliding with corrupt-dump
+        # Run 9 fix: profile / memory-layer mismatch. patterns
+        # - multi-token matches required to avoid colliding with corrupt-dump
         # errors. Arm placed AFTER missing_symbols (so transient symbol-server
         # failures still classify as missing_symbols), BEFORE corrupted_dump
         # (so legitimate profile mismatch isn't bucketed as corruption).
-        # Bare "profile" is intentionally NOT a trigger — too broad.
+        # Bare "profile" is intentionally NOT a trigger - too broad.
         if (
             ("unable to construct" in stderr and (
                 "layer" in stderr or "kernel" in stderr or "profile" in stderr
@@ -449,7 +449,7 @@ class VolatilityRunner(SafeRunner):
     # substring matching on outputs_summary; this lets them recognize
     # "Vol3 can't run on this evidence" as a legitimate-gap satisfaction
     # rather than a real failure. See plan: toasty-squishing-thompson.md
-    # Fix 2 (peer reviewer-tightened tool_incompatible disposition).
+    # Fix 2.
 
     def _build_outputs_summary(
         self, stdout: str, stderr: str, exit_code: int, timed_out: bool

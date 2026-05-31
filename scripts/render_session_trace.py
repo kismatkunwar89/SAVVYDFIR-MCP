@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render a Claude Code session JSONL into a redacted reports/<case_id>/trace.html.
 
-Run-11 trace integration (peer reviewer sign-off). Operator-explicit helper — NOT
+Run-11 trace integration. Operator-explicit helper - NOT
 auto-fired from generate_report. Failures here cannot poison the existing
 report flow.
 
@@ -11,7 +11,7 @@ Usage:
 
 Defaults:
     --output       reports/<case_id>/trace.html
-    --detail       low   (peer reviewer catch: high is too leaky for judges)
+    --detail       low
     --reports-root ./reports
 """
 
@@ -30,14 +30,14 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Redaction patterns (post-peer reviewer revision).
+# Redaction patterns (post-revision).
 #
 # Operator infrastructure → placeholders. Evidence-side identifiers, framework
 # audit IDs (F-NNN / E-NNN / CTX-NNN), MITRE technique IDs, and case-side
 # user/email/host names that come from the disk image are NOT touched.
 # ---------------------------------------------------------------------------
 
-# Secret shapes (peer reviewer catch).
+# Secret shapes.
 SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # Anthropic / OpenAI / Hugging Face / Slack / GitHub / GitLab tokens
     (re.compile(r"sk-[A-Za-z0-9_-]{20,}"), "<redacted-secret>"),
@@ -83,7 +83,7 @@ MAC_PATTERN = re.compile(r"\b[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}\b")
 def _discover_operator_paths() -> list[tuple[str, str]]:
     """Return (literal, replacement) pairs for operator-side filesystem paths.
 
-    Order matters — longer prefixes come FIRST so we don't replace `/home/foo/`
+    Order matters - longer prefixes come FIRST so we don't replace `/home/foo/`
     before `/home/foo/SAVVYDFIR-MCP/` has had a chance to be replaced.
     """
     home = Path.home()
@@ -170,7 +170,7 @@ def redact(html_text: str, *, case_id: str, manifest_path: Path | None,
            extra_tokens: list[str], lan_cidr: str | None) -> str:
     """Apply the layered redaction pass to a rendered HTML string."""
 
-    # 1) Secrets (run first — they may contain path-like fragments we don't want to mask first).
+    # 1) Secrets (run first - they may contain path-like fragments we don't want to mask first).
     for pat, repl in SECRET_PATTERNS:
         html_text = pat.sub(repl, html_text)
 
@@ -209,7 +209,7 @@ def redact(html_text: str, *, case_id: str, manifest_path: Path | None,
     for raw, repl in uuid_replacements.items():
         html_text = html_text.replace(raw, repl)
 
-    # 7) MAC addresses → placeholder (conservative — we don't try to
+    # 7) MAC addresses → placeholder (conservative - we don't try to
     #    distinguish operator vs case MACs; treat all rendered MACs as PII.)
     html_text = MAC_PATTERN.sub("<mac>", html_text)
 
@@ -273,8 +273,8 @@ def main() -> int:
                         help="Reports root directory (default: ./reports).")
     parser.add_argument("--detail", default="low",
                         choices=("full", "high", "low", "minimal", "user-only"),
-                        help="claude-code-log --detail level. Default 'low' (peer reviewer sign-off; "
-                             "'high' is opt-in for internal audit/demo prep, NOT public submission).")
+                        help="claude-code-log --detail level. Default 'low' "
+                             "('high' is opt-in for internal audit/demo prep, NOT public submission).")
     parser.add_argument("--manifest", default=None,
                         help="Path to manifest.json (for evidence dataset discovery).")
     parser.add_argument("--redact-lan", default=None,

@@ -55,8 +55,18 @@ INDEPTHTECHNICALMOVE.md
 docs/RUN7-OPERATIONAL-PLAN.md
 GEMINI.md
 AGENTS.md
-n
 .archive/
+
+# AI-scratch handoff / personal-comms drafts (KEEP LOCALLY, do not commit).
+# Functional MD stays tracked: CLAUDE.md, README.md, .claude/agents/*.md,
+# .claude/skills/**, docs methodology - those are the product.
+*handoff*.md
+*-handoff.md
+paperplanhandoff.md
+docs/jaswanth.md
+docs/reply.md
+docs/team-message-to-jaswanth.md
+team-message-*.md
 
 # Local screenshots and scratch artifacts that should never be tracked
 Screenshot*.png

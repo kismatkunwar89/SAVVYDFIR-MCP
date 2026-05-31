@@ -5,7 +5,7 @@ allowed-tools:
   - Bash
 ---
 
-# Artifact Routing — Windows Forensics Mind Map
+# Artifact Routing - Windows Forensics Mind Map
 
 ## Execution Evidence
 | Artifact | MCP Tool | What It Proves |

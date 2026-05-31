@@ -1,7 +1,6 @@
-"""Append-only delegation ledger — observation phase (3a).
+"""Append-only delegation ledger - observation phase (3a).
 
-Hook-owned source of truth for Path A vs Path B authorization (per
-peer reviewer consensus 2026-05-19 ITEM-2/ITEM-3). NO enforcement at this phase;
+Hook-owned source of truth for Path A vs Path B authorization. NO enforcement at this phase;
 this module only WRITES rows and provides READ helpers. Enforcement
 (workflow-enforce-pre.py reading the ledger to deny/allow) lands in
 Phase 3b/3c.
@@ -26,7 +25,7 @@ Path: /tmp/savvydfir_delegation_ledger.jsonl
 Session pointer: /tmp/savvydfir_current_session.json (written by SessionStart)
 
 Cross-session contamination is prevented by mandatory session_id matching
-on all reads — rows whose session_id != the current session do not
+on all reads - rows whose session_id != the current session do not
 authorize anything.
 """
 from __future__ import annotations
@@ -68,11 +67,11 @@ VALID_EVENTS = frozenset({
     "skip_redispatch_pending_delegate",
     "skip_redispatch_lane_already_corroborated",
     "skip_redispatch_prereqs_incomplete",
-    # DEFECT-3 stale-delegate distinctions (peer reviewer consensus 2026-05-20)
+    # DEFECT-3 stale-delegate distinctions
     "stale_delegate_dismissed",
     "delegate_satisfied_by_lane_record",
     "delegate_satisfied_by_path_b_allowance",
-    # C-PRIME (peer reviewer consensus 2026-05-20 final round) — repair guard
+    # C-PRIME - repair guard
     "repair_required",       # prose_only / malformed_json detected; parent should spawn json-repair
     "repair_attempted",      # parent has spawned the json-repair Task (idempotency anchor)
     "repair_succeeded",      # json-repair returned valid contract JSON
@@ -230,7 +229,7 @@ def read_session_rows(
 ) -> list[dict[str, Any]]:
     """Read rows for the current session (or a specific one).
 
-    Cross-session rows are filtered out — only rows whose ``session_id``
+    Cross-session rows are filtered out - only rows whose ``session_id``
     matches the resolved session are returned. This is the invariant that
     prevents yesterday's timeout from authorizing today's Path B.
     """
@@ -271,7 +270,7 @@ def has_failed_task_outcome(lane_id: str, session_id: Optional[str] = None) -> b
 
     This is the read primitive workflow-enforce-pre.py uses to decide
     whether Path B is authorized for a specialist lane (Phase 3b/3c).
-    Phase 3a does not call this — it only writes rows.
+    Phase 3a does not call this - it only writes rows.
     """
     rows = read_session_rows(
         session_id=session_id,

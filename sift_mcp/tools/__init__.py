@@ -12,27 +12,27 @@ one or more SIFT forensic CLI tools.  All tool functions are synchronous
 
 Namespaces
 ----------
-* **evidence** — :mod:`sift_mcp.tools.evidence`
+* **evidence** - :mod:`sift_mcp.tools.evidence`
   ``verify_integrity``, ``get_provenance``
 
-* **disk** — :mod:`sift_mcp.tools.disk`
+* **disk** - :mod:`sift_mcp.tools.disk`
   ``extract_prefetch``, ``get_amcache``, ``extract_mft_timeline``,
   ``list_deleted_files``, ``summarize_evtx``, ``extract_registry_run_keys``
 
-* **memory** — :mod:`sift_mcp.tools.memory` *(loaded if available)*
+* **memory** - :mod:`sift_mcp.tools.memory` *(loaded if available)*
   ``detect_profile``, ``list_processes``, ``scan_processes``,
   ``scan_network``, ``detect_injection``, ``list_dlls``
 
-* **timeline** — :mod:`sift_mcp.tools.timeline`
+* **timeline** - :mod:`sift_mcp.tools.timeline`
   ``build_timeline``, ``query_timeline``
 
-* **yara** — :mod:`sift_mcp.tools.yara`
+* **yara** - :mod:`sift_mcp.tools.yara`
   ``scan_files``, ``scan_memory``
 
-* **correlation** — :mod:`sift_mcp.tools.correlation`
+* **correlation** - :mod:`sift_mcp.tools.correlation`
   ``compare_disk_and_memory``, ``flag_discrepancy``
 
-* **state** — :mod:`sift_mcp.tools.state_tools`
+* **state** - :mod:`sift_mcp.tools.state_tools`
   ``read_state``, ``export_trace``
 
 Usage
@@ -76,7 +76,7 @@ from sift_mcp.tools.disk import (
 from sift_mcp.tools.disk import init_tools as _init_disk
 
 # ---------------------------------------------------------------------------
-# Memory tools (optional — module may not exist yet)
+# Memory tools (optional - module may not exist yet)
 # ---------------------------------------------------------------------------
 
 try:
@@ -164,7 +164,7 @@ def init_all_tools(audit_logger, state_manager) -> None:
 
     Called once at server startup by :mod:`sift_mcp.server`.
 
-    W1.7 (Run 2 consensus 2026-05-24, peer reviewer Q1+C / peer reviewer amendment): also
+    W1.7 (Run 2 consensus 2026-05-24, Q1+C / amendment): also
     register runtime deps with sift_mcp.tools._contracts so the CONTRACT
     path (build_contract_response → _attach_heuristic_slice) has live
     singletons WITHOUT a lazy ``from sift_mcp.server import ...``. The
@@ -178,7 +178,7 @@ def init_all_tools(audit_logger, state_manager) -> None:
     state_manager:
         The process-wide :class:`~sift_mcp.state.CaseStateManager`.
     """
-    # W1.7 BUG-4 fix — register before per-module init so any tool
+    # W1.7 BUG-4 fix - register before per-module init so any tool
     # invoked during init can already use heuristic injection cleanly.
     from sift_mcp.tools._contracts import set_runtime_deps
     set_runtime_deps(state_manager=state_manager, audit_logger=audit_logger)

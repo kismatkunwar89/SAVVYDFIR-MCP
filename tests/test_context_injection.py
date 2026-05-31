@@ -275,4 +275,4 @@ def test_augment_instruction_has_phase2_markers():
     assert "schema" in body
     assert "timestamp_bounds" in body
     assert "attack_window" in body
-    assert "peer reviewer consensus 2026-05-22" in body
+    assert "csv_path" in body

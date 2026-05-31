@@ -1,6 +1,6 @@
 # Dataset Documentation
 
-**SAVVYDFIR-MCP — Evidence Corpus: SRL-2018 (SANS Realistic Lab 2018)**
+**SAVVYDFIR-MCP - Evidence Corpus: SRL-2018 (SANS Realistic Lab 2018)**
 
 This document records the evidence files used to evaluate SAVVYDFIR-MCP, their provenance, integrity hashes, and the findings produced per host. All placeholder values in `[BRACKETS]` must be completed after evidence files are acquired and hashed.
 
@@ -11,9 +11,9 @@ This document records the evidence files used to evaluate SAVVYDFIR-MCP, their p
 | Field | Value |
 |---|---|
 | **Corpus name** | SANS Realistic Lab 2018 (SRL-2018) |
-| **Source** | SANS Institute — DFIR Advanced Incident Response course |
-| **Access method** | Licensed via SANS DFIR course materials |
-| **License** | Educational use only — not redistributable |
+| **Source** | SANS Institute - Advanced Incident Response course |
+| **Access method** | Licensed via course materials |
+| **License** | Educational use only - not redistributable |
 | **Scenario description** | Multi-host enterprise compromise simulating an APT campaign with initial access via spearphishing, lateral movement, credential theft, and data staging |
 | **Number of hosts** | 22 |
 | **Evidence types** | Disk images (E01 format) + memory dumps (raw/zip) |
@@ -26,7 +26,7 @@ This document records the evidence files used to evaluate SAVVYDFIR-MCP, their p
 |---|---|
 | SIFT Workstation | [RECORD EXACT VERSION, e.g., `sift-vm-3.0-amd64.20240415`] |
 | Ubuntu | [e.g., `22.04.3 LTS`] |
-| Volatility 3 | `/opt/volatility3-2.20.0/vol.py` — version 2.20.0 |
+| Volatility 3 | `/opt/volatility3-2.20.0/vol.py` - version 2.20.0 |
 | EZ Tools suite | [e.g., `2024-01-15` release] |
 | PECmd version | `dotnet /opt/zimmermantools/PECmd.dll --version` → [RECORD] |
 | AmcacheParser version | [RECORD] |
@@ -50,15 +50,15 @@ This document records the evidence files used to evaluate SAVVYDFIR-MCP, their p
 |---|---|
 | **Case ID** | SRL-2018-WKSTN-01 |
 | **Host** | base-wkstn-01 |
-| **Role** | User workstation — primary demo case |
+| **Role** | User workstation - primary demo case |
 | **Disk image path** | `/evidence/SRL-2018/base-wkstn-01-c-drive.E01` |
 | **Disk image size** | [e.g., 15.8 GB] |
 | **Disk image SHA-256** | `[RECORD SHA-256 HASH OF .E01 FILE]` |
 | **Memory dump path** | `/evidence/SRL-2018/base-wkstn-01-mem.raw` (or `.zip`) |
 | **Memory dump size** | [e.g., 1.2 GB] |
 | **Memory dump SHA-256** | `[RECORD SHA-256 HASH OF MEMORY DUMP]` |
-| **OS version** | [Detected by `detect_profile()`, e.g., `Windows 10 x64 Build 17763`] |
-| **Evidence verified at** | [Timestamp of first `verify_integrity()` call] |
+| **OS version** | [Detected by `detect_profile`, e.g., `Windows 10 x64 Build 17763`] |
+| **Evidence verified at** | [Timestamp of first `verify_integrity` call] |
 
 **Verification commands:**
 
@@ -132,18 +132,18 @@ sha256sum /evidence/SRL-2018/<hostname>-mem.raw > /evidence/SRL-2018/<hostname>-
 ewfverify /evidence/SRL-2018/<hostname>-c-drive.E01
 ```
 
-The MCP tool `verify_integrity()` wraps `ewfverify` and records the result in `audit.jsonl` automatically.
+The MCP tool `verify_integrity` wraps `ewfverify` and records the result in `audit.jsonl` automatically.
 
 ### At Investigation End
 
-The Stop hook re-runs `verify_integrity()` and compares `integrity_hash_start` with `integrity_hash_end`. A mismatch would indicate evidence modification — which should never happen given read-only mount options and SafeRunner's path deny list.
+The Stop hook re-runs `verify_integrity` and compares `integrity_hash_start` with `integrity_hash_end`. A mismatch would indicate evidence modification - which should never happen given read-only mount options and SafeRunner's path deny list.
 
 ### Mount Options (Read-Only Enforcement)
 
 ```bash
 # Mount E01 image read-only via ewfmount (libewf):
 sudo ewfmount /evidence/SRL-2018/base-wkstn-01-c-drive.E01 /mnt/disk-base-wkstn-01
-# ewfmount always mounts read-only — no write option exists
+# ewfmount always mounts read-only - no write option exists
 
 # Verify mount options:
 mount | grep /mnt/disk-base-wkstn-01
@@ -159,10 +159,10 @@ sudo mount -o ro,noatime /mnt/disk-base-wkstn-01/ewf1 /mnt/filesystem-base-wkstn
 
 | Limitation | Impact | Mitigation |
 |---|---|---|
-| SRL-2018 represents a simulated scenario, not a live incident | Findings may reflect scenario design artifacts rather than novel attacker behavior | Results are clearly scoped as "SRL-2018 evaluation" — generalization claims are avoided |
+| SRL-2018 represents a simulated scenario, not a live incident | Findings may reflect scenario design artifacts rather than novel attacker behavior | Results are clearly scoped as "SRL-2018 evaluation" - generalization claims are avoided |
 | Memory dump acquisition time may not align exactly with disk image acquisition time | Some in-memory artifacts may reference files that do not yet appear as deleted on disk (or vice versa) | Cross-artifact time-gap discrepancies are noted in findings rather than flagged as errors |
 | Some evidence files may not be available for all 22 hosts if course license does not include full corpus | Reduces breadth pass coverage | Evaluation reports actual host count, not claimed count |
-| E01 images include embedded hashes from acquisition — ewfverify checks these, not re-acquisition | Cannot independently verify chain of custody beyond SANS acquisition | Document SANS as trusted evidence custodian |
+| E01 images include embedded hashes from acquisition - ewfverify checks these, not re-acquisition | Cannot independently verify chain of custody beyond SANS acquisition | Document SANS as trusted evidence custodian |
 
 ---
 

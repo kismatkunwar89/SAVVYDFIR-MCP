@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-# peer reviewer consensus 2026-05-19 Tier-A report-gate invariants:
+# Tier-A report-gate invariants:
 # alternative-hypothesis completeness check shared with semantics.py.
 from sift_mcp.semantics import _alternative_hypothesis_complete
 
@@ -62,7 +62,7 @@ def _pending_delegate_blocks_case(
     pending_case_id = str(pending_delegate.get("case_id") or "").strip()
     if pending_case_id and pending_case_id != case_id:
         return False
-    # DEFECT-3 (peer reviewer consensus 2026-05-20): stale-dismissed and processed
+    # DEFECT-3: stale-dismissed and processed
     # entries should not block. The status field is authoritative; the
     # legacy processed boolean is checked above.
     status = str(pending_delegate.get("status") or "").lower()
@@ -71,9 +71,9 @@ def _pending_delegate_blocks_case(
     return True
 
 
-# DEFECT-3 — stale-delegate filter helpers
+# DEFECT-3 - stale-delegate filter helpers
 def _import_scripts_module(name: str) -> Any:
-    """Best-effort import of a script in scripts/ — returns None on failure
+    """Best-effort import of a script in scripts/ - returns None on failure
     so the report gate degrades gracefully without the new helpers."""
     try:
         import sys as _sys
@@ -96,7 +96,7 @@ def _lane_recorded_by_same_specialist(
     delegate_subagent: str,
 ) -> bool:
     """Return True if the lane was completed by the same specialist that
-    the delegate requested (the peer reviewer-distinguished "same actor" case)."""
+    the delegate requested (the -distinguished "same actor" case)."""
     if not isinstance(lane_record, dict):
         return False
     assigned = _normalize_specialist(lane_record.get("assigned_agent"))
@@ -106,10 +106,10 @@ def _lane_recorded_by_same_specialist(
     return assigned == target
 
 
-# W1.7 Run-5 fix (BUG-B, tri-agent consensus 2026-05-24, peer reviewer+peer reviewer signed)
+# W1.7 Run-5 fix (BUG-B)
 # Synthesis is inverted in W1.7: main-agent inline IS Path A; @synthesis-analyst
 # Task spawn is the opt-in escape hatch. The legacy dismissal predicate had
-# only same-actor and DIFFERENT-actor+path_b_would_allow paths — both fail
+# only same-actor and DIFFERENT-actor+path_b_would_allow paths - both fail
 # for main-agent inline synthesis (Run-5 evidence: agent recorded the lane,
 # generate_report still returned needs_delegate). This predicate adds the
 # missing Path-A satisfaction: main-agent recorded synthesis_corroboration
@@ -120,7 +120,7 @@ _SYNTHESIS_MIN_CONFIRMED = 3
 
 
 def _safe_get_findings(state_manager: Any) -> list[dict[str, Any]]:
-    """Defensive wrapper — some test fakes don't implement get_findings();
+    """Defensive wrapper - some test fakes don't implement get_findings();
     returning [] in that case means the predicate evaluates to False naturally
     instead of crashing dismissal entirely (preserves legacy test contracts).
     """
@@ -143,13 +143,13 @@ def _inline_synthesis_satisfies_delegate(
     requiring a path_b_would_allow ledger row (synthesis inline is Path A,
     not a fallback).
 
-    Conditions (per peer reviewer A-REFINED + peer reviewer strict-confirmed-resolution):
+    Conditions (per A-REFINED + strict-confirmed-resolution):
       - lane_id is the synthesis lane
       - delegate target normalizes to a synthesis specialist
       - lane assigned_agent normalizes to 'main-agent'
       - lane status is a done state (COMPLETE / COMPLETE_WITH_GAPS)
       - ≥3 of lane's finding_ids RESOLVE to status=CONFIRMED in state
-        (not just `len(finding_ids) >= 3` — actual confirmation from state)
+        (not just `len(finding_ids) >= 3` - actual confirmation from state)
     """
     if not isinstance(lane_record, dict):
         return False
@@ -162,7 +162,7 @@ def _inline_synthesis_satisfies_delegate(
     lane_status = str(lane_record.get("status") or "").upper()
     if lane_status not in {"COMPLETE", "COMPLETE_WITH_GAPS"}:
         return False
-    # Resolve CONFIRMED count from state (peer reviewer: trust state, not caller claim)
+    # Resolve CONFIRMED count from state (trust state, not caller claim)
     lane_finding_ids = {str(fid).strip() for fid in (lane_record.get("finding_ids") or [])}
     if not lane_finding_ids:
         return False
@@ -201,7 +201,7 @@ def _dismiss_stale_delegates(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Walk the per-lane delegate queue and dismiss stale entries.
 
-    peer reviewer consensus 2026-05-20:
+    
       * SAME-actor stale → mark stale_dismissed, ledger=`delegate_satisfied_by_lane_record`
       * DIFFERENT-actor + ledger has `path_b_would_allow` for the lane in
         current session → mark stale_dismissed, ledger=`delegate_satisfied_by_path_b_allowance`
@@ -225,7 +225,7 @@ def _dismiss_stale_delegates(
     for entry in pending:
         entry_case = str(entry.get("case_id") or "").strip()
         if entry_case and entry_case != case_id:
-            # Foreign-case entry — not ours to block on or dismiss.
+            # Foreign-case entry - not ours to block on or dismiss.
             continue
         lane_id = str(entry.get("lane_id") or "").strip()
         delegate_key = str(entry.get("delegate_key") or "").strip()
@@ -242,7 +242,7 @@ def _dismiss_stale_delegates(
             still_blocking.append(entry)
             continue
 
-        # Timestamp comparison — lane must have been updated AFTER delegate
+        # Timestamp comparison - lane must have been updated AFTER delegate
         # was queued. We use updated_at (close to recorded_at).
         lane_ts = _parse_iso8601(
             lane_record.get("updated_at") or lane_record.get("recorded_at")
@@ -253,7 +253,7 @@ def _dismiss_stale_delegates(
             still_blocking.append(entry)
             continue
 
-        # Lane is satisfied. Now the peer reviewer distinction:
+        # Lane is satisfied. Now the distinction:
         # (a) SAME specialist? Auto-dismiss.
         # (b) Different specialist? Only dismiss if ledger has Path B
         #     allowance for the same lane in current session.
@@ -280,7 +280,7 @@ def _dismiss_stale_delegates(
                 f"inline Path A satisfies @{subagent} delegate per W1.7"
             )
         else:
-            # Different actor — check ledger for Path B allowance.
+            # Different actor - check ledger for Path B allowance.
             has_path_b_allowance = False
             if ledger is not None:
                 try:
@@ -293,7 +293,7 @@ def _dismiss_stale_delegates(
             if not has_path_b_allowance:
                 # Phantom Path A: the lane was completed by a different
                 # actor without recorded Path B authorization. KEEP
-                # blocking — this is exactly the case peer reviewer insisted on.
+                # blocking - this is exactly the case insisted on.
                 still_blocking.append(entry)
                 continue
             event_name = "delegate_satisfied_by_path_b_allowance"
@@ -341,8 +341,8 @@ def _dismiss_stale_delegates(
 
 
 # ---------------------------------------------------------------------------
-# Phase 5 — Investigation-success gate
-# (peer reviewer consensus 2026-05-22)
+# Phase 5 - Investigation-success gate
+#
 # Separate from evaluate_ir_coverage_gate (which checks artifact tool coverage)
 # this gate checks SPECIALIST CONTRIBUTION: did each lane receive at least one
 # submit_finding call from its expected specialist? If not, the lane is
@@ -352,7 +352,7 @@ def _dismiss_stale_delegates(
 
 # Lanes that REQUIRE specialist contribution (artifact-collection lanes).
 # evidence_access is main-agent-only (no specialist counterpart).
-# synthesis_corroboration is the synthesis output — checked separately.
+# synthesis_corroboration is the synthesis output - checked separately.
 _SPECIALIST_REQUIRED_LANES = (
     "memory",
     "disk_execution_persistence",
@@ -372,18 +372,18 @@ def evaluate_hypothesis_gate(
 
     Enforces that the LLM brain-step (prepare_hypothesis_context +
     record_hypotheses) ran when the investigation produced meaningful
-    evidence. Threshold per peer reviewer+peer reviewer consensus:
+    evidence. Threshold 
         confirmed_count >= 1  OR  findings_count >= 25  OR  sigma_hunt success.
     Below that threshold (triage-only runs) the gate is a no-op.
 
     Escape hatch: SAVVYDFIR_SKIP_HYPOTHESIS_GATE=1 in env bypasses the
     gate AND writes an audit-visible row recording the bypass + reason.
-    Per peer reviewer requirement: no silent weakening.
+    Per requirement: no silent weakening.
 
     Returns:
-        {"status": "ok"}  — gate passed or below threshold or bypassed
+        {"status": "ok"}  - gate passed or below threshold or bypassed
         {"status": "needs_hypothesis", "reason": ..., "next_required_tool": ...,
-         "allow_partial_hint": True}  — block generate_report
+         "allow_partial_hint": True}  - block generate_report
     """
     # Triage-only threshold
     sigma_ok = bool(
@@ -402,7 +402,7 @@ def evaluate_hypothesis_gate(
     if not meaningful_evidence:
         return {"status": "ok", "reason": "below_evidence_threshold"}
 
-    # Escape hatch — audit-visible, never silent
+    # Escape hatch - audit-visible, never silent
     if os.environ.get("SAVVYDFIR_SKIP_HYPOTHESIS_GATE") == "1":
         try:
             scripts_dir = Path(__file__).resolve().parent.parent / "scripts"
@@ -457,7 +457,7 @@ def evaluate_investigation_success_gate(
     case_id: str,
     state_manager: Any,
 ) -> dict[str, Any]:
-    """Phase 5 (peer reviewer consensus 2026-05-22): per-lane specialist contribution audit.
+    """Phase 5: per-lane specialist contribution audit.
 
     Reads two signals:
       1. ``audit.jsonl`` (state.submit_finding events grouped by ``assigned_agent``)
@@ -489,7 +489,7 @@ def evaluate_investigation_success_gate(
         }
 
     The Phase 1 ``submit_finding`` provenance is the primary signal. This gate
-    DEPENDS on Phase 1 — without ``assigned_agent`` on findings, we can't tell
+    DEPENDS on Phase 1 - without ``assigned_agent`` on findings, we can't tell
     which specialist registered them.
     """
     # Import here to avoid module-level state dependencies.
@@ -557,7 +557,7 @@ def evaluate_investigation_success_gate(
     except Exception:
         pass
 
-    # W1.7.11 (CR13 Option X) — Main-agent runtime query path (NEW primary).
+    # W1.7.11 (CR13 Option X) - Main-agent runtime query path (NEW primary).
     # The W1.6.1 architecture made main-agent inline analysis the PRIMARY
     # path. Per CR13: when a lane has been recorded via record_analysis_lane
     # with assigned_agent='main-agent' AND has ≥1 finding with a resolvable
@@ -614,7 +614,7 @@ def evaluate_investigation_success_gate(
             and main_agent_findings_by_lane.get(lane_id, 0) > 0
         )
 
-        # W1.7.11: NEW primary path — main-agent recorded the lane with
+        # W1.7.11: NEW primary path - main-agent recorded the lane with
         # at least one finding linked to a real execution. This is the
         # default architecture per W1.6.1, NOT a fallback.
         runtime_query_count = main_agent_runtime_query_by_lane.get(lane_id, 0)
@@ -681,7 +681,7 @@ def evaluate_investigation_success_gate(
 def _count_correction_events(state_manager: Any) -> int:
     """Count CorrectionEvent rows in audit.jsonl for the current case.
 
-    Run-11 polish — surfaces the W1.5 criterion-#1 tiebreaker signal
+    Run-11 polish - surfaces the W1.5 criterion-#1 tiebreaker signal
     (self-correction count) into the report metrics grid. The canonical
     predicate is ``row.get("correction_event") is not None`` per
     ``sift_mcp/audit.py:171`` where the field defaults to None and is set
@@ -720,7 +720,7 @@ def _read_audit_jsonl(state_manager: Any) -> list[dict[str, Any]]:
 
 def _read_ledger_for_case(case_id: str) -> list[dict[str, Any]]:
     """Best-effort read of /tmp/savvydfir_delegation_ledger.jsonl filtered
-    by case_id (when present in extra) — Phase 5 fallback signal."""
+    by case_id (when present in extra) - Phase 5 fallback signal."""
     try:
         ledger_path = Path(
             os.environ.get(
@@ -780,7 +780,7 @@ def _short_description(value: Any, limit: int = 140) -> str:
 
 def _rank_findings(findings: list[dict[str, Any]], *, limit: int = 25) -> list[dict[str, Any]]:
     """Rank findings for the report. W1.7 (CR13-5): TTP-first ordering per
-    Pyramid of Pain — findings carrying MITRE techniques rank above raw IOCs.
+    Pyramid of Pain - findings carrying MITRE techniques rank above raw IOCs.
 
     Sort key (descending priority):
         1. Status precedence (CONFIRMED > HYPOTHESIS > ACTIVE > OBSERVATION)
@@ -879,8 +879,8 @@ def _render_findings_rows(
     """Render finding rows for a report table.
 
     ``evidence_col`` controls the third-from-last column:
-      * ``"tool"`` (default) — shows ``tool_name``; used by Top Active Leads.
-      * ``"corroborated_by"`` — shows comma-joined ``F-NNN`` IDs; used by Top
+      * ``"tool"`` (default) - shows ``tool_name``; used by Top Active Leads.
+      * ``"corroborated_by"`` - shows comma-joined ``F-NNN`` IDs; used by Top
         Confirmed Findings to surface the multi-source corroboration that
         the framework's self-correction story rests on.
     Unknown values fall back to the tool column for safety.
@@ -1052,7 +1052,7 @@ def _render_hypothesis_validation(hypotheses: list[dict[str, Any]]) -> str:
         tag_cls, badge_text = _HYPOTHESIS_VERDICT_BADGES.get(
             status, ("muted", html.escape(status))
         )
-        # Defensive normalisation — state should be clean, but never assume.
+        # Defensive normalisation - state should be clean, but never assume.
         linked = h.get("related_finding_ids")
         linked = linked if isinstance(linked, list) else ([linked] if linked else [])
         linked_text = ", ".join(html.escape(str(fid)) for fid in linked if fid) or "—"
@@ -1081,10 +1081,10 @@ _LANE_SPECS: dict[str, dict[str, Any]] = {
     "event_auth": {"title": "Event Log and Auth", "required": True, "phase": "analysis"},
     "anti_forensics_recovery": {"title": "Anti-Forensics and Recovery", "required": True, "phase": "analysis"},
     "timeline_correlation": {"title": "Timeline and Correlation", "required": True, "phase": "analysis"},
-    # W1.7 Run-5 fix (BUG-C, peer reviewer proven mechanism 2026-05-24): without this
+    # W1.7 Run-5 fix (BUG-C, proven mechanism 2026-05-24): without this
     # entry, _synthesize_analysis_lanes filters synthesis_corroboration OUT
     # (line ~1700 returns only lanes whose key is in _LANE_SPECS), then
-    # update_triage_state replaces the entire array — silently ERASING the
+    # update_triage_state replaces the entire array - silently ERASING the
     # main-agent inline synthesis lane from state.json on every generate_report
     # success. Run-5 evidence: E-047 recorded synthesis, audit confirmed,
     # final state.json had only 6 lanes. Adding here fixes the wipe.
@@ -1111,7 +1111,7 @@ EXPECTED_LANE_AGENTS: dict[str, tuple[str, ...]] = {
         "srum-analyst",
         "timeline-analyst",
     ),
-    # Phase 4 (peer reviewer consensus 2026-05-22) — creative cross-artifact synthesis
+    # Phase 4 - creative cross-artifact synthesis
     # gets its OWN lane. timeline_correlation closes when the artifact
     # specialists finish; synthesis_corroboration runs AFTER, taking all
     # closed lanes as input.
@@ -1320,10 +1320,10 @@ def _needs_detect_injection(findings: list[dict[str, Any]]) -> bool:
     - any finding records psscan_only_count > 0 (verified hidden PIDs), OR
     - requires_deeper_analysis is explicitly True, OR
     - psscan ran without a pslist baseline AND a later pslist is now
-      available — recompute the delta from current state and demand
+      available - recompute the delta from current state and demand
       detect_injection if real hidden PIDs surface.
 
-    peer reviewer round-7 P2: prior implementation forced detect_injection on
+    round-7 P2: prior implementation forced detect_injection on
     every run because scan_processes set psscan_only_count = len(psscan_pids)
     when pslist absent. Now scan_processes records psscan_unverified=True
     + psscan_pids list, and this gate recomputes the real delta when both
@@ -1366,7 +1366,7 @@ def _needs_list_dlls(findings: list[dict[str, Any]]) -> bool:
 
 
 def _list_dlls_missing_pids(findings: list[dict[str, Any]]) -> list[int]:
-    """E.2 (peer reviewer round-1 P2): return PIDs that need list_dlls but
+    """E.2: return PIDs that need list_dlls but
     haven't been covered yet.
 
     Required PIDs = union of every finding's network_followup_pids /
@@ -1400,7 +1400,7 @@ def _list_dlls_missing_pids(findings: list[dict[str, Any]]) -> list[int]:
 def _execution_was_successful(ex: dict[str, Any]) -> bool:
     """Universal success predicate for an execution record.
 
-    Used by every mandatory-tool check, not just sigma_hunt. peer reviewer review
+    Used by every mandatory-tool check, not just sigma_hunt. review
     round-2 #M2: prior implementation only required tool suffix presence,
     meaning a failed parser counted toward coverage.
     """
@@ -1442,10 +1442,10 @@ def _has_successful_execution(executions: list[dict[str, Any]], tool_suffix: str
 def _needs_sigma_hunt_run(executions: list[dict[str, Any]]) -> bool:
     """sigma_scan != sigma_hunt. Bypass-resistant check.
 
-    peer reviewer review round-1 #2: a naive 'tool_name present' check would pass
+    review round-1 #2: a naive 'tool_name present' check would pass
     for a failed/timed-out/wrong-input/zero-output sigma_hunt run.
 
-    peer reviewer review round-2 #H: the prior shipped check missed the durable-
+    review round-2 #H: the prior shipped check missed the durable-
     output invariant. A successful sigma_hunt without a readable Chainsaw
     JSON at the recorded output_path means there is no rule-engine evidence
     for the report or specialists to corroborate.
@@ -1460,7 +1460,7 @@ def _needs_sigma_hunt_run(executions: list[dict[str, Any]]) -> bool:
         finding_ids_generated list is non-empty, which only happens when
         sigma_hunt successfully wrote and parsed Chainsaw output)
 
-    Zero detections on a clean system is a valid pass — sigma_hunt's
+    Zero detections on a clean system is a valid pass - sigma_hunt's
     correctness is judged by execution success + durable output, not hit
     count.
     """
@@ -1470,7 +1470,7 @@ def _needs_sigma_hunt_run(executions: list[dict[str, Any]]) -> bool:
             continue
         if not _execution_was_successful(ex):
             continue
-        # Durable-output invariant (peer reviewer round-2 #H, Phase-A-boundary):
+        # Durable-output invariant:
         # Substring matching '.json' in outputs_summary was bypassable
         # (prose can claim ".json" without an actual file). Now require
         # structured proof:
@@ -1563,17 +1563,17 @@ def evaluate_ir_coverage_gate(
     accepted_by_lane: list[dict[str, Any]] = []
 
     def _add(tool: str, suffix: str, classification: str, reason: str) -> None:
-        """peer reviewer round-2 #M2: presence is not enough; require a successful run.
+        """round-2 #M2: presence is not enough; require a successful run.
 
         Falls back to presence-only when an execution record lacks success
-        metadata (exit_code/duration/hash) — protects backwards compatibility
+        metadata (exit_code/duration/hash) - protects backwards compatibility
         with test fixtures and legacy state.json files that did not populate
         those fields. Real audited executions WILL have them.
         """
         if suffix not in suffixes:
             missing.append({"tool": tool, "classification": classification, "reason": reason})
             return
-        # Suffix is present — check if at least one of those executions was
+        # Suffix is present - check if at least one of those executions was
         # success-recorded. If none have the success fields populated, fall
         # back to presence-only to avoid breaking on legacy fixtures.
         candidates = [
@@ -1582,7 +1582,7 @@ def evaluate_ir_coverage_gate(
                 or str(ex.get("tool_name") or "").endswith(f".{suffix}"))
         ]
         if not candidates:
-            return  # name-match without prefix path — keep presence behavior
+            return  # name-match without prefix path - keep presence behavior
         # If ANY candidate has populated success fields, REQUIRE at least
         # one of them to satisfy success. Otherwise (legacy fixture) accept.
         any_with_metadata = any(
@@ -2030,7 +2030,7 @@ def validate_report(
         "unresolved_discrepancy": unresolved > 0,
         "specialist_lanes_inferred": specialist_lanes_inferred,
         # Honest quality signal: hunt loop not fully closed if any recorded
-        # hypothesis is still ACTIVE/INVESTIGATING (not a gate — see
+        # hypothesis is still ACTIVE/INVESTIGATING (not a gate - see
         # _count_unresolved_hypotheses).
         "hypotheses_unresolved": _count_unresolved_hypotheses(
             state_manager.get_hypotheses()
@@ -2056,7 +2056,7 @@ def validate_report(
     }
 
 
-# W1.7 (CR13 Option X) — Activity Thread Mermaid renderer.
+# W1.7 (CR13 Option X) - Activity Thread Mermaid renderer.
 # Maps the case's findings (via classified MITRE techniques) onto Cyber
 # Kill Chain phases. Empty phase = blindspot (Diamond Axiom 4).
 
@@ -2177,7 +2177,7 @@ def render_report_html(payload: dict[str, Any]) -> str:
     status_breakdown = payload.get("status_breakdown", {})
     evidence_kind_breakdown = payload.get("evidence_kind_breakdown", {})
     triage_status = payload.get("triage_status", summary.get("triage_status", "UNKNOWN"))
-    # Run-11 polish #8: explicit allowlist for triage-status color class —
+    # Run-11 polish #8: explicit allowlist for triage-status color class -
     # defaults to ``warn`` (amber) so future unknown statuses are NEVER
     # accidentally rendered green.
     _TRIAGE_STATUS_CLASSES = {
@@ -2192,7 +2192,7 @@ def render_report_html(payload: dict[str, Any]) -> str:
     data_gaps = payload.get("data_gaps", [])
     analysis_lanes = payload.get("analysis_lanes", [])
     orchestration_warnings = payload.get("orchestration_warnings", [])
-    # W1.7 — Activity Thread state for blindspot reporting
+    # W1.7 - Activity Thread state for blindspot reporting
     activity_thread = payload.get("activity_thread", {"phases": {}, "blindspot_notes": {}})
     hypotheses = payload.get("hypotheses", [])
 
@@ -2440,7 +2440,7 @@ def generate_report_payload(
         or "/tmp/savvydfir_delegate.json"
     )
 
-    # DEFECT-3 (peer reviewer consensus 2026-05-20): dismiss stale delegates first.
+    # DEFECT-3: dismiss stale delegates first.
     # Walks the per-lane queue, marks entries whose lane is already
     # satisfied by the same specialist (or has Path B allowance) as
     # stale_dismissed. Returns (dismissed, still_blocking) for audit.
@@ -2462,7 +2462,7 @@ def generate_report_payload(
                 _legacy_lane_record = _find_lane_in_state(
                     case_id, state_manager, _legacy_lane
                 )
-                # W1.7 Run-5 BUG-B (peer reviewer nuance): legacy single-file delegate
+                # W1.7 Run-5 BUG-B (nuance): legacy single-file delegate
                 # path is the surface _pending_delegate_blocks_case reads. Same
                 # synthesis Path-A dismissal logic must apply here, not just
                 # to the per-lane queue.
@@ -2526,7 +2526,7 @@ def generate_report_payload(
             )
             and not allow_partial
         ):
-            # peer reviewer consensus 2026-05-19 Tier-B2: enrich deny message with
+            # Tier-B2: enrich deny message with
             # allow_partial=True escape hatch. The agent shouldn't loop
             # forever trying to clear a stuck delegate.
             return {
@@ -2590,7 +2590,7 @@ def generate_report_payload(
     findings = state_manager.get_findings()
     executions = state_manager.get_executions()
     if not allow_partial:
-        # Phase 5 (peer reviewer consensus 2026-05-22): investigation-success gate.
+        # Phase 5: investigation-success gate.
         # Checked BEFORE the existing coverage gate so the operator first
         # sees specialist-contribution failures (which are usually the
         # actionable signal), then tool-coverage failures.
@@ -2605,7 +2605,7 @@ def generate_report_payload(
                 "report_json_path": str(report_json_path),
             }
 
-    # W1.7 (Run 2 consensus 2026-05-24, Q4 / peer reviewer ordering): hypothesis
+    # W1.7 (Run 2 consensus 2026-05-24, Q4 / ordering): hypothesis
     # gate is now EXTRACTED from the `if not allow_partial:` wrapper so it
     # fires even under partial mode. Run 2 used allow_partial=True to bypass
     # a stuck synthesis delegate and the hypothesis gate was silently
@@ -2639,7 +2639,7 @@ def generate_report_payload(
             analysis_lanes=state_manager.get_analysis_lanes(),
         )
         if not coverage_check["ok"]:
-            # peer reviewer consensus 2026-05-19 Tier-B2: surface allow_partial=True
+            # Tier-B2: surface allow_partial=True
             # escape hatch in the deny message so the agent doesn't loop.
             return {
                 "status": "needs_coverage",
@@ -2662,7 +2662,7 @@ def generate_report_payload(
                 "report_json_path": str(report_json_path),
             }
 
-        # peer reviewer consensus 2026-05-19 Tier-A report-gate invariants:
+        # Tier-A report-gate invariants:
         # CONFIRMED findings MUST have (1) resolvable execution_id and
         # (2) populated alternative-hypothesis disposition. Block report
         # generation if either is missing; allow_partial=True partitions
@@ -2760,7 +2760,7 @@ def generate_report_payload(
         status_flags["graph_missing"] = True
         triage_status = "COMPLETE_WITH_GAPS"
 
-    # W1.7 (CR13 Option X) — surface Activity Thread for blindspot reporting
+    # W1.7 (CR13 Option X) - surface Activity Thread for blindspot reporting
     # and rebuild it from current findings so MITRE-classified findings get
     # mapped to kill-chain phases even if state.activity_thread is stale.
     activity_thread_state = state_manager.get_activity_thread()
@@ -2783,7 +2783,7 @@ def generate_report_payload(
         pass
 
     # Run-11 polish:
-    #   #5 Dedupe sigma summary_markdown for display ONLY — never mutate the
+    #   #5 Dedupe sigma summary_markdown for display ONLY - never mutate the
     #      underlying sigma_result hits / counts. Build a display-only copy.
     sigma_for_display = dict(sigma_result) if isinstance(sigma_result, dict) else sigma_result
     if isinstance(sigma_for_display, dict):
@@ -2835,14 +2835,14 @@ def generate_report_payload(
         "report_json_path": str(report_json_path),
         "graph_path": str(graph_html_path) if graph_html_path.exists() else None,
         "graph_json_path": str(graph_json_path) if graph_json_path.exists() else None,
-        # Run-11 trace integration (peer reviewer sign-off): mark trace.html present
+        # Run-11 trace integration: mark trace.html present
         # only when the sibling file actually exists. The renderer treats this
-        # as a boolean signal — the href is rendered as a fixed relative
+        # as a boolean signal - the href is rendered as a fixed relative
         # string "trace.html" (NOT interpolated from this field) to avoid
         # href-injection via report state. The trace itself is produced by
         # `scripts/render_session_trace.py`, an operator-explicit helper.
         # Detailed companion: `trace-detailed.html` is the FULL-detail
-        # render (`--detail full`) of the session — every event preserved
+        # render (`--detail full`) of the session - every event preserved
         # post-redaction. `trace.html` is the filtered scan-friendly view.
         "trace_path": "trace.html" if (report_dir / "trace.html").exists() else None,
         "trace_detailed_path": "trace-detailed.html" if (report_dir / "trace-detailed.html").exists() else None,

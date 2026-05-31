@@ -5,10 +5,10 @@ allowed-tools:
   - Bash
 ---
 
-# Sigma Detection — Universal Anomaly Detection Guide
+# Sigma Detection - Universal Anomaly Detection Guide
 
 ## How sigma_scan() Works
-`sigma_scan(case_id)` reads ALL findings from the case state and runs 5 independent detectors. Each detector implements case-agnostic logic — no hardcoded IPs, usernames, or filenames.
+`sigma_scan(case_id)` reads ALL findings from the case state and runs 5 independent detectors. Each detector implements case-agnostic logic - no hardcoded IPs, usernames, or filenames.
 
 ## Detector 1: Process Anomalies
 **What it checks:**
@@ -21,8 +21,8 @@ allowed-tools:
 - System process wrong path
 
 **Pivot from hit:**
-1. `detect_injection(pid=FLAGGED_PID)` — check for code injection
-2. `list_dlls(pid=FLAGGED_PID)` — check for suspicious DLLs
+1. `detect_injection(pid=FLAGGED_PID)` - check for code injection
+2. `list_dlls(pid=FLAGGED_PID)` - check for suspicious DLLs
 3. Hash the binary: `sha256sum <path>`
 
 ## Detector 2: Network Anomalies
@@ -78,6 +78,6 @@ allowed-tools:
 
 ## Interpreting Results
 - **CRITICAL + HIGH first:** These indicate active compromise indicators
-- **MEDIUM:** Suspicious but could be legitimate — investigate before concluding
+- **MEDIUM:** Suspicious but could be legitimate - investigate before concluding
 - **Always follow pivot_suggestion:** Each hit includes the recommended next step
 - **Cross-reference:** A single anomaly is a lead; corroborating anomalies across detectors confirm compromise

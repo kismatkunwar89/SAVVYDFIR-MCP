@@ -44,8 +44,8 @@ The codebase correctly uses **behavioral patterns** instead of hardcoded IOCs:
 
 ### References Found (Non-IOC)
 
-- "attacker" in comments/descriptions (9 occurrences) — narrative text only
-- "evil.exe" in example comment (`disk.py:3147`) — documentation only
+- "attacker" in comments/descriptions (9 occurrences) - narrative text only
+- "evil.exe" in example comment (`disk.py:3147`) - documentation only
 - No actual comparison logic uses these strings
 
 ## Recommendations
@@ -58,12 +58,12 @@ The codebase correctly uses **behavioral patterns** instead of hardcoded IOCs:
 
 ### No Action Required
 The codebase is **already case-agnostic** per CLAUDE.md requirements:
-> "Case-agnostic: no hardcoded IPs, usernames, or filenames — universal patterns only"
+> "Case-agnostic: no hardcoded IPs, usernames, or filenames - universal patterns only"
 
 ## Conclusion
 
 **Status**: PASS  
 **Action**: Document findings (no code changes needed)  
-**Commit Message**: "D.2: Hardcoded IOC audit complete — no environment-specific IOCs found"
+**Commit Message**: "D.2: Hardcoded IOC audit complete - no environment-specific IOCs found"
 
 All detection logic uses behavioral patterns (parent process, logon type, path regex) instead of hardcoded indicators. The framework correctly supports universal investigation workflows across arbitrary environments.

@@ -1,4 +1,4 @@
-"""extract_heuristic_slice.py — Read canonical heuristic .md files and return
+"""extract_heuristic_slice.py - Read canonical heuristic .md files and return
 bounded slices for MCP injection (W1.7 Option X).
 
 Used by:
@@ -8,7 +8,7 @@ Used by:
 
 The .md files at .claude/agents/<artifact>-analyst.md are CANONICAL forensic
 heuristic knowledge bases authored by the user. They use a mix of section
-headers — this module handles the variance and produces deterministic,
+headers - this module handles the variance and produces deterministic,
 hashable, audit-citable slices.
 
 Header inventory (verified across 8 artifact files):
@@ -17,12 +17,12 @@ Header inventory (verified across 8 artifact files):
 - 1/8 (prefetch): "## Critical Forensic Heuristics"
 - 6/8:   "## Professional Patterns (from ...)"
 - All 8: "## Output Format", "## Query Pattern", "## Systematic Coverage Pattern"
-  (workflow sections — NOT in the heuristic slice; agent already knows pattern)
+  (workflow sections - NOT in the heuristic slice; agent already knows pattern)
 
 CTX audit chain (court-grade provenance):
     finding → execution_id → CTX-NNN → source_path + source_hash + section + excerpt_hash
 
-peer reviewer sign-off 2026-05-23 (CR13).
+(CR13).
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 AGENTS_DIR = REPO_ROOT / ".claude" / "agents"
 
 # Section header candidates that constitute the "heuristic" portion of each .md.
-# Ordered by priority — the slice extractor walks this list and concatenates
+# Ordered by priority - the slice extractor walks this list and concatenates
 # matching sections in declaration order. "What to Hunt" and "Critical Forensic
 # Heuristics" are the primary heuristic surfaces; "Forensic Ground Rules" is
 # always included as the framing preamble.
@@ -46,7 +46,7 @@ HEURISTIC_SECTION_HEADERS: list[str] = [
     "## What to Hunt (Heuristics, not procedures)",
     "## Critical Forensic Heuristics",
     "## Critical Forensic Distinction",
-    # "Professional Patterns" is depth-only — included by get_heuristic on demand,
+    # "Professional Patterns" is depth-only - included by get_heuristic on demand,
     # NOT in the Tier-1 / Tier-2 slice (would blow budget).
 ]
 
@@ -171,14 +171,14 @@ def _find_section_by_substring(
 
 
 # ---------------------------------------------------------------------------
-# Public API — three tiers of slice extraction
+# Public API - three tiers of slice extraction
 # ---------------------------------------------------------------------------
 
 def extract_tier1_slice(artifact: str) -> Optional[dict[str, Any]]:
     """Tier-1: post-`csv_path` per-artifact slice (~800 tokens).
 
     Used by build_contract_response() to inject heuristics with the extraction
-    response. Single call per (case_id, artifact, lane) — caching is the
+    response. Single call per (case_id, artifact, lane) - caching is the
     caller's responsibility (state.heuristic_refs_loaded).
 
     Returns dict with:
@@ -237,7 +237,7 @@ def extract_tier1_slice(artifact: str) -> Optional[dict[str, Any]]:
 def extract_tier2_slice(artifact: str) -> Optional[dict[str, Any]]:
     """Tier-2: hypothesis-bundle per-artifact slice (~600 tokens).
 
-    Used by prepare_hypothesis_context() — tighter than Tier-1 to allow
+    Used by prepare_hypothesis_context() - tighter than Tier-1 to allow
     multiple artifacts in a single bundle. Includes ONLY 'Forensic Ground
     Rules' + 'What to Hunt' (or equivalent), drops Distinction blocks.
     """

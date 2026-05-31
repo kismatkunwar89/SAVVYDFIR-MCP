@@ -1,4 +1,4 @@
-"""SAVVYDFIR-MCP Server — Purpose-built forensic MCP backend for Protocol SIFT.
+"""SAVVYDFIR-MCP Server - Purpose-built forensic MCP backend for Protocol SIFT.
 
 This server exposes 43 typed forensic tools through the Model Context
 Protocol (MCP) using stdio transport. It is designed to be used with Claude Code
@@ -6,14 +6,14 @@ as the primary agentic execution engine on SANS SIFT Workstation.
 
 Architecture
 ------------
-* **SafeRunner** — all subprocess calls go through a read-only enforcement layer
+* **SafeRunner** - all subprocess calls go through a read-only enforcement layer
   that validates paths, deny-lists destructive commands, and logs every execution
   to ``audit.jsonl`` before and after the subprocess runs.
-* **AuditLogger** — append-only JSONL audit trail; every tool invocation produces
+* **AuditLogger** - append-only JSONL audit trail; every tool invocation produces
   a ``started`` entry before execution and a ``completed`` entry after.
-* **CaseStateManager** — single-source-of-truth JSON state file (``state.json``);
+* **CaseStateManager** - single-source-of-truth JSON state file (``state.json``);
   holds all findings with F-NNN IDs, executions with E-NNN IDs, and open questions.
-* **FastMCP** — synchronous MCP server over stdio; all tool functions are sync
+* **FastMCP** - synchronous MCP server over stdio; all tool functions are sync
   because ``SafeRunner`` uses ``subprocess.run()``.
 
 Tool namespaces (56 tools)
@@ -40,7 +40,7 @@ Analysis (1):   run_analysis
 Novel contributions
 -------------------
 1. Cross-artifact contradiction detection via ``compare_disk_and_memory()``
-   (6 specific forensic checks — absent from all existing Protocol SIFT
+   (6 specific forensic checks - absent from all existing Protocol SIFT
    extensions and published DFIR-LLM systems).
 2. Evidence-triggered self-correction: CORRECTION_EVENTs fire when physical
    evidence contradicts itself, not when the LLM contradicts itself.
@@ -155,7 +155,7 @@ _audit_logger = AuditLogger(output_path=str(_ANALYSIS_DIR / "audit.jsonl"))
 _state_manager = CaseStateManager(state_path=str(_ANALYSIS_DIR / "state.json"))
 
 # ---------------------------------------------------------------------------
-# RBAC path model — case-agnostic read/write enforcement
+# RBAC path model - case-agnostic read/write enforcement
 # ---------------------------------------------------------------------------
 
 #: Paths that are strictly READ-ONLY (evidence and mount points).
@@ -234,7 +234,7 @@ init_all_tools(
 # ---------------------------------------------------------------------------
 
 
-# Memory tools — optional (module may not be built yet)
+# Memory tools - optional (module may not be built yet)
 try:
     # type: ignore[import]
     from sift_mcp.tools.memory import detect_profile as _detect_profile
@@ -266,7 +266,7 @@ def _memory_unavailable(tool_name: str) -> dict[str, Any]:
 
 
 # ===========================================================================
-# FORENSIC KNOWLEDGE SYSTEM — Valhuntir forensic-knowledge YAMLs (MIT)
+# FORENSIC KNOWLEDGE SYSTEM - Valhuntir forensic-knowledge YAMLs (MIT)
 # Injects artifact-specific caveats into every tool response so forensic
 # discipline is reinforced at the point of interpretation, not just at
 # session start via CLAUDE.md (which Claude drifts from after 50+ calls).
@@ -310,7 +310,7 @@ def _init_fk() -> None:
     """Load all forensic knowledge YAMLs at server startup."""
     global _FK
     if not _FK_BASE.exists():
-        return  # graceful degradation — no FK data available
+        return  # graceful degradation - no FK data available
     for tool_name, artifact in _FK_MAP.items():
         _FK[tool_name] = _load_fk(artifact)
     # Load discipline anti-patterns for rotating reminders
@@ -327,7 +327,7 @@ def _init_fk() -> None:
     except Exception:
         pass
 
-    # Load Hunt Evil process baseline (SANS DFIR)
+    # Load Hunt Evil process baseline
     try:
         hunt_evil_path = Path(__file__).parent.parent / \
             "data" / "hunt-evil-baseline.json"
@@ -358,7 +358,7 @@ def _init_fk() -> None:
 
 _init_fk()  # runs at import time
 
-# Per-session call counter — resets when Claude session restarts (correct behaviour)
+# Per-session call counter - resets when Claude session restarts (correct behaviour)
 _tool_call_counters: dict[str, int] = {}
 
 
@@ -405,7 +405,7 @@ def _forensic_envelope(tool_name: str) -> dict:
             "discipline_reminder": reminder or None,
             "data_provenance":     "tool_output_may_contain_untrusted_evidence",
         }
-    # For process scanning tools — include Hunt Evil baseline reference
+    # For process scanning tools - include Hunt Evil baseline reference
     # analyze_vss: add EZ Tools --vss documentation note
     if tool_name == "disk.analyze_vss" and count < 2:
         envelope["vss_recovery_note"] = (
@@ -419,13 +419,13 @@ def _forensic_envelope(tool_name: str) -> dict:
         baseline = _FK.get("__process_baseline__")
         if baseline and "corroborate_with" not in envelope:
             envelope["process_baseline_reference"] = (
-                "Hunt Evil (SANS DFIR): Check each process against expected "
+                "Hunt Evil: Check each process against expected "
                 "parent, instance count, and account. Key flags: svchost.exe parent≠services.exe, "
                 "lsass.exe count>1, explorer.exe account=System. "
                 f"Full baseline at /opt/SAVVYDFIR-MCP/data/hunt-evil-baseline.json"
             )
 
-    # Strip None values — don't pollute responses when FK data is absent
+    # Strip None values - don't pollute responses when FK data is absent
     return {k: v for k, v in envelope.items() if v is not None}
 
 
@@ -925,7 +925,7 @@ def _record_artifact_absent_audit(
     command_line: str = "",
     parameters: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """peer reviewer ITEM-2 helper: persist an artifact-absent classification end-to-end.
+    """ITEM-2 helper: persist an artifact-absent classification end-to-end.
 
     Monolithic disk tools (extract_shimcache, extract_srum, extract_pca) used
     to early-return ``status: artifact_absent`` directly, bypassing the audit
@@ -960,7 +960,7 @@ def _record_artifact_absent_audit(
         command_line=command_line,
     )
 
-    # Neutral gap finding — DOCUMENTED, no MITRE tags, no overclaim.
+    # Neutral gap finding - DOCUMENTED, no MITRE tags, no overclaim.
     finding_id = None
     try:
         finding_id = _state_manager.add_finding({
@@ -985,7 +985,7 @@ def _record_artifact_absent_audit(
             ],
         })
     except Exception:
-        # Finding write failure is non-fatal — the audit + execution row still go through
+        # Finding write failure is non-fatal - the audit + execution row still go through
         finding_id = None
 
     outputs_summary = (
@@ -1035,7 +1035,7 @@ def _strip_data_for_summary(response: Any, response_format: str = "summary",
     pattern used by disk tools via _apply_response_format.
 
     This applies to memory tools (scan_network, detect_injection, list_dlls)
-    which previously returned full record arrays on every call — a typical
+    which previously returned full record arrays on every call - a typical
     list_dlls response is 200+ DLLs ≈ 30 KB of context per PID.
     """
     if not isinstance(response, dict):
@@ -1043,7 +1043,7 @@ def _strip_data_for_summary(response: Any, response_format: str = "summary",
     fmt = (response_format or "summary").strip().lower()
     if fmt == "detailed":
         return response
-    # Default = summary — drop heavy fields, keep counts + handles + status.
+    # Default = summary - drop heavy fields, keep counts + handles + status.
     out = dict(response)
     data = out.get("data")
     if isinstance(data, list):
@@ -1064,24 +1064,24 @@ def _record_tool_success_audit(
     parameters: Optional[dict[str, Any]] = None,
     command_line: str = "",
     exit_code: int = 0,
-    # peer reviewer review round-2 ITEM-2: real timing instead of synthetic ~0ms.
+    # round-2 ITEM-2: real timing instead of synthetic ~0ms.
     # Callers MUST capture start_time before subprocess work begins; without
     # it the row records the helper-call duration only, not actual work.
     start_time: Optional[float] = None,
-    # peer reviewer review round-2 ITEM-1: structured artifact linkage. Without
+    # round-2 ITEM-1: structured artifact linkage. Without
     # this, downstream correlation (_latest_durable_csv_for_tool) cannot
     # find the produced CSV and silently misses evidence.
     raw_evidence_refs: Optional[list[dict[str, Any]]] = None,
     csv_path: Optional[str] = None,  # convenience wrapper for the common case
 ) -> str:
-    """peer reviewer consensus follow-up: monolithic tools must record execution parity
+    """follow-up: monolithic tools must record execution parity
     for SUCCESS paths with REAL provenance, not synthetic placeholders.
 
     Caller responsibilities (consensus contract):
-      * ``start_time``: capture ``time.monotonic()`` BEFORE the heavy
+      * ``start_time``: capture ``time.monotonic`` BEFORE the heavy
         subprocess work (esedbexport, AppCompatCacheParser, etc.). Falls
-        back to ``time.monotonic()`` at helper-call time with a stderr
-        warning — but that loses real duration.
+        back to ``time.monotonic`` at helper-call time with a stderr
+        warning - but that loses real duration.
       * ``command_line``: pass the actual subprocess invocation. For
         multi-phase pipelines, use a composite string like
         ``"esedbexport ... && SrumECmd parse ..."``. For pure-Python
@@ -1100,7 +1100,7 @@ def _record_tool_success_audit(
     if parameters is None:
         parameters = {}
     if not command_line:
-        # Fallback only — warn so this doesn't silently regress.
+        # Fallback only - warn so this doesn't silently regress.
         command_line = f"{tool_name}(exit_code={exit_code})"
         sys.stderr.write(
             f"[audit] _record_tool_success_audit: synthetic command_line for "
@@ -1152,7 +1152,7 @@ def _record_tool_success_audit(
             started_entry=started,
             completed_entry=completed,
         )
-        # peer reviewer review round-2 ITEM-1: link the durable CSV so
+        # round-2 ITEM-1: link the durable CSV so
         # _latest_durable_csv_for_tool can find it. Without this, the
         # gate passes but correlation silently sees zero evidence.
         if refs:
@@ -1201,7 +1201,7 @@ def _memory_watchdog(tool_name: str) -> None:
     when RSS crosses thresholds so operators see the climb instead of getting
     silently kill -9'd. At CRITICAL it also forces a gc.collect().
 
-    Fires once per tool call (called from _finalize_tool_response). Cheap —
+    Fires once per tool call (called from _finalize_tool_response). Cheap -
     /proc read + integer compare.
     """
     rss_mb = _read_rss_mb()
@@ -1247,7 +1247,7 @@ def _finalize_tool_response(tool_name: str, response: Any) -> Any:
     """Append the Phase 7 linked audit event and reconcile execution provenance."""
     if not isinstance(response, dict):
         return response
-    # Watchdog fires before audit work — if we're near OOM, the warning row
+    # Watchdog fires before audit work - if we're near OOM, the warning row
     # gets written even if the audit/link work below throws.
     _memory_watchdog(tool_name)
     response = _canonicalize_response_artifact_paths(response)
@@ -1342,7 +1342,7 @@ def verify_integrity(image_path: str) -> dict[str, Any]:
     Runs ``ewfverify`` (for E01 images) or ``sha256sum`` (for raw/dd images)
     to compute and compare the image hash against any stored reference hash.
 
-    This is the FIRST tool that should be called when evidence is registered —
+    This is the FIRST tool that should be called when evidence is registered -
     the computed hash is recorded in the audit log and must match the
     case-opening hash when the case is closed (zero-spoliation guarantee).
 
@@ -1420,7 +1420,7 @@ def extract_prefetch(
     image_path:
         Absolute path to the evidence disk image or mounted directory.
     case_id:
-        Case identifier — used to derive the output CSV path.
+        Case identifier - used to derive the output CSV path.
     max_entries:
         Maximum number of PrefetchRecord entries to return.
     response_format:
@@ -1454,7 +1454,7 @@ def get_amcache(
 
     Runs ``dotnet AmcacheParser.dll`` (EZ Tools) to parse Amcache.hve.
     Returns a list of AmcacheRecord dicts with SHA-1 hashes of executed
-    binaries — hashes survive even after the binary is deleted.
+    binaries - hashes survive even after the binary is deleted.
 
     Use the SHA-1 hash to pivot into threat intelligence even for deleted
     binaries.
@@ -1546,13 +1546,13 @@ def extract_usn_journal(
     """Parse the NTFS USN Journal ($UsnJrnl:$J) via MFTECmd.
 
     B.2: USN persists rename/delete/extend records the MFT itself may
-    have overwritten — critical for ransomware encryption timelines
+    have overwritten - critical for ransomware encryption timelines
     and large-file exfil staging detection.
 
     Output is LARGE (often >1M rows). Summary-only response returns the
     csv_path handle; the @mft-analyst runs targeted run_analysis queries
     against the CSV. Do NOT pass response_format='detailed' for routine
-    analysis — only for narrow row drill-down.
+    analysis - only for narrow row drill-down.
 
     Parameters
     ----------
@@ -1656,13 +1656,13 @@ def summarize_evtx(
     IDs to prevent context flooding.
 
     Key event IDs (included by default):
-    * **4624** — Successful logon (reveals lateral movement)
-    * **4625** — Failed logon (brute force indicator)
-    * **4688** — Process creation (requires audit policy)
-    * **7045** — New service installed (persistence indicator)
-    * **4698** — Scheduled task created
-    * **4103/4104** — PowerShell logging
-    * **1/3** — Sysmon process/network (if available)
+    * **4624** - Successful logon (reveals lateral movement)
+    * **4625** - Failed logon (brute force indicator)
+    * **4688** - Process creation (requires audit policy)
+    * **7045** - New service installed (persistence indicator)
+    * **4698** - Scheduled task created
+    * **4103/4104** - PowerShell logging
+    * **1/3** - Sysmon process/network (if available)
 
     Parameters
     ----------
@@ -1828,7 +1828,7 @@ def detect_profile(dump_path: str) -> dict[str, Any]:
 def list_processes(dump_path: str, response_format: str = "summary") -> dict[str, Any]:
     """List running processes from a memory dump using the PEB linked list.
 
-    Runs Volatility 3 ``windows.pslist.PsList`` — walks the
+    Runs Volatility 3 ``windows.pslist.PsList`` - walks the
     ``PsActiveProcessHead`` doubly-linked list to enumerate OS-visible
     processes.  Compare against ``scan_processes()`` (pool tag scan) to
     detect DKOM-hidden processes.
@@ -1861,11 +1861,11 @@ def list_processes(dump_path: str, response_format: str = "summary") -> dict[str
 def scan_processes(dump_path: str, response_format: str = "summary") -> dict[str, Any]:
     """Scan physical memory for EPROCESS structures (pool tag scan).
 
-    Runs Volatility 3 ``windows.psscan.PsScan`` — searches raw memory pages
+    Runs Volatility 3 ``windows.psscan.PsScan`` - searches raw memory pages
     for EPROCESS pool tags rather than walking the linked list.  This surfaces
     unlinked (DKOM-hidden) processes missed by ``list_processes()``.
 
-    Compare results against ``list_processes()`` — processes appearing in
+    Compare results against ``list_processes()`` - processes appearing in
     psscan but not pslist are DKOM-hidden.
 
     Parameters
@@ -1936,7 +1936,7 @@ def detect_injection(
     """Detect process injection via VAD region analysis (malfind).
 
     Runs Volatility 3 ``windows.malfind.Malfind`` to identify memory regions
-    that are executable, writable, and anonymous (no backing file on disk) —
+    that are executable, writable, and anonymous (no backing file on disk) -
     a strong indicator of process injection or shellcode.
 
     Injection in a process running from a legitimate path (System32,
@@ -2015,8 +2015,8 @@ def build_timeline(
     """Build a Plaso super-timeline from an evidence source.
 
     Runs ``log2timeline.py`` to ingest all artefact types from *source_path*
-    and write a ``.plaso`` storage file.  This step is slow (30–120 minutes
-    for a 100 GB image) — for demos, pre-generate the ``.plaso`` file.
+    and write a ``.plaso`` storage file.  This step is slow (30-120 minutes
+    for a 100 GB image) - for demos, pre-generate the ``.plaso`` file.
 
     Common parser presets: ``"win10"`` (default), ``"win7"``, ``"linux"``.
 
@@ -2026,7 +2026,7 @@ def build_timeline(
         Absolute path to the evidence source (image, mounted directory, or
         memory dump).
     case_id:
-        Case identifier — used to derive the ``.plaso`` output path in
+        Case identifier - used to derive the ``.plaso`` output path in
         ``./analysis/<case_id>/``.
     parsers:
         Plaso parser preset or comma-separated list of parser names.
@@ -2117,7 +2117,7 @@ def scan_files(
     *rules_path*.  Returns a list of match dicts: ``rule_name``,
     ``target_file``, ``matched_strings``.
 
-    An empty match list with ``status="ok"`` means no rules fired — a clean
+    An empty match list with ``status="ok"`` means no rules fired - a clean
     result, not an error.
 
     Parameters
@@ -2178,7 +2178,7 @@ def scan_memory(
 
 
 # ===========================================================================
-# CORRELATION NAMESPACE (2 tools) — THE CORE DIFFERENTIATOR
+# CORRELATION NAMESPACE (2 tools) - THE CORE DIFFERENTIATOR
 # ===========================================================================
 
 
@@ -2191,17 +2191,17 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
     Reads the authoritative case state and runs 6 forensic checks that no
     existing Protocol SIFT extension or DFIR-LLM system implements:
 
-    1. **process_no_disk_binary** (HIGH) — Running process with no on-disk
+    1. **process_no_disk_binary** (HIGH) - Running process with no on-disk
        binary → fileless malware or reflective injection.
-    2. **execution_evidence_deleted_binary** (HIGH) — Prefetch/Amcache entry
+    2. **execution_evidence_deleted_binary** (HIGH) - Prefetch/Amcache entry
        for a binary in the deleted-file list → post-exploitation cleanup.
-    3. **injection_legitimate_path** (HIGH) — VAD injection on a System32/
+    3. **injection_legitimate_path** (HIGH) - VAD injection on a System32/
        Program Files process → process hollowing or DLL injection.
-    4. **network_no_disk_evidence** (MEDIUM) — Network connection from a PID
+    4. **network_no_disk_evidence** (MEDIUM) - Network connection from a PID
        with no disk execution evidence → fileless attack.
-    5. **persistence_missing_binary** (HIGH) — Run key pointing to a binary
+    5. **persistence_missing_binary** (HIGH) - Run key pointing to a binary
        not found on disk → compromised but remediated host.
-    6. **timestomping_detected** (HIGH) — SI timestamps differ from FN
+    6. **timestomping_detected** (HIGH) - SI timestamps differ from FN
        timestamps by >1 hour → user-level timestamp manipulation.
 
     For each discrepancy found, the affected findings' ``contradicted_by``
@@ -2291,14 +2291,14 @@ def find_temporal_clusters(
     min_sources: int = 2,
     min_events: int = 3,
 ) -> dict[str, Any]:
-    """Find temporal clusters of activity across artifact types — Phase 6 synthesis input.
+    """Find temporal clusters of activity across artifact types - Phase 6 synthesis input.
 
-    W1.7 Run-3 fix (BUG-8, tri-agent signed 2026-05-24): this function existed
+    W1.7 Run-3 fix (BUG-8): this function existed
     in correlation.py but was never registered as an MCP tool. Run 3 agent tried
     to use it for Phase 6 synthesis and hit "tool not found", which contributed
     to the synthesis_corroboration lane closing with finding_ids=[] (0 CONFIRMED).
 
-    Professional workflow (DFIR):
+    Professional workflow :
     1. Merge all timestamped findings chronologically
     2. Slide a window (default ±5 min = 300s)
     3. Identify multi-source bursts (FILE + REG + EVT at same second)
@@ -2317,7 +2317,7 @@ def find_temporal_clusters(
     min_sources:
         Minimum distinct artifact types per cluster (default 2).
     min_events:
-        Minimum events per cluster (default 3 — the stacking threshold).
+        Minimum events per cluster (default 3 - the stacking threshold).
 
     Returns
     -------
@@ -2405,7 +2405,7 @@ def flag_discrepancy(
 
     Creates a DiscrepancyAlert and updates both findings' ``contradicted_by``
     lists in the authoritative case state.  Use this when the agent identifies
-    a contradiction that the automated correlation engine did not catch — for
+    a contradiction that the automated correlation engine did not catch - for
     example, when Volatility and a disk artefact give conflicting PID/process
     information.
 
@@ -2610,7 +2610,7 @@ def export_trace(case_id: str) -> dict[str, Any]:
     Parameters
     ----------
     case_id:
-        The forensic case identifier (used for labelling only — the audit
+        The forensic case identifier (used for labelling only - the audit
         log is server-global).
 
     Returns
@@ -2748,8 +2748,8 @@ def generate_graph(
     Runs ``scripts/investigation_graph.py`` to read ``audit.jsonl`` and
     ``state.json`` and produce:
 
-    1. ``graph.json`` — Node/edge graph data for D3.js.
-    2. ``graph.html`` — Self-contained interactive HTML visualization with
+    1. ``graph.json`` - Node/edge graph data for D3.js.
+    2. ``graph.html`` - Self-contained interactive HTML visualization with
        force-directed layout, hover tooltips, click provenance, and filters.
 
     Node types: case, evidence_source, finding (colored by evidence_kind),
@@ -2759,7 +2759,7 @@ def generate_graph(
     Parameters
     ----------
     case_id:
-        The forensic case identifier — used to derive default paths.
+        The forensic case identifier - used to derive default paths.
     state_path:
         Override path to ``state.json``. Defaults to
         ``./analysis/state.json``.
@@ -2799,7 +2799,7 @@ def generate_graph(
     _t0 = _time.monotonic()
     result: dict[str, Any]
 
-    # Resolve paths — respect per-host analysis dir set by run_investigation.py
+    # Resolve paths - respect per-host analysis dir set by run_investigation.py
     analysis_dir = _ANALYSIS_DIR
     reports_dir = Path("./reports").resolve()
 
@@ -2953,7 +2953,7 @@ def serve_graph(
     Parameters
     ----------
     case_id:
-        The forensic case identifier — used to derive the default graph path.
+        The forensic case identifier - used to derive the default graph path.
     port:
         Port number for the suggested http.server command (default 8080).
     graph_html_path:
@@ -3011,10 +3011,10 @@ def merge_host_graphs(
     (IPv4 addresses, MD5/SHA1/SHA256 hashes, domain\\user accounts) from
     ``supporting_indicators``, and builds a unified graph with cross-host edges:
 
-    * ``lateral_movement`` — TA0008 finding on one host shares an IOC with a
+    * ``lateral_movement`` - TA0008 finding on one host shares an IOC with a
       finding on another host.
-    * ``shared_ioc`` — same IP, hash, or domain appears in 2+ hosts.
-    * ``shared_account`` — same Windows account seen on 2+ hosts.
+    * ``shared_ioc`` - same IP, hash, or domain appears in 2+ hosts.
+    * ``shared_account`` - same Windows account seen on 2+ hosts.
 
     Each shared IOC becomes a purple hub node connecting the related findings
     across hosts.  Run this after completing investigations on 2+ hosts.
@@ -3130,7 +3130,7 @@ def merge_host_graphs(
 def build_reports_index(
     reports_dir: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Generate reports/index.html — a dashboard listing all investigations.
+    """Generate reports/index.html - a dashboard listing all investigations.
 
     Scans all ``reports/{case_id}/graph.json`` files and produces a self-
     contained dark-mode HTML index with:
@@ -3141,7 +3141,7 @@ def build_reports_index(
       exists).
 
     Run this after completing one or more investigations to refresh the index.
-    The index is regenerated from scratch on each call — safe to call repeatedly.
+    The index is regenerated from scratch on each call - safe to call repeatedly.
 
     Parameters
     ----------
@@ -3224,12 +3224,12 @@ _SIGMA_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "inform
 _SIGMA_ATTACK_TAG_RE = re.compile(r"attack\.(t\d{4}(?:\.\d{3})?)", re.IGNORECASE)
 _SIGMA_VALID_SEVERITIES = {"critical", "high", "medium", "low", "informational"}
 
-# W1.7 Run-4 fix (tri-agent consensus 2026-05-24, peer reviewer+peer reviewer signed):
+# W1.7 Run-4 fix:
 # Chainsaw emits "info" (short form) but legacy code expected "informational".
 # Without normalization, severity_filter=["informational"] silently misses
 # every Chainsaw "info" hit (Run 4 evidence: 192 "info" hits + 30,893 "User
-# Logoff" hits all using "info"). peer reviewer consensus: this normalization is
-# Step 0 of the fix — no level-semantic logic works without it.
+# Logoff" hits all using "info"). this normalization is
+# Step 0 of the fix - no level-semantic logic works without it.
 _SIGMA_LEVEL_ALIASES = {
     "info": "informational",
     "informational": "informational",
@@ -3247,7 +3247,7 @@ _SIGMA_LEVEL_ALIASES = {
 def _normalize_sigma_level(raw_level: Any) -> str:
     """Map any Sigma/Chainsaw severity representation to the canonical 5-bucket
     enum (critical/high/medium/low/informational). Default 'informational'
-    for unknown/missing — never silently classify as actionable.
+    for unknown/missing - never silently classify as actionable.
     """
     if raw_level is None:
         return "informational"
@@ -3257,8 +3257,8 @@ def _normalize_sigma_level(raw_level: Any) -> str:
 
 # Default inline-actionable threshold. Operator can override via env var
 # SAVVYDFIR_SIGMA_INLINE_LEVEL=low|medium|high|critical to expand or contract
-# (peer reviewer Q5: tunable so phishing cases can lower threshold to 'low'). The
-# threshold ONLY moves the summary/inline boundary — it never suppresses
+#. The
+# threshold ONLY moves the summary/inline boundary - it never suppresses
 # persisted JSON or queryability via query_sigma_results.
 _SIGMA_ACTIONABLE_DEFAULT_LEVEL = "medium"
 
@@ -3284,7 +3284,7 @@ def _is_actionable_level(level: str, threshold: str) -> bool:
 
 
 def _compact_sigma_hit(hit: dict[str, Any], *, index: int = -1) -> dict[str, Any]:
-    """Compact projection of a Chainsaw hit — preserves the fields the agent
+    """Compact projection of a Chainsaw hit - preserves the fields the agent
     needs to triage (rule, severity, technique, who/when/where) without the
     full event document body that bloats response size (Run-4 evidence: 50 raw
     hits = 89k chars; compact = ~300 chars each).
@@ -3315,7 +3315,7 @@ def _aggregate_below_threshold_summary(
 ) -> dict[str, Any]:
     """Build the 'summarized but not gapped' view of below-threshold hits.
 
-    peer reviewer consensus 2026-05-24: never dump raw rows; always return:
+    never dump raw rows; always return:
     - per-rule {name, level, count, first_ts, last_ts, sample_indices[≤3]}
     - top-`max_rules` rules by count (rest folded into 'other_rules_count')
     - `noise_rules`: rules with count > noise_count_threshold (e.g. User Logoff)
@@ -3390,7 +3390,7 @@ def _filter_sigma_hits(
     requested_techniques: set[str],
 ) -> list[dict[str, Any]]:
     # Normalize requested severities so operator can pass 'info' or
-    # 'informational' (or 'med' etc.) — handles the Chainsaw alias mismatch
+    # 'informational' (or 'med' etc.) - handles the Chainsaw alias mismatch
     # that caused Run 4's severity_filter to silently match nothing.
     normalized_sev_filter = {_normalize_sigma_level(s) for s in requested_severities}
     filtered_hits: list[dict[str, Any]] = []
@@ -3460,10 +3460,10 @@ def sigma_hunt(
     data because:
 
     1. Sigma rules encode community consensus about what constitutes malicious
-       behavior — they are calibrated against millions of real events.
+       behavior - they are calibrated against millions of real events.
     2. Each rule includes ATT&CK technique tags (e.g. ``attack.t1059.001``),
        so ATT&CK mappings are deterministic, not inferred.
-    3. Detection is reproducible — same logs, same rules, same results across
+    3. Detection is reproducible - same logs, same rules, same results across
        different investigators and investigations.
 
     Chainsaw covers the full attacker lifecycle across all high-value event IDs:
@@ -3489,7 +3489,7 @@ def sigma_hunt(
         Maximum number of Sigma hit findings to create in CaseStateManager.
         Individual findings are ranked by severity (critical > high > medium)
         before truncation.  Defaults to 500.  Note: Chainsaw ALWAYS processes
-        every event in the EVTX target — max_entries only caps how many hits
+        every event in the EVTX target - max_entries only caps how many hits
         become individual findings.  The full hit list is persisted as JSON at
         the output_path and can be paged through with ``query_sigma_results()``.
         The summary finding always reports the TRUE ``hits_total`` count.
@@ -3515,7 +3515,7 @@ def sigma_hunt(
     Notes
     -----
     If Chainsaw is not installed, the tool returns status ``"tool_not_found"``
-    with a detailed install hint — this is not treated as an error so the
+    with a detailed install hint - this is not treated as an error so the
     investigation can continue with other tools.
 
     ATT&CK technique extraction:
@@ -3564,7 +3564,7 @@ def sigma_hunt(
     def _finalize_validation_failure(error_msg: str, exit_code: int = 1) -> dict[str, Any]:
         """Complete audit trail for sigma_hunt validation failures.
 
-        peer reviewer adversarial review MEDIUM priority: sigma_hunt opened audit
+        adversarial review MEDIUM priority: sigma_hunt opened audit
         execution before validation, but several post-start failure paths
         returned without log_result or _record_execution_parity. This defeats
         the success/failure gate and loses debugging context for operators.
@@ -3904,7 +3904,7 @@ def sigma_hunt(
     # Only fail on non-zero exit. Empty output is legitimate ("no hits" on
     # clean systems) and is handled by _parse_chainsaw_hits below.
     #
-    # peer reviewer round-5 P2-#1: must record audit completion BEFORE returning
+    # round-5 P2-#1: must record audit completion BEFORE returning
     # so validate_run and the coverage gate can distinguish "real failed
     # run" from "never completed". A bare early-return leaves only the
     # 'started' entry, which the new gate would treat as not-yet-run.
@@ -3938,7 +3938,7 @@ def sigma_hunt(
             )
         except Exception:
             _failed_completed = None
-        # peer reviewer round-6 P2: _record_execution_parity dereferences
+        # round-6 P2: _record_execution_parity dereferences
         # completed_entry.get("entry_hash") and will raise on None.
         # Only call it when we have a real completed entry.
         if isinstance(_failed_completed, dict):
@@ -3981,8 +3981,8 @@ def sigma_hunt(
     hits_total = len(filtered_hits)
     severity_counts, technique_counts, technique_set = _sigma_breakdowns(filtered_hits)
 
-    # W1.7 Run-4 fix (tri-agent consensus 2026-05-24): split hits by sigma
-    # rule level — NEVER drop actionable detections, summarize noise.
+    # W1.7 Run-4 fix: split hits by sigma
+    # rule level - NEVER drop actionable detections, summarize noise.
     # User constraint: 'fix should be not have gap on detection triggered'.
     # actionable_threshold default 'medium' (critical+high+medium inline),
     # operator-tunable via SAVVYDFIR_SIGMA_INLINE_LEVEL env var.
@@ -3996,21 +3996,21 @@ def sigma_hunt(
         else:
             below_threshold_hits.append(hit)
 
-    # Compact projection of actionable hits — all medium+ compact inline (per
-    # peer reviewer: "inline ≠ full raw record"; raw lives in persisted JSON for
+    # Compact projection of actionable hits - all medium+ compact inline (per
+    # "inline ≠ full raw record"; raw lives in persisted JSON for
     # query_sigma_results drill-down).
     actionable_hits_compact = [
         _compact_sigma_hit(hit, index=idx)
         for idx, hit in enumerate(actionable_hits_raw)
     ]
-    # Below-threshold summary — per-rule {count, first_ts, last_ts, samples}.
+    # Below-threshold summary - per-rule {count, first_ts, last_ts, samples}.
     # Never dump raw rows; preserve detection visibility without flooding.
     below_threshold_summary = _aggregate_below_threshold_summary(below_threshold_hits)
 
-    # State-finding policy is now DECOUPLED from response visibility (peer reviewer
+    # State-finding policy is now DECOUPLED from response visibility (
     # consensus Q5): create individual state findings ONLY for actionable hits,
     # capped at max_entries as a SAFETY ceiling against pathological volumes.
-    # max_entries no longer gates "what the agent sees" — it gates "how many
+    # max_entries no longer gates "what the agent sees" - it gates "how many
     # raw_detector_hit findings pollute state.json".
     hits_to_process = actionable_hits_raw[:max_entries]
     preview_hits = [_compact_sigma_hit(h, index=i) for i, h in enumerate(hits_to_process[:10])]
@@ -4048,7 +4048,7 @@ def sigma_hunt(
 
         # Artifact event-time for find_temporal_clusters (Run 9 fix).
         # system_time = EVTX TimeCreated; Chainsaw emits ISO-8601.
-        # Skip "unknown" / missing — leave timestamp_observed None.
+        # Skip "unknown" / missing - leave timestamp_observed None.
         _observed_ts = str(system_time) if (
             system_time and str(system_time) != "unknown"
         ) else None
@@ -4130,7 +4130,7 @@ def sigma_hunt(
     except Exception:
         pass
 
-    # Per-severity summary findings — surface bucket counts as discrete state
+    # Per-severity summary findings - surface bucket counts as discrete state
     # entries so critical/high/medium counts are individually queryable in
     # state.json without parsing the prose summary. Closes the "30k mediums
     # buried in one summary" blindspot.
@@ -4169,7 +4169,7 @@ def sigma_hunt(
             pass
 
     # audit: tool completed
-    # peer reviewer round-4 P1 + Phase-A-boundary review: outputs_summary includes
+    # round-4 P1 + Phase-A-boundary review: outputs_summary includes
     # output_path so the gate can verify durable Chainsaw output. We also
     # propagate output_target as a parameter so audit consumers can read
     # the structured path without parsing the prose summary. Phase-A-
@@ -4222,7 +4222,7 @@ def sigma_hunt(
     # max_entries only caps how many become individual MCP findings. The
     # sigma-analyst subagent is expected to triage the JSON intelligently
     # (severity ranking, rule rarity, technique clustering, attack-window
-    # filtering) — not mechanically iterate every hit.
+    # filtering) - not mechanically iterate every hit.
     not_promoted_count = max(0, hits_total - len(hits_to_process))
     coverage_gap_payload = {
         "hits_total": hits_total,
@@ -4240,10 +4240,10 @@ def sigma_hunt(
         ),
     }
 
-    # peer reviewer consensus 2026-05-19 Tier-B1: when fallback was applied due
+    # Tier-B1: when fallback was applied due
     # to full-dir chainsaw timeout, return a ranked list of single-file
     # follow-up calls the agent should make to close coverage gaps.
-    # System.evtx is FIRST (EID 7045 service install — central to many
+    # System.evtx is FIRST (EID 7045 service install - central to many
     # attack chains and was missed in Run-10 for exactly this reason).
     recommended_next_calls: list[dict[str, Any]] = []
     if fallback_applied and fallback_reason == "directory_timeout":
@@ -4256,7 +4256,7 @@ def sigma_hunt(
             )
         except Exception:
             evtx_inv = {}
-        # Inventory stores stems lowercased — fall back to ranking even if
+        # Inventory stores stems lowercased - fall back to ranking even if
         # the inventory is empty (means summarize_evtx hasn't run yet).
         present_stems = set()
         if isinstance(evtx_inv, dict):
@@ -4348,7 +4348,7 @@ def sigma_hunt(
         ),
         **_forensic_envelope("detection.sigma_hunt"),
     }
-    # W1.7 Run-4 fix (tri-agent consensus 2026-05-24): response shape now
+    # W1.7 Run-4 fix: response shape now
     # surfaces ALL actionable detections (medium+) inline as compact records,
     # AND below-threshold summary so noise visibility is preserved without
     # flooding context. detailed mode adds raw actionable records for the
@@ -4368,7 +4368,7 @@ def sigma_hunt(
         f"never raw-dumped."
     )
     if normalized_format == "detailed":
-        # detailed mode: include raw actionable hits (NOT all 31k — only the
+        # detailed mode: include raw actionable hits (NOT all 31k - only the
         # already-bounded actionable set). Below-threshold stays summarized.
         response_payload["hits"] = actionable_hits_raw
     return _finalize_tool_response("detection.sigma_hunt", response_payload)
@@ -4394,7 +4394,7 @@ def hayabusa_hunt(
         audit entry so validate_run can distinguish failure from
         never-ran.
       - Records a summary finding even for 0 hits (durable-output
-        invariant — Phase A boundary).
+        invariant - Phase A boundary).
       - Includes the output_path in outputs_summary so the report gate's
         durable-proof check is satisfied.
 
@@ -4458,7 +4458,7 @@ def hayabusa_hunt(
 
     if hayabusa_bin is None:
         # Phase B boundary: mirror sigma_hunt's hardened missing-binary
-        # path — record a completed audit entry with exit_code=127 so
+        # path - record a completed audit entry with exit_code=127 so
         # coverage/audit consumers can distinguish "dependency absent"
         # from "started but abandoned".
         _missing_summary = (
@@ -4544,7 +4544,7 @@ def hayabusa_hunt(
     # Build command. Hayabusa flags:
     #   -d / -f: input dir or single file
     #   -r:      rules dir
-    #   -c:      rules-config dir (Hayabusa requires this — it looks for
+    #   -c:      rules-config dir (Hayabusa requires this - it looks for
     #           channel_abbreviations.txt and others under here; defaults
     #           are at <rules>/config in the standard install layout)
     #   -o:      output CSV path
@@ -4581,7 +4581,7 @@ def hayabusa_hunt(
             "execution_id": _eid,
         }
 
-    # Failure path: log completion (peer reviewer round-5 pattern)
+    # Failure path: log completion
     if proc.returncode != 0:
         _failed_summary = (
             f"hayabusa failed with exit_code={proc.returncode}; "
@@ -4630,7 +4630,7 @@ def hayabusa_hunt(
             "execution_id": _eid,
         }
 
-    # Parse CSV — Hayabusa columns vary by profile; we read the first
+    # Parse CSV - Hayabusa columns vary by profile; we read the first
     # max_entries rows and create findings.
     finding_ids: list[str] = []
     hits_total = 0
@@ -4903,17 +4903,17 @@ def query_sigma_results(
         ),
         **_forensic_envelope("detection.query_sigma_results"),
     }
-    # W1.7 Run-4 fix (tri-agent consensus 2026-05-24, peer reviewer P0): query_sigma_results
+    # W1.7 Run-4 fix (P0): query_sigma_results
     # detailed mode used to return RAW chainsaw event documents (Run-4 evidence:
     # 50 hits = 89,002 chars overflow). Compact projection mirrors sigma_hunt's
-    # actionable_hits shape — operator gets queryable paged drill-down without
+    # actionable_hits shape - operator gets queryable paged drill-down without
     # blowing the MCP response budget. Raw records remain at output_path for
     # operators who need them via direct file read.
     payload["actionable_hits"] = [
         _compact_sigma_hit(h, index=offset + i) for i, h in enumerate(page)
     ]
     if normalized_format == "detailed":
-        # Compact projection in detailed mode too (peer reviewer: "50 compact hits ≠
+        # Compact projection in detailed mode too ("50 compact hits ≠
         # 50 raw Chainsaw blobs"). For raw event docs, read output_path directly.
         payload["hits"] = [_compact_sigma_hit(h, index=offset + i) for i, h in enumerate(page)]
     return _finalize_tool_response("detection.query_sigma_results", payload)
@@ -4940,7 +4940,7 @@ def analyze_vss(
 
     Uses ``vshadowinfo`` and ``vshadowmount`` from libvshadow (Joachim Metz),
     which are pre-installed on SANS SIFT Workstation.  Does NOT mount or write
-    to the evidence image — read-only analysis only.
+    to the evidence image - read-only analysis only.
 
     Workflow:
       1. If ``partition_offset_sectors`` is not provided, runs ``mmls`` to auto-
@@ -4948,7 +4948,7 @@ def analyze_vss(
       2. Runs ``vshadowinfo`` to list all shadow copies with creation timestamps.
       3. For each shadow copy, mounts it temporarily (read-only) via
          ``vshadowmount`` and checks for the presence of key forensic artifacts.
-      4. Unmounts immediately after checking — no persistent mount points.
+      4. Unmounts immediately after checking - no persistent mount points.
       5. Returns a structured inventory of shadow copies and which artifacts are
          recoverable from each.
 
@@ -5068,7 +5068,7 @@ def analyze_vss(
                 capture_output=True, text=True, timeout=30
             )
             if mmls.returncode == 0:
-                # Parse mmls output — find the largest NTFS partition
+                # Parse mmls output - find the largest NTFS partition
                 # (offset, size, index)
                 ntfs_partitions: list[tuple[int, int, int]] = []
                 for line in mmls.stdout.splitlines():
@@ -5089,7 +5089,7 @@ def analyze_vss(
                     ntfs_partitions.sort(key=lambda x: x[1], reverse=True)
                     offset_sectors = ntfs_partitions[0][0]
         except FileNotFoundError:
-            pass  # mmls not available — try without offset
+            pass  # mmls not available - try without offset
 
     # ------------------------------------------------------------------
     # 3. Run vshadowinfo to list shadow copies
@@ -5231,7 +5231,7 @@ def analyze_vss(
     if current_shadow:
         shadow_copies.append(current_shadow)
 
-    # OOM mitigation — vshadowinfo output not needed after parse
+    # OOM mitigation - vshadowinfo output not needed after parse
     if hasattr(vsi_result, "release_stdout"):
         vsi_result.release_stdout()
 
@@ -5316,7 +5316,7 @@ def analyze_vss(
             except Exception:
                 pass
     else:
-        # Can't mount — still report shadow copies without artifact check
+        # Can't mount - still report shadow copies without artifact check
         for shadow in shadow_copies:
             shadow["artifacts_found"] = {}
             shadow["artifacts_missing"] = check_artifacts
@@ -5501,22 +5501,22 @@ def extract_pca(
 ) -> dict[str, Any]:
     """Extract Windows 11 Program Compatibility Assistant (PCA) execution artifacts.
 
-    Windows 11 22H2+ introduced the Program Compatibility Assistant artifact —
+    Windows 11 22H2+ introduced the Program Compatibility Assistant artifact -
     a plain-text record of GUI-launched executables stored in:
     ``C:\\Windows\\appcompat\\pca\\``
 
     Key files:
-    * **PcaAppLaunchDic.txt** — pipe-delimited, one entry per unique executable:
+    * **PcaAppLaunchDic.txt** - pipe-delimited, one entry per unique executable:
       ``{FullExecutablePath}|{UTC_Termination_Timestamp}``
       Timestamp = when the process *terminated*, not when it started.
-    * **PcaGeneralDb0.txt** and **PcaGeneralDb1.txt** — detailed exit records,
+    * **PcaGeneralDb0.txt** and **PcaGeneralDb1.txt** - detailed exit records,
       UTF-16LE encoded, alternating active/inactive.
 
     Forensic significance:
     * Records ALL GUI-launched executables, even if Prefetch is disabled
-    * Timestamp represents **termination** — useful for runtime duration when
+    * Timestamp represents **termination** - useful for runtime duration when
       correlated with Prefetch last-run time (duration = PCA_terminate - PF_start)
-    * Often survives attacker cleanup — most attackers don't know this artifact exists
+    * Often survives attacker cleanup - most attackers don't know this artifact exists
     * Cross-references with Amcache via ProgramId field for post-deletion hash lookup
     * Files in Temp/AppData/Downloads not present in standard Windows directories
       are automatically flagged as suspicious
@@ -5555,7 +5555,7 @@ def extract_pca(
     systems, which do not have this artifact.
 
     **Encoding:** PCA files use UTF-16LE with BOM.  Do NOT use standard ASCII
-    tools (e.g. ``cat``, ``grep``) to read these files — they will silently
+    tools (e.g. ``cat``, ``grep``) to read these files - they will silently
     corrupt or miss data.  This tool handles the encoding explicitly.
 
     **Timestamp interpretation:** The timestamp is when the process *terminated*,
@@ -5597,10 +5597,10 @@ def extract_pca(
                 break
 
     # ------------------------------------------------------------------
-    # 2. Check presence — Windows version gate
+    # 2. Check presence - Windows version gate
     # ------------------------------------------------------------------
     if not pca_launch_dic.exists():
-        # peer reviewer ITEM-2 broadened: pca_not_present is the canonical
+        # ITEM-2 broadened: pca_not_present is the canonical
         # Windows-10/Server "this artifact doesn't exist on this image" case.
         # Route through the audit pipeline so the hook gate sees the gap.
         response = _record_artifact_absent_audit(
@@ -5738,7 +5738,7 @@ def extract_pca(
                 line = line.strip()
                 if not line:
                     continue
-                # PcaGeneralDb format varies — best effort parsing
+                # PcaGeneralDb format varies - best effort parsing
                 entry = {
                     "raw_line": line,
                     "source_file": str(db_file),
@@ -5762,7 +5762,7 @@ def extract_pca(
     suspicious_entries = [e for e in pca_entries if e["is_suspicious"]]
     clean_entries = [e for e in pca_entries if not e["is_suspicious"]]
 
-    # Sort each group by timestamp (descending — most recent first)
+    # Sort each group by timestamp (descending - most recent first)
     def _sort_key(entry: dict) -> str:
         return entry.get("termination_timestamp_utc", "") or ""
 
@@ -5904,7 +5904,7 @@ def extract_pca(
 
 
 # ===========================================================================
-# REGISTRY HELPER — rla.exe dirty hive cleanup
+# REGISTRY HELPER - rla.exe dirty hive cleanup
 # ===========================================================================
 
 def _clean_hive_with_rla(hive_path: Path, label: str) -> tuple:
@@ -5932,19 +5932,19 @@ def _clean_hive_with_rla(hive_path: Path, label: str) -> tuple:
         capture_output=True, timeout=60,
     )
 
-    # rla outputs with path-flattened filename — find whatever is in tmp_out
+    # rla outputs with path-flattened filename - find whatever is in tmp_out
     cleaned_files = [f for f in tmp_out.iterdir() if f.is_file()]
     if cleaned_files:
         cleaned_hive = cleaned_files[0]
     else:
-        # Hive was already clean — use the original copy
+        # Hive was already clean - use the original copy
         cleaned_hive = tmp_in / hive_path.name
 
     return cleaned_hive, tmp_in, tmp_out
 
 
 # ===========================================================================
-# DISK NAMESPACE — extract_shimcache
+# DISK NAMESPACE - extract_shimcache
 # ===========================================================================
 
 @mcp.tool()
@@ -5957,7 +5957,7 @@ def extract_shimcache(
 
     ShimCache records every executable path observed by Windows, along with
     the file's last-modified timestamp.  It does NOT record run count or
-    execution time — only *presence*.  An entry proves the binary existed on
+    execution time - only *presence*.  An entry proves the binary existed on
     disk at some point.  Absence of an entry (via cross-reference with
     Amcache or Prefetch) is equally significant: it may indicate timestomping
     or anti-forensic file replacement.
@@ -5982,7 +5982,7 @@ def extract_shimcache(
     """
     if "extract_shimcache" in _DISABLED_TOOLS:
         return {"status": "disabled", "reason": "extract_shimcache is in SAVVYDFIR_DISABLE_TOOLS"}
-    # peer reviewer review round-2 ITEM-2: capture real start time BEFORE rla.exe
+    # round-2 ITEM-2: capture real start time BEFORE rla.exe
     # transaction-log replay + AppCompatCacheParser parsing.
     import time as _time_shim
     _shim_start_time = _time_shim.monotonic()
@@ -5996,7 +5996,7 @@ def extract_shimcache(
         if raw_hive.is_file():
             system_hive = raw_hive
         else:
-            # peer reviewer ITEM-2: persist artifact_absent through the audit pipeline
+            # ITEM-2: persist artifact_absent through the audit pipeline
             # so the hooks (which read state.json:executions) see the gap.
             return _record_artifact_absent_audit(
                 tool_name="disk.extract_shimcache",
@@ -6041,14 +6041,14 @@ def extract_shimcache(
                 "stderr": proc.stderr[:500],
             }
 
-        # Find the CSV — named {timestamp}_..._AppCompatCache.csv
+        # Find the CSV - named {timestamp}_..._AppCompatCache.csv
         csv_files = sorted(output_dir.glob("*AppCompatCache.csv"))
         if not csv_files:
             # AppCompatCacheParser exited cleanly but produced no CSV.
             # In SleuthKit-direct workflows the staged SYSTEM hive may lack
             # replayed transaction logs (.LOG1/.LOG2), leaving the
             # AppCompatCache key dirty/empty. This is a legitimate
-            # documented gap, not a tool failure — route through the audit
+            # documented gap, not a tool failure - route through the audit
             # pipeline so the hook gate sees the gap (state.json:executions
             # gets a row with outputs_summary containing "artifact_absent").
             response = _record_artifact_absent_audit(
@@ -6160,8 +6160,8 @@ def extract_shimcache(
                 })
                 finding_ids.append(sfid)
 
-        # peer reviewer review round-2: SUCCESS path records execution parity
-        # WITH real provenance — duration covers full rla.exe + parsing,
+        # round-2: SUCCESS path records execution parity
+        # WITH real provenance - duration covers full rla.exe + parsing,
         # csv_path linked to raw_evidence_refs for correlation, command_line
         # is a truthful operation descriptor (not a fake shell invocation
         # since the heavy work is rla.exe subprocess + Python CSV parsing).
@@ -6200,7 +6200,7 @@ def extract_shimcache(
 
 
 # ===========================================================================
-# DISK NAMESPACE — extract_srum
+# DISK NAMESPACE - extract_srum
 # ===========================================================================
 
 @mcp.tool()
@@ -6215,7 +6215,7 @@ def extract_srum(
     SRUM records per-process network usage (bytes sent/received) and resource
     consumption.  Data is retained for approximately 30 days (application) and
     60 days (network).  SRUM can surface evidence of applications that no
-    longer exist on disk — making it a critical anti-forensics detection tool.
+    longer exist on disk - making it a critical anti-forensics detection tool.
 
     Uses esedbexport (native Linux libEseDb) to export the ESE database
     tables, then parses the network data and application resource tables.
@@ -6239,7 +6239,7 @@ def extract_srum(
     """
     if "extract_srum" in _DISABLED_TOOLS:
         return {"status": "disabled", "reason": "extract_srum is in SAVVYDFIR_DISABLE_TOOLS"}
-    # peer reviewer review round-2 ITEM-2: capture real start time BEFORE any
+    # round-2 ITEM-2: capture real start time BEFORE any
     # heavy subprocess work so the success-audit row records actual duration.
     import time as _time_srum
     _srum_start_time = _time_srum.monotonic()
@@ -6252,7 +6252,7 @@ def extract_srum(
         if raw_srudb.is_file():
             srudb = raw_srudb
         else:
-            # peer reviewer ITEM-2: route absence through audit pipeline so the
+            # ITEM-2: route absence through audit pipeline so the
             # state.json:executions row carries the artifact_absent marker
             # the hooks search for.
             return _record_artifact_absent_audit(
@@ -6329,7 +6329,7 @@ def extract_srum(
     # Table has columns: AutoIncId, TimeStamp, AppId, UserId, ..., BytesSent, BytesRecvd
     # IMPORTANT: read ALL rows before truncating. Computing the 3x-median
     # threshold on a 50-row insertion-order sample (the previous behaviour)
-    # produced wrong findings — the median was effectively random.
+    # produced wrong findings - the median was effectively random.
     network_entries: list[dict] = []
     for tbl_file in sorted(export_dir.iterdir()):
         if not tbl_file.is_file() or tbl_file.stat().st_size < 10:
@@ -6362,7 +6362,7 @@ def extract_srum(
             break  # Only one network table
 
     if not network_entries:
-        # peer reviewer ITEM-2 broadened: even the no_data path must register an
+        # ITEM-2 broadened: even the no_data path must register an
         # execution row so the hook gate sees the legitimate gap.
         response = _record_artifact_absent_audit(
             tool_name="disk.extract_srum",
@@ -6466,7 +6466,7 @@ def extract_srum(
         })
         finding_ids.append(sfid)
 
-    # peer reviewer review round-2: SUCCESS path must record execution parity
+    # round-2: SUCCESS path must record execution parity
     # WITH real provenance (start_time + composite command_line + csv_path
     # linkage), so:
     #   1. The gate sees the tool ran (state.json:executions row)
@@ -6656,11 +6656,11 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
                 # CRITICAL: extraction without analysis is half a run. Every
                 # tool that returns csv_path/output_path is a PIVOT POINT, not
                 # an endpoint. The agent MUST drill in via run_analysis or by
-                # spawning the matching specialist subagent — otherwise the
+                # spawning the matching specialist subagent - otherwise the
                 # findings table fills with raw observations that never get
                 # promoted to CONFIRMED via cross-artifact corroboration.
                 "analysis_contract": {
-                    # W1.6.1e (2026-05-23) — main-agent inline analysis is the
+                    # W1.6.1e (2026-05-23) - main-agent inline analysis is the
                     # primary path for the FIND EVIL! hackathon submission.
                     # See PLAN-FIND-EVIL-HACKATHON-2026-05-23.md.
                     "rule": (
@@ -6866,19 +6866,19 @@ def _raw_artifact_target(
     source_name = Path(source_path.replace("\\", "/")).name or source_path.strip("$")
     safe_name = re.sub(r"[^A-Za-z0-9.$%_ -]+", "_", source_name).strip(" .") or "artifact"
     normalized = source_path.replace("\\", "/")
-    # peer reviewer consensus 2026-05-19: extend the per-user prefix to all NTUSER
+    # extend the per-user prefix to all NTUSER
     # transaction-log variants. Without this, alice's hive stages as
     # alice_NTUSER.DAT but its logs stage as the generic NTUSER.DAT.LOG1/LOG2
-    # — rla.exe looks for `{hive}.LOG1` next to the hive and misses them,
+    # - rla.exe looks for `{hive}.LOG1` next to the hive and misses them,
     # and multiple users collide on the same generic log filename so
     # seen_targets silently skips them.
     #
-    # peer reviewer follow-up 2026-05-19: detect Users as a path SEGMENT (case
+    # follow-up 2026-05-19: detect Users as a path SEGMENT (case
     # insensitive) regardless of leading drive/slash. fls -r -p produces
     # relative paths like Users/alice/NTUSER.DAT (no leading slash) which
     # the old substring guard missed entirely, bypassing the prefix branch
     # for the actual extraction path. Older Windows installs (XP/2003) may
-    # live under Documents and Settings/<user>/ — detected as a segment too.
+    # live under Documents and Settings/<user>/ - detected as a segment too.
     if family == "registry" and safe_name.upper() in _NTUSER_VARIANTS:
         parts = [part for part in normalized.split("/") if part]
         users_idx = None
@@ -7025,7 +7025,7 @@ def extract_windows_artifacts(
         failures: list[dict[str, Any]] = []
         seen_targets: set[str] = set()
 
-        # OOM mitigation — fls output on full NTFS can be 100+ MB.
+        # OOM mitigation - fls output on full NTFS can be 100+ MB.
         # Materialize the line list once, then release the raw buffer so the
         # heap doesn't carry it through the icat per-file extraction loop.
         _fls_lines = fls_result.stdout.splitlines()
@@ -7122,11 +7122,11 @@ def extract_windows_artifacts(
         # $MFT + 420 EVTX + 266 prefetch + SRUDB + USN had successfully staged.
         # The agent then saw "warning" + interpreted as "extraction failed" and
         # chased ghosts. Now:
-        #   - status="ok"           — all expected families staged with no failures
-        #   - status="partial_success" — at least one family staged ≥1 file BUT
+        #   - status="ok"           - all expected families staged with no failures
+        #   - status="partial_success" - at least one family staged ≥1 file BUT
         #                            either failures present or some family empty
-        #   - status="warning"      — nothing staged at all (everything failed)
-        #   - status="error"        — already returned earlier via the exception path
+        #   - status="warning"      - nothing staged at all (everything failed)
+        #   - status="error"        - already returned earlier via the exception path
         families_with_artifacts = [f for f in selected if extracted.get(f)]
         families_empty = [f for f in selected if not extracted.get(f)]
         total_artifacts_staged = sum(len(paths) for paths in extracted.values())
@@ -7379,7 +7379,7 @@ def _mark_state_updated_after_report(case_id: str) -> None:
     )
 
 
-# Phase 4 (peer reviewer consensus 2026-05-22): synthesis_corroboration runs AFTER
+# Phase 4: synthesis_corroboration runs AFTER
 # all artifact lanes (including timeline_correlation) close. Adding
 # timeline_correlation to the prereq tuple lets the artifact-specialist
 # swarm close first, then synthesis-analyst stacks evidence across them.
@@ -7397,13 +7397,13 @@ _SYNTHESIS_SPECIALIST = "synthesis-analyst"
 
 
 def _dispatch_corroboration_if_ready(case_id: str) -> bool:
-    """C.1 (peer reviewer round-1 #4) + Phase-C-boundary #high: atomic dispatch.
+    """C.1 + Phase-C-boundary #high: atomic dispatch.
 
-    DEFECT-2 (peer reviewer consensus 2026-05-20): also enforce deterministic
+    DEFECT-2: also enforce deterministic
     idempotency via delegate_key in the per-lane queue. When 4 specialists
     progress timeline_correlation sequentially, only the FIRST completion
     that meets prereqs may enqueue a corroboration delegate; subsequent
-    completions look up the existing delegate by key and skip — even if
+    completions look up the existing delegate by key and skip - even if
     the persistent ``corroboration_dispatched`` flag has been reset.
 
     Sequence per call:
@@ -7420,7 +7420,7 @@ def _dispatch_corroboration_if_ready(case_id: str) -> bool:
     Returns True iff this call won the claim AND wrote a delegate.
     """
     # DEFECT-2: load ledger and delegate-queue helpers (best-effort imports
-    # — failures don't break dispatch, just lose the audit trail).
+    # - failures don't break dispatch, just lose the audit trail).
     import sys
     from pathlib import Path as P
     _scripts_dir = P(__file__).resolve().parent.parent / "scripts"
@@ -7500,7 +7500,7 @@ def _dispatch_corroboration_if_ready(case_id: str) -> bool:
             return False
 
     # First pass: short-circuit if synthesis_corroboration is already done.
-    # Phase 4 (peer reviewer consensus 2026-05-22): the dispatcher's "already done"
+    # Phase 4: the dispatcher's "already done"
     # check now keys on synthesis_corroboration, NOT timeline_correlation.
     # timeline_correlation closes on artifact-specialist completion;
     # synthesis_corroboration closes only when synthesis-analyst finishes.
@@ -7527,7 +7527,7 @@ def _dispatch_corroboration_if_ready(case_id: str) -> bool:
 
     # Fallback: try_claim_status_flag returns False both when the predicate
     # fails AND when the flag was already set by a prior call.  In the
-    # "already set" case we must also skip — otherwise the code below will
+    # "already set" case we must also skip - otherwise the code below will
     # re-write the delegate.json with processed=False, blocking generate_report.
     try:
         _existing_flag = _state_manager._state.get("status_flags", {}).get(
@@ -7577,7 +7577,7 @@ def _dispatch_corroboration_if_ready(case_id: str) -> bool:
         )
         return False
 
-    # peer reviewer boundary fix: write delegate BEFORE claiming flag to prevent
+    # boundary fix: write delegate BEFORE claiming flag to prevent
     # permanent dispatch suppression on transient write failures.
     # Phase 4: target the new synthesis_corroboration lane + synthesis-analyst.
     delegate_path = Path(
@@ -7624,10 +7624,10 @@ def _dispatch_corroboration_if_ready(case_id: str) -> bool:
         # Atomic rename (POSIX guarantees atomicity)
         Path(tmp_path).replace(delegate_path)
     except (OSError, IOError):
-        # Delegate write failed — do NOT claim the flag, allow retry
+        # Delegate write failed - do NOT claim the flag, allow retry
         return False
 
-    # Delegate file exists — now claim the flag
+    # Delegate file exists - now claim the flag
     claimed_for_dispatch = _state_manager.try_claim_status_flag(
         "corroboration_dispatched",
         readiness_predicate=_needs_dispatch_predicate,
@@ -7635,7 +7635,7 @@ def _dispatch_corroboration_if_ready(case_id: str) -> bool:
     )
     if not claimed_for_dispatch:
         # Another process claimed between our write and flag check.
-        # Delegate file exists but we didn't win the race — return False
+        # Delegate file exists but we didn't win the race - return False
         # (the winner will process it).
         return False
 
@@ -7690,7 +7690,7 @@ def _mark_delegate_processed_for_lane(case_id: str, lane_id: str) -> None:
         # Pop the delegate from this lane's queue
         mark_delegate_processed(lane_id)
     except Exception:
-        pass  # Delegate processing is advisory — failure must not block
+        pass  # Delegate processing is advisory - failure must not block
 
 
 def _mark_evidence_access_lane(source_tool: str, summary: str) -> None:
@@ -7805,7 +7805,7 @@ def record_analysis_lane(
                 "required_tool_name": "disk.summarize_evtx",
             }
 
-        # peer reviewer consensus 2026-05-19 Tier-B2: detect duplicate
+        # Tier-B2: detect duplicate
         # COMPLETE→COMPLETE upserts and short-circuit to a noop result.
         # Without this, an agent retrying generate_report after a delegate
         # block kept calling record_analysis_lane with identical state,
@@ -7921,12 +7921,12 @@ def record_analysis_lane(
         # exactly once when all artifact lanes are recorded done; the
         # idempotent flag in status_flags prevents duplicate dispatch on
         # retries, stale triggers, or out-of-order lane writeback.
-        # Phase 4 (peer reviewer consensus 2026-05-22) — removed the prior
+        # Phase 4 - removed the prior
         # lane-skip guard ("if normalized_lane != 'timeline_correlation'").
         # Synthesis runs into its OWN lane (synthesis_corroboration), so
         # dispatch can fire on ANY prereq lane completion (including
         # timeline_correlation). The dispatcher's idempotency comes from
-        # _SYNTHESIS_LANE_ID status checks + the delegate_key lookup —
+        # _SYNTHESIS_LANE_ID status checks + the delegate_key lookup -
         # NOT from skipping certain source lanes. Only synthesis itself
         # closing the synthesis_corroboration lane prevents re-dispatch.
         corroboration_dispatched = False
@@ -8062,7 +8062,7 @@ def add_finding(
         most recent execution for the same ``tool_name`` if one exists,
         otherwise the latest execution overall. CONFIRMED findings whose
         ``execution_id`` does not resolve to a real audit row are demoted to
-        ACTIVE with ``requires_re_extraction=True`` (peer reviewer provenance gate).
+        ACTIVE with ``requires_re_extraction=True`` (provenance gate).
     alternative_hypothesis:
         Strongest competing benign explanation for the observed evidence.
         Required (non-empty) for CONFIRMED findings unless ``disposition``
@@ -8076,7 +8076,7 @@ def add_finding(
         Final disposition of the alternative hypothesis. One of:
         ``"ruled_out"``, ``"not_resolved"``, ``"partially_plausible"``,
         ``"not_applicable"``. ``not_resolved`` / ``partially_plausible``
-        demote CONFIRMED to ACTIVE per peer reviewer sign-off.
+        demote CONFIRMED to ACTIVE per 
     alternative_hypothesis_not_applicable_reason:
         Required (non-empty) when ``disposition="not_applicable"``.
 
@@ -8114,7 +8114,7 @@ def add_finding(
             finding["alternative_hypothesis_not_applicable_reason"] = (
                 alternative_hypothesis_not_applicable_reason
             )
-        # W1.7 Run-3 fix (BUG-7): persist corroborated_by — parity with submit_finding
+        # W1.7 Run-3 fix (BUG-7): persist corroborated_by - parity with submit_finding
         if corroborated_by:
             finding["corroborated_by"] = [str(x).strip() for x in corroborated_by if str(x).strip()]
         finding_id = _state_manager.add_finding(finding)
@@ -8154,15 +8154,15 @@ def submit_finding(
 ) -> dict[str, Any]:
     """Specialist-authoritative finding registration with durable provenance.
 
-    W1.7 Run-3 fix (tri-agent consensus 2026-05-24, peer reviewer+peer reviewer signed):
+    W1.7 Run-3 fix:
     ``corroborated_by`` parameter is now exposed (Run 3 failed because the
     SOP told the agent to pass it but the tool didn't accept it). Response
     now always includes ``confirmed_eligibility`` so the agent can self-
     correct without waiting for the report gate.
 
-    COPY-PASTE SCHEMA TEMPLATE — Phase 6 synthesis finding ready for CONFIRMED.
+    COPY-PASTE SCHEMA TEMPLATE - Phase 6 synthesis finding ready for CONFIRMED.
     Replace the <ANGLE_BRACKETS> placeholders with case-specific values from
-    your investigation. Do NOT copy literal example values — they are
+    your investigation. Do NOT copy literal example values - they are
     intentionally generic to keep the framework case-agnostic.
 
         submit_finding(
@@ -8173,14 +8173,14 @@ def submit_finding(
                                  credential_access | exfiltration | other>,
             artifact_type="correlation",
             evidence_kind="inference",          # synthesis derived from multiple observations;
-                                                # NOT "corroborated" — valid enum is
+                                                # NOT "corroborated" - valid enum is
                                                 # OBSERVATION | INFERENCE | HYPOTHESIS | REJECTED
             description=<one sentence: what the multi-source stack proves and why>,
             confidence=<0.85-1.00 for CONFIRMED claims>,
             status="CONFIRMED",
             source_execution_id=<execution_id of the compare_disk_and_memory or
                                  find_temporal_clusters run that produced the
-                                 evidence — must resolve to a real audit row>,
+                                 evidence - must resolve to a real audit row>,
             corroborated_by=<list of ≥2 (preferably ≥3) source F-NNN finding IDs
                             that independently support this claim>,
             alternative_hypothesis=<one sentence describing the strongest
@@ -8196,16 +8196,16 @@ def submit_finding(
         )
 
     CONFIRMED-eligibility checklist (A1 + A2 gates from semantics.py):
-      A1 provenance — source_execution_id MUST resolve to a real audit row
-      A2 alt-hypothesis bundle — alternative_hypothesis + evidence_against_it
+      A1 provenance - source_execution_id MUST resolve to a real audit row
+      A2 alt-hypothesis bundle - alternative_hypothesis + evidence_against_it
                                  (≥1) + disposition="ruled_out" OR
                                  disposition="not_applicable" + reason
-      Stacking — corroborated_by with ≥2 (preferably ≥3) finding IDs
-      Confidence — typically ≥0.85 for CONFIRMED claims
+      Stacking - corroborated_by with ≥2 (preferably ≥3) finding IDs
+      Confidence - typically ≥0.85 for CONFIRMED claims
 
-    peer reviewer consensus 2026-05-22 Phase 1. Differs from ``add_finding`` in two
+    Phase 1. Differs from ``add_finding`` in two
 
-    peer reviewer consensus 2026-05-22 Phase 1. Differs from ``add_finding`` in two
+    Phase 1. Differs from ``add_finding`` in two
     ways: every call REQUIRES a specialist ``assigned_agent`` and a ``lane_id``.
     These two fields are the provenance anchor the Phase 5 investigation-success
     gate uses to confirm that each specialist lane received first-pass analyst
@@ -8216,7 +8216,7 @@ def submit_finding(
     hypothesis gate fire identically. The ONLY semantic differences are:
       * ``assigned_agent`` is mandatory and persisted to the Finding model.
       * ``tool_name`` stays as ``"state.submit_finding"`` (the MCP producing tool).
-        We do NOT overload tool_name with the specialist name per peer reviewer sign-off.
+        We do NOT overload tool_name with the specialist name per 
       * An audit row is written so ``which specialist registered finding F-NNN``
         is queryable later via audit.jsonl.
 
@@ -8230,7 +8230,7 @@ def submit_finding(
         Must match the specialist's mapped lane in ``TOOL_AGENT_MAP``.
     assigned_agent:
         Specialist subagent_type WITHOUT the leading ``@`` (e.g. ``"mft-analyst"``).
-        Required — the provenance anchor for the investigation-success gate.
+        Required - the provenance anchor for the investigation-success gate.
     finding_type:
         Forensic category (``timestomping``, ``lateral_movement``,
         ``credential_access``, ``persistence``, etc.).
@@ -8252,8 +8252,7 @@ def submit_finding(
         Optional narrow classification + ATT&CK mapping.
     alternative_hypothesis, evidence_that_would_support_it, evidence_against_it,
     disposition, alternative_hypothesis_not_applicable_reason:
-        A2 gate fields. CONFIRMED status requires the disposition-bundle (see
-        peer reviewer consensus 2026-05-19).
+        A2 gate fields. CONFIRMED status requires the disposition-bundle.
     status:
         Lifecycle (``ACTIVE``, ``CONFIRMED``, ``REJECTED``). Demoted by gate
         if A1 or A2 invariants fail.
@@ -8264,7 +8263,7 @@ def submit_finding(
         ``status``, ``finding_id``, ``finding`` (the persisted record).
     """
     try:
-        # Normalize assigned_agent — accept "@memory-analyst" or "memory-analyst".
+        # Normalize assigned_agent - accept "@memory-analyst" or "memory-analyst".
         normalized_agent = (assigned_agent or "").strip().lstrip("@")
         if not normalized_agent:
             return {
@@ -8288,12 +8287,12 @@ def submit_finding(
             "confidence": confidence,
             "finding_status": status,
             "artifact_path": artifact_path,
-            # peer reviewer sign-off: tool_name stays as the MCP producing tool.
+            # tool_name stays as the MCP producing tool.
             # Specialist provenance goes in assigned_agent (separate field).
             "tool_name": "state.submit_finding",
             "iteration": 1,
             "contradicted_by": [],
-            # Phase 1 — durable specialist provenance:
+            # Phase 1 - durable specialist provenance:
             "assigned_agent": normalized_agent,
         }
         if supporting_indicators:
@@ -8308,7 +8307,7 @@ def submit_finding(
             finding["execution_id"] = source_execution_id
         if timestamp_observed:
             # Validate ISO-8601 (with timezone or trailing Z); on parse failure
-            # warn-and-drop rather than raise — so agent typos don't kill the
+            # warn-and-drop rather than raise - so agent typos don't kill the
             # finding, but bad timestamps don't poison find_temporal_clusters.
             _ts_normalized = ""
             try:
@@ -8335,7 +8334,7 @@ def submit_finding(
             finding["alternative_hypothesis_not_applicable_reason"] = (
                 alternative_hypothesis_not_applicable_reason
             )
-        # W1.7 Run-3 fix (BUG-7): persist corroborated_by — Finding model
+        # W1.7 Run-3 fix (BUG-7): persist corroborated_by - Finding model
         # supports it (finding.py:223) but submit_finding never exposed it.
         # Agent in Run 3 couldn't pass it even though SOP required it.
         if corroborated_by:
@@ -8344,14 +8343,14 @@ def submit_finding(
         finding_id = _state_manager.add_finding(finding)
         stored = _state_manager.get_finding(finding_id) or finding
 
-        # Phase 1 audit row — captures which specialist registered the finding,
+        # Phase 1 audit row - captures which specialist registered the finding,
         # which lane they were working, and the durable finding_id. The Phase 5
         # investigation-success gate reads these rows.
         #
-        # peer reviewer adversarial review 2026-05-22 [HIGH]: prior version called
+        # adversarial review 2026-05-22 [HIGH]: prior version called
         # log_execution(...) with kwargs that don't exist on the signature
         # (exit_code, duration_seconds, outputs_summary, finding_ids_generated)
-        # — raised TypeError, swallowed silently, audit row never written,
+        # - raised TypeError, swallowed silently, audit row never written,
         # Phase 5 gate saw 0 submit_finding rows. Fix: write the proper
         # started + completed pair via the documented API.
         audit_command = (
@@ -8389,19 +8388,19 @@ def submit_finding(
                 parameters=audit_parameters,
             )
         except Exception as audit_exc:
-            # peer reviewer required: do NOT silently swallow this — Phase 5 gate
+            # required: do NOT silently swallow this - Phase 5 gate
             # depends on it. Surface in the tool response.
             audit_failure = f"audit_write_failed: {type(audit_exc).__name__}: {audit_exc}"
 
-        # W1.7 Run-3 fix (Step 4, tri-agent signed 2026-05-24): non-blocking
+        # W1.7 Run-3 fix (Step 4): non-blocking
         # confirmed_eligibility feedback so the agent learns the A1+A2 schema
         # at the moment of submission, not 30 minutes later at the report gate.
-        # Always present (peer reviewer: deterministic for tests/agents). Rich detail
+        # Always present (deterministic for tests/agents). Rich detail
         # only when the agent claims high confidence or CONFIRMED status.
         stored_status = str(stored.get("finding_status") or status or "").upper()
         eligibility: dict[str, Any] = {"eligible": False, "missing": [], "gate_blocks": []}
         if confidence >= 0.85 or stored_status == "CONFIRMED":
-            # Check A1 provenance — execution_id must resolve to a real audit row
+            # Check A1 provenance - execution_id must resolve to a real audit row
             stored_eid = str(stored.get("execution_id") or "").strip()
             if not stored_eid or stored_eid == "E-000":
                 eligibility["gate_blocks"].append("A1_provenance: source_execution_id unresolved (E-000 or empty)")
@@ -8467,7 +8466,7 @@ def coverage_report(case_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# W1.7 — heuristic-injection MCP tools (CR13 Option X)
+# W1.7 - heuristic-injection MCP tools (CR13 Option X)
 # ---------------------------------------------------------------------------
 #
 # Three tools form the heuristic-injection lane:
@@ -8476,8 +8475,8 @@ def coverage_report(case_id: str) -> dict[str, Any]:
 #       Tier-2 bundle: aggregates manifest taxonomy + volatile summary +
 #       detection anchors + execution anomalies + open corrections + data
 #       gaps + per-artifact heuristic slices for artifacts that produced
-#       findings. Dedup via state.heuristic_refs_loaded — second call returns
-#       refs only, not full slice content (peer reviewer CR13-3).
+#       findings. Dedup via state.heuristic_refs_loaded - second call returns
+# refs only, not full slice content (CR13-3).
 #
 #   record_hypotheses(case_id, hypotheses=[...])
 #       Persist LLM-formed Hypothesis records to state for audit + follow-on
@@ -8512,7 +8511,7 @@ def _emit_context_bundle_for_slice(
     """Allocate a CTX-NNN, write context_bundle audit row, persist heuristic ref
     to state. Returns (context_id, was_new). If the exact (artifact, excerpt_hash)
     pair was already loaded for this case, returns the existing CTX id and
-    was_new=False — caller can use this to return refs-only instead of content.
+    was_new=False - caller can use this to return refs-only instead of content.
     """
     excerpt_hash = slice_data.get("excerpt_hash") or ""
     existing = _state_manager.lookup_heuristic_ref(artifact, excerpt_hash)
@@ -8549,24 +8548,24 @@ def _emit_context_bundle_for_slice(
 @mcp.tool()
 def prepare_hypothesis_context(case_id: str) -> dict[str, Any]:
     """Bundle the context an LLM needs to form 2-5 ranked investigation
-    hypotheses. CR13 Option X — the missing brain step between detection
+    hypotheses. CR13 Option X - the missing brain step between detection
     anchors and pivot loop.
 
     Returns a dict with:
-        taxonomy             — manifest investigative_taxonomy (if present)
-        volatile_summary     — active processes / network / injection flags
-        detection_anchors    — top-N sigma + hayabusa hits (NOT raw 502)
-        execution_anomalies  — first-runs / off-path binaries from
+        taxonomy             - manifest investigative_taxonomy (if present)
+        volatile_summary     - active processes / network / injection flags
+        detection_anchors    - top-N sigma + hayabusa hits (NOT raw 502)
+        execution_anomalies  - first-runs / off-path binaries from
                                 Prefetch/Amcache/ShimCache
-        open_corrections     — outstanding CorrectionEvent records
-        data_gaps            — coverage_debt + analyst-recorded gaps
-        applicable_heuristics— per-artifact heuristic slices with CTX refs,
+        open_corrections     - outstanding CorrectionEvent records
+        data_gaps            - coverage_debt + analyst-recorded gaps
+        applicable_heuristics- per-artifact heuristic slices with CTX refs,
                                 ONLY for artifacts that produced findings;
                                 duplicates already-loaded slices return as
                                 refs-only (token-budget protection)
-        loaded_refs          — list of CTX ids already in state (for the
+        loaded_refs          - list of CTX ids already in state (for the
                                 LLM to reference without re-receiving content)
-        agent_instruction    — what the LLM should do with this bundle
+        agent_instruction    - what the LLM should do with this bundle
 
     Token budget: ~5K maximum per call. Tier-2 slices are ~600 tokens each;
     capped at 4 fresh artifacts per call. Repeat calls return mostly refs.
@@ -8583,7 +8582,7 @@ def prepare_hypothesis_context(case_id: str) -> dict[str, Any]:
             or {}
         )
 
-        # 2) Volatile summary — derive from existing memory findings if present
+        # 2) Volatile summary - derive from existing memory findings if present
         findings = _state_manager.get_findings()
         volatile_summary = {
             "process_findings": len([f for f in findings if (f.get("tool_name") or "").startswith("memory.")]),
@@ -8599,7 +8598,7 @@ def prepare_hypothesis_context(case_id: str) -> dict[str, Any]:
             ]),
         }
 
-        # 3) Detection anchors — ranked, NOT raw 502
+        # 3) Detection anchors - ranked, NOT raw 502
         sigma_findings = [
             f for f in findings
             if "sigma" in (f.get("tool_name") or "").lower()
@@ -8632,7 +8631,7 @@ def prepare_hypothesis_context(case_id: str) -> dict[str, Any]:
             ][:20],
         }
 
-        # 4) Execution anomalies — from disk-execution findings
+        # 4) Execution anomalies - from disk-execution findings
         execution_anomalies = [
             {"finding_id": f.get("finding_id"), "description": (f.get("description") or "")[:160]}
             for f in findings
@@ -8661,7 +8660,7 @@ def prepare_hypothesis_context(case_id: str) -> dict[str, Any]:
         artifact_coverage = case_state_dict.get("artifact_coverage") or {}
         coverage_debt = artifact_coverage.get("coverage_debt") or []
 
-        # 7) Per-artifact heuristic slices — for artifacts that produced findings
+        # 7) Per-artifact heuristic slices - for artifacts that produced findings
         produced_artifacts: set[str] = set()
         artifact_classifiers = [
             ("memory.", "memory"),
@@ -8708,7 +8707,7 @@ def prepare_hypothesis_context(case_id: str) -> dict[str, Any]:
                 loaded_refs.append(ctx_id)
                 budget_fresh -= 1
             else:
-                # Already loaded OR budget exhausted — return ref only
+                # Already loaded OR budget exhausted - return ref only
                 applicable_heuristics[artifact] = {
                     "ctx_id": ctx_id,
                     "source_path": slice_data["source_path"],
@@ -8770,7 +8769,7 @@ def record_hypotheses(case_id: str, hypotheses: list[dict[str, Any]]) -> dict[st
           "mitre_techniques": ["T1003"]
         }
 
-    Idempotent on hypothesis_id — existing entries are updated in place.
+    Idempotent on hypothesis_id - existing entries are updated in place.
     """
     try:
         _state_manager.load(case_id)
@@ -8801,8 +8800,8 @@ def record_hypotheses(case_id: str, hypotheses: list[dict[str, Any]]) -> dict[st
 @mcp.tool()
 def get_heuristic(artifact: str, topic: str = "what_to_hunt") -> dict[str, Any]:
     """Return a specific section from the canonical heuristic .md for an
-    artifact. CR13 Option X Tier-3 — for pivot-loop drill-down when the
-    main agent needs deeper DFIR guidance on a specific topic.
+    artifact. CR13 Option X Tier-3 - for pivot-loop drill-down when the
+    main agent needs deeper guidance on a specific topic.
 
     Parameters
     ----------
@@ -9169,7 +9168,7 @@ def mount_image(
         mounts = _mounts_text()
 
         if _path_is_mount(disk_mount, mounts):
-            # Already fully mounted — return immediately, skip all steps
+            # Already fully mounted - return immediately, skip all steps
             return ToolResult(
                 status="ok", tool="mount_image",
                 message=f"Already mounted at {disk_mount} (pre-existing mount detected)",
@@ -9308,14 +9307,14 @@ def mount_image(
                         pass
 
         if offset is None:
-            # mmls failed or found no partitions — check for raw/loop filesystem
+            # mmls failed or found no partitions - check for raw/loop filesystem
             # (common for E01 images acquired from a single partition, not a whole disk)
             parted_proc = _sp.run(
                 ["/usr/sbin/parted", "-s", device, "print"],
                 capture_output=True, text=True, timeout=30
             )
             if "loop" in parted_proc.stdout.lower():
-                # Raw filesystem with no partition table — mount at offset 0
+                # Raw filesystem with no partition table - mount at offset 0
                 offset = 0
                 data["offset_source"] = "parted (raw filesystem, no partition table)"
             else:
@@ -9354,7 +9353,7 @@ def mount_image(
                     # (no NTFS-mounted /mnt/disk/), every disk tool that defaults
                     # to /mnt/disk/<path> will fail with "file not found" until
                     # raw artifacts are staged. Make extract_windows_artifacts
-                    # the unambiguous MANDATORY next tool — it uses fls + icat
+                    # the unambiguous MANDATORY next tool - it uses fls + icat
                     # to stage $MFT, hives + their .LOG1/.LOG2, EVTX, prefetch,
                     # amcache, SRUDB.dat to /cases/<case_id>/artifacts/raw/.
                     # After that, durable-path resolvers in the other disk
@@ -9391,7 +9390,7 @@ def mount_image(
         # Step 3: Mount partition read-only
         Path(disk_mount).mkdir(parents=True, exist_ok=True)
         if offset == 0:
-            # Raw filesystem — mount directly, no loop offset needed
+            # Raw filesystem - mount directly, no loop offset needed
             mount_cmd = ["/usr/bin/mount", "-o", "ro", device, disk_mount]
         else:
             mount_cmd = ["/usr/bin/mount", "-o",
@@ -9950,15 +9949,15 @@ def sigma_scan(case_id: str) -> dict[str, Any]:
 
     Executes 5 independent anomaly detectors against the authoritative case
     state. Each detector implements case-agnostic detection logic based on
-    universal Windows forensic patterns — no hardcoded IPs, usernames, or
+    universal Windows forensic patterns - no hardcoded IPs, usernames, or
     filenames.
 
     Detectors:
-    1. **process_anomaly** — svchost parentage, orphans, wrong-path system procs
-    2. **network_anomaly** — RFC1918 exclusion, unusual ports, system proc C2
-    3. **mft_timestomp** — SI vs FN timestamp discrepancy (>1 hour = timestomping)
-    4. **evtx_anomaly** — High-value Event IDs with auto ATT&CK tagging
-    5. **persistence_anomaly** — Run keys pointing to suspicious paths
+    1. **process_anomaly** - svchost parentage, orphans, wrong-path system procs
+    2. **network_anomaly** - RFC1918 exclusion, unusual ports, system proc C2
+    3. **mft_timestomp** - SI vs FN timestamp discrepancy (>1 hour = timestomping)
+    4. **evtx_anomaly** - High-value Event IDs with auto ATT&CK tagging
+    5. **persistence_anomaly** - Run keys pointing to suspicious paths
 
     Parameters
     ----------
@@ -10184,7 +10183,7 @@ def run_analysis(
 
 
 # ===========================================================================
-# MCP Resources — ATT&CK technique routing (Module 4 pattern)
+# MCP Resources - ATT&CK technique routing (Module 4 pattern)
 # ===========================================================================
 
 

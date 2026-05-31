@@ -1,5 +1,5 @@
 """
-sift_mcp.models — Public model API for SAVVYDFIR-MCP.
+sift_mcp.models - Public model API for SAVVYDFIR-MCP.
 
 Import any model directly from this package:
 
@@ -71,12 +71,12 @@ __all__ = [
     # Execution / correction
     "CorrectionEvent",
     "Execution",
-    # Artifacts — memory
+    # Artifacts - memory
     "ProcessRecord",
     "InjectionIndicator",
     "DllRecord",
     "NetworkArtifact",
-    # Artifacts — disk
+    # Artifacts - disk
     "PrefetchRecord",
     "AmcacheRecord",
     "RegistryRunKey",

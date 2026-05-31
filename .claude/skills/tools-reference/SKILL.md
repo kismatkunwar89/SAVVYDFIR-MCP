@@ -5,7 +5,7 @@ allowed-tools:
   - Bash
 ---
 
-# Tools Reference — Exact Command Syntax
+# Tools Reference - Exact Command Syntax
 
 ## Volatility 3 (Memory Analysis)
 ```bash
@@ -13,7 +13,7 @@ MEM=/evidence/memory/extracted/dump.raw
 
 # Process analysis
 vol3 -f $MEM windows.pslist          # Running processes (EPROCESS list walk)
-vol3 -f $MEM windows.psscan          # All processes (pool tag scan — finds hidden)
+vol3 -f $MEM windows.psscan          # All processes (pool tag scan - finds hidden)
 vol3 -f $MEM windows.pstree          # Process tree with parent-child
 vol3 -f $MEM windows.cmdline         # Command lines per process
 
@@ -89,7 +89,7 @@ SBECmd -d /mnt/disk/Users/ --csv /cases/shellbags/ --csvf shellbags.csv
 
 ## Plaso / log2timeline
 ```bash
-# Create super timeline (slow — 30-120 min for 100GB image)
+# Create super timeline (slow - 30-120 min for 100GB image)
 log2timeline.py --parsers win10 /cases/timeline/case.plaso /mnt/disk/
 
 # Query timeline

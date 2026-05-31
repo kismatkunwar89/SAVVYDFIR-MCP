@@ -1,5 +1,5 @@
 """
-sigma.py — Universal anomaly detection and analysis models for SAVVYDFIR-MCP.
+sigma.py - Universal anomaly detection and analysis models for SAVVYDFIR-MCP.
 
 These models are case-agnostic: they describe universal forensic patterns
 (e.g. orphan processes, RFC1918 exclusion, SI<FN timestomping) without
@@ -99,7 +99,7 @@ class ToolResult(BaseModel):
 
 
 class SigmaScanResult(BaseModel):
-    """Output of sigma_scan() — universal anomaly detection across all artifacts.
+    """Output of sigma_scan() - universal anomaly detection across all artifacts.
 
     Attributes:
         case_id:            Parent case identifier.
@@ -147,7 +147,7 @@ class SigmaScanResult(BaseModel):
 
 
 class AnalysisResult(BaseModel):
-    """Output of run_analysis() — Pandas-based data analysis.
+    """Output of run_analysis() - Pandas-based data analysis.
 
     Attributes:
         query:          The analysis query that was executed.

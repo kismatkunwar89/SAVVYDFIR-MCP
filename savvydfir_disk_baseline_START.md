@@ -1,4 +1,4 @@
-# SAVVYDFIR-MCP — Single-Host Disk Baseline (Start)
+# SAVVYDFIR-MCP - Single-Host Disk Baseline (Start)
 
 > Purpose: a practical disk-first evaluation baseline for our current single-host testing.
 > This is extracted from the broader SRL / CRIMSON OSPREY baseline, but trimmed to what we can fairly score on one host.
@@ -8,7 +8,7 @@
 Assumption:
 
 - current single-host disk focus is `nfury` in the hackathon corpus
-- this maps most closely to `rd01` in the DFIR material
+- this maps most closely to `rd01` in the material
 
 What this baseline is for:
 

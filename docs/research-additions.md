@@ -1,9 +1,9 @@
 # SAVVYDFIR-MCP: Research Additions & Academic Grounding
 
-**Version:** 2.0 — Hackathon Submission Supplement  
+**Version:** 2.0 - Hackathon Submission Supplement  
 **Date:** 2025  
 **Authors:** SAVVYDFIR-MCP Development Team  
-**Status:** Research-grade — peer review ready
+**Status:** Research-grade - peer review ready
 
 ---
 
@@ -62,10 +62,10 @@ Beyond the three tools, this report documents:
 | **Memory forensics** | ✅ Covered | ✅ Covered | Volatility tools | Process/network |
 | **Timeline correlation** | ✅ Covered | ✅ Covered | `build_timeline` | Multi-artifact ordering |
 | **Cross-artifact correlation** | ✅ Unique | ✅ Unique | `compare_disk_and_memory` | Novel contribution |
-| **Windows Search Index (ESE)** | ❌ Missing | ❌ Future work | — | Document access evidence |
-| **Jump Lists (.automaticDestinations)** | ❌ Missing | ❌ Future work | — | File MRU with timestamps |
-| **SRUM (System Resource Usage Monitor)** | ❌ Missing | ❌ Future work | — | Network/process energy use |
-| **D3FEND ontology mapping** | ❌ Missing | ❌ Future work | — | Countermeasure classification |
+| **Windows Search Index (ESE)** | ❌ Missing | ❌ Future work | - | Document access evidence |
+| **Jump Lists (.automaticDestinations)** | ❌ Missing | ❌ Future work | - | File MRU with timestamps |
+| **SRUM (System Resource Usage Monitor)** | ❌ Missing | ❌ Future work | - | Network/process energy use |
+| **D3FEND ontology mapping** | ❌ Missing | ❌ Future work | - | Countermeasure classification |
 
 ### 2.2 The Three Critical Gaps (Why They Matter to Judges)
 
@@ -75,7 +75,7 @@ The original `summarize_evtx` tool produces a CSV that the LLM analyst then quer
 Chainsaw with Sigma rules gives investigators:
 - 3,000+ curated detection rules maintained by the global DFIR community (SigmaHQ)
 - ATT&CK technique mappings built into each rule
-- Deterministic detection (rule fires or doesn't — no hallucination risk)
+- Deterministic detection (rule fires or doesn't - no hallucination risk)
 - Reproducible results across investigations
 
 Without Sigma validation, every EVTX finding carries implicit uncertainty about whether the pattern is actually malicious. With Sigma, the finding says: "the global DFIR community agrees this pattern indicates T1053.005 (Scheduled Task)."
@@ -86,7 +86,7 @@ Event ID 1102 (Security log cleared) appears frequently in ransomware and APT in
 Volume Shadow Copies may contain intact Security.evtx, System.evtx, and NTUSER.DAT from before the clearing event. This is the **only reliable way to recover cleared Windows event logs** from a mounted disk image on SIFT.
 
 #### Gap 3: Windows 11 Execution Evidence Blindspot (PCA)
-Windows 11 22H2+ introduced PcaAppLaunchDic.txt — a plain-text record of every GUI-launched executable with UTC termination timestamps. This artifact:
+Windows 11 22H2+ introduced PcaAppLaunchDic.txt - a plain-text record of every GUI-launched executable with UTC termination timestamps. This artifact:
 - Survives attacker cleanup (attackers don't know it exists)
 - Is trivially parseable (no binary format)
 - Provides evidence complementary to Prefetch (which can be disabled via registry)
@@ -102,9 +102,9 @@ Any system running Windows 11 22H2+ was invisible to SAVVYDFIR-MCP v1.0 with res
 
 The integration of large language models into digital forensics has accelerated dramatically in 2025. A systematic survey published on arXiv in April 2025 ("Digital Forensics in the Age of Large Language Models," [arXiv:2504.02963](https://arxiv.org/html/2504.02963v1)) identifies three primary paradigms:
 
-1. **LLM-driven evidence network construction** — using GPT-4-turbo to build structured graphs G = (V, E) from evidence items
-2. **LLM-driven log analysis** — using LLMs directly as forensic analysts over invocation logs
-3. **Mobile evidence contextual analysis (MECA)** — applying GPT-4o, Gemini, and Claude 3.5 to messenger forensics
+1. **LLM-driven evidence network construction** - using GPT-4-turbo to build structured graphs G = (V, E) from evidence items
+2. **LLM-driven log analysis** - using LLMs directly as forensic analysts over invocation logs
+3. **Mobile evidence contextual analysis (MECA)** - applying GPT-4o, Gemini, and Claude 3.5 to messenger forensics
 
 SAVVYDFIR-MCP operates in the **second paradigm** (log analysis) but with a critical architectural distinction: it uses LLMs for reasoning and interpretation, while deterministic tools (Chainsaw/Sigma, MFTECmd, EvtxECmd) handle the actual data extraction and pattern matching. This hybrid approach directly addresses the hallucination risk identified in the survey.
 
@@ -115,9 +115,9 @@ Sharma et al. (2024) introduced **ForensicLLM** ([LSU Scholarly Repository](http
 Key findings relevant to SAVVYDFIR-MCP:
 - ForensicLLM outperformed base LLaMA-3.1-8B by 4.06% on BERTScore F1 and 15.79% on G-Eval
 - Source attribution accuracy: 86.6% of responses included correct author and title
-- The RAFT approach — combining fine-tuning with RAG — is directly applicable to SAVVYDFIR-MCP's future development
+- The RAFT approach - combining fine-tuning with RAG - is directly applicable to SAVVYDFIR-MCP's future development
 
-SAVVYDFIR-MCP's current approach of using Claude (a general-purpose frontier LLM) is appropriate for the hackathon context, but ForensicLLM's results suggest domain-specific fine-tuning would improve accuracy in production deployments. The local deployment model also aligns with SAVVYDFIR-MCP's SIFT Workstation architecture — neither system requires cloud connectivity after initial setup.
+SAVVYDFIR-MCP's current approach of using Claude (a general-purpose frontier LLM) is appropriate for the hackathon context, but ForensicLLM's results suggest domain-specific fine-tuning would improve accuracy in production deployments. The local deployment model also aligns with SAVVYDFIR-MCP's SIFT Workstation architecture - neither system requires cloud connectivity after initial setup.
 
 ### 3.3 ProvSEEK: The Closest Academic Parallel
 
@@ -134,7 +134,7 @@ ProvSEEK's architecture closely mirrors SAVVYDFIR-MCP's design:
 | Provenance database queries | `build_timeline`, `query_timeline` |
 | Structured forensic summaries | `export_trace`, `read_state` |
 
-ProvSEEK achieves 22%/29% higher precision and recall for threat detection compared to naive agentic AI approaches. It uses chain-of-thought (CoT) reasoning — exactly what Claude Code applies in SAVVYDFIR-MCP investigations.
+ProvSEEK achieves 22%/29% higher precision and recall for threat detection compared to naive agentic AI approaches. It uses chain-of-thought (CoT) reasoning - exactly what Claude Code applies in SAVVYDFIR-MCP investigations.
 
 The key difference: ProvSEEK operates on Linux audit logs (provenance graphs), while SAVVYDFIR-MCP targets Windows disk images on SIFT. These are complementary, not competing, systems.
 
@@ -152,7 +152,7 @@ CTINexus's approach of extracting `(head entity, relation, tail entity)` triplet
 
 A 2025 Microsoft Security Blog post ([Microsoft Tech Community](https://techcommunity.microsoft.com/blog/microsoft-security-blog/graph-rag-for-security-insights-from-a-microsoft-intern/4437624)) documents Graph RAG applied to security investigations. The key finding: traditional RAG provides **isolated facts** (a suspicious vehicle, a compliance issue), while Graph RAG **reveals connections** between encoded strings, phishing URLs, malware files, and compromised email accounts.
 
-This is precisely the problem SAVVYDFIR-MCP's `compare_disk_and_memory` and `generate_graph` tools address — but at the artifact level rather than the document level. When a process appears in memory but has no corresponding disk footprint (EVTX + Prefetch + Amcache all absent), that cross-artifact contradiction is a Graph RAG-style finding that isolated per-artifact analysis would miss.
+This is precisely the problem SAVVYDFIR-MCP's `compare_disk_and_memory` and `generate_graph` tools address - but at the artifact level rather than the document level. When a process appears in memory but has no corresponding disk footprint (EVTX + Prefetch + Amcache all absent), that cross-artifact contradiction is a Graph RAG-style finding that isolated per-artifact analysis would miss.
 
 Traditional RAG Response: "Unusual service installed at T+2h."  
 Graph RAG Response: "Service install (EID 7045) at T+2h matches MFT FN timestamp for a file in C:\Temp at T+1h57m, which matches Prefetch first-run at T+1h58m, which is absent from Amcache (hash not present), consistent with a fileless service that loaded from memory."
@@ -160,8 +160,8 @@ Graph RAG Response: "Service install (EID 7045) at T+2h matches MFT FN timestamp
 ### 4.2 CyKG-RAG: Structured Security Knowledge Integration
 
 **CyKG-RAG** ([University of Vienna / RAGE-KG 2024](https://eprints.cs.univie.ac.at/8178/1/RAGE-KG_2024_paper_1_Andreas%20Ekelhart.pdf)) by Kurniawan et al. integrates two types of knowledge graphs into the RAG pipeline:
-1. **Log & Event Graphs** — private, organization-specific log data
-2. **Cybersecurity Knowledge Graphs** — CVE, CWE, CAPEC, MITRE ATT&CK data
+1. **Log & Event Graphs** - private, organization-specific log data
+2. **Cybersecurity Knowledge Graphs** - CVE, CWE, CAPEC, MITRE ATT&CK data
 
 This dual-graph architecture is directly relevant to SAVVYDFIR-MCP's future development:
 - Log & Event Graph = the `state.json` + `investigation_graph.py` output
@@ -182,7 +182,7 @@ AgCyRAG's heterogeneous data integration approach validates SAVVYDFIR-MCP's mult
 
 ## 5. Missing Windows Artifacts: The Blind Spots We Closed
 
-### 5.1 Volume Shadow Copies (VSS) — Anti-Forensic Recovery
+### 5.1 Volume Shadow Copies (VSS) - Anti-Forensic Recovery
 
 **Technical background:** Volume Shadow Copy Service (VSS) has been included in Windows since Server 2003. On modern Windows systems, shadow copies are created automatically during Windows updates and software installation. Each shadow copy is a point-in-time snapshot of the volume, stored in the System Volume Information directory.
 
@@ -204,27 +204,27 @@ On SIFT Workstation, `vshadowinfo` and `vshadowmount` (from libvshadow by Joachi
 
 **Technical background:** The Program Compatibility Assistant (PcaSvc) has existed since Windows Vista to monitor legacy applications and apply compatibility shims. In Windows 11 22H2, Microsoft added a persistent text-based tracking mechanism:
 
-- **PcaAppLaunchDic.txt**: Pipe-delimited, `{FullExecutablePath}|{UTC_Termination_Timestamp}` — one line per unique executable, updated to the most recent termination time
+- **PcaAppLaunchDic.txt**: Pipe-delimited, `{FullExecutablePath}|{UTC_Termination_Timestamp}` - one line per unique executable, updated to the most recent termination time
 - **PcaGeneralDb0.txt** and **PcaGeneralDb1.txt**: Alternating active logs with detailed exit records, UTF-16LE encoded
 
 **Key properties for forensics:**
-- Timestamp = process **termination** time (not start time) — useful for runtime duration estimates when correlated with Prefetch
-- Covers only **GUI-launched programs** (via Windows Explorer) — not CLI or service-started processes
-- File is written in **Unicode** — standard ASCII tools may misread it
+- Timestamp = process **termination** time (not start time) - useful for runtime duration estimates when correlated with Prefetch
+- Covers only **GUI-launched programs** (via Windows Explorer) - not CLI or service-started processes
+- File is written in **Unicode** - standard ASCII tools may misread it
 - Entries survive attacker cleanup because most attackers don't know this artifact exists
 
 **Cross-reference potential:**
-- PcaGeneralDb records contain a ProgramId that links to **Amcache** — enables hash lookup even if the binary was deleted after execution
+- PcaGeneralDb records contain a ProgramId that links to **Amcache** - enables hash lookup even if the binary was deleted after execution
 - Timestamp correlation with Prefetch: PCA termination time minus Prefetch last-run time = approximate execution duration
-- If an executable appears in PCA but NOT in Prefetch, it may have been executed after Prefetch was disabled (T1112: Modify Registry — Prefetch disabled at `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters\EnablePrefetcher`)
+- If an executable appears in PCA but NOT in Prefetch, it may have been executed after Prefetch was disabled (T1112: Modify Registry - Prefetch disabled at `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters\EnablePrefetcher`)
 
 **Sources:** [Andrea Fortuna's analysis (2026)](https://andreafortuna.org/2026/03/19/windows11-pca-artifact/), [Kaspersky Windows 11 forensic artifacts report (2025)](https://www.cryptika.com/kaspersky-details-windows-11-forensic-artifacts-and-changes-with-windows-10-for-investigators/), [ElcomSoft Windows artifacts investigation (2026)](https://blog.elcomsoft.com/2026/03/investigating-windows-file-system-artifacts-under-cwindows/)
 
 ### 5.3 Double Timestomping (MFT Enhancement)
 
-**Technical background:** Standard timestomping detection compares `$SI` vs `$FN` timestamps — if `$SI_Created < $FN_Created`, the `$SI` was backdated. This is the textbook detection.
+**Technical background:** Standard timestomping detection compares `$SI` vs `$FN` timestamps - if `$SI_Created < $FN_Created`, the `$SI` was backdated. This is the textbook detection.
 
-Advanced attackers (particularly APT-grade tooling) perform **double timestomping**: they modify `$SI` and then move or rename the file, which causes Windows to copy the modified `$SI` timestamps into `$FN`. The result: both `$SI` and `$FN` show the same backdated time — the standard detection method fails.
+Advanced attackers (particularly APT-grade tooling) perform **double timestomping**: they modify `$SI` and then move or rename the file, which causes Windows to copy the modified `$SI` timestamps into `$FN`. The result: both `$SI` and `$FN` show the same backdated time - the standard detection method fails.
 
 **Detection methods for double timestomping (from inversecos.com research, 2022):**
 1. **Sub-second precision check:** Tool-generated timestamps (Cobalt Strike, Metasploit, Timestomp.exe) often have `100ns` precision of exactly `.0000000`. However, sophisticated attackers using `nTimetools` set arbitrary sub-second values to defeat this. A `.0000000` value is suspicious but not conclusive.
@@ -241,10 +241,10 @@ Advanced attackers (particularly APT-grade tooling) perform **double timestompin
 | Artifact | Location | Forensic Value | Priority |
 |---|---|---|---|
 | **Jump Lists** | `%APPDATA%\Microsoft\Windows\Recent\AutomaticDestinations\` | File MRU with timestamps, reveals documents opened by specific applications | High |
-| **Windows Search Index (ESE)** | `%ProgramData%\Microsoft\Search\Data\Applications\Windows\Windows.edb` | Full-text content of indexed files — may contain content of deleted documents | Medium |
-| **SRUM (System Resource Usage Monitor)** | `C:\Windows\System32\sru\SRUDB.dat` | Network bytes sent/received per process per hour — proves attacker exfiltration | High |
-| **Windows Timeline (ActivitiesCache.db)** | `%LocalAppData%\ConnectedDevicesPlatform\L.<user>\ActivitiesCache.db` | User activity timeline synced to Microsoft cloud — survives local log clearing | Medium |
-| **Browser Artifacts** | SQLite DBs per browser | URLs visited, downloads, form data — C2 beaconing evidence | Covered (browser-analyst.md) |
+| **Windows Search Index (ESE)** | `%ProgramData%\Microsoft\Search\Data\Applications\Windows\Windows.edb` | Full-text content of indexed files - may contain content of deleted documents | Medium |
+| **SRUM (System Resource Usage Monitor)** | `C:\Windows\System32\sru\SRUDB.dat` | Network bytes sent/received per process per hour - proves attacker exfiltration | High |
+| **Windows Timeline (ActivitiesCache.db)** | `%LocalAppData%\ConnectedDevicesPlatform\L.<user>\ActivitiesCache.db` | User activity timeline synced to Microsoft cloud - survives local log clearing | Medium |
+| **Browser Artifacts** | SQLite DBs per browser | URLs visited, downloads, form data - C2 beaconing evidence | Covered (browser-analyst.md) |
 
 ---
 
@@ -279,11 +279,11 @@ Each Sigma rule includes:
 | Dimension | LLM over EvtxECmd CSV | Chainsaw + Sigma |
 |---|---|---|
 | **Speed** | Minutes (CSV load + LLM inference) | Seconds (Rust native) |
-| **Reproducibility** | Non-deterministic — same logs, different queries | Deterministic — same logs, same rules, same results |
+| **Reproducibility** | Non-deterministic - same logs, different queries | Deterministic - same logs, same rules, same results |
 | **False positive rate** | High (LLM pattern-matches without community calibration) | Low (community-calibrated over millions of events) |
 | **ATT&CK coverage** | Ad-hoc (depends on analyst prompt) | Systematic (every rule has ATT&CK tags) |
 | **Novel TTPs** | LLM may miss new techniques | Community rules updated within days of CVE publication |
-| **Evidence quality** | "The LLM identified..." | "Sigma rule fires..." — stronger for reports |
+| **Evidence quality** | "The LLM identified..." | "Sigma rule fires..." - stronger for reports |
 | **Courtroom admissibility** | Questioned | Based on community-published, peer-reviewed rules |
 
 ### 6.3 Chainsaw's Event ID Coverage
@@ -323,9 +323,9 @@ SAVVYDFIR-MCP's multi-artifact correlation architecture is grounded in a decade 
 **POIROT** (Milajerdi et al., 2019, CCS) ([Semantic Scholar](https://www.semanticscholar.org/paper/POIROT:-Aligning-Attack-Behavior-with-Kernel-Audit-Milajerdi-Eshete/40d7bed3161095d5d76a8cfea52f9ebe758299d4)) introduces the idea of aligning CTI (Cyber Threat Intelligence) reports with kernel audit records through graph-based querying. Key contributions:
 - Provenance graphs as directed acyclic graphs where nodes = system entities (processes, files, network sockets) and edges = system calls
 - "Graph alignment" between attack behavior descriptions (from CTI) and observed audit events
-- Evaluated on DARPA Transparent Computing datasets — can search graphs containing millions of nodes and pinpoint attacks in minutes
+- Evaluated on DARPA Transparent Computing datasets - can search graphs containing millions of nodes and pinpoint attacks in minutes
 
-**Relevance to SAVVYDFIR-MCP:** The `compare_disk_and_memory` tool performs a POIROT-style alignment: it takes behavioral indicators from one artifact type (memory — running processes) and cross-references them against kernel-level evidence from another (disk — Prefetch, Amcache, EVTX). When a process is found in memory but absent from all disk-based execution evidence, this is the cross-artifact contradiction that POIROT's graph alignment would surface.
+**Relevance to SAVVYDFIR-MCP:** The `compare_disk_and_memory` tool performs a POIROT-style alignment: it takes behavioral indicators from one artifact type (memory - running processes) and cross-references them against kernel-level evidence from another (disk - Prefetch, Amcache, EVTX). When a process is found in memory but absent from all disk-based execution evidence, this is the cross-artifact contradiction that POIROT's graph alignment would surface.
 
 ### 7.2 ANUBIS: Machine Learning on Provenance Graphs
 
@@ -341,16 +341,16 @@ SAVVYDFIR-MCP's multi-artifact correlation architecture is grounded in a decade 
 **LogKernel** (Li et al., 2022, Wiley) ([arXiv:2208.08820](https://arxiv.org/abs/2208.08820)) proposes clustering provenance graphs using graph kernel methods to separate attack behavior from benign activity without requiring prior CTI. Key contributions:
 - Abstracts system audit logs into Behaviour Provenance Graphs (BPGs)
 - Graph kernel clustering embeds BPGs into a continuous vector space
-- Evaluated on DARPA CADETS dataset — detects all attack scenarios including unknown attacks not in CTI
+- Evaluated on DARPA CADETS dataset - detects all attack scenarios including unknown attacks not in CTI
 
-**Relevance to SAVVYDFIR-MCP:** LogKernel addresses the "unknown attack" problem — when the attacker uses novel techniques not covered by existing Sigma rules. In SAVVYDFIR-MCP, the combination of `scan_files` (YARA — signature-based) and `compare_disk_and_memory` (anomaly-based) provides a two-layer detection analogous to LogKernel's dual approach: known patterns via signatures, unknown patterns via cross-artifact contradictions.
+**Relevance to SAVVYDFIR-MCP:** LogKernel addresses the "unknown attack" problem - when the attacker uses novel techniques not covered by existing Sigma rules. In SAVVYDFIR-MCP, the combination of `scan_files` (YARA - signature-based) and `compare_disk_and_memory` (anomaly-based) provides a two-layer detection analogous to LogKernel's dual approach: known patterns via signatures, unknown patterns via cross-artifact contradictions.
 
 ### 7.4 ActMiner: Causality Tracking for Threat Hunting
 
 **ActMiner** (cited in POIROT semantic scholar profile) applies causality tracking and incremental graph alignment for threat hunting. Its approach of incrementally refining the provenance graph as new evidence arrives directly maps to SAVVYDFIR-MCP's iterative investigation model:
 1. Each tool execution adds findings to `state.json`
 2. The investigator reads state before each subsequent query to scope searches to the established attack window
-3. `CORRECTION_EVENT`s fire when new evidence contradicts existing findings — exactly the "incremental refinement" ActMiner describes
+3. `CORRECTION_EVENT`s fire when new evidence contradicts existing findings - exactly the "incremental refinement" ActMiner describes
 
 ### 7.5 Systematic Survey: Provenance Graph-Based Threat Detection
 
@@ -365,7 +365,7 @@ SAVVYDFIR-MCP currently implements query-based approaches (Sigma rules, YARA sig
 
 ## 8. What We Implemented: Three New MCP Tools
 
-### 8.1 `sigma_hunt` — Chainsaw/Sigma Detection
+### 8.1 `sigma_hunt` - Chainsaw/Sigma Detection
 
 **What it does:** Runs Chainsaw with community Sigma rules against EVTX files, parses the JSON output, and creates structured CaseStateManager findings with ATT&CK mappings.
 
@@ -377,24 +377,24 @@ SAVVYDFIR-MCP currently implements query-based approaches (Sigma rules, YARA sig
 
 **Forensic value:** A Sigma rule hit is **stronger evidence than an LLM observation** because it represents community consensus about what constitutes malicious behavior. When presenting findings to stakeholders, "Sigma rule 'Suspicious PowerShell Keywords' fired against Security.evtx" is more credible than "the LLM noted unusual PowerShell activity."
 
-### 8.2 `analyze_vss` — Volume Shadow Copy Inventory
+### 8.2 `analyze_vss` - Volume Shadow Copy Inventory
 
 **What it does:** Runs `vshadowinfo` against a disk image to enumerate all shadow copies, then for each shadow copy checks whether key forensic artifacts (Security.evtx, System.evtx, NTUSER.DAT) are present and readable.
 
 **Design decisions:**
-- Reads from disk image directly (no live system required) — SIFT workflow compatible
-- Reports shadow copy creation dates vs. evidence timestamps — enables "pre-attack" vs. "post-attack" differentiation
-- Creates one summary finding per artifact presence, not one per shadow copy — prevents finding ID explosion
+- Reads from disk image directly (no live system required) - SIFT workflow compatible
+- Reports shadow copy creation dates vs. evidence timestamps - enables "pre-attack" vs. "post-attack" differentiation
+- Creates one summary finding per artifact presence, not one per shadow copy - prevents finding ID explosion
 - Offset-aware: uses `mmls` to find partition start offset before calling `vshadowinfo`
 
 **Forensic value:** When EID 1102 (log cleared) is the last event in a live EVTX file, `analyze_vss` is the **only recovery path**. If VSS contains a shadow copy from before the clearing event, the investigation can recover the full authentication timeline.
 
-### 8.3 `extract_pca` — PCA Execution Evidence
+### 8.3 `extract_pca` - PCA Execution Evidence
 
 **What it does:** Reads `PcaAppLaunchDic.txt` and `PcaGeneralDb0.txt` from a mounted image, parses the pipe-delimited UTF-16LE content, filters for suspicious execution paths (not standard Windows directories), and creates structured findings.
 
 **Design decisions:**
-- UTF-16LE decoding: PCA files are Unicode — the tool explicitly handles this encoding to prevent silent data loss
+- UTF-16LE decoding: PCA files are Unicode - the tool explicitly handles this encoding to prevent silent data loss
 - Suspicious path filtering: executables in `\Temp\`, `\AppData\`, `\Downloads\`, `\ProgramData\`, `\Users\Public\` are flagged; standard system paths are deprioritized
 - Windows version check: returns a clear "PCA not present" message for pre-22H2 systems rather than an error
 - Cross-reference note: each finding includes a note about Amcache ProgramId correlation for hash lookup
@@ -441,7 +441,7 @@ d3fend_technique: Optional[str] = None   # e.g., "D3-LFA"
 d3fend_artifact: Optional[str] = None    # e.g., "d3f:EventLog"
 ```
 
-This would allow the `export_trace` tool to produce D3FEND-annotated forensic reports — a significant differentiator for enterprise customers who need to align DFIR activities with their defensive framework.
+This would allow the `export_trace` tool to produce D3FEND-annotated forensic reports - a significant differentiator for enterprise customers who need to align DFIR activities with their defensive framework.
 
 ---
 
@@ -498,7 +498,7 @@ The three new tools (sigma_hunt, analyze_vss, extract_pca) add breadth; the cros
 
 ### 10.4 The Forensic Trinity in SAVVYDFIR-MCP
 
-Professional DFIR follows the "Forensic Trinity" — no single artifact proves anything; corroboration across three independent artifact classes is required for high-confidence findings:
+Professional DFIR follows the "Forensic Trinity" - no single artifact proves anything; corroboration across three independent artifact classes is required for high-confidence findings:
 
 ```
           EVTX (Event Logs)
@@ -516,9 +516,9 @@ SAVVYDFIR-MCP's agent architecture operationalizes this trinity:
 - `evtx-analyst` handles the "Logs" vertex
 - `mft-analyst` handles the "Disk" vertex  
 - `memory-analyst` handles the "Memory" vertex
-- `compare_disk_and_memory` and `flag_discrepancy` are the edges — they detect when two vertices contradict each other
+- `compare_disk_and_memory` and `flag_discrepancy` are the edges - they detect when two vertices contradict each other
 
-Adding `sigma_hunt` strengthens the "Logs" vertex with community validation. Adding `analyze_vss` recovers the "Logs" vertex when it has been deliberately erased. Adding `extract_pca` adds a fourth execution evidence channel that is independent of Prefetch and Amcache — making the trinity a quadrilateral.
+Adding `sigma_hunt` strengthens the "Logs" vertex with community validation. Adding `analyze_vss` recovers the "Logs" vertex when it has been deliberately erased. Adding `extract_pca` adds a fourth execution evidence channel that is independent of Prefetch and Amcache - making the trinity a quadrilateral.
 
 ---
 

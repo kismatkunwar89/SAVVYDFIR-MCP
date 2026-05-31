@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-investigation_graph.py — Generate a D3.js force-directed investigation graph
+investigation_graph.py - Generate a D3.js force-directed investigation graph
 for SAVVYDFIR-MCP case data.
 
 Reads ``audit.jsonl`` (the structured execution audit log) and ``state.json``
 (the full CaseState with findings) and produces:
 
-1. ``graph.json`` — A serialised node/edge graph suitable for D3.js.
-2. ``graph.html`` — A self-contained, fully interactive HTML report embedding
+1. ``graph.json`` - A serialised node/edge graph suitable for D3.js.
+2. ``graph.html`` - A self-contained, fully interactive HTML report embedding
    the D3.js visualisation and all graph data as an inline JSON variable.
 
 Usage
@@ -21,7 +21,7 @@ The ``graph.json`` is written alongside the HTML file in the same directory.
 
 Node types
 ----------
-    case            Root node — one per investigation.
+    case            Root node - one per investigation.
     evidence_source Disk image or memory dump.
     finding         Individual forensic finding (OBSERVATION / INFERENCE /
                     HYPOTHESIS / REJECTED).
@@ -66,7 +66,7 @@ ATTACK_TACTICS: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Colour palette — matches CLAUDE.md Protocol SIFT PDF style
+# Colour palette - matches CLAUDE.md Protocol SIFT PDF style
 # ---------------------------------------------------------------------------
 
 COLORS: dict[str, str] = {
@@ -190,7 +190,7 @@ def _build_execution_index(audit_entries: list[dict[str, Any]]) -> dict[str, dic
             continue
         if eid not in index:
             index[eid] = {}
-        # Merge — later entries (completed) overwrite None fields from started
+        # Merge - later entries (completed) overwrite None fields from started
         for k, v in entry.items():
             if v is not None:
                 index[eid][k] = v
@@ -212,9 +212,9 @@ class GraphBuilder:
     edges: list[dict]
         Accumulated edge records.
     _node_ids: set[str]
-        Set of all node IDs added so far — used to prevent duplicates.
+        Set of all node IDs added so far - used to prevent duplicates.
     _edge_keys: set[tuple]
-        Set of (source, target, type) tuples — used to prevent duplicate edges.
+        Set of (source, target, type) tuples - used to prevent duplicate edges.
     """
 
     def __init__(self) -> None:
@@ -249,7 +249,7 @@ class GraphBuilder:
         color:
             Hex colour string used in the D3.js render.
         details:
-            Dict of all relevant metadata — shown in sidebar / tooltip.
+            Dict of all relevant metadata - shown in sidebar / tooltip.
         size:
             Optional explicit size override.  If None, a type-based default
             is applied in the template.
@@ -363,7 +363,7 @@ class GraphBuilder:
         memory_dumps = manifest.get("memory_dumps", [])
 
         if not disk_images and not memory_dumps:
-            # Infer from findings — create one generic node per artifact_type found
+            # Infer from findings - create one generic node per artifact_type found
             art_types_seen = set(f.get("artifact_type", "") for f in findings)
             if "disk" in art_types_seen:
                 disk_images = [{"host": case_id, "path": "(evidence disk)", "image_type": "inferred"}]
@@ -417,7 +417,7 @@ class GraphBuilder:
             status = (f.get("finding_status") or "").upper()
             conf = float(f.get("confidence") or 0.0)
             mitre = (f.get("mitre_technique") or "").strip()
-            # Drop raw Sigma rule hits — preserve only the per-severity
+            # Drop raw Sigma rule hits - preserve only the per-severity
             # summary findings (which have finding_type=threat_detection
             # and finding_kind=raw_detector_hit but represent thousands
             # of underlying hits as a single rolled-up node).
@@ -532,7 +532,7 @@ class GraphBuilder:
                         self._add_edge(src_id, fid, "produced", "produced")
                         break
             else:
-                # correlation / timeline / yara — attach to case root
+                # correlation / timeline / yara - attach to case root
                 self._add_edge(case_id, fid, "produced", "produced")
 
         # ---- 4. Inter-finding edges -----------------------------------
@@ -617,14 +617,14 @@ class GraphBuilder:
             k = (f.get("evidence_kind") or "unknown").upper()
             kind_counts[k] = kind_counts.get(k, 0) + 1
 
-        # ATT&CK tactic breakdown — for Kill Chain view
+        # ATT&CK tactic breakdown - for Kill Chain view
         tactic_counts: dict[str, int] = {}
         for f in findings:
             tac = f.get("mitre_tactic", "")
             if tac:
                 tactic_counts[tac] = tactic_counts.get(tac, 0) + 1
 
-        # IOC extraction — IPs, hashes, file paths from supporting_indicators
+        # IOC extraction - IPs, hashes, file paths from supporting_indicators
         ioc_set: set[str] = set()
         for f in findings:
             for ind in f.get("supporting_indicators", []):
@@ -676,7 +676,7 @@ def _load_html_template(template_path: Path) -> str:
     if template_path.exists():
         return template_path.read_text(encoding="utf-8")
 
-    # The template does not exist — this should not happen in a normal install,
+    # The template does not exist - this should not happen in a normal install,
     # but we provide a safe fallback error page so the script never crashes.
     return (
         "<!DOCTYPE html><html><body>"
@@ -688,25 +688,25 @@ def _load_html_template(template_path: Path) -> str:
 
 def _build_infra_redactions(case_id: str) -> list[tuple[re.Pattern[str], str]]:
     """Return (regex, replacement) pairs that scrub OPERATOR/INFRASTRUCTURE
-    path prefixes from the rendered graph — and NOTHING that is forensic
+    path prefixes from the rendered graph - and NOTHING that is forensic
     evidence.
 
     The rendered ``graph.html`` is a self-contained, judge-facing artifact.
     Embedded node fields (artifact_path, provenance.command_line,
     embedding_text, supporting_indicators, etc.) can carry operator-side
-    paths copied out of ``audit.jsonl`` / ``state.json`` — e.g.
+    paths copied out of ``audit.jsonl`` / ``state.json`` - e.g.
     ``/opt/SAVVYDFIR-MCP/...``, ``/home/<operator>/...``, ``/cases/<id>/...``.
     Those reveal where the framework is installed and who is running it; they
     are not part of the case. This pass replaces ONLY those prefixes with
     neutral placeholders.
 
-    What is deliberately preserved (forensic evidence — never touched):
+    What is deliberately preserved (forensic evidence - never touched):
     case-side emails, attacker/victim IP addresses, Windows registry paths
     (``ROOT\\...``), hostnames from the disk image, finding IDs, the case_id
     token itself in non-path contexts, MITRE technique IDs, tool names.
 
     Agnostic: every pattern is derived from ``os.path`` / ``Path.home()`` and
-    the ``case_id`` argument — there are NO hardcoded operator, host, or case
+    the ``case_id`` argument - there are NO hardcoded operator, host, or case
     tokens. Works for any operator, any install location, any case.
     """
     pairs: list[tuple[re.Pattern[str], str]] = []
@@ -743,9 +743,7 @@ def _redact_infra_paths(value: Any, redactions: list[tuple[re.Pattern[str], str]
 
     Walks dicts, lists, and scalars. Only strings are transformed; numbers,
     booleans, and None pass through untouched. Covers current and future
-    string fields in the graph payload without enumerating a field list
-    (peer reviewer carry-forward 2026-05-30: a fixed field list misses
-    supporting_indicators / outputs_summary / agent_reason / future fields).
+    string fields in the graph payload without enumerating a field list.
     """
     if isinstance(value, str):
         for pat, repl in redactions:
@@ -774,7 +772,7 @@ def _inject_graph_data(html: str, graph_data: dict[str, Any],
     graph_data:
         The graph dict (nodes, edges, meta) to serialise and inject.
     case_id:
-        Case identifier — used to scope the ``/cases/<case_id>/`` redaction.
+        Case identifier - used to scope the ``/cases/<case_id>/`` redaction.
         Optional; an empty value still scrubs install/home/evidence prefixes.
 
     Returns
@@ -860,7 +858,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    """Main entry point — parse args, build graph, write outputs.
+    """Main entry point - parse args, build graph, write outputs.
 
     Parameters
     ----------
@@ -930,7 +928,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     # served from reports/<case_id>/. Scrub operator/infra path prefixes from
     # the payload BEFORE writing either file so neither leaks install paths,
     # operator home dirs, or RBAC base paths. Forensic evidence (emails, IPs,
-    # registry paths, hostnames) is preserved. Agnostic — see
+    # registry paths, hostnames) is preserved. Agnostic - see
     # _build_infra_redactions(). case_id scopes the /cases/<id>/ rule.
     _case_id = str((graph_data.get("meta") or {}).get("case_id") or "")
     _redactions = _build_infra_redactions(_case_id)

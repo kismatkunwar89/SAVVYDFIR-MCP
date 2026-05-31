@@ -2,7 +2,7 @@
 sift_mcp.runners.eztools
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-EZToolsRunner — subprocess wrapper for **Eric Zimmerman's Tools** on SIFT
+EZToolsRunner - subprocess wrapper for **Eric Zimmerman's Tools** on SIFT
 Workstation.
 
 Tool paths (from Protocol SIFT's global/CLAUDE.md):
@@ -63,7 +63,7 @@ def _sift_bin(name: str) -> Optional[str]:
 
 #: Default timeout for EZ Tools.  .NET startup adds latency; large MFT or
 #: EVTX sets can take several minutes.
-DEFAULT_TIMEOUT = 1800  # seconds — EvtxECmd on 251MB Security.evtx needs up to 20 min
+DEFAULT_TIMEOUT = 1800  # seconds - EvtxECmd on 251MB Security.evtx needs up to 20 min
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ class EZToolsRunner(SafeRunner):
     TOOLS_DIR: str = TOOLS_DIR
 
     # ------------------------------------------------------------------
-    # MFTECmd — Master File Table parser
+    # MFTECmd - Master File Table parser
     # ------------------------------------------------------------------
 
     def run_mftecmd(
@@ -165,7 +165,7 @@ class EZToolsRunner(SafeRunner):
         return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
-    # MFTECmd — USN Journal mode
+    # MFTECmd - USN Journal mode
     # ------------------------------------------------------------------
 
     def run_mftecmd_usn(
@@ -213,7 +213,7 @@ class EZToolsRunner(SafeRunner):
         return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
-    # PECmd — Prefetch parser
+    # PECmd - Prefetch parser
     # ------------------------------------------------------------------
 
     def run_pecmd(
@@ -255,7 +255,7 @@ class EZToolsRunner(SafeRunner):
         return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
-    # AmcacheParser — Amcache.hve parser
+    # AmcacheParser - Amcache.hve parser
     # ------------------------------------------------------------------
 
     def run_amcacheparser(
@@ -298,7 +298,7 @@ class EZToolsRunner(SafeRunner):
         return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
-    # EvtxECmd — Windows Event Log parser
+    # EvtxECmd - Windows Event Log parser
     # ------------------------------------------------------------------
 
     def run_evtxecmd(
@@ -373,7 +373,7 @@ class EZToolsRunner(SafeRunner):
         return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
-    # RECmd — Registry hive parser
+    # RECmd - Registry hive parser
     # ------------------------------------------------------------------
 
     def run_recmd(
@@ -434,7 +434,7 @@ class EZToolsRunner(SafeRunner):
         return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
-    # AppCompatCacheParser — Shimcache / AppCompatCache parser
+    # AppCompatCacheParser - Shimcache / AppCompatCache parser
     # ------------------------------------------------------------------
 
     def run_appcompatcacheparser(
@@ -490,12 +490,12 @@ class EZToolsRunner(SafeRunner):
         str
             One of:
 
-            * ``"dotnet_not_found"`` — .NET runtime not installed.
-            * ``"dll_not_found"`` — EZ Tool DLL not present at expected path.
-            * ``"input_not_found"`` — Evidence file or directory not found.
-            * ``"output_dir_missing"`` — CSV output directory does not exist.
-            * ``"timeout"`` — process exceeded the timeout.
-            * ``"unknown"`` — inspect ``result.stderr`` directly.
+            * ``"dotnet_not_found"`` - .NET runtime not installed.
+            * ``"dll_not_found"`` - EZ Tool DLL not present at expected path.
+            * ``"input_not_found"`` - Evidence file or directory not found.
+            * ``"output_dir_missing"`` - CSV output directory does not exist.
+            * ``"timeout"`` - process exceeded the timeout.
+            * ``"unknown"`` - inspect ``result.stderr`` directly.
         """
         if result.timed_out:
             return "timeout"

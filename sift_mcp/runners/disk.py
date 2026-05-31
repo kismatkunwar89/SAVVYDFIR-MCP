@@ -10,14 +10,14 @@ parse the CLI output into typed Pydantic models, and return plain dicts.
 
 Tools
 -----
-- ``extract_prefetch``         — Windows Prefetch execution evidence with
+- ``extract_prefetch``         - Windows Prefetch execution evidence with
                                   `.pf` file metadata.
-- ``get_amcache``              — AmcacheParser: SHA-1 evidence of execution.
-- ``extract_mft_timeline``     — MFTECmd: Full NTFS MFT with SI/FN timestamps
+- ``get_amcache``              - AmcacheParser: SHA-1 evidence of execution.
+- ``extract_mft_timeline``     - MFTECmd: Full NTFS MFT with SI/FN timestamps
                                   (timestomping detection).
-- ``list_deleted_files``       — fls -rd: Deleted file recovery via TSK.
-- ``summarize_evtx``           — EvtxECmd: Windows event log parsing.
-- ``extract_registry_run_keys``— RECmd: Persistence key extraction.
+- ``list_deleted_files``       - fls -rd: Deleted file recovery via TSK.
+- ``summarize_evtx``           - EvtxECmd: Windows event log parsing.
+- ``extract_registry_run_keys``- RECmd: Persistence key extraction.
 
 Design pattern
 --------------
@@ -66,7 +66,7 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Module-level singletons — set via init_tools()
+# Module-level singletons - set via init_tools()
 # ---------------------------------------------------------------------------
 
 _ez_runner: Optional["EZToolsRunner"] = None
@@ -840,7 +840,7 @@ def list_deleted_files(
     records: list[DeletedFile] = []
     finding_ids: list[str] = []
 
-    # OOM mitigation — fls stdout is multi-MB on big partitions
+    # OOM mitigation - fls stdout is multi-MB on big partitions
     _fls_lines = result.stdout.splitlines()
     if hasattr(result, "release_stdout"):
         result.release_stdout()
@@ -977,13 +977,13 @@ def summarize_evtx(
     if evtx_dir is None:
         base = Path(image_path)
         if base.suffix.lower() == ".evtx":
-            # image_path is a direct EVTX file — use its parent directory
+            # image_path is a direct EVTX file - use its parent directory
             evtx_dir = str(base.parent)
         elif base.is_dir():
             # image_path is already a directory of EVTX files
             evtx_dir = str(base)
         else:
-            # image_path is a disk image (E01/raw) — derive standard path
+            # image_path is a disk image (E01/raw) - derive standard path
             evtx_dir = str(
                 base.parent / "mnt" / "C" / "Windows" / "System32" / "winevt" / "Logs"
             )

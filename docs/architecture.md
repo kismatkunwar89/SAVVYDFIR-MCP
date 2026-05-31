@@ -75,8 +75,8 @@
 
 Claude Code acts as the orchestration engine. It reads two configuration inputs:
 
-- **`~/.claude/CLAUDE.md`** (global) — defines the agent's identity, tool routing priority, evidence classification rules, and self-correction protocol.
-- **`/cases/<ID>/CLAUDE.md`** (per-case) — defines the specific investigation: evidence paths, known IOCs, target time window, and investigation goal.
+- **`~/.claude/CLAUDE.md`** (global) - defines the agent's identity, tool routing priority, evidence classification rules, and self-correction protocol.
+- **`/cases/<ID>/CLAUDE.md`** (per-case) - defines the specific investigation: evidence paths, known IOCs, target time window, and investigation goal.
 
 The agent loop has three phases per iteration:
 
@@ -207,10 +207,10 @@ Enforcement sequence:
 
 The `AuditLogger` writes one JSONL line per tool execution to `./analysis/audit.jsonl`. Properties:
 
-- **Synchronous + immediate flush** — every entry is flushed to disk before the tool call returns.
-- **Fail-closed** — if the write fails (disk full, permissions), the tool call fails.
-- **Monotonic IDs** — execution IDs (E-001, E-002, ...) and finding IDs (F-001, F-002, ...) are never reused within a case.
-- **Immutable** — once written, entries are never modified; corrections append new entries.
+- **Synchronous + immediate flush** - every entry is flushed to disk before the tool call returns.
+- **Fail-closed** - if the write fails (disk full, permissions), the tool call fails.
+- **Monotonic IDs** - execution IDs (E-001, E-002, ...) and finding IDs (F-001, F-002, ...) are never reused within a case.
+- **Immutable** - once written, entries are never modified; corrections append new entries.
 
 ---
 

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SAVVYDFIR-MCP Report — HACKATHON-2026-WKSTN01</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --surface: #111827;
+    --card: #1f2937;
+    --border: #374151;
+    --text: #e5e7eb;
+    --muted: #9ca3af;
+    --accent: #38bdf8;
+    --good: #22c55e;
+    --warn: #f59e0b;
+    --danger: #ef4444;
+    --mono: 'JetBrains Mono', 'Cascadia Code', monospace;
+    --sans: 'Inter', system-ui, sans-serif;
+  }
+  body { margin: 0; background: radial-gradient(circle at top, #172554, var(--bg)); color: var(--text); font-family: var(--sans); }
+  main { max-width: 1180px; margin: 0 auto; padding: 2rem; }
+  h1, h2 { margin: 0 0 0.75rem; }
+  p, li { color: var(--text); }
+  .subtitle { color: var(--muted); margin-bottom: 1.5rem; font-family: var(--mono); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+  .card { background: color-mix(in srgb, var(--card) 88%, black); border: 1px solid var(--border); border-radius: 16px; padding: 1rem 1.1rem; margin-bottom: 1.2rem; box-shadow: 0 10px 30px rgba(0,0,0,0.18); }
+  .metric-label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; }
+  .metric-value { font-size: 1.8rem; font-weight: 700; margin-top: 0.3rem; }
+  .accent { color: var(--accent); }
+  .good { color: var(--good); }
+  .warn { color: var(--warn); }
+  .danger { color: var(--danger); }
+  .tags { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+  .tag { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-family: var(--mono); }
+  .tag.covered { background: rgba(34,197,94,0.15); color: #86efac; border: 1px solid rgba(34,197,94,0.25); }
+  .tag.uncovered { background: rgba(245,158,11,0.15); color: #fcd34d; border: 1px solid rgba(245,158,11,0.25); }
+  .tag.muted { background: rgba(156,163,175,0.12); color: var(--muted); border: 1px solid rgba(156,163,175,0.18); }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(15,23,42,0.85); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; font-family: var(--mono); color: #dbeafe; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 0.7rem 0.6rem; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; }
+  th { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; }
+  ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>SAVVYDFIR-MCP Investigation Report</h1>
+  <div class="subtitle">HACKATHON-2026-WKSTN01 · /opt/SAVVYDFIR-MCP/reports/HACKATHON-2026-WKSTN01/report.html</div>
+
+  <section class="grid">
+    <div class="card"><div class="metric-label">Case Status</div><div class="metric-value accent">COMPLETE</div></div>
+    <div class="card"><div class="metric-label">Triage Status</div><div class="metric-value warn">COMPLETE_WITH_GAPS</div></div>
+    <div class="card"><div class="metric-label">Findings</div><div class="metric-value">72</div></div>
+    <div class="card"><div class="metric-label">Confirmed</div><div class="metric-value good">3</div></div>
+    <div class="card"><div class="metric-label">Unresolved</div><div class="metric-value warn">3</div></div>
+    <div class="card"><div class="metric-label">Sigma Hits</div><div class="metric-value danger">2</div></div>
+    <div class="card"><div class="metric-label">Coverage</div><div class="metric-value">42.9%</div></div>
+  </section>
+
+  <section class="card">
+    <h2>Executive Summary</h2>
+    <p>Case <strong>HACKATHON-2026-WKSTN01</strong> contains <strong>72</strong> findings, of which <strong>3</strong> are confirmed and <strong>69</strong> are hypotheses/active leads. The current unresolved discrepancy count is <strong>3</strong>. Sigma preflight reported <strong>0</strong> CRITICAL and <strong>2</strong> HIGH anomalies.</p>
+  </section>
+
+  
+
+  
+  <div class="card">
+    <h2>Activity Thread — Cyber Kill Chain Coverage</h2>
+    <p style="color: var(--muted); font-size: 0.92em;">
+      Per Diamond Model Axiom 4, every malicious activity traverses a
+      succession of kill-chain phases. Empty phases below represent
+      <strong>blindspots</strong> — areas where evidence was either not
+      extracted, not retained, or actively destroyed by anti-forensics.
+    </p>
+    <div class="grid">
+      <div>
+        <div class="metric-label">Phases with corroborated evidence</div>
+        <div class="metric-value good">4</div>
+      </div>
+      <div>
+        <div class="metric-label">Single-source phases</div>
+        <div class="metric-value warn">0</div>
+      </div>
+      <div>
+        <div class="metric-label">Blindspots (empty phases)</div>
+        <div class="metric-value danger">2</div>
+      </div>
+    </div>
+    <pre class="mermaid" style="background: rgba(255,255,255,0.04);">graph LR
+  RECONNAISSANCE[&quot;Reconnaissance&lt;br/&gt;(0)&quot;]
+  style RECONNAISSANCE fill:#dc2626,stroke:#991b1b,color:#fff
+  DELIVERY[&quot;Delivery&lt;br/&gt;(0)&quot;]
+  style DELIVERY fill:#dc2626,stroke:#991b1b,color:#fff
+  RECONNAISSANCE --&gt; DELIVERY
+  EXPLOITATION[&quot;Exploitation&lt;br/&gt;(10)&quot;]
+  style EXPLOITATION fill:#16a34a,stroke:#15803d,color:#fff
+  DELIVERY --&gt; EXPLOITATION
+  INSTALLATION[&quot;Installation / Persistence&lt;br/&gt;(15)&quot;]
+  style INSTALLATION fill:#16a34a,stroke:#15803d,color:#fff
+  EXPLOITATION --&gt; INSTALLATION
+  COMMAND_AND_CONTROL[&quot;Command and Control&lt;br/&gt;(2)&quot;]
+  style COMMAND_AND_CONTROL fill:#16a34a,stroke:#15803d,color:#fff
+  INSTALLATION --&gt; COMMAND_AND_CONTROL
+  ACTIONS_ON_OBJECTIVES[&quot;Actions on Objectives&lt;br/&gt;(12)&quot;]
+  style ACTIONS_ON_OBJECTIVES fill:#16a34a,stroke:#15803d,color:#fff
+  COMMAND_AND_CONTROL --&gt; ACTIONS_ON_OBJECTIVES</pre>
+    <table>
+      <thead><tr><th>Kill-chain phase</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Reconnaissance</td><td><span class="tag uncovered">BLINDSPOT — no evidence</span></td></tr><tr><td>Delivery</td><td><span class="tag uncovered">BLINDSPOT — no evidence</span></td></tr><tr><td>Exploitation</td><td><span class="tag covered">10 findings</span></td></tr><tr><td>Installation / Persistence</td><td><span class="tag covered">15 findings</span></td></tr><tr><td>Command and Control</td><td><span class="tag covered">2 findings</span></td></tr><tr><td>Actions on Objectives</td><td><span class="tag covered">12 findings</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+
+  <section class="card">
+    <h2>Sigma Anomaly Summary</h2>
+    <pre>| # | Severity | Detector | Description | ATT&amp;CK |
+|---|----------|----------|-------------|--------|
+| 1 | HIGH | sdelete_cipher_trace | Execution evidence indicates SDelete or cipher /w wiping activity. | T1070 |
+| 2 | HIGH | sdelete_cipher_trace | Execution evidence indicates SDelete or cipher /w wiping activity. | T1070 |</pre>
+  </section>
+
+  <section class="card">
+    <h2>Top Actionable Leads</h2>
+    <table>
+      <thead>
+        <tr><th>Severity</th><th>Detector</th><th>Confidence</th><th>Description</th><th>Recommended Next Pivot</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>HIGH</td><td>sdelete_cipher_trace</td><td>0.85</td><td>Execution evidence indicates SDelete or cipher /w wiping activity.</td><td>Correlate wiping execution with deleted files, USN records, and VSS recovery.</td></tr>
+<tr><td>HIGH</td><td>sdelete_cipher_trace</td><td>0.85</td><td>Execution evidence indicates SDelete or cipher /w wiping activity.</td><td>Correlate wiping execution with deleted files, USN records, and VSS recovery.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Anti-Forensics Warnings</h2>
+    <ul><li><strong>sdelete_cipher_trace</strong>: Execution evidence indicates SDelete or cipher /w wiping activity.</li></ul>
+  </section>
+
+  <section class="card">
+    <h2>Data Gaps</h2>
+    <ul><li><strong>warning</strong>: {&#x27;gap&#x27;: &#x27;sigma_hunt found no EID 1102 (log clearing) in Security.evtx — VSS analysis not triggered. If the attacker cleared logs in a prior session (before the Sep 16 attack), evidence would be absent from the current Security.evtx file.&#x27;, &#x27;severity&#x27;: &#x27;low&#x27;}</li></ul>
+    <div class="metric-label" style="margin-top: 1rem;">Status Flags</div>
+    <pre>{
+  &quot;open_leads&quot;: true,
+  &quot;anti_forensics_warning&quot;: true,
+  &quot;unresolved_discrepancy&quot;: true,
+  &quot;specialist_lanes_inferred&quot;: false
+}</pre>
+  </section>
+
+  <section class="card">
+    <h2>Orchestration Warnings</h2>
+    <ul><li>None recorded.</li></ul>
+  </section>
+
+  <section class="card">
+    <h2>Analysis Lanes</h2>
+    <table>
+      <thead>
+        <tr><th>Lane</th><th>Status</th><th>Required</th><th>Agents</th><th>Executions</th><th>Findings</th><th>Summary</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>evidence_access</td><td>COMPLETE</td><td>yes</td><td>main-agent</td><td>0</td><td>0</td><td>mount_image: SleuthKit direct access ready at /mnt/evidence/ewf1; load_memory: Memory dump ready at /evidence/memory/base-wkstn-01-mem.img</td></tr>
+<tr><td>memory</td><td>COMPLETE_WITH_GAPS</td><td>yes</td><td>main-agent</td><td>6</td><td>10</td><td>Memory analysis identified rogue service subject_srv.exe (PID 214656) at C:\windows\ with active C2 connection to 172.16.5.25:54420, DKOM-hidden conhost (PID 214668) with phanto...</td></tr>
+<tr><td>disk_execution_persistence</td><td>COMPLETE_WITH_GAPS</td><td>yes</td><td>main-agent</td><td>7</td><td>45</td><td>Disk execution persistence analysis complete: Prefetch confirms subject_srv.exe executed twice on 2021-09-16 (02:52:10 and 03:01:58 UTC) with Mnemosyne.sys and $MFT references (...</td></tr>
+<tr><td>event_auth</td><td>COMPLETE_WITH_GAPS</td><td>yes</td><td>main-agent</td><td>5</td><td>9</td><td>Security.evtx (2021-09-15 to 2021-09-17) confirms: attacker BASE-HUNT (172.16.5.25) used cbarton-a NTLM Type 3 logons starting 02:51:50 UTC on 2021-09-16, then installed F-Respo...</td></tr>
+<tr><td>anti_forensics_recovery</td><td>COMPLETE_WITH_GAPS</td><td>yes</td><td>main-agent</td><td>5</td><td>8</td><td>Anti-forensics and VSS recovery complete: 4 confirmed techniques (T1070.006 timestomping, T1014 BYOVD ephemeral driver, T1014 DKOM process hiding, Amcache gap); VSS analysis fou...</td></tr>
+<tr><td>timeline_correlation</td><td>COMPLETE_WITH_GAPS</td><td>yes</td><td>main-agent</td><td>8</td><td>21</td><td>Timeline correlation complete: USN Journal confirms Mnemosyne.sys + subject_srv.exe drop/timestomp sequence at 2021-09-16 02:52–03:02 UTC; EVTX EID 7045×3 + 4624 NTLM burst from...</td></tr>
+<tr><td>synthesis_corroboration</td><td>COMPLETE</td><td>yes</td><td>main-agent</td><td>2</td><td>3</td><td>Phase 6 synthesis complete: compare_disk_and_memory confirmed 8 cross-artifact discrepancies (Mnemosyne deletion, SRUM exfiltration, ShimCache/Amcache gap); find_temporal_cluste...</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>ATT&amp;CK Coverage</h2>
+    <p>Coverage is currently <strong>42.9%</strong>.</p>
+    <div class="metric-label">Covered Tactics</div>
+    <div class="tags"><span class='tag covered'>TA0002 — Execution</span><span class='tag covered'>TA0003 — Persistence</span><span class='tag covered'>TA0005 — Defense Evasion</span><span class='tag covered'>TA0008 — Lateral Movement</span><span class='tag covered'>TA0010 — Exfiltration</span><span class='tag covered'>TA0011 — Command and Control</span></div>
+    <div class="metric-label" style="margin-top: 1rem;">Uncovered Tactics</div>
+    <div class="tags"><span class='tag uncovered'>TA0001 — Initial Access</span><span class='tag uncovered'>TA0004 — Privilege Escalation</span><span class='tag uncovered'>TA0006 — Credential Access</span><span class='tag uncovered'>TA0007 — Discovery</span><span class='tag uncovered'>TA0009 — Collection</span><span class='tag uncovered'>TA0040 — Impact</span><span class='tag uncovered'>TA0042 — Resource Development</span><span class='tag uncovered'>TA0043 — Reconnaissance</span></div>
+    <div class="metric-label" style="margin-top: 1rem;">Suggested Next Tools</div>
+    <ul><li><strong>TA0001</strong>: disk.summarize_evtx, memory.scan_network</li>
+<li><strong>TA0004</strong>: disk.summarize_evtx, memory.scan_processes</li>
+<li><strong>TA0006</strong>: disk.extract_shimcache, disk.get_amcache, disk.summarize_evtx</li>
+<li><strong>TA0007</strong>: memory.scan_processes, memory.list_dlls, timeline.query_timeline</li>
+<li><strong>TA0009</strong>: disk.extract_prefetch, disk.get_amcache, memory.scan_processes</li>
+<li><strong>TA0040</strong>: disk.summarize_evtx, memory.detect_injection, timeline.query_timeline</li>
+<li><strong>TA0042</strong>: disk.get_amcache, disk.extract_prefetch, timeline.query_timeline</li>
+<li><strong>TA0043</strong>: disk.summarize_evtx, memory.scan_network, timeline.query_timeline</li></ul>
+  </section>
+
+  <section class="card">
+    <h2>Open Questions</h2>
+    <ul>
+      <li>No open questions recorded.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>Top Confirmed Findings</h2>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Status</th><th>Confidence</th><th>Tool</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>F-068</td><td>CONFIRMED</td><td>0.990</td><td>state.submit_finding</td><td>Seven independent artifact sources confirm F-Response Subject Agent (subject_srv.exe) was deployed by an attacker from BASE-HUNT (172.16....</td></tr>
+<tr><td>F-070</td><td>CONFIRMED</td><td>0.950</td><td>state.submit_finding</td><td>Three independent sources confirm attacker-controlled host BASE-HUNT (172.16.5.25) laterally accessed base-wkstn-01 using compromised dom...</td></tr>
+<tr><td>F-069</td><td>CONFIRMED</td><td>0.784</td><td>state.submit_finding</td><td>Four independent artifact sources confirm the attacker timestomped subject_srv.exe to 2018-04-10 19:29:48 UTC at time of deployment (2021...</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Top Active Leads</h2>
+    <table>
+      <thead>
+        <tr><th>ID</th><th>Status</th><th>Confidence</th><th>Tool</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>F-043</td><td>ACTIVE</td><td>0.920</td><td>disk.extract_srum</td><td>SRUM network usage table parsed via esedbexport. 25001 application entries analysed (full dataset). Total outbound across all apps: 6724....</td></tr>
+<tr><td>F-053</td><td>ACTIVE</td><td>0.850</td><td>disk.extract_srum</td><td>SRUM: AppId:1 sent 2.7 MB / received 33.6 MB (last record: Aug 20, 2021 17:45:00.000000209). Outbound volume is ≥3× the median for this e...</td></tr>
+<tr><td>F-052</td><td>ACTIVE</td><td>0.850</td><td>disk.extract_srum</td><td>SRUM: AppId:1 sent 2.7 MB / received 33.3 MB (last record: Aug 05, 2021 18:52:00.000000111). Outbound volume is ≥3× the median for this e...</td></tr>
+<tr><td>F-051</td><td>ACTIVE</td><td>0.850</td><td>disk.extract_srum</td><td>SRUM: AppId:1 sent 2.8 MB / received 6.1 MB (last record: Jul 30, 2021 20:30:59.231231218). Outbound volume is ≥3× the median for this en...</td></tr>
+<tr><td>F-050</td><td>ACTIVE</td><td>0.850</td><td>disk.extract_srum</td><td>SRUM: AppId:259 sent 2.8 MB / received 0.7 MB (last record: Jul 21, 2021 18:59:00.000000223). Outbound volume is ≥3× the median for this ...</td></tr>
+<tr><td>F-049</td><td>ACTIVE</td><td>0.850</td><td>disk.extract_srum</td><td>SRUM: AppId:1 sent 2.8 MB / received 33.4 MB (last record: Aug 26, 2021 07:57:00.000000251). Outbound volume is ≥3× the median for this e...</td></tr>
+<tr><td>F-048</td><td>ACTIVE</td><td>0.850</td><td>disk.extract_srum</td><td>SRUM: AppId:1 sent 2.9 MB / received 6.4 MB (last record: Aug 04, 2021 19:28:00.000000237). Outbound volume is ≥3× the median for this en...</td></tr>
+<tr><td>F-047</td><td>ACTIVE</td><td>0.850</td><td>disk.extract_srum</td><td>SRUM: AppId:1 sent 3.0 MB / received 4.4 MB (last record: Aug 10, 2021 03:34:59.231231162). Outbound volume is ≥3× the median for this en...</td></tr>
+<tr><td>F-046</td><td>ACTIVE</td><td>0.850</td><td>disk.extract_srum</td><td>SRUM: AppId:1 sent 3.3 MB / received 5.6 MB (last record: Jul 21, 2021 18:59:00.000000223). Outbound volume is ≥3× the median for this en...</td></tr>
+<tr><td>F-045</td><td>ACTIVE</td><td>0.850</td><td>disk.extract_srum</td><td>SRUM: subject_srv.exe sent 1548.7 MB / received 7.3 MB (last record: Sep 16, 2021 03:07:00.000000111). Outbound volume is ≥3× the median ...</td></tr>
+<tr><td>F-044</td><td>ACTIVE</td><td>0.850</td><td>disk.extract_srum</td><td>SRUM: AppId:1 sent 1549.5 MB / received 9.5 MB (last record: Sep 16, 2021 03:07:00.000000111). Outbound volume is ≥3× the median for this...</td></tr>
+<tr><td>F-004</td><td>ACTIVE</td><td>0.750</td><td>memory.scan_network</td><td>1 established TCP connection(s) to 172.16.5.25 (ports: 54420). Owning process: subject_srv.ex (PID 214656). Grouped connections to the sa...</td></tr>
+<tr><td>F-003</td><td>ACTIVE</td><td>0.750</td><td>memory.scan_network</td><td>1 established TCP connection(s) to 172.16.4.10 (ports: 8080). Owning process: svchost.exe (PID 2332). Grouped connections to the same ext...</td></tr>
+<tr><td>F-035</td><td>ACTIVE</td><td>0.722</td><td>disk.extract_registry_run_keys</td><td>Registry persistence group (services): 2 row(s) targeting name: mnemosyne desc:. Samples: None=Name: mnemosyne Desc:; None=Name: mnemosyn...</td></tr>
+<tr><td>F-034</td><td>ACTIVE</td><td>0.722</td><td>disk.extract_registry_run_keys</td><td>Registry persistence group (services): 2 row(s) targeting action: block active: true. Samples: Multiple=Action: Block Active: TRUE; Multi...</td></tr>
+<tr><td>F-033</td><td>ACTIVE</td><td>0.722</td><td>disk.extract_registry_run_keys</td><td>Registry persistence group (services): 527 row(s) targeting action: allow active: true. Samples: Multiple=Action: Allow Active: TRUE; Mul...</td></tr>
+<tr><td>F-032</td><td>ACTIVE</td><td>0.722</td><td>disk.extract_registry_run_keys</td><td>Registry persistence group (services): 235 row(s) targeting action: allow active: false. Samples: Multiple=Action: Allow Active: FALSE; M...</td></tr>
+<tr><td>F-031</td><td>ACTIVE</td><td>0.722</td><td>disk.extract_registry_run_keys</td><td>Registry persistence group (services): 2 row(s) targeting 86400. Samples: Lease=86400; Lease=86400. Promotion: non_system_service_target.</td></tr>
+<tr><td>F-030</td><td>ACTIVE</td><td>0.722</td><td>disk.extract_registry_run_keys</td><td>Registry persistence group (services): 2 row(s) targeting 255.255.0.0. Samples: DhcpSubnetMask=255.255.0.0; DhcpSubnetMaskOpt=255.255.0.0...</td></tr>
+<tr><td>F-029</td><td>ACTIVE</td><td>0.722</td><td>disk.extract_registry_run_keys</td><td>Registry persistence group (services): 2 row(s) targeting 255.255.255.0. Samples: DhcpSubnetMask=255.255.255.0; DhcpSubnetMaskOpt=255.255...</td></tr>
+<tr><td>F-028</td><td>ACTIVE</td><td>0.722</td><td>disk.extract_registry_run_keys</td><td>Registry persistence group (services): 7 row(s) targeting 1. Samples: DhcpGatewayHardwareCount=1; EnableDHCP=1; EnableDHCP=1. Promotion: ...</td></tr>
+<tr><td>F-027</td><td>ACTIVE</td><td>0.722</td><td>disk.extract_registry_run_keys</td><td>Registry persistence group (services): 2 row(s) targeting 172.16.7.1. Samples: DhcpDefaultGateway=172.16.7.1; DhcpServer=172.16.7.1. Prom...</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Findings Status Breakdown</h2>
+    <div class="grid">
+      <div class="card"><div class="metric-label">ACTIVE</div><div class="metric-value">69</div></div><div class="card"><div class="metric-label">CONFIRMED</div><div class="metric-value">3</div></div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

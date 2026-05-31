@@ -6,8 +6,8 @@ MCP tool functions for YARA signature-based scanning on SIFT Workstation.
 
 Two tools are exposed:
 
-* ``scan_files`` — Scan a file or directory tree against YARA rules.
-* ``scan_memory`` — Scan a raw memory dump against YARA rules.
+* ``scan_files`` - Scan a file or directory tree against YARA rules.
+* ``scan_memory`` - Scan a raw memory dump against YARA rules.
 
 Both tools parse YARA's stdout into a list of match dicts with fields
 ``rule_name``, ``target_file``, and ``matched_strings``.
@@ -207,7 +207,7 @@ def scan_memory(
         ``.yarc``).
     dump_path:
         Absolute path to the raw memory dump (``.raw``, ``.mem``, ``.lime``,
-        ``.vmem``).  The file is treated as a binary blob — no memory
+        ``.vmem``).  The file is treated as a binary blob - no memory
         structure parsing is performed by YARA itself.
 
     Returns
@@ -314,9 +314,9 @@ def _parse_yara_output(stdout: str) -> list[dict[str, Any]]:
     list[dict[str, Any]]
         A list of match dicts, each with:
 
-        * ``rule_name`` — the YARA rule that matched.
-        * ``target_file`` — the file in which the match was found.
-        * ``matched_strings`` — list of string-match lines (may be empty).
+        * ``rule_name`` - the YARA rule that matched.
+        * ``target_file`` - the file in which the match was found.
+        * ``matched_strings`` - list of string-match lines (may be empty).
     """
     matches: list[dict[str, Any]] = []
     current_match: Optional[dict[str, Any]] = None

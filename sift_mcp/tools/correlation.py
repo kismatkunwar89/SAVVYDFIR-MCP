@@ -2,13 +2,13 @@
 sift_mcp.tools.correlation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-THE CORE DIFFERENTIATOR — Cross-artifact correlation engine for SAVVYDFIR-MCP.
+THE CORE DIFFERENTIATOR - Cross-artifact correlation engine for SAVVYDFIR-MCP.
 
 Two tools are exposed:
 
-* ``compare_disk_and_memory`` — Reads the authoritative case state and runs
+* ``compare_disk_and_memory`` - Reads the authoritative case state and runs
   6 specific forensic correlation checks, producing a :class:`CorrelationReport`.
-* ``flag_discrepancy`` — Manually flag a discrepancy between two specific
+* ``flag_discrepancy`` - Manually flag a discrepancy between two specific
   findings.
 
 These tools are synchronous (FastMCP supports sync).
@@ -16,27 +16,27 @@ These tools are synchronous (FastMCP supports sync).
 The 6 Correlation Checks
 ------------------------
 
-1. **Process in memory with no disk binary** — A running process whose
+1. **Process in memory with no disk binary** - A running process whose
    executable path cannot be found in any disk execution artefact indicates
    fileless malware or post-execution binary deletion.
 
-2. **Prefetch/Amcache entry for deleted binary** — A Prefetch or Amcache
+2. **Prefetch/Amcache entry for deleted binary** - A Prefetch or Amcache
    record proves the binary executed, but ``fls -rd`` shows it was subsequently
    deleted.  Strong post-exploitation cleanup indicator.
 
-3. **VAD anomaly on legitimate-path process** — A ``malfind`` injection
+3. **VAD anomaly on legitimate-path process** - A ``malfind`` injection
    indicator on a process running from System32 or Program Files is far more
    forensically significant than a hit on an unknown binary.
 
-4. **Network connection with no disk artefact** — A memory-resident network
+4. **Network connection with no disk artefact** - A memory-resident network
    connection whose owning process has no corresponding disk execution
    evidence indicates fileless attack or injected shellcode.
 
-5. **Registry persistence for missing binary** — A Run/RunOnce key points to
-   a binary path that does not exist on disk — the host was compromised but
+5. **Registry persistence for missing binary** - A Run/RunOnce key points to
+   a binary path that does not exist on disk - the host was compromised but
    the malware was subsequently cleaned up.
 
-6. **Timestomping detection** — ``$STANDARD_INFORMATION`` timestamps differ
+6. **Timestomping detection** - ``$STANDARD_INFORMATION`` timestamps differ
    significantly from ``$FILE_NAME`` timestamps, indicating user-level
    timestamp manipulation.
 """
@@ -121,17 +121,17 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
 
     The 6 checks are:
 
-    1. **process_no_disk_binary** (HIGH) — Process in memory whose executable
+    1. **process_no_disk_binary** (HIGH) - Process in memory whose executable
        path is absent from all disk execution artefacts.
-    2. **execution_evidence_deleted_binary** (HIGH) — Prefetch/Amcache entry
+    2. **execution_evidence_deleted_binary** (HIGH) - Prefetch/Amcache entry
        for a binary that appears in the deleted-file list.
-    3. **injection_legitimate_path** (HIGH) — VAD injection indicator on a
+    3. **injection_legitimate_path** (HIGH) - VAD injection indicator on a
        process running from a system path (System32, Program Files, etc.).
-    4. **network_no_disk_evidence** (MEDIUM) — Network connection from a PID
+    4. **network_no_disk_evidence** (MEDIUM) - Network connection from a PID
        whose owning process has no disk execution evidence.
-    5. **persistence_missing_binary** (HIGH) — Registry Run key points to a
+    5. **persistence_missing_binary** (HIGH) - Registry Run key points to a
        binary path that does not exist in the disk artefacts.
-    6. **timestomping_detected** (HIGH) — SI timestamps differ from FN
+    6. **timestomping_detected** (HIGH) - SI timestamps differ from FN
        timestamps by more than 1 hour, indicating timestomping.
 
     For each discrepancy, this function also updates the ``contradicted_by``
@@ -211,7 +211,7 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
         # miss than fabricated HIGH-severity alert). Detectors must populate
         # path: explicitly to enable this check.
 
-        # Defense-in-depth — even if proc_path came from the structured
+        # Defense-in-depth - even if proc_path came from the structured
         # field, require it to look like a real executable path before
         # accepting it.
         if proc_path and not _is_real_executable_path(proc_path):
@@ -788,7 +788,7 @@ def flag_discrepancy(
     reason:
         Human-readable explanation of why these findings contradict each
         other (e.g. ``"Process PID 1832 in pslist but binary hash not in "
-        "Amcache — likely injected shellcode"``).
+        "Amcache - likely injected shellcode"``).
 
     Returns
     -------
@@ -1300,7 +1300,7 @@ def _is_real_executable_path(path: str) -> bool:
 
 
 def _path_from_description(desc: str) -> Optional[str]:
-    """DEPRECATED — Run-11 fix removed all callers (correlation.py:209, etc).
+    """DEPRECATED - Run-11 fix removed all callers (correlation.py:209, etc).
 
     Retained as a tombstone in case external code imports it. Always returns
     None now. See _is_real_executable_path for the replacement validation."""
@@ -1308,7 +1308,7 @@ def _path_from_description(desc: str) -> Optional[str]:
 
 
 def _exe_from_description(desc: str) -> Optional[str]:
-    """DEPRECATED — Run-11 fix removed all callers (correlation.py:245, etc).
+    """DEPRECATED - Run-11 fix removed all callers (correlation.py:245, etc).
 
     Retained as a tombstone in case external code imports it. Always returns
     None now. Detectors must populate `executable:` supporting_indicators."""
@@ -1346,7 +1346,7 @@ def _add_contradiction(
 
     The behavior is structural: every contradiction detected by the
     correlation engine becomes an auditable correction record. The agent
-    does not have to "decide" to record one — the framework does it
+    does not have to "decide" to record one - the framework does it
     deterministically. That is exactly the structural enforcement the
     hackathon rules score on (criterion #4 + criterion #1 tiebreaker).
 
@@ -1435,7 +1435,7 @@ def _add_contradiction(
             contradiction_summary=contradiction_summary,
             revised_confidence=revised_conf_str,
             contradiction_source_execution_id=exec_id_for_audit,
-            # We don't have a new finding ID — this is a demotion, not a replacement
+            # We don't have a new finding ID - this is a demotion, not a replacement
             revised_claim=None,
             revised_finding_id=None,
         )
@@ -1457,7 +1457,7 @@ def find_temporal_clusters(
     """
     Find temporal clusters of activity across multiple artifact types.
 
-    Professional workflow (from SANS DFIR):
+    Professional workflow:
     1. Merge all artifacts chronologically
     2. Sliding window (default ±5 minutes = 300s)
     3. Look for multi-source bursts (FILE+REG+EVT at same second)
@@ -1487,10 +1487,10 @@ def find_temporal_clusters(
             * confidence: 0.80-1.00 based on source diversity
         - parameters: Input parameters used
     """
-    # W1.7 Run-5 fix (BUG-A, tri-agent signed 2026-05-24): dead import.
+    # W1.7 Run-5 fix (BUG-A): dead import.
     # get_state_manager() does not exist in server.py; this line crashed
     # the tool on first call (Run-5 audit E-042: "cannot import name").
-    # The function uses module-level _state_mgr from init_tools() — no
+    # The function uses module-level _state_mgr from init_tools() - no
     # server import needed.
     if _state_mgr is None:
         return {"status": "error", "error": "Tool module not initialised — call init_tools() first."}

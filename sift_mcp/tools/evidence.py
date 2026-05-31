@@ -6,11 +6,11 @@ Evidence integrity and provenance tools for SAVVYDFIR-MCP.
 
 Tools
 -----
-- ``verify_integrity`` — Verifies hash integrity of an evidence image by running
+- ``verify_integrity`` - Verifies hash integrity of an evidence image by running
   ``ewfverify`` (for EWF/E01 images) via SleuthKitRunner.  Returns a structured
   :class:`~sift_mcp.models.artifacts.IntegrityResult` dict.
 
-- ``get_provenance`` — Retrieves the full execution chain for a finding ID from
+- ``get_provenance`` - Retrieves the full execution chain for a finding ID from
   ``audit.jsonl`` via :meth:`~sift_mcp.audit.AuditLogger.get_execution_chain`.
   Useful for establishing chain-of-custody documentation.
 
@@ -46,7 +46,7 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Module-level singletons — set via init_tools()
+# Module-level singletons - set via init_tools()
 # ---------------------------------------------------------------------------
 
 _runner: Optional["SleuthKitRunner"] = None
@@ -140,7 +140,7 @@ def _parse_ewfverify_output(
     image_path:
         Absolute path to the image file (recorded verbatim in the result).
     exit_code:
-        Process exit code — 0 means verified OK, non-zero means mismatch or
+        Process exit code - 0 means verified OK, non-zero means mismatch or
         error.
 
     Returns
@@ -241,16 +241,16 @@ def verify_integrity(image_path: str) -> dict[str, Any]:
     dict
         Keys:
 
-        ``tool_name``       — ``"evidence.verify_integrity"``
-        ``status``          — ``"success"`` or ``"error"``
-        ``data``            — List containing a single :class:`IntegrityResult`
+        ``tool_name``       - ``"evidence.verify_integrity"``
+        ``status``          - ``"success"`` or ``"error"``
+        ``data``            - List containing a single :class:`IntegrityResult`
                               dict (or empty on error).
-        ``findings_created`` — List of F-NNN finding IDs created.
-        ``execution_id``    — E-NNN audit trail ID.
-        ``raw_command``     — The command that was executed.
-        ``verified``        — Top-level bool for quick inspection.
-        ``error_message``   — Present only when ``status == "error"``.
-        ``stderr``          — Present only when ``status == "error"``.
+        ``findings_created`` - List of F-NNN finding IDs created.
+        ``execution_id``    - E-NNN audit trail ID.
+        ``raw_command``     - The command that was executed.
+        ``verified``        - Top-level bool for quick inspection.
+        ``error_message``   - Present only when ``status == "error"``.
+        ``stderr``          - Present only when ``status == "error"``.
     """
     tool = "evidence.verify_integrity"
     if _runner is None or _state is None or _audit is None:
@@ -311,7 +311,7 @@ def verify_integrity(image_path: str) -> dict[str, Any]:
         )
         confidence = 0.99
     elif no_stored_hash:
-        # No acquisition hash in image — cannot verify, but not a failure
+        # No acquisition hash in image - cannot verify, but not a failure
         finding_type = "other"
         description = (
             f"Image integrity unverifiable for {image_path}. "
@@ -392,12 +392,12 @@ def get_provenance(finding_id: str) -> dict[str, Any]:
     dict
         Keys:
 
-        ``tool_name``      — ``"evidence.get_provenance"``
-        ``status``         — ``"success"`` or ``"error"``
-        ``finding_id``     — The queried finding ID.
-        ``execution_chain`` — List of audit entry dicts from ``audit.jsonl``.
-        ``chain_length``   — Number of entries in the chain.
-        ``error_message``  — Present only when ``status == "error"``.
+        ``tool_name``      - ``"evidence.get_provenance"``
+        ``status``         - ``"success"`` or ``"error"``
+        ``finding_id``     - The queried finding ID.
+        ``execution_chain`` - List of audit entry dicts from ``audit.jsonl``.
+        ``chain_length``   - Number of entries in the chain.
+        ``error_message``  - Present only when ``status == "error"``.
     """
     if _audit is None:
         return {

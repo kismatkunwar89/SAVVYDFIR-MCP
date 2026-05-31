@@ -35,16 +35,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-# Phase classifier — keep in sync with CLAUDE.md
+# Phase classifier - keep in sync with CLAUDE.md
 PHASE_MAP: dict[str, str] = {
-    # Phase 1 — Volatile data (memory)
+    # Phase 1 - Volatile data (memory)
     "memory.list_processes": "1_memory",
     "memory.scan_processes": "1_memory",
     "memory.detect_injection": "1_memory",
     "memory.scan_network": "1_memory",
     "memory.list_dlls": "1_memory",
     "memory.load_memory": "1_memory",
-    # Phase 2 — Triage baseline (disk)
+    # Phase 2 - Triage baseline (disk)
     "disk.extract_mft_timeline": "2_disk",
     "disk.extract_usn_journal": "2_disk",
     "disk.summarize_evtx": "2_disk",
@@ -56,18 +56,18 @@ PHASE_MAP: dict[str, str] = {
     "disk.extract_windows_artifacts": "2_disk",
     "disk.extract_pca": "2_disk",
     "disk.mount_image": "2_disk",
-    # Phase 3 — Detection engines
+    # Phase 3 - Detection engines
     "detection.sigma_hunt": "3_detection",
     "detection.hayabusa_hunt": "3_detection",
     "detection.sigma_scan": "3_detection",
     "detection.analyze_vss": "3_detection",
-    # Phase 5 — Cross-artifact correlation
+    # Phase 5 - Cross-artifact correlation
     "correlation.compare_disk_and_memory": "5_correlation",
     "correlation.find_temporal_clusters": "5_correlation",
     "correlation.flag_discrepancy": "5_correlation",
     "timeline.build_timeline": "5_correlation",
     "timeline.query_timeline": "5_correlation",
-    # Phase 7 — Reporting
+    # Phase 7 - Reporting
     "reporting.generate_report": "7_reporting",
     "graph.generate_graph": "7_reporting",
     "graph.merge_host_graphs": "7_reporting",

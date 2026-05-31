@@ -1,5 +1,5 @@
 """
-execution.py — Tool execution and self-correction data models for SAVVYDFIR-MCP.
+execution.py - Tool execution and self-correction data models for SAVVYDFIR-MCP.
 
 Every time the agent invokes an MCP tool, one ``Execution`` record is written
 to ``<case_dir>/audit.jsonl``.  If that tool call reveals evidence that
@@ -32,7 +32,7 @@ class CorrectionEvent(BaseModel):
 
     A ``CorrectionEvent`` is attached to the ``Execution`` record whose tool
     output caused the contradiction.  It is NEVER produced by LLM
-    introspection alone — it must be backed by concrete artifact evidence.
+    introspection alone - it must be backed by concrete artifact evidence.
 
     Attributes:
         prior_claim:             The exact text of the finding that is being
@@ -116,7 +116,7 @@ class CorrectionEvent(BaseModel):
 
 
 class Execution(BaseModel):
-    """Record of a single MCP tool invocation — one line in ``audit.jsonl``.
+    """Record of a single MCP tool invocation - one line in ``audit.jsonl``.
 
     Every execution is self-contained: it records WHY the agent called the
     tool (``agent_reason``), WHAT command was actually run (``command_line``),

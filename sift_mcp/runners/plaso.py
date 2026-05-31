@@ -2,7 +2,7 @@
 sift_mcp.runners.plaso
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-PlasoRunner — subprocess wrapper for **Plaso** (log2timeline / psort / pinfo)
+PlasoRunner - subprocess wrapper for **Plaso** (log2timeline / psort / pinfo)
 on SIFT Workstation.
 
 Tool paths (from Protocol SIFT's global/CLAUDE.md):
@@ -12,7 +12,7 @@ Tool paths (from Protocol SIFT's global/CLAUDE.md):
 Performance notes
 -----------------
 ``log2timeline.py`` is the most time-intensive step in any DFIR workflow.
-Processing a 100 GB disk image can take 30–120 minutes.  The default timeout
+Processing a 100 GB disk image can take 30-120 minutes.  The default timeout
 for ``log2timeline()`` is set to **7 200 seconds (2 hours)**.  For demo/test
 purposes, pre-generate the ``.plaso`` storage file before the MCP session.
 
@@ -27,13 +27,13 @@ Typical usage
 
     runner = PlasoRunner()
 
-    # Step 1 — build the super timeline (slow — pre-generate for demos)
+    # Step 1 - build the super timeline (slow - pre-generate for demos)
     result = runner.log2timeline(
         source_path="/cases/SRL-2018/evidence/disk.E01",
         storage_file="/cases/SRL-2018/analysis/timeline.plaso",
     )
 
-    # Step 2 — extract a time-sliced subset
+    # Step 2 - extract a time-sliced subset
     result = runner.psort(
         storage_file="/cases/SRL-2018/analysis/timeline.plaso",
         output_file="/cases/SRL-2018/analysis/events_may2026.csv",
@@ -41,7 +41,7 @@ Typical usage
         time_slice_end="2026-05-31T23:59:59",
     )
 
-    # Step 3 — inspect storage metadata
+    # Step 3 - inspect storage metadata
     result = runner.pinfo("/cases/SRL-2018/analysis/timeline.plaso")
 """
 
@@ -68,7 +68,7 @@ DEFAULT_TIMEZONE = "UTC"
 #: Default output format for psort.
 DEFAULT_OUTPUT_FORMAT = "dynamic"
 
-#: Default timeout for log2timeline (slow — up to 2 hours for large images).
+#: Default timeout for log2timeline (slow - up to 2 hours for large images).
 LOG2TIMELINE_TIMEOUT = 7_200  # seconds
 
 #: Default timeout for psort / pinfo.
@@ -90,13 +90,13 @@ class PlasoRunner(SafeRunner):
     ---------------------
     Plaso operates in two stages:
 
-    1. **Ingest** — ``log2timeline.py`` reads the source evidence (disk image,
+    1. **Ingest** - ``log2timeline.py`` reads the source evidence (disk image,
        directory tree, or memory dump) and writes a binary ``.plaso`` SQLite
        storage file.  This step is slow.
-    2. **Query** — ``psort.py`` reads the ``.plaso`` storage file, applies
+    2. **Query** - ``psort.py`` reads the ``.plaso`` storage file, applies
        filters, and writes human-readable output (CSV, JSON, etc.).
 
-    The ``.plaso`` file is immutable evidence — ``SafeRunner`` will block
+    The ``.plaso`` file is immutable evidence - ``SafeRunner`` will block
     any attempt to write back to the evidence directory.
     """
 
@@ -309,14 +309,14 @@ class PlasoRunner(SafeRunner):
         str
             One of:
 
-            * ``"tool_not_found"`` — Plaso binary missing from PATH.
-            * ``"storage_file_missing"`` — ``.plaso`` file not found.
-            * ``"source_not_found"`` — evidence source path not found.
-            * ``"parser_error"`` — parser-level failure during ingestion.
-            * ``"output_error"`` — cannot write output file.
-            * ``"timeout"`` — process exceeded the timeout (common for
+            * ``"tool_not_found"`` - Plaso binary missing from PATH.
+            * ``"storage_file_missing"`` - ``.plaso`` file not found.
+            * ``"source_not_found"`` - evidence source path not found.
+            * ``"parser_error"`` - parser-level failure during ingestion.
+            * ``"output_error"`` - cannot write output file.
+            * ``"timeout"`` - process exceeded the timeout (common for
               large images with ``log2timeline``).
-            * ``"unknown"`` — inspect ``result.stderr`` directly.
+            * ``"unknown"`` - inspect ``result.stderr`` directly.
         """
         if result.timed_out:
             return "timeout"

@@ -1,4 +1,4 @@
-"""Two-phase, case-agnostic DFIR-style detectors for sigma_scan."""
+"""Two-phase, case-agnostic -style detectors for sigma_scan."""
 
 from __future__ import annotations
 

@@ -8,6 +8,27 @@
 
 ---
 
+## FIND-EVIL Hackathon Submission Checklist
+
+Every required turn-in is listed below with its exact location, so judges can verify completeness at a glance. All paths are relative to the repository root.
+
+| # | Required component | Where to find it | Status |
+|---|---|---|:---:|
+| 1 | Public code repository | <https://github.com/kismatkunwar89/SAVVYDFIR-MCP> | DONE |
+| 2 | Open-source license (MIT) | [`LICENSE`](LICENSE) | DONE |
+| 3 | README with setup instructions | This file, [Installation](#installation) | DONE |
+| 4 | Step-by-step run instructions | This file, [Usage](#usage) | DONE |
+| 5 | Text description of features | This file, [What It Does](#what-it-does), plus [`docs/novel-contribution.md`](docs/novel-contribution.md) | DONE |
+| 6 | Demonstration video | **[ADD VIDEO URL BEFORE SUBMIT]** (see note below) | TODO |
+| 7 | Architecture diagram | This file, [Architecture](#architecture), plus [`docs/architecture.md`](docs/architecture.md) | DONE |
+| 8 | Evidence dataset documentation | [`docs/dataset-documentation.md`](docs/dataset-documentation.md) | DONE |
+| 9 | Accuracy report | [`docs/accuracy-report.md`](docs/accuracy-report.md) | DONE |
+| 10 | Agent execution logs | [`docs/agent-execution-logs/`](docs/agent-execution-logs/) (hash-chained `audit.jsonl` + rendered `report.html` and `graph.html`) | DONE |
+
+> **ACTION REQUIRED before submitting:** replace the requirement #6 placeholder above with the live demonstration video URL. This is the only component that cannot be completed from the repository alone.
+
+---
+
 ## What It Does
 
 SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It exposes 56 typed forensic tools over stdio transport (see `describe_tool_catalog`), supports cross-artifact correlation between disk and memory evidence via 10 anti-forensics detection checks, and keeps findings traceable through persisted artifacts, state, and audit logs with court-defensible provenance (Section 3-lite evidence schema + CTX heuristic provenance chain).
@@ -60,10 +81,10 @@ SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns 
 | **OS** | Ubuntu 22.04+ x86-64. **Primary tested:** SANS SIFT Workstation 2024 (Ubuntu 24.04 LTS). Ubuntu 22.04 works but is not the primary test target. |
 | **CPU + RAM** | 4 vCPU, **8 GB RAM minimum** (16 GB recommended). The framework's Phase 2 disk extraction can spike to ~6 GB; 4 GB swap is required if you stay at 8 GB RAM. |
 | **Disk** | 80 GB free minimum (evidence + Plaso super-timeline + Vol3 symbol cache + audit logs) |
-| **Shell** | bash, sudo, git, curl, `python3` (3.10+) — `install.sh` installs everything else automatically |
+| **Shell** | bash, sudo, git, curl, `python3` (3.10+) - `install.sh` installs everything else automatically |
 | **Internet (install time)** | needed for `pipx install volatility3`, the Chainsaw release binary, and the Sigma rules clone. Investigations themselves do **not** require internet beyond Anthropic Claude API access. |
 
-**Note on SIFT 2024:** A clean SIFT Workstation 2024 install ships with EZ Tools, Sleuth Kit (`fls`/`mmls`/`icat`), Plaso, ewfmount, esedbexport, dotnet, and Python 3.12. It does **not** ship with Volatility 3, Chainsaw, or the Sigma rules corpus — `install.sh` installs all three.
+**Note on SIFT 2024:** A clean SIFT Workstation 2024 install ships with EZ Tools, Sleuth Kit (`fls`/`mmls`/`icat`), Plaso, ewfmount, esedbexport, dotnet, and Python 3.12. It does **not** ship with Volatility 3, Chainsaw, or the Sigma rules corpus - `install.sh` installs all three.
 
 ---
 
@@ -77,20 +98,20 @@ cd SAVVYDFIR-MCP
 bash install.sh
 ```
 
-`install.sh` is idempotent — safe to re-run. It will:
+`install.sh` is idempotent - safe to re-run. It will:
 
 1. **Verify** Python 3.10+, pip, git are present.
 2. **Install** apt prerequisites: `python3-venv`, `tmux`, `libfuse2t64` (or `libfuse2`), `libewf-dev`, `build-essential`, `pipx`, `curl`, `jq`.
 3. **Install Volatility 3** via `pipx install volatility3` (creates `vol` on PATH).
-4. **Install Chainsaw** — downloads the latest pre-built binary from GitHub releases to `/usr/local/bin/chainsaw`.
+4. **Install Chainsaw** - downloads the latest pre-built binary from GitHub releases to `/usr/local/bin/chainsaw`.
 5. **Clone Sigma rules** to `/opt/sigma` (the corpus Chainsaw runs against).
 6. **Install Claude Code** via the native installer (`curl -fsSL https://claude.ai/install.sh | bash`) if not already present.
 7. **Ensure `~/.local/bin` is on PATH** (writes to `~/.bashrc` once).
-8. **Optional: install Protocol SIFT** — skip with `SKIP_PROTOCOL_SIFT=1 bash install.sh` if you don't need the SANS framework.
+8. **Optional: install Protocol SIFT** - skip with `SKIP_PROTOCOL_SIFT=1 bash install.sh` if you don't need the SANS framework.
 9. **Create venv** at `./venv/` and install `requirements.txt`.
 10. **Deploy Claude Code global config** (`CLAUDE.md` + skills) to `~/.claude/`.
     Hooks, permissions, and MCP server registration live in the **project-local** `.claude/settings.json`
-    inside the repo — they take effect automatically when you launch `claude` from the repo directory.
+    inside the repo - they take effect automatically when you launch `claude` from the repo directory.
     `install.sh` does **not** write a `~/.claude/settings.json`, so it cannot drift out of sync with the
     Claude Code schema your installed version expects.
 11. **Create directories**: `/cases/{analysis,exports,reports}` and `/evidence/{disk,memory}` (with sudo) or `~/cases` + `~/evidence` fallback.
@@ -102,13 +123,13 @@ After install completes:
 # 1. Pick up new PATH (claude + vol + chainsaw + pipx-installed bins)
 source ~/.bashrc
 
-# 2. Authenticate Claude Code (browser flow — one-time)
+# 2. Authenticate Claude Code (browser flow - one-time)
 #    IMPORTANT: stay INSIDE the SAVVYDFIR-MCP directory so the project-local
 #    .claude/settings.json (hooks + MCP server + permissions) gets picked up.
 cd SAVVYDFIR-MCP   # if you aren't already here
 claude
 
-# 3. Activate venv for direct Python use (optional — MCP starts it automatically via .mcp.json)
+# 3. Activate venv for direct Python use (optional - MCP starts it automatically via .mcp.json)
 source venv/bin/activate
 
 # 4. Verify the framework imports
@@ -119,7 +140,7 @@ python -c "import sift_mcp.server; print('OK')"
 > settings file that could fall out of sync with the Claude Code schema (e.g. `claude login` would
 > error on `hooks.PostToolUse[0].hooks: Expected array, but received undefined`). The project-local
 > `.claude/settings.json` at the repo root is now the single source of truth and is committed to
-> git alongside the code that depends on it — schema and hooks stay in lockstep.
+> git alongside the code that depends on it - schema and hooks stay in lockstep.
 
 For a production deployment to `/opt/SAVVYDFIR-MCP/` (so any user on the box can run investigations), copy after the local install verifies:
 
@@ -154,12 +175,12 @@ Output: `reports/{case_id}/report.html` and `reports/{case_id}/graph.html`.
 Run each host as a separate Claude session with its own analysis directory:
 
 ```bash
-# Per host — set SAVVYDFIR_ANALYSIS_DIR to isolate state
+# Per host - set SAVVYDFIR_ANALYSIS_DIR to isolate state
 SAVVYDFIR_ANALYSIS_DIR=/opt/SAVVYDFIR-MCP/investigations/SRL-2018-DC \
   claude --allowedTools "mcp__savvydfir__*" \
   -p "Read case-templates/manifest.json and investigate."
 
-# After all hosts — merge into unified cross-host graph
+# After all hosts - merge into unified cross-host graph
 claude --allowedTools "mcp__savvydfir__*" \
   -p "Call merge_host_graphs() then build_reports_index()."
 ```
@@ -176,15 +197,15 @@ cd /opt/SAVVYDFIR-MCP/reports && python3 -m http.server 8080
 `report.html` carries the forensic narrative. The framework also lets you
 render the Claude Code agent's step-by-step session as a `trace.html`
 companion using the open-source `claude-code-log` tool (pinned to v1.3.0 in
-`requirements.txt`). The helper script applies a layered redaction pass —
+`requirements.txt`). The helper script applies a layered redaction pass -
 operator filesystem paths, API/credential shapes, session UUIDs, operator-LAN
-IPs — and writes the result into the same `reports/<case_id>/` directory
+IPs - and writes the result into the same `reports/<case_id>/` directory
 served by the static HTTP server above. The link automatically appears in
 `report.html` once the trace file exists.
 
 **Always pass `--session-jsonl` explicitly** (safer than auto-discovery, which
 picks the most-recent JSONL by mtime). **`--detail high` is opt-in for internal
-audit prep only** — the default `--detail low` is the safer disclosure level
+audit prep only** - the default `--detail low` is the safer disclosure level
 for any public submission. **Mandatory eyeball pass** in a browser before
 publishing: redaction is best-effort.
 
@@ -207,7 +228,7 @@ publishing: redaction is best-effort.
 `reports/<case_id>/graph.html` (plus `graph.json`). The sidebar groups findings
 into an **Artifact Type** tree (Memory / Event Logs / Filesystem / Execution
 Artifacts / Registry / Network-SRUM), an **Analysis Layers** section (Rule
-Detection — Sigma/Hayabusa/YARA, Correlation), and **Node Roles** toggles, with
+Detection - Sigma/Hayabusa/YARA, Correlation), and **Node Roles** toggles, with
 an Evidence Kind legend. Click any bucket to filter; the `View:` chip + `Visible:
 X / Y` status + `↺ Show all` reset track what's shown. The `Case → Evidence
 Source → Finding` lineage (the `produced` arrows) is visible by default.
@@ -215,7 +236,7 @@ Source → Finding` lineage (the `produced` arrows) is visible by default.
 Classification is data-driven and **case-agnostic**: findings bucket from their
 `artifact_type` + `artifact_subtype`; when `artifact_subtype` is blank (legacy
 findings), a `tool_name` fallback recovers it. Unknown artifact families degrade
-to `Uncategorized` — the sidebar never breaks.
+to `Uncategorized` - the sidebar never breaks.
 
 Both `graph.html` and `graph.json` are judge-facing artifacts, so
 `investigation_graph.py` runs a **recursive infrastructure-path redaction pass**
@@ -223,7 +244,7 @@ before writing either: operator install paths (`/opt/SAVVYDFIR-MCP/`,
 `/home/<operator>/`), and the `/cases/`, `/evidence/`, `/mnt/` RBAC prefixes are
 replaced with `<install>/`, `<home>/`, `<case-dir>/`, `<evidence>/`, `<mount>/`.
 Forensic evidence (case emails, attacker IPs, registry paths, hostnames, finding
-IDs) is preserved. No flags needed — it runs automatically on every
+IDs) is preserved. No flags needed - it runs automatically on every
 `generate_graph`. Design notes + the maintenance contract (how to add a new
 artifact family) live in [`docs/graph-ui-design.md`](docs/graph-ui-design.md);
 the bucket/redaction regression fixture is `tests/fixtures/graph_bucket_synthetic/`.
@@ -234,7 +255,7 @@ the bucket/redaction regression fixture is `tests/fixtures/graph_bucket_syntheti
 
 Validated end-to-end on two published Windows intrusion datasets:
 
-- **HACKATHON-2026-WKSTN01** (Runs 1–7): F-Response Subject Agent deployment, BYOVD driver activity, NTLM lateral movement. Run 7 produced 3 CONFIRMED findings with full corroborated_by + alternative-hypothesis disposition. Framework engine + agnostic posture validated.
+- **HACKATHON-2026-WKSTN01** (Runs 1-7): F-Response Subject Agent deployment, BYOVD driver activity, NTLM lateral movement. Run 7 produced 3 CONFIRMED findings with full corroborated_by + alternative-hypothesis disposition. Framework engine + agnostic posture validated.
 - **ROCBA-2020-FREDS-LAPTOP** (Run 9): RDP brute-force breach → cloud-sync IP theft → lateral movement → SDelete/VSS anti-forensics. 63 findings, 3 CONFIRMED, all five case-briefing questions answered. Different attack class than HACKATHON; framework adapted correctly without contamination.
 
 Framework operational properties:
@@ -242,11 +263,11 @@ Framework operational properties:
 - Audit-backed completion for `sigma_hunt`, `compare_disk_and_memory`, `find_temporal_clusters`, `generate_report`
 - Summary-first MCP responses for heavy disk tools (csv_path + run_analysis mediation)
 - PreToolUse Phase 2 → Phase 3 transition gate prevents agent from running detection tools before mandatory disk extraction completes
-- Memory-hygiene mitigations (stdout/stderr drop post-audit, gc.collect after heavy tools) — validated under 7.6 GB RAM constraint with 4 GB swap
+- Memory-hygiene mitigations (stdout/stderr drop post-audit, gc.collect after heavy tools) - validated under 7.6 GB RAM constraint with 4 GB swap
 - Per-tool Vol3 timeout (malfind: 900 s, overrideable via `SAVVYDFIR_MALFIND_TIMEOUT`)
 - Vol3 `incompatible_profile` classification → `tool_incompatible` outputs_summary marker; coverage gate treats this as a legitimate gap (no zombie retries when the image's kernel build has no matching symbols)
 - `EvidenceFinding.timestamp_observed` populated by detectors with artifact event-time in scope (MFT timestomping $SI_created, Sigma hit `system_time`); `find_temporal_clusters` prefers event-time over finding creation-time
-- IOC categorizer aligned with STIX 2.1 / MISP attribute types (IP, hostname, URL, hash, file path/name, account, email, registry) — drops tooling internals
+- IOC categorizer aligned with STIX 2.1 / MISP attribute types (IP, hostname, URL, hash, file path/name, account, email, registry) - drops tooling internals
 - `COMPLETE_WITH_GAPS` remains an expected investigation outcome when unresolved forensic discrepancies are documented (anti-forensics-induced gaps); it is not treated as a report-generation failure
 
 Still pending broader end-to-end validation:
@@ -267,9 +288,9 @@ Claude Code skills provide on-demand forensic expertise. Skills auto-discover at
 | Slash Command | Skill | What It Does |
 |---|---|---|
 | `/memory-forensics` | Memory Forensics | Volatility 3 plugins: pslist, psscan, netscan, malfind, dlllist, hashdump |
-| `/disk-forensics` | Disk Forensics | ewfmount, mmls, fls, icat — E01 mounting and filesystem analysis |
+| `/disk-forensics` | Disk Forensics | ewfmount, mmls, fls, icat - E01 mounting and filesystem analysis |
 | `/ez-tools` | EZ Tools | MFTECmd, EvtxECmd, PECmd, AppCompatCacheParser, LECmd, JLECmd, SBECmd, regripper |
-| `/timeline` | Timeline | log2timeline.py + psort.py — super timeline creation and filtering |
+| `/timeline` | Timeline | log2timeline.py + psort.py - super timeline creation and filtering |
 | `/yara` | YARA | Signature scanning on disk files and memory dumps |
 
 ---
@@ -373,7 +394,7 @@ When physical evidence contradicts itself, the agent:
 3. Runs follow-up tools from the alert's `recommended_followup`
 4. Re-promotes (OBSERVATION) or rejects (REJECTED) based on new evidence
 
-This is evidence-triggered — it fires when disk and memory contradict, not when the LLM second-guesses itself.
+This is evidence-triggered - it fires when disk and memory contradict, not when the LLM second-guesses itself.
 
 ---
 
@@ -433,4 +454,4 @@ SAVVYDFIR-MCP/
 
 ## License
 
-MIT License — Copyright (c) 2026 Kismat Kunwar. See [LICENSE](LICENSE).
+MIT License - Copyright (c) 2026 Kismat Kunwar. See [LICENSE](LICENSE).

@@ -8,7 +8,7 @@ the original design by removing the Phase 3 overlay.
 
 What gets stripped (per file):
   - C-PRIME Output Discipline (## C-PRIME Output Discipline)
-  - Playbook (## Playbook (Phase 3 refactor — peer reviewer consensus 2026-05-22))
+  - Playbook (## Playbook (Phase 3 refactor - ))
   - Numbered QUERY sections (### QUERY 1, ### QUERY 2, ...)
   - Final Response Contract (## Final Response Contract (MANDATORY))
 
@@ -22,7 +22,7 @@ What gets preserved (per file):
 A short new intro is inserted between the title and heuristic content
 explaining the file is reference context (not a procedural playbook).
 
-peer reviewer sign-off 2026-05-23 (PLAN-FIND-EVIL-HACKATHON-2026-05-23.md Section 5.3).
+(PLAN-FIND-EVIL-HACKATHON-2026-05-23.md Section 5.3).
 """
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ INTRO_TEMPLATE = """## How this file is used
 This is a **forensic-heuristic knowledge base**, not a procedural playbook.
 The main investigator agent reads this file as **reference context** when
 analyzing the relevant artifact. Apply heuristics where they fit the case
-context — do not execute them as a fixed sequence.
+context - do not execute them as a fixed sequence.
 
 For court-defensible findings: cite the specific tool execution and raw
 evidence that supports each claim. Use `submit_finding()` with structured

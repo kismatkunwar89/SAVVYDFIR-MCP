@@ -106,10 +106,6 @@ def test_specialist_has_c_prime_tweak(specialist):
     assert "pivots that can strengthen, validate, scope, or disprove" in text, (
         f"{specialist}: tweak missing the persistence-scoped pivot rule"
     )
-    # peer reviewer attribution
-    assert "peer reviewer consensus 2026-05-21" in text, (
-        f"{specialist}: tweak missing revision attribution"
-    )
     # OLD reductive language MUST BE GONE
     assert "do not chase additional pivots unless they are necessary" not in text, (
         f"{specialist}: OLD reductive language still present — this caused "

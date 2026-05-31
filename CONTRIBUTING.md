@@ -20,7 +20,7 @@ or any PII. Use redacted/synthesized examples.
 
 1. Fork + branch from `master`. Branch naming: `feat/<short-name>`, `fix/<short-name>`.
 2. Run the full test suite: `python3 -m pytest tests/ -v`
-3. Keep framework code case-agnostic — no hardcoded IPs, usernames, filenames,
+3. Keep framework code case-agnostic - no hardcoded IPs, usernames, filenames,
    hashes, MITRE techniques, or case identifiers in `sift_mcp/`, `scripts/`,
    `CLAUDE.md`, or `.claude/agents/*.md`. Detector pattern code is the only
    exception (e.g. `T1070.006` in the timestomping detector).
@@ -44,7 +44,7 @@ or any PII. Use redacted/synthesized examples.
    audit logging pattern (see `compare_disk_and_memory` for the canonical shape).
 3. Register the tool in `sift_mcp/tool_catalog.py`.
 4. If the tool returns a large result set, use the `build_contract_response`
-   envelope and cap inline payload by severity/level — never by arbitrary count.
+   envelope and cap inline payload by severity/level - never by arbitrary count.
 5. Add unit + integration tests under `tests/`.
 6. If the tool feeds the heuristic-injection layer, add the artifact mapping
    in `_HEURISTIC_ARTIFACT_FOR_TOOL` and ensure the response carries
@@ -57,7 +57,7 @@ or any PII. Use redacted/synthesized examples.
 2. Wire the artifact key into `scripts/extract_heuristic_slice.py`.
 3. Add the artifact mapping in `sift_mcp/tools/_contracts.py`
    (`_HEURISTIC_ARTIFACT_FOR_TOOL`) so the Tier-1 injection picks it up.
-4. Keep the agent SOP case-agnostic — no hardcoded examples from past
+4. Keep the agent SOP case-agnostic - no hardcoded examples from past
    investigations.
 
 ## License

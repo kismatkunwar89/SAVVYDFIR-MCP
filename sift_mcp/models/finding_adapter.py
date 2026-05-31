@@ -1,4 +1,4 @@
-"""finding_adapter.py — Map existing Finding dict to Section 3-lite EvidenceFinding.
+"""finding_adapter.py - Map existing Finding dict to Section 3-lite EvidenceFinding.
 
 Allows incremental migration: tools that produce findings via the old
 Finding model can continue working while submit_finding writes BOTH the
@@ -13,7 +13,7 @@ The adapter handles:
   - MITRE technique/tactic merge from legacy fields
   - finding_id legacy F-NNN preserved as alias; ULID generated for DAG
 
-peer reviewer sign-off 2026-05-23. See PLAN-FIND-EVIL-HACKATHON-2026-05-23.md Section 4.
+See PLAN-FIND-EVIL-HACKATHON-2026-05-23.md Section 4.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from .evidence_finding import (
 
 
 # ---------------------------------------------------------------------------
-# Confidence bucketing — float to enum
+# Confidence bucketing - float to enum
 # ---------------------------------------------------------------------------
 
 # Legacy float thresholds (calibrated to match existing finding distributions)
@@ -75,7 +75,7 @@ def confidence_float_to_enum(value: Any) -> Confidence:
 
 
 # ---------------------------------------------------------------------------
-# Status mapping — legacy FindingStatus to EvidenceFindingStatus
+# Status mapping - legacy FindingStatus to EvidenceFindingStatus
 # ---------------------------------------------------------------------------
 
 _LEGACY_STATUS_MAP = {
@@ -196,7 +196,7 @@ def adapt_finding_to_evidence_finding(
     # Confidence bucketing
     confidence = confidence_float_to_enum(legacy.get("confidence"))
 
-    # Confidence rationale — promote alt-hypothesis info if HIGH
+    # Confidence rationale - promote alt-hypothesis info if HIGH
     rationale = (
         legacy.get("confidence_rationale")
         or legacy.get("evidence_against_it")
@@ -211,7 +211,7 @@ def adapt_finding_to_evidence_finding(
     if confidence == Confidence.HIGH and not rationale:
         confidence = Confidence.MEDIUM
 
-    # MITRE techniques — accept singular or list, normalize to list
+    # MITRE techniques - accept singular or list, normalize to list
     mitre = legacy.get("mitre_techniques") or legacy.get("mitre_technique") or []
     if isinstance(mitre, str):
         mitre = [mitre] if mitre else []
@@ -246,7 +246,7 @@ def adapt_finding_to_evidence_finding(
         if desc:
             tool_output_hash = sha256_string(desc)
 
-    # Graph edges — contradicted_by → contradicts (ULID validation will reject
+    # Graph edges - contradicted_by → contradicts (ULID validation will reject
     # legacy F-NNN format, so we omit them rather than fail validation)
     raw_contradicts = legacy.get("contradicted_by") or legacy.get("contradicts") or []
     raw_corroborates = legacy.get("corroborated_by") or legacy.get("corroborates") or []

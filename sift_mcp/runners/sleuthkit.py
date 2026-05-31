@@ -2,7 +2,7 @@
 sift_mcp.runners.sleuthkit
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-SleuthKitRunner — subprocess wrapper for **The Sleuth Kit** on SIFT Workstation.
+SleuthKitRunner - subprocess wrapper for **The Sleuth Kit** on SIFT Workstation.
 
 Tool paths (from Protocol SIFT's global/CLAUDE.md):
     All Sleuth Kit binaries are in ``$PATH`` on SIFT Workstation:
@@ -43,7 +43,7 @@ from sift_mcp.runners.base import RunResult, SafeRunner
 # Defaults
 # ---------------------------------------------------------------------------
 
-DEFAULT_TIMEOUT = 120  # seconds — disk tools are usually fast
+DEFAULT_TIMEOUT = 120  # seconds - disk tools are usually fast
 
 
 # ---------------------------------------------------------------------------
@@ -344,12 +344,12 @@ class SleuthKitRunner(SafeRunner):
         str
             One of:
 
-            * ``"image_not_found"`` — the image file does not exist.
-            * ``"invalid_image"`` — TSK cannot open or parse the image.
-            * ``"inode_not_found"`` — inode does not exist in this filesystem.
-            * ``"tool_not_found"`` — binary missing from PATH.
-            * ``"timeout"`` — process exceeded the timeout.
-            * ``"unknown"`` — inspect ``result.stderr`` directly.
+            * ``"image_not_found"`` - the image file does not exist.
+            * ``"invalid_image"`` - TSK cannot open or parse the image.
+            * ``"inode_not_found"`` - inode does not exist in this filesystem.
+            * ``"tool_not_found"`` - binary missing from PATH.
+            * ``"timeout"`` - process exceeded the timeout.
+            * ``"unknown"`` - inspect ``result.stderr`` directly.
         """
         if result.timed_out:
             return "timeout"

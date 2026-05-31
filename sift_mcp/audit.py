@@ -152,7 +152,7 @@ class AuditLogger:
         command_line:
             The fully assembled command string that will be executed.
         agent_turn:
-            The Claude agent turn counter at time of invocation.
+            The agent turn counter at time of invocation.
         """
         entry: AuditEntry = {
             "timestamp": _utcnow_iso(),
@@ -212,7 +212,7 @@ class AuditLogger:
         parameters:
             Structured high-level parameters associated with this execution.
         agent_turn:
-            Claude agent turn number associated with this execution.
+            agent turn number associated with this execution.
         """
         entry: AuditEntry = {
             "timestamp": _utcnow_iso(),
@@ -312,7 +312,7 @@ class AuditLogger:
             ULID of a new finding that supersedes the original.
         correction_id (optional):
             Pre-generated ULID for this correction event. If None, the audit
-            layer leaves it None — generation is the caller's job (or the
+            layer leaves it None - generation is the caller's job (or the
             CorrectionEvent model's default).
 
         Returns
@@ -320,7 +320,7 @@ class AuditLogger:
         AuditEntry
             The dictionary that was appended to audit.jsonl.
         """
-        # The correction_event payload — graph renderer expects these field names
+        # The correction_event payload - graph renderer expects these field names
         # (scripts/investigation_graph.py:565-607 reads `affected_finding_ids`).
         affected = [original_finding_id]
         revised_ids = [revised_finding_id] if revised_finding_id else []
@@ -379,7 +379,7 @@ class AuditLogger:
         )
 
     # ------------------------------------------------------------------
-    # W1.7 — CTX (context bundle) audit primitive
+    # W1.7 - CTX (context bundle) audit primitive
     # ------------------------------------------------------------------
 
     _ctx_counter: int = 0
@@ -411,7 +411,7 @@ class AuditLogger:
         """Write a ``context_bundle`` audit row recording that a heuristic
         slice from a canonical .md file was delivered to the LLM.
 
-        W1.7 (PLAN-FIND-EVIL-HACKATHON-2026-05-23.md + tri-agent CR13 sign-off):
+        W1.7 (CR13):
         every Tier-1 / Tier-2 / Tier-3 heuristic injection writes one of these
         rows. Findings can then cite ``heuristic_context_refs: ["CTX-003"]``,
         forming a court-defensible chain: finding → execution_id → CTX-NNN

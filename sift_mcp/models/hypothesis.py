@@ -1,11 +1,11 @@
-"""hypothesis.py — Pydantic schema for LLM-formed investigation hypotheses.
+"""hypothesis.py - Pydantic schema for LLM-formed investigation hypotheses.
 
 W1.7 (CR13 Option X): persistence target for the agent's hypothesis-formation
 step. The LLM forms 2-5 ranked hypotheses from prepare_hypothesis_context's
-bundle; record_hypotheses() persists them via this schema for audit and
+bundle; record_hypotheses persists them via this schema for audit and
 follow-on pivot iteration.
 
-Design constraint (peer reviewer CR13-3): MCP must NOT pretend to do the thinking.
+Design constraint (CR13-3): MCP must NOT pretend to do the thinking.
 The Hypothesis schema is a STRUCTURED CONTAINER for LLM-emitted analysis,
 not a planner that generates hypotheses itself. Python validates shape and
 provenance; the LLM authors the content.
@@ -66,7 +66,7 @@ class HypothesisStatus(str, Enum):
 
 
 class HypothesisPivotType(str, Enum):
-    """Diamond Model pivot edge — for adaptive pivot suggestions.
+    """Diamond Model pivot edge - for adaptive pivot suggestions.
 
     From threat-hunting research (notebook #43):
     Victim ↔ Capability ↔ Infrastructure ↔ Adversary
@@ -127,7 +127,7 @@ class Hypothesis(BaseModel):
         ),
     )
 
-    # Provenance — which CTX bundle did the LLM use to form this?
+    # Provenance - which CTX bundle did the LLM use to form this?
     source_context_refs: list[str] = Field(
         default_factory=list,
         description=(

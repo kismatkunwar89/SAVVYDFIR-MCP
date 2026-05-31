@@ -1,4 +1,4 @@
-"""activity_thread.py — Cyber Kill Chain phase mapping for blindspot detection.
+"""activity_thread.py - Cyber Kill Chain phase mapping for blindspot detection.
 
 W1.7 (CR13 Option X): Activity Thread tracks which Cyber Kill Chain phases
 have evidence (findings mapped to phase). Empty phase = blindspot per Diamond
@@ -6,7 +6,7 @@ Model Axiom 4: every malicious activity must traverse a succession of phases.
 
 The Activity Thread is rendered as a Mermaid diagram in the final report,
 filled phases shown in green, empty (blindspot) phases shown in red. This is
-direct hackathon judging-criterion-#5 deliverable (Audit Trail Quality —
+direct hackathon judging-criterion-#5 deliverable (Audit Trail Quality -
 'can judges trace any finding back to specific tool execution that produced
 it', extended to 'and see what's MISSING').
 
@@ -48,7 +48,7 @@ class KillChainPhase(str, Enum):
     ACTIONS_ON_OBJECTIVES = "actions_on_objectives"
 
 
-# Color hints for Mermaid rendering — green = evidence present, red = blindspot
+# Color hints for Mermaid rendering - green = evidence present, red = blindspot
 KILL_CHAIN_COLORS_FILLED = "#16a34a"  # green
 KILL_CHAIN_COLORS_EMPTY = "#dc2626"   # red
 KILL_CHAIN_COLORS_PARTIAL = "#eab308" # amber (single-source, low corroboration)
@@ -56,7 +56,7 @@ KILL_CHAIN_COLORS_PARTIAL = "#eab308" # amber (single-source, low corroboration)
 
 # Default mapping: MITRE technique prefix → KillChainPhase
 # This is used to auto-classify findings that carry MITRE techniques into
-# the right phase. Agnostic — no hardcoded case values.
+# the right phase. Agnostic - no hardcoded case values.
 MITRE_TECHNIQUE_PHASE_MAP: dict[str, KillChainPhase] = {
     # Reconnaissance
     "T1595": KillChainPhase.RECONNAISSANCE,  # Active Scanning
@@ -138,7 +138,7 @@ class ActivityThread(BaseModel):
     """Per-case mapping of Cyber Kill Chain phases → finding IDs.
 
     Lives in state.json under ``state.activity_thread``. Updated whenever a
-    finding is added (via add_finding / submit_finding) — the finding's
+    finding is added (via add_finding / submit_finding) - the finding's
     mitre_techniques are classified into a phase, and the finding ID is
     appended to that phase's bucket.
 
@@ -146,7 +146,7 @@ class ActivityThread(BaseModel):
     Mermaid graph:
         - Phase node colored green = ≥2 findings (corroborated)
         - Phase node colored amber = 1 finding (single-source observation)
-        - Phase node colored red = empty (BLINDSPOT — per Diamond Axiom 4)
+        - Phase node colored red = empty (BLINDSPOT - per Diamond Axiom 4)
     """
 
     # Per-phase finding ID buckets
@@ -209,7 +209,7 @@ class ActivityThread(BaseModel):
 
     def phase_status(self, phase: KillChainPhase) -> str:
         """Return 'filled' (≥2 findings = corroborated), 'partial' (1 finding),
-        or 'empty' (0 findings — blindspot)."""
+        or 'empty' (0 findings - blindspot)."""
         n = len(self.phases.get(phase.value, []))
         if n >= 2:
             return "filled"

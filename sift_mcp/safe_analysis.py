@@ -104,7 +104,7 @@ def _evaluate_query(query: str, df, np_module, pd_module=None):
     # Run-11 fix (2026-05-29): pre-import pd, np, and common Pandas helpers
     # so the agent does not need `import pandas as pd` (which the blocklist
     # rightly rejects as a sandbox escape vector). Operator hit this hard
-    # in the ROCBA debrief — was forced to drop to external python3 for
+    # in the ROCBA debrief - was forced to drop to external python3 for
     # any query that needed pd.to_datetime, pd.Series, pd.DataFrame, etc.
     usersyms = {
         "df": df,

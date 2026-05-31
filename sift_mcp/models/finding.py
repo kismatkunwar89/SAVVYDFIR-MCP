@@ -1,5 +1,5 @@
 """
-finding.py — Forensic finding data models for SAVVYDFIR-MCP.
+finding.py - Forensic finding data models for SAVVYDFIR-MCP.
 
 Every piece of analytic output produced by the agent is stored as a
 ``Finding``.  Findings are the atom of the audit trail: each one links back
@@ -109,7 +109,7 @@ class Finding(BaseModel):
                               HYPOTHESIS, REJECTED).
         finding_status:       Lifecycle status (ACTIVE, CORRECTED, CONFIRMED,
                               REJECTED).
-        confidence:           Analyst confidence in the finding (0.0–1.0).
+        confidence:           Analyst confidence in the finding (0.0-1.0).
         description:          Human-readable explanation of the finding and
                               supporting reasoning (≥ 10 characters).
         supporting_indicators: Raw strings (hashes, paths, offsets) that
@@ -236,7 +236,7 @@ class Finding(BaseModel):
         None,
         description="Source class that satisfied the latest corroboration requirement.",
     )
-    # --- peer reviewer consensus 2026-05-19 (Tier-A report-gate invariants) -------
+    # --- (Tier-A report-gate invariants) -------
     requires_re_extraction: bool = Field(
         default=False,
         description=(
@@ -284,7 +284,7 @@ class Finding(BaseModel):
             "ransomware encryption pattern — no benign use of this binary')."
         ),
     )
-    # --- peer reviewer consensus 2026-05-22 (Phase 1 — durable specialist provenance) ---
+    # --- (Phase 1 - durable specialist provenance) ---
     assigned_agent: Optional[str] = Field(
         default=None,
         description=(
@@ -293,8 +293,8 @@ class Finding(BaseModel):
             "finding was registered via state.add_finding by the main agent or "
             "auto-recorded by an MCP extraction tool. Required for the Phase 5 "
             "investigation-success gate to verify per-lane specialist contribution. "
-            "Keep tool_name as the MCP producing tool — DO NOT overload it with "
-            "the specialist name (peer reviewer sign-off)."
+            "Keep tool_name as the MCP producing tool, DO NOT overload it with "
+            "the specialist name."
         ),
     )
     fk_source_class: Optional[str] = Field(
@@ -360,7 +360,7 @@ class Finding(BaseModel):
         None,
         description=(
             "True when scan_processes ran without a matching pslist baseline. "
-            "peer reviewer round-7 P2: replaces the prior false-positive of treating all "
+            "Replaces the prior false-positive of treating all "
             "psscan PIDs as hidden. Gate recomputes the delta when pslist later runs."
         ),
     )
@@ -393,7 +393,7 @@ class Finding(BaseModel):
         None,
         ge=0,
         description=(
-            "PID a list_dlls finding actually examined. E.2 (peer reviewer round-1 P2): "
+            "PID a list_dlls finding actually examined. E.2: "
             "the report gate uses this to verify per-PID coverage instead of "
             "accepting any list_dlls execution as full coverage."
         ),
@@ -489,7 +489,7 @@ class Finding(BaseModel):
     def _validate_observation_has_offset_or_path(self) -> "Finding":
         """OBSERVATION findings SHOULD reference an artifact path.
 
-        Run-11 fix (2026-05-29): expanded error message — operator's debrief
+        Run-11 fix (2026-05-29): expanded error message - operator's debrief
         noted the rule was surfaced only at submit time after the agent had
         already authored the full payload. Hint at the INFERENCE alternative
         when the finding describes derived/aggregate analysis (which doesn't

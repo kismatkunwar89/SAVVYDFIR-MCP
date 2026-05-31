@@ -1,5 +1,5 @@
 """
-case.py — Case-level data models for SAVVYDFIR-MCP.
+case.py - Case-level data models for SAVVYDFIR-MCP.
 
 Defines the authoritative representations of a forensic case:
   - DiskImage / MemoryDump: evidence-source descriptors
@@ -31,7 +31,7 @@ class DiskImage(BaseModel):
     Attributes:
         path: Absolute filesystem path to the image file (E01, raw, dd, AFF).
         host: Hostname or asset-tag of the machine the image was acquired from.
-        image_type: Acquisition format — determines which tools can parse it
+        image_type: Acquisition format - determines which tools can parse it
                     (e.g. ewfmount for E01, loop-mount for raw/dd).
     """
 
@@ -105,7 +105,7 @@ class CaseManifest(BaseModel):
         investigation_goal: Natural-language statement of the primary
                             investigative objective.
         max_iterations:     Maximum number of triage iterations the agent may
-                            execute before stopping (1–10, default 4).
+                            execute before stopping (1-10, default 4).
     """
 
     case_id: str = Field(

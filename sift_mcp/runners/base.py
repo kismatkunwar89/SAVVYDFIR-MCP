@@ -1,4 +1,4 @@
-"""SafeRunner — Read-only enforcement layer for all forensic tool execution.
+"""SafeRunner - Read-only enforcement layer for all forensic tool execution.
 
 Every subprocess call in SAVVYDFIR-MCP goes through SafeRunner. This is the
 architectural guardrail that ensures:
@@ -9,8 +9,8 @@ architectural guardrail that ensures:
 
 Design decisions
 ----------------
-* ``subprocess.run(shell=False)`` — no shell expansion, no injection surface.
-* Path resolution before deny-list check — prevents ``../../../mnt/`` traversal.
+* ``subprocess.run(shell=False)`` - no shell expansion, no injection surface.
+* Path resolution before deny-list check - prevents ``../../../mnt/`` traversal.
 * Fail-closed audit: if the pre-execution log write raises, the command never runs.
 * Execution IDs are sourced from ``AuditLogger.next_execution_id()`` so IDs
   remain globally monotonic and consistent across audit.jsonl + state.json.
@@ -89,7 +89,7 @@ class RunResult:
         Run-8 OOM root cause: dotnet/EvtxECmd captures multi-MB stdout into
         Python str objects. After the audit log has persisted the
         ``outputs_summary`` (already a bounded projection), the full captured
-        text is no longer needed by typical callers — the actual artifact
+        text is no longer needed by typical callers - the actual artifact
         data lives in CSVs on disk. Keep a small head + tail for debug only.
 
         Called by ``SafeRunner.run()`` AFTER audit + state writes, BEFORE the
@@ -114,7 +114,7 @@ class RunResult:
         full stdout to parse JSON output set
         ``DROP_CAPTURED_OUTPUT_AFTER_AUDIT=False``, which keeps stdout in
         heap for the lifetime of every RunResult. Over a 60-90min
-        investigation this accumulates to multiple GB — the framework OOM-killed
+        investigation this accumulates to multiple GB - the framework OOM-killed
         a real ROCBA run mid-Phase-2.
 
         Callers MUST call ``result.release_stdout()`` immediately after
@@ -150,7 +150,7 @@ class CommandDeniedError(PermissionError):
 
 
 # ---------------------------------------------------------------------------
-# No-op audit stub — used when no AuditLogger is supplied
+# No-op audit stub - used when no AuditLogger is supplied
 # ---------------------------------------------------------------------------
 
 
@@ -220,7 +220,7 @@ class SafeRunner:
     # RBAC Path Model
     # ------------------------------------------------------------------
     # Evidence paths: readable by all forensic tools (Volatility, Sleuth Kit, etc.)
-    # These are NEVER writable — enforced at the argument level below.
+    # These are NEVER writable - enforced at the argument level below.
     EVIDENCE_PATHS: list[str] = [
         "/evidence/",
         "/mnt/",
@@ -233,14 +233,14 @@ class SafeRunner:
         "/tmp/",
     ]
 
-    # Paths that are ALWAYS blocked — kernel/device interfaces, never needed by forensic tools
+    # Paths that are ALWAYS blocked - kernel/device interfaces, never needed by forensic tools
     DENIED_PATHS: list[str] = [
         "/dev/",
         "/proc/",
         "/sys/",
     ]
 
-    # Write-protected paths — arguments pointing here are allowed for READS
+    # Write-protected paths - arguments pointing here are allowed for READS
     # but blocked if the tool would write to them (checked via output flag detection)
     WRITE_PROTECTED_PATHS: list[str] = [
         "/evidence/",
@@ -264,8 +264,8 @@ class SafeRunner:
     #: When True, drop captured stdout/stderr from the returned RunResult
     #: after the audit row + outputs_summary are persisted. Default True
     #: (Run-8 OOM mitigation for multi-MB dotnet captures that write CSV
-    #: to disk anyway). Subclasses whose stdout IS the parsed data — most
-    #: notably :class:`VolatilityRunner` — must override to ``False``, or
+    #: to disk anyway). Subclasses whose stdout IS the parsed data - most
+    #: notably :class:`VolatilityRunner` - must override to ``False``, or
     #: callers parse an empty/truncated buffer (Run 11 ROCBA: pslist
     #: returned 0 processes from a healthy 2,186-row memory image).
     DROP_CAPTURED_OUTPUT_AFTER_AUDIT: bool = True
@@ -399,7 +399,7 @@ class SafeRunner:
            :py:exc:`CommandDeniedError` on violation).
         2. Validates every path-like argument against the denied path prefixes
            (raises :py:exc:`PathDeniedError` on violation).
-        3. Logs a ``started`` entry to ``audit.jsonl`` via :py:attr:`audit` —
+        3. Logs a ``started`` entry to ``audit.jsonl`` via :py:attr:`audit` -
            **fail-closed**: if this write raises, the subprocess is never run.
         4. Invokes ``subprocess.run(shell=False, …)`` with the given timeout.
         5. Logs a ``completed`` entry to ``audit.jsonl``.
@@ -417,7 +417,7 @@ class SafeRunner:
         parameters:
             Structured parameters dict written into the audit record.
         agent_turn:
-            The current Claude agent turn number, stored in the audit record.
+            The current agent turn number, stored in the audit record.
         tool_name:
             Optional per-call MCP tool name override.  Use this when a single
             runner instance services multiple logical tools.
@@ -500,7 +500,7 @@ class SafeRunner:
                 encoding="utf-8",
                 errors="replace",
                 timeout=timeout,
-                shell=False,  # CRITICAL — never use shell=True
+                shell=False,  # CRITICAL - never use shell=True
                 cwd=cwd,
             )
             stdout = proc.stdout or ""
@@ -573,7 +573,7 @@ class SafeRunner:
             timed_out=timed_out,
         )
 
-        # Run-8 OOM mitigation (peer reviewer + peer reviewer consensus 2026-05-26): drop the
+        # Run-8 OOM mitigation: drop the
         # full captured stdout/stderr buffers from the returned RunResult once
         # the audit log + state row have persisted their bounded outputs_summary.
         # Multi-MB dotnet/EvtxECmd captures otherwise live in the Python heap
@@ -594,7 +594,7 @@ class SafeRunner:
                 result.drop_captured_output(keep_chars=8192)
             except Exception:
                 pass
-        # Free function-local references — they're large for chatty tools.
+        # Free function-local references - they're large for chatty tools.
         stdout = ""
         stderr = ""
         # Encourage immediate reclamation after heavy tools (dotnet, Vol3

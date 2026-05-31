@@ -1,5 +1,5 @@
 """
-artifacts.py — Typed artifact response models for SAVVYDFIR-MCP.
+artifacts.py - Typed artifact response models for SAVVYDFIR-MCP.
 
 Every MCP tool that wraps a forensic CLI command returns a list of one of
 these models instead of raw stdout.  The models make tool output directly
@@ -119,7 +119,7 @@ class InjectionIndicator(BaseModel):
         vad_end:            End virtual address of the suspicious VAD region.
         protection:         VAD protection string, e.g. 'PAGE_EXECUTE_READWRITE'.
         has_mz_header:      True if an 'MZ' (PE) magic was detected at the start
-                            of the region — strong indicator of a reflectively
+                            of the region - strong indicator of a reflectively
                             loaded DLL or injected PE.
         dump_path:          Absolute path to the extracted region dump file
                             (None if extraction was not performed).
@@ -199,7 +199,7 @@ class NetworkArtifact(BaseModel):
     Attributes:
         protocol:      IP protocol (TCP or UDP).
         local_addr:    Local IP address.
-        local_port:    Local port number (0–65535).
+        local_port:    Local port number (0-65535).
         remote_addr:   Remote IP address (None for listening sockets).
         remote_port:   Remote port number (None for listening sockets).
         state:         Connection state string (e.g. 'ESTABLISHED', 'LISTENING').
@@ -387,7 +387,7 @@ class RegistryRunKey(BaseModel):
         hive:             Registry hive file (e.g. 'NTUSER.DAT', 'SOFTWARE').
         key_path:         Full registry key path.
         value_name:       Value name within the key.
-        value_data:       Value data — the path to the binary or script that
+        value_data:       Value data - the path to the binary or script that
                           will execute at the persistence trigger.
         last_write_time:  UTC last-write time of the registry key.
         persistence_type: Category of persistence mechanism.

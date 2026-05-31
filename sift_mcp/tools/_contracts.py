@@ -175,7 +175,7 @@ def build_provenance(
     return {key: value for key, value in provenance.items() if value not in (None, "", [], {})}
 
 
-# W1.7 — Tier-1 heuristic injection map: tool_name (or prefix) → artifact key
+# W1.7 - Tier-1 heuristic injection map: tool_name (or prefix) → artifact key
 # matching the .claude/agents/<artifact>-analyst.md canonical files.
 # Used by build_contract_response() to attach `applicable_heuristics` slice
 # directly to the extraction tool's response payload (CR13 Option X Tier-1).
@@ -213,12 +213,12 @@ def _resolve_heuristic_artifact(tool_name: str) -> Optional[str]:
     return None
 
 
-# W1.7 (Run 2 consensus 2026-05-24, peer reviewer+peer reviewer signed): runtime-dep registry.
+# W1.7 (Run 2 consensus 2026-05-24, +signed): runtime-dep registry.
 # server.py wires _state_manager / _audit_logger here via init_all_tools so the
 # CONTRACT path (build_contract_response → _attach_heuristic_slice) has live
 # singletons without lazy `from sift_mcp.server import ...`. The lazy import
 # pattern produced silent audit/state divergence in Run 2 (8 audit rows, 3
-# state refs) — peer reviewer Q1 fix.
+# state refs) - Q1 fix.
 _runtime_state_manager: Any = None
 _runtime_audit_logger: Any = None
 
@@ -229,7 +229,7 @@ def set_runtime_deps(state_manager: Any, audit_logger: Any) -> None:
 
     Missing-deps behavior: if this is not called, _attach_heuristic_slice
     skips injection AND surfaces ``applicable_heuristics_skipped_reason``
-    on the response (fail-visible per peer reviewer consensus 2026-05-24).
+    on the response (fail-visible ).
     """
     global _runtime_state_manager, _runtime_audit_logger
     _runtime_state_manager = state_manager
@@ -256,7 +256,7 @@ def _attach_heuristic_slice(
       3. Neither available → skip injection AND set
          response["applicable_heuristics_skipped_reason"] (fail-visible)
 
-    NO lazy `from sift_mcp.server import ...` — that pattern caused Run 2's
+    NO lazy `from sift_mcp.server import ...` - that pattern caused Run 2's
     CONTRACT-path state-write loss (BUG-4). All state-write errors are
     re-raised (not swallowed); only audit-write errors are best-effort.
 
@@ -289,7 +289,7 @@ def _attach_heuristic_slice(
         )
         return
 
-    # Load the slice (failures here are non-fatal — heuristic catalog is data)
+    # Load the slice (failures here are non-fatal - heuristic catalog is data)
     try:
         import sys
         from pathlib import Path as _P
@@ -321,11 +321,11 @@ def _attach_heuristic_slice(
         }
         return
 
-    # State WRITE path — surfaces errors (peer reviewer Q1 mandate: no silent swallow
+    # State WRITE path - surfaces errors (Q1 mandate: no silent swallow
     # of state writes; only audit writes are best-effort).
     ctx_id = resolved_state.next_context_id()
     section_label = " + ".join(slice_data.get("sections_included") or ["unknown"])
-    # Audit write — best-effort (audit failure shouldn't lose state ref)
+    # Audit write - best-effort (audit failure shouldn't lose state ref)
     try:
         resolved_audit.log_context_bundle(
             case_id=case_id,
@@ -341,7 +341,7 @@ def _attach_heuristic_slice(
         )
     except Exception as exc:
         response.setdefault("audit_write_warning", f"context_bundle: {exc}")
-    # State write — surface errors (was swallowed in Run 2; BUG-4 root cause)
+    # State write - surface errors (was swallowed in Run 2; BUG-4 root cause)
     resolved_state.record_heuristic_ref(
         context_id=ctx_id,
         artifact=artifact,
@@ -392,10 +392,10 @@ def build_contract_response(
     canonical heuristic .md file (per `_HEURISTIC_ARTIFACT_FOR_TOOL`), the
     response will include an `applicable_heuristics` field carrying the
     Tier-1 heuristic slice (~800 tokens) for that artifact. Dedup via
-    state.heuristic_refs_loaded — subsequent calls in the same lane return
+    state.heuristic_refs_loaded - subsequent calls in the same lane return
     refs-only.
 
-    `case_id` and `execution_id` are optional for backward compatibility —
+    `case_id` and `execution_id` are optional for backward compatibility -
     callers that don't yet thread them through skip heuristic injection
     silently.
     """

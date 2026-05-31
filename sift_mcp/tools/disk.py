@@ -10,13 +10,13 @@ parse the CLI output into typed Pydantic models, and return plain dicts.
 
 Tools
 -----
-- ``extract_prefetch``         — Prefetch execution evidence via ``pyscca``.
-- ``get_amcache``              — AmcacheParser: SHA-1 evidence of execution.
-- ``extract_mft_timeline``     — MFTECmd: Full NTFS MFT with SI/FN timestamps
+- ``extract_prefetch``         - Prefetch execution evidence via ``pyscca``.
+- ``get_amcache``              - AmcacheParser: SHA-1 evidence of execution.
+- ``extract_mft_timeline``     - MFTECmd: Full NTFS MFT with SI/FN timestamps
                                   (timestomping detection).
-- ``list_deleted_files``       — fls -rd: Deleted file recovery via TSK.
-- ``summarize_evtx``           — EvtxECmd: Windows event log parsing.
-- ``extract_registry_run_keys``— RECmd: Persistence key extraction.
+- ``list_deleted_files``       - fls -rd: Deleted file recovery via TSK.
+- ``summarize_evtx``           - EvtxECmd: Windows event log parsing.
+- ``extract_registry_run_keys``- RECmd: Persistence key extraction.
 
 Design pattern
 --------------
@@ -84,7 +84,7 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Module-level singletons — set via init_tools()
+# Module-level singletons - set via init_tools()
 # ---------------------------------------------------------------------------
 
 _ez_runner: Optional["EZToolsRunner"] = None
@@ -410,7 +410,7 @@ def _parse_dt(value: str) -> Optional[datetime]:
 def _warn_if_empty(result: dict, tool_name: str, path: str, min_expected: int = 1) -> dict:
     """Upgrade status to 'warning' if records=0 but path exists.
 
-    Silent 0-record success is the worst failure mode — it looks like
+    Silent 0-record success is the worst failure mode - it looks like
     a clean system when the tool silently failed. This makes it loud.
     """
     count = result.get("records_count", len(result.get("data", [])))
@@ -564,9 +564,9 @@ def _raw_artifact_base() -> Path:
 
 
 def _durable_raw_artifact_path(kind: str) -> Optional[str]:
-    """Return a durable extracted artifact path for *kind* — content-aware.
+    """Return a durable extracted artifact path for *kind* - content-aware.
 
-    peer reviewer Phase-A-boundary review: the prior 'first existing path' check
+    review: the prior 'first existing path' check
     accepted empty directories created by failed/partial extract_windows_
     artifacts runs. An empty raw/evtx would then shadow a valid mounted
     Windows root and break A.2 path resolution.
@@ -585,7 +585,7 @@ def _durable_raw_artifact_path(kind: str) -> Optional[str]:
             # Run-8 lesson: a SAM-only staging dir was treated as valid here,
             # then RECmd produced SAM-only output and persistence data was
             # lost (no Run keys, no services). For persistence analysis we
-            # need SYSTEM and/or SOFTWARE — the hives that actually carry
+            # need SYSTEM and/or SOFTWARE - the hives that actually carry
             # Run keys + ControlSet\Services. Return the dir only if at
             # least one of those is present; SAM or NTUSER alone is not
             # enough to call this "a registry dir for persistence work".
@@ -1519,7 +1519,7 @@ def _build_mft_records(
                         finding_status=FindingStatus.ACTIVE,
                         confidence=0.8,
                         # Artifact event-time for find_temporal_clusters (Run 9 fix).
-                        # Use $SI created — the timestamp the attacker manipulated;
+                        # Use $SI created - the timestamp the attacker manipulated;
                         # $FN created is preserved on disk but reflects file-creation
                         # not the timestomping action.
                         timestamp_observed=si_created,
@@ -2034,7 +2034,7 @@ def _group_and_promote_registry(
 
 
 # ---------------------------------------------------------------------------
-# DFIR constants — case-agnostic, universally applicable
+# DFIR constants - case-agnostic, universally applicable
 # ---------------------------------------------------------------------------
 
 #: 26 universal Windows Event IDs that are relevant across ALL DFIR cases.
@@ -2169,7 +2169,7 @@ def extract_prefetch(
     if not preflight.get("ok"):
         return _artifact_preflight_error(tool_name=tool, preflight=preflight)
 
-    # Use pyscca (libscca) — handles Windows 10 MAM-compressed .pf files on Linux
+    # Use pyscca (libscca) - handles Windows 10 MAM-compressed .pf files on Linux
     # and exposes Prefetch-native run history without relying on Windows-only PECmd.
     records: list[PrefetchRecord] = []
     finding_ids: list[str] = []
@@ -2246,7 +2246,7 @@ def extract_prefetch(
         key = record.pf_timestamp_source or "unavailable"
         pf_timestamp_source_counts[key] = pf_timestamp_source_counts.get(key, 0) + 1
 
-    # One summary finding for the whole batch — not one per .pf file
+    # One summary finding for the whole batch - not one per .pf file
     if records:
         first_runs = sorted(
             [r for r in records if r.last_run_times],
@@ -2510,7 +2510,7 @@ def get_amcache(
         except Exception:
             continue
 
-    # One summary finding for the whole batch — not one per Amcache entry
+    # One summary finding for the whole batch - not one per Amcache entry
     if records:
         suspicious = [
             r for r in records
@@ -2868,7 +2868,7 @@ def _resolve_usn_path_input(image_path: str, usn_path: Optional[str]) -> str:
 
     The icat staging step writes the ADS as a flat file under
     /cases/<id>/artifacts/raw/usn/. Naming has drifted across staging
-    revisions — we accept all known variants AND fall back to scanning
+    revisions - we accept all known variants AND fall back to scanning
     the directory for any file >0 bytes that contains 'UsnJrnl' or 'J'.
     """
     if usn_path is not None:
@@ -2888,7 +2888,7 @@ def _resolve_usn_path_input(image_path: str, usn_path: Optional[str]) -> str:
             candidate = base / candidate_name
             if candidate.is_file() and candidate.stat().st_size > 0:
                 return str(candidate)
-        # Last-resort directory scan — pick the largest UsnJrnl/J-ish file.
+        # Last-resort directory scan - pick the largest UsnJrnl/J-ish file.
         # Defensive: if any future staging revision uses yet another name,
         # the file is still found as long as its name carries "UsnJrnl"
         # or starts with "J" or "$J".
@@ -2931,7 +2931,7 @@ def extract_usn_journal(
 ) -> dict[str, Any]:
     """Parse the NTFS USN Journal ($UsnJrnl:$J) via MFTECmd.
 
-    B.2 — USN persists filesystem-change records that the MFT itself may
+    B.2 - USN persists filesystem-change records that the MFT itself may
     overwrite. Critical for ransomware/exfiltration timelines because:
       - rename/delete is recorded with timestamps even after the MFT
         record is reallocated
@@ -2939,7 +2939,7 @@ def extract_usn_journal(
         encryption activity (ransomware) and large-file staging (exfil)
 
     Like extract_mft_timeline, USN output is LARGE (often >1M rows). We
-    return a summary + csv_path handle ONLY — the parent agent must use
+    return a summary + csv_path handle ONLY - the parent agent must use
     run_analysis() against the CSV, never load rows into context.
     Specialist analyst: @mft-analyst (handles both MFT and USN pivots).
 
@@ -3089,7 +3089,7 @@ def extract_usn_journal(
     response = {
         "tool_name": tool,
         "status": "success" if durable_csv else "warning",
-        # Phase B boundary: explicit empty data array even on success —
+        # Phase B boundary: explicit empty data array even on success -
         # USN context is large and never inlined. Clients/hooks enforce
         # the contract by checking data == [].
         "data": [],
@@ -3211,7 +3211,7 @@ def list_deleted_files(
     records: list[DeletedFile] = []
     finding_ids: list[str] = []
 
-    # OOM mitigation — fls stdout on a full MFT is multi-MB. Materialize the
+    # OOM mitigation - fls stdout on a full MFT is multi-MB. Materialize the
     # line list once and immediately release the raw buffer so the heap
     # doesn't carry it through the per-line scoring loop below.
     _fls_lines = result.stdout.splitlines()
@@ -3348,7 +3348,7 @@ def list_deleted_files(
 
 
 # ---------------------------------------------------------------------------
-# Tool: summarize_evtx — helpers
+# Tool: summarize_evtx - helpers
 # ---------------------------------------------------------------------------
 
 # High-value attack-surface channels: extract if present and non-empty.
@@ -3423,7 +3423,7 @@ def _stage_evtx_for_extraction(
     """Copy only baseline + present high-value .evtx files into a staging dir.
 
     Returns (staging_dir, [channel_stems_staged]).  If the inventory contains
-    no usable channels we return the original fallback_dir untouched — this
+    no usable channels we return the original fallback_dir untouched - this
     keeps the legacy "process everything" behaviour as a safety net.
 
     Run7 Stage 2 behaviour: EvtxECmd runs only against this bounded set,
@@ -3579,7 +3579,7 @@ def summarize_evtx(
     if not preflight.get("ok"):
         return _artifact_preflight_error(tool_name=tool, preflight=preflight)
 
-    # Channel inventory — always enumerate before processing so state.json
+    # Channel inventory - always enumerate before processing so state.json
     # records which channels are present vs empty vs not extracted.
     evtx_inventory = _enumerate_evtx_channels(resolved_evtx_dir)
     _record_evtx_inventory(evtx_inventory)
@@ -3625,14 +3625,14 @@ def summarize_evtx(
         "end_date": end_date or "",
     }
     if caller_specified_eids:
-        # Caller explicitly chose EIDs — include them in the cache key
+        # Caller explicitly chose EIDs - include them in the cache key
         cache_params = {
             **cache_base_params,
             "event_ids": sorted(effective_eids) if effective_eids else [],
             "event_id_strategy": "explicit",
         }
     else:
-        # Auto-selected EIDs (adaptive or default) — cache on base params only
+        # Auto-selected EIDs (adaptive or default) - cache on base params only
         cache_params = {
             **cache_base_params,
             "event_id_strategy": "auto",
@@ -3898,7 +3898,7 @@ def summarize_evtx(
 
 # Persistence key path fragments to match (lower-case)
 _PERSISTENCE_FRAGMENTS: list[tuple[str, str]] = [
-    # Run keys — absolute path (NTUSER.DAT or full SOFTWARE path)
+    # Run keys - absolute path (NTUSER.DAT or full SOFTWARE path)
     # NOTE: runonce/runservices MUST come before run (run is a substring of them)
     ("\\software\\microsoft\\windows\\currentversion\\runonce", "runonce"),
     ("\\software\\microsoft\\windows\\currentversion\\runservices", "run"),
@@ -3906,7 +3906,7 @@ _PERSISTENCE_FRAGMENTS: list[tuple[str, str]] = [
     ("\\software\\wow6432node\\microsoft\\windows\\currentversion\\runonce", "runonce"),
     ("\\software\\wow6432node\\microsoft\\windows\\currentversion\\runservices", "run"),
     ("\\software\\wow6432node\\microsoft\\windows\\currentversion\\run", "run"),
-    # Run keys — hive-relative (RECmd with -d strips the hive name prefix)
+    # Run keys - hive-relative (RECmd with -d strips the hive name prefix)
     # NOTE: runonce/runservices MUST come before run (run is a substring of them)
     ("\\currentversion\\runonce", "runonce"),
     ("\\currentversion\\runservices", "run"),
@@ -3919,7 +3919,7 @@ _PERSISTENCE_FRAGMENTS: list[tuple[str, str]] = [
     # Winlogon (T1547.004)
     ("\\winlogon", "winlogon_shell"),
     ("userinit", "winlogon_userinit"),
-    # Services — both absolute and hive-relative (T1543.003)
+    # Services - both absolute and hive-relative (T1543.003)
     ("\\currentcontrolset\\services\\", "services"),
     ("controlset001\\services\\", "services"),
     # LSA packages (T1547.005)
@@ -3936,7 +3936,7 @@ _PERSISTENCE_FRAGMENTS: list[tuple[str, str]] = [
     # Shell Extensions (T1546.015)
     ("shelliconoverlayidentifiers", "shell_extension"),
     ("shellserviceobjectdelayload", "shell_extension"),
-    # Image File Execution Options — debugger hijacking (T1546.012)
+    # Image File Execution Options - debugger hijacking (T1546.012)
     ("image file execution options", "ifeo"),
     # Scheduled Tasks (T1053.005)
     ("\\tasks\\", "scheduled_task"),
@@ -4236,10 +4236,10 @@ def extract_registry_run_keys(
                             str(cleaned_dir / hive_path.name),
                         )
                     except Exception:
-                        # rla.exe failure on a single hive is non-fatal —
+                        # rla.exe failure on a single hive is non-fatal -
                         # fall back to the dirty hive AND keep its transaction
                         # logs (.LOG1/.LOG2) so RECmd can still replay them.
-                        # peer reviewer round-5 P2-#2: prior fallback dropped logs,
+                        # round-5 P2-#2: prior fallback dropped logs,
                         # regressing from the original directory which had them.
                         try:
                             shutil.copy2(
@@ -4271,7 +4271,7 @@ def extract_registry_run_keys(
                             "lane_id": "disk_execution_persistence",
                         })
                     else:
-                        # Neither cleaned nor original has them — surface warning
+                        # Neither cleaned nor original has them - surface warning
                         data_gaps.append({
                             "artifact_family": "registry",
                             "classification": "missing_system_hives",

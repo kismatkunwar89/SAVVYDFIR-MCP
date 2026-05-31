@@ -1,6 +1,6 @@
 # Evaluation Methodology
 
-**SAVVYDFIR-MCP — FIND EVIL! Hackathon 2026**
+**SAVVYDFIR-MCP - FIND EVIL! Hackathon 2026**
 
 This document defines how accuracy is measured, what constitutes a true positive, false positive, and false negative, how the baseline comparison is constructed, and what metrics are reported in the accuracy report.
 
@@ -14,7 +14,7 @@ Ground truth for the SRL-2018 evidence corpus is established through two complem
 
 **1.1 Manual analysis (primary)**
 
-An analyst runs the full suite of SIFT Workstation tools directly from the command line — without any LLM involvement — and documents all forensically significant findings per host. Tools used:
+An analyst runs the full suite of SIFT Workstation tools directly from the command line - without any LLM involvement - and documents all forensically significant findings per host. Tools used:
 
 - `python3 /opt/volatility3-2.20.0/vol.py` (pslist, psscan, malfind, netscan, dlllist)
 - `dotnet /opt/zimmermantools/PECmd.dll` (Prefetch)
@@ -59,7 +59,7 @@ A finding is a **True Positive** if:
 2. A matching finding exists in the ground truth set for the same host, AND
 3. The finding references the correct artifact type and approximate artifact location (path or PID).
 
-A finding does not need exact string matching to be a TP — it must identify the correct forensic indicator with the correct artifact attribution.
+A finding does not need exact string matching to be a TP - it must identify the correct forensic indicator with the correct artifact attribution.
 
 ### 2.2 False Positive (FP)
 
@@ -156,15 +156,15 @@ The baseline is Protocol SIFT without the SAVVYDFIR-MCP layer: Claude Code with 
 | Servers (base-srv-01 through base-srv-04) | 4 | Server-side compromise |
 | Additional hosts | 6 | Breadth coverage |
 
-**Demo case:** `base-wkstn-01` — deep analysis with all 24 tools. This is the primary accuracy validation target.
+**Demo case:** `base-wkstn-01` - deep analysis with all 24 tools. This is the primary accuracy validation target.
 
 **Breadth pass:** Core tools on all 22 hosts (pslist, psscan, extract_prefetch, extract_registry_run_keys, compare_disk_and_memory).
 
 ### What Is Not Evaluated
 
-- Network packet captures (PCAP) — not in scope for this tool set
-- Mobile device forensics — not in scope
-- Cloud artifact analysis — not in scope
+- Network packet captures (PCAP) - not in scope for this tool set
+- Mobile device forensics - not in scope
+- Cloud artifact analysis - not in scope
 - Anti-forensics techniques beyond those detectable by the 6 correlation checks
 
 ---

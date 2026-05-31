@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-merge_graphs.py — Cross-host investigation graph merger for SAVVYDFIR-MCP.
+merge_graphs.py - Cross-host investigation graph merger for SAVVYDFIR-MCP.
 
 Loads all per-host ``graph.json`` files from the reports directory, detects
 shared IOCs (IPs, hashes, domains, accounts) across hosts, and emits a
@@ -85,18 +85,18 @@ LATERAL_MOVEMENT_TACTIC = "TA0008"
 
 # Node colours
 COLORS: dict[str, str] = {
-    "host":             "#1e40af",   # dark blue  — host cluster
-    "case":             "#0f172a",   # near-black — case root
+    "host":             "#1e40af",   # dark blue  - host cluster
+    "case":             "#0f172a",   # near-black - case root
     "evidence_source":  "#3b82f6",   # blue
-    "ioc":              "#7c3aed",   # violet     — shared IOC hub
+    "ioc":              "#7c3aed",   # violet     - shared IOC hub
     "OBSERVATION":      "#22c55e",
     "INFERENCE":        "#eab308",
     "HYPOTHESIS":       "#f97316",
     "REJECTED":         "#ef4444",
     "CORRECTION":       "#dc2626",
-    "lateral_movement": "#f43f5e",   # rose       — cross-host lateral edge
-    "shared_ioc":       "#8b5cf6",   # purple     — cross-host IOC edge
-    "shared_account":   "#06b6d4",   # cyan       — cross-host account edge
+    "lateral_movement": "#f43f5e",   # rose       - cross-host lateral edge
+    "shared_ioc":       "#8b5cf6",   # purple     - cross-host IOC edge
+    "shared_account":   "#06b6d4",   # cyan       - cross-host account edge
 }
 
 # ---------------------------------------------------------------------------
@@ -324,7 +324,7 @@ class UnifiedGraphBuilder:
                 src = edge["source"]
                 tgt = edge["target"]
 
-                # Finding and correction nodes were prefixed — update references
+                # Finding and correction nodes were prefixed - update references
                 def _maybe_prefix(nid: str) -> str:
                     # Only prefix nodes that are not case/evidence_source roots
                     for n in graph.get("nodes", []):
@@ -350,7 +350,7 @@ class UnifiedGraphBuilder:
                 by_case.setdefault(case_id, []).append((finding_id, tactic))
 
             if len(by_case) < 2:
-                continue  # IOC only seen on one host — no cross-host edge
+                continue  # IOC only seen on one host - no cross-host edge
 
             # Determine IOC type and display label
             ioc_type, ioc_value = ioc.split(":", 1)

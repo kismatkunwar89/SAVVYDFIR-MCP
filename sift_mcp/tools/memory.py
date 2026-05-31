@@ -10,13 +10,13 @@ plain dicts.
 
 Tools
 -----
-- ``detect_profile``    — windows.info: OS profiling.
-- ``list_processes``    — windows.pslist: Live process list with heuristic
+- ``detect_profile``    - windows.info: OS profiling.
+- ``list_processes``    - windows.pslist: Live process list with heuristic
                           suspicion scoring.
-- ``scan_processes``    — windows.psscan: Pool-scan for hidden/unlinked processes.
-- ``scan_network``      — windows.netscan: Network socket/connection scan.
-- ``detect_injection``  — windows.malfind: VAD-based injection detection.
-- ``list_dlls``         — windows.dlllist: DLL list for a specific PID.
+- ``scan_processes``    - windows.psscan: Pool-scan for hidden/unlinked processes.
+- ``scan_network``      - windows.netscan: Network socket/connection scan.
+- ``detect_injection``  - windows.malfind: VAD-based injection detection.
+- ``list_dlls``         - windows.dlllist: DLL list for a specific PID.
 
 Design pattern
 --------------
@@ -73,7 +73,7 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Module-level singletons — set via init_tools()
+# Module-level singletons - set via init_tools()
 # ---------------------------------------------------------------------------
 
 _runner: Optional["VolatilityRunner"] = None
@@ -171,7 +171,7 @@ def _normalize_response_format(response_format: str) -> Optional[str]:
 def _dump_identifier(dump_path: str) -> str:
     """Derive a filename-safe identifier from a memory dump path.
 
-    E.1 (peer reviewer round-1 P2): in multi-dump cases (enterprise scope with
+    E.1: in multi-dump cases (enterprise scope with
     one .img per host), pslist/psscan artifacts must be partitioned per
     dump so the gate's psscan_only_count comparison pairs the right
     pslist with the right psscan. Identifier is the basename minus
@@ -204,7 +204,7 @@ def _persist_rows_as_csv(
         base = Path(os.environ.get("OUTPUT_BASE", "/cases")) / cid / "artifacts" / tool_short_name
         base.mkdir(parents=True, exist_ok=True)
 
-        # Dump-keyed destination (E.1) — primary write target.
+        # Dump-keyed destination (E.1) - primary write target.
         dump_id = _dump_identifier(dump_path) if dump_path else None
         if dump_id:
             dump_dest = base / dump_id / filename
@@ -459,7 +459,7 @@ def _score_process_suspicion(
     Returns
     -------
     tuple[bool, Optional[str]]
-        ``(suspicious, reason)`` — ``True`` if any heuristic fires.
+        ``(suspicious, reason)`` - ``True`` if any heuristic fires.
     """
     name_lower = name.lower()
     reasons: list[str] = []
@@ -559,7 +559,7 @@ def detect_profile(dump_path: str) -> dict[str, Any]:
         }
 
     rows = _parse_json_output(result.stdout)
-    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation — free the multi-MB stdout now that we have parsed rows
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation - free the multi-MB stdout now that we have parsed rows
 
     # windows.info emits key-value rows or a single object.
     # Fields: NtMajorVersion, NtMinorVersion, NtBuildLab, SystemTime,
@@ -757,7 +757,7 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
 
     Reads the doubly-linked PEB process list from the kernel.  Processes that
     are hidden via DKOM (Direct Kernel Object Manipulation) will NOT appear
-    here — use :func:`scan_processes` to detect them.
+    here - use :func:`scan_processes` to detect them.
 
     Heuristic suspicion scoring
     ---------------------------
@@ -811,7 +811,7 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
         }
 
     rows = _parse_json_output(result.stdout)
-    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation — free the multi-MB stdout now that we have parsed rows
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation - free the multi-MB stdout now that we have parsed rows
     records = _parse_process_rows(rows, source="pslist")
 
     # Build a pid → name map for parent-name resolution
@@ -868,7 +868,7 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
             fid = _state.add_finding(finding.model_dump(mode="json"))
             finding_ids.append(fid)
 
-    # peer reviewer round-7 P2: emit a baseline pslist finding carrying pslist_pids
+    # round-7 P2: emit a baseline pslist finding carrying pslist_pids
     # so the report gate's _needs_detect_injection can recompute the
     # psscan-pslist delta when scan_processes ran before list_processes.
     # Without this, a stored psscan_unverified=True finding cannot be
@@ -950,7 +950,7 @@ def list_processes(dump_path: str, case_id: Optional[str] = None, max_results: i
 def _load_pslist_pids_for_case(dump_path: Optional[str] = None) -> Optional[set[int]]:
     """Load PID set from the pslist CSV that matches the SAME dump.
 
-    E.1 (peer reviewer round-1 P2): a multi-dump case stores each dump's pslist
+    E.1: a multi-dump case stores each dump's pslist
     at artifacts/pslist/<dump_id>/pslist.csv. The matching psscan run
     must read its own dump's pslist, not whichever pslist was written
     most recently (which would silently compare PIDs across dumps).
@@ -1035,7 +1035,7 @@ def scan_processes(dump_path: str, response_format: str = "summary") -> dict[str
         return _runner_error(tool, exc)
 
     # Run-11 fix (2026-05-29): on timeout, retry once with 2x timeout.
-    # Operator hit "timeout on 19 GB image; succeeded on retry" — mandatory
+    # Operator hit "timeout on 19 GB image; succeeded on retry" - mandatory
     # DKOM check was silently dropped. The base psscan() already picks an
     # adaptive timeout from image size; if even that wasn't enough, double it.
     if not result.ok and getattr(result, "timed_out", False):
@@ -1062,14 +1062,14 @@ def scan_processes(dump_path: str, response_format: str = "summary") -> dict[str
         }
 
     rows = _parse_json_output(result.stdout)
-    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation — free the multi-MB stdout now that we have parsed rows
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation - free the multi-MB stdout now that we have parsed rows
     records = _parse_process_rows(rows, source="psscan")
 
     # E.1: pass the current scan's dump_path so we pair with THAT dump's
     # pslist baseline, not a stale pslist from a different memory dump.
     pslist_pids = _load_pslist_pids_for_case(dump_path=dump_path)
     psscan_pids = {r.pid for r in records}
-    # peer reviewer round-7 P2: prior implementation set psscan_only_count to
+    # round-7 P2: prior implementation set psscan_only_count to
     # len(psscan_pids) when pslist absent, forcing detect_injection on every
     # run even with no actual hidden processes (false positive). Original
     # Run2 set it to 0 (false negative when scan_processes runs first).
@@ -1212,7 +1212,7 @@ def scan_network(dump_path: str, case_id: Optional[str] = None, max_results: int
         }
 
     rows = _parse_json_output(result.stdout)
-    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation — free the multi-MB stdout now that we have parsed rows
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation - free the multi-MB stdout now that we have parsed rows
     records: list[NetworkArtifact] = []
     finding_ids: list[str] = []
     established_count = 0
@@ -1466,7 +1466,7 @@ def detect_injection(
         }
 
     rows = _parse_json_output(result.stdout)
-    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation — free the multi-MB stdout now that we have parsed rows
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation - free the multi-MB stdout now that we have parsed rows
     records: list[InjectionIndicator] = []
     finding_ids: list[str] = []
     mz_header_count = 0
@@ -1730,7 +1730,7 @@ def list_dlls(dump_path: str, pid: int) -> dict[str, Any]:
         }
 
     rows = _parse_json_output(result.stdout)
-    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation — free the multi-MB stdout now that we have parsed rows
+    if hasattr(result, "release_stdout"): result.release_stdout()  # OOM mitigation - free the multi-MB stdout now that we have parsed rows
     records: list[DllRecord] = []
     finding_ids: list[str] = []
 
@@ -1840,7 +1840,7 @@ def list_dlls(dump_path: str, pid: int) -> dict[str, Any]:
         fid = _state.add_finding(finding.model_dump(mode="json"))
         finding_ids.append(fid)
     else:
-        # I.1 fix: Zero-row result — still mark PID as covered to satisfy report gate
+        # I.1 fix: Zero-row result - still mark PID as covered to satisfy report gate
         # Without this, successful list_dlls with 0 DLLs (exited process, empty load list)
         # permanently blocks report finalization even though the required follow-up executed.
         finding = Finding(

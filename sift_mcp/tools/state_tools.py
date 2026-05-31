@@ -7,9 +7,9 @@ full audit trace.
 
 Two tools are exposed:
 
-* ``read_state`` — Returns a summary of the current case state (findings,
+* ``read_state`` - Returns a summary of the current case state (findings,
   executions, open questions, status).
-* ``export_trace`` — Returns the full JSONL audit trail as a list of
+* ``export_trace`` - Returns the full JSONL audit trail as a list of
   :class:`~sift_mcp.audit.AuditEntry` dicts.
 
 Both tools are synchronous (FastMCP supports sync).
@@ -169,7 +169,7 @@ def export_trace(case_id: str) -> dict[str, Any]:
     Parameters
     ----------
     case_id:
-        The forensic case identifier.  Used only for labelling — the audit
+        The forensic case identifier.  Used only for labelling - the audit
         log path is set at server startup.
 
     Returns

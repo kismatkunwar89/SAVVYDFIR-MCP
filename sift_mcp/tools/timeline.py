@@ -6,9 +6,9 @@ MCP tool functions for Plaso super-timeline construction and querying.
 
 Two tools are exposed:
 
-* ``build_timeline`` — Ingests an evidence source with ``log2timeline.py``
+* ``build_timeline`` - Ingests an evidence source with ``log2timeline.py``
   and produces a ``.plaso`` storage file in ``./analysis/``.
-* ``query_timeline`` — Queries a ``.plaso`` storage file with ``psort.py``,
+* ``query_timeline`` - Queries a ``.plaso`` storage file with ``psort.py``,
   optionally filtering by time range and/or content expression.
 
 Both tools are synchronous because :class:`~sift_mcp.runners.base.SafeRunner`
@@ -245,7 +245,7 @@ def build_timeline(
     ``./analysis/<case_id>/`` (created if absent).  The parser preset
     controls which artefact types are ingested.
 
-    This step is slow — 30–120 minutes for a 100 GB image.  For demos,
+    This step is slow - 30-120 minutes for a 100 GB image.  For demos,
     pre-generate the ``.plaso`` file and call :func:`query_timeline` directly.
 
     Parameters
@@ -259,9 +259,9 @@ def build_timeline(
     parsers:
         Plaso parser preset.  Common values:
 
-        * ``"win10"`` (default) — Windows 10/11 artefacts
-        * ``"win7"`` — Windows 7 / Server 2008 R2
-        * ``"linux"`` — Linux system artefacts
+        * ``"win10"`` (default) - Windows 10/11 artefacts
+        * ``"win7"`` - Windows 7 / Server 2008 R2
+        * ``"linux"`` - Linux system artefacts
         * A comma-separated list of individual parser names for targeted
           ingestion.
 
@@ -380,7 +380,7 @@ def build_timeline(
         }
 
     # Try to extract event count from log2timeline stdout
-    # OOM mitigation — plaso stdout can run hundreds of MB; release after parse.
+    # OOM mitigation - plaso stdout can run hundreds of MB; release after parse.
     event_count: str = "unknown"
     for line in result.stdout.splitlines():
         # Plaso prints something like: "Completed processing ... 1234567 events"
@@ -400,7 +400,7 @@ def build_timeline(
     try:
         pinfo_result = _runner.pinfo(storage_file=storage_path, tool_name=tool)
         if pinfo_result.ok:
-            # pinfo prints "Total number of events: N" — parse it
+            # pinfo prints "Total number of events: N" - parse it
             for line in pinfo_result.stdout.splitlines():
                 m = re.search(r"Total number of events[^\d]*([\d,]+)", line, re.IGNORECASE)
                 if m:
@@ -408,7 +408,7 @@ def build_timeline(
                     break
             if hasattr(pinfo_result, "release_stdout"): pinfo_result.release_stdout()  # OOM mitigation
             if pinfo_event_count is None:
-                # Couldn't parse — fall back to permissive (don't block on parse failure)
+                # Couldn't parse - fall back to permissive (don't block on parse failure)
                 pinfo_error = "pinfo.py succeeded but event count unparseable"
         else:
             pinfo_error = (
@@ -664,7 +664,7 @@ def _csv_row_to_event(row: dict[str, str]) -> Optional[dict[str, Any]]:
         for k, v in row.items()
     }
 
-    # Extract timestamp — different column names across formats
+    # Extract timestamp - different column names across formats
     raw_ts = (
         normalised.get("datetime")
         or normalised.get("timestamp")

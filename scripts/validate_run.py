@@ -31,7 +31,7 @@ DEFAULT_STATE = REPO_ROOT / "analysis" / "state.json"
 DEFAULT_AUDIT = REPO_ROOT / "analysis" / "audit.jsonl"
 
 
-# peer reviewer round-3 #M: share the bypass-resistant predicates with reporting.py
+# round-3 #M: share the bypass-resistant predicates with reporting.py
 # instead of re-implementing them here (split-brain risk).
 sys.path.insert(0, str(REPO_ROOT))
 from sift_mcp.reporting import _needs_sigma_hunt_run, evaluate_ir_coverage_gate  # noqa: E402
@@ -63,7 +63,7 @@ def _load_audit(path: Path) -> list[dict[str, Any]]:
 # ---------- invariants ----------
 
 def check_sigma_hunt_succeeded(state: dict[str, Any]) -> tuple[bool, str]:
-    """peer reviewer round-2 #H + round-3: share predicate with reporting.py to avoid split-brain.
+    """round-2 #H + round-3: share predicate with reporting.py to avoid split-brain.
 
     Successful = exit_code 0 AND duration > 0 AND audit_completed_entry_hash
     AND durable Chainsaw output (.json hint in outputs_summary OR
@@ -94,7 +94,7 @@ def check_sigma_hunt_succeeded(state: dict[str, Any]) -> tuple[bool, str]:
 def check_specialist_findings(state: dict[str, Any], minimum: int = 1) -> tuple[bool, str]:
     """At least one specialist subagent must have contributed.
 
-    peer reviewer round-7 P2: prior implementation hardcoded ≥5 which was a Run2-
+    round-7 P2: prior implementation hardcoded ≥5 which was a Run2-
     specific assertion. Clean systems can legitimately produce fewer
     specialist findings. The invariant is "specialists were actually
     invoked", not a specific count.
@@ -102,7 +102,7 @@ def check_specialist_findings(state: dict[str, Any], minimum: int = 1) -> tuple[
     Override via env: SAVVYDFIR_MIN_SPECIALIST_FINDINGS=N.
 
     Provenance can be carried in finding.provenance.generated_by or
-    finding.assigned_agent. Run2 had 0 specialist findings — all from main.
+    finding.assigned_agent. Run2 had 0 specialist findings - all from main.
     """
     try:
         minimum = int(os.environ.get("SAVVYDFIR_MIN_SPECIALIST_FINDINGS", minimum))
@@ -131,7 +131,7 @@ def check_specialist_findings(state: dict[str, Any], minimum: int = 1) -> tuple[
 def check_coverage_gate(state: dict[str, Any]) -> tuple[bool, str]:
     """Recompute the gate live from state.
 
-    peer reviewer round-3 #M: prior implementation trusted a stored ir_coverage_gate
+    round-3 #M: prior implementation trusted a stored ir_coverage_gate
     field with `ok: True`. A stale or manually-persisted ok flag could pass
     even when the actual executions/findings would have failed the gate.
     Now we recompute from raw state every time using the same evaluate_ir_
@@ -161,7 +161,7 @@ def check_coverage_gate(state: dict[str, Any]) -> tuple[bool, str]:
 def check_no_error_dispatch(audit_path: Path) -> tuple[bool, str]:
     """Verify the hook never tried to dispatch a specialist on a tool error.
 
-    Looks for /tmp/savvydfir_delegate.json history (if archived) — best-effort.
+    Looks for /tmp/savvydfir_delegate.json history (if archived) - best-effort.
     Run2 had the hook dispatching evtx-analyst even when summarize_evtx
     returned status=error. Fixed in f6eef87.
     """
@@ -181,7 +181,7 @@ def check_no_error_dispatch(audit_path: Path) -> tuple[bool, str]:
                 prev_tool = tool
                 continue
             if prev_was_error and tool == "state.record_analysis_lane":
-                # Lane being recorded right after a tool error — Run2 pattern.
+                # Lane being recorded right after a tool error - Run2 pattern.
                 errors_followed_by_lane.append(prev_tool)
             prev_was_error = False
             prev_tool = ""
@@ -231,7 +231,7 @@ def main() -> int:
         help=(
             "DOWNGRADE-ONLY. When set, missing audit.jsonl skips the hook-regression "
             "invariant AND the run is reported as INCOMPLETE-PASS (never full PASS). "
-            "peer reviewer review round-2 #M3: prior default silently skipped this invariant."
+            "Prior default silently skipped this invariant."
         ),
     )
     args = parser.parse_args()
@@ -253,7 +253,7 @@ def main() -> int:
             elif sig == "audit":
                 if not args.audit.is_file():
                     if not args.allow_missing_audit:
-                        # Default: audit.jsonl REQUIRED — fail loudly.
+                        # Default: audit.jsonl REQUIRED - fail loudly.
                         ok, msg = False, (
                             f"audit.jsonl not found at {args.audit}. Pass "
                             "--allow-missing-audit for downgraded validation."

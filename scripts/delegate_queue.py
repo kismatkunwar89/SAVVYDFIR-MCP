@@ -32,7 +32,7 @@ from typing import Any, Iterable, Optional
 
 DEFAULT_QUEUE_PATH = "/tmp/savvydfir_delegate_queue.json"
 
-# DEFECT-2 / peer reviewer consensus 2026-05-20 — deterministic delegate idempotency.
+# DEFECT-2 / deterministic delegate idempotency.
 # A delegate is uniquely identified by the tuple
 #   (case_id, lane_id, subagent_type, iteration)
 # Anything with the same key is the SAME logical work item, and the
@@ -56,7 +56,7 @@ def compute_delegate_key(
     """Return the deterministic key for a delegate's idempotency lookup.
 
     Two delegates with the same (case_id, lane_id, subagent_type, iteration)
-    are the SAME logical work item — the dispatcher refuses to re-enqueue
+    are the SAME logical work item - the dispatcher refuses to re-enqueue
     a pending duplicate (DEFECT-2 fix).
     """
     payload = "|".join([
@@ -94,7 +94,7 @@ def _migrate_legacy_delegate(delegate: dict[str, Any]) -> dict[str, Any]:
     if delegate["status"] not in DELEGATE_STATUS_VALUES:
         delegate["status"] = "pending"
     delegate.setdefault("retry_count", 0)
-    # C-PRIME (peer reviewer consensus 2026-05-20): repair attempts are tracked
+    # C-PRIME: repair attempts are tracked
     # separately from retry_count so a specialist that needed repair
     # doesn't burn its full retry budget on the repair pass.
     delegate.setdefault("repair_count", 0)
@@ -182,7 +182,7 @@ def _write_queue(queue: dict[str, list[dict[str, Any]]]) -> None:
                 except OSError:
                     pass
         except (OSError, IOError):
-            # Tmp write itself failed — try direct write as last resort.
+            # Tmp write itself failed - try direct write as last resort.
             fd = os.open(
                 path,
                 os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
@@ -197,7 +197,7 @@ def _write_queue(queue: dict[str, list[dict[str, Any]]]) -> None:
             except OSError:
                 pass
     except (OSError, IOError):
-        pass  # Queue file is advisory — failure must not block
+        pass  # Queue file is advisory - failure must not block
 
 
 def enqueue_delegate(lane_id: str, delegate: dict[str, Any]) -> None:
@@ -220,7 +220,7 @@ def enqueue_delegate(lane_id: str, delegate: dict[str, Any]) -> None:
     delegate.setdefault("created_at", datetime.now(timezone.utc).isoformat())
     delegate["processed"] = False
     delegate.setdefault("lane_id", lane_id)
-    # DEFECT-2 fields — deterministic idempotency anchor
+    # DEFECT-2 fields - deterministic idempotency anchor
     delegate.setdefault(
         "delegate_key",
         compute_delegate_key(
@@ -275,7 +275,7 @@ def mark_delegate_stale(
     """Transition a delegate to status='stale_dismissed' in place.
 
     Returns the updated entry (with reason + processed_at filled in) or None
-    if no match was found. Idempotent — calling twice on the same key is
+    if no match was found. Idempotent - calling twice on the same key is
     safe and returns the already-stale entry on the second call.
     """
     if not delegate_key:
@@ -339,7 +339,7 @@ def mark_delegate_failed(
 def all_pending_delegates() -> list[dict[str, Any]]:
     """Flatten the queue into a list of pending entries with lane_id attached.
 
-    Excludes entries whose status is processed/stale_dismissed — used by
+    Excludes entries whose status is processed/stale_dismissed - used by
     the report gate to surface ONLY work that is genuinely still pending.
     """
     queue = _read_queue()

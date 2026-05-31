@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-trace_finding.py — Trace a finding ID to its full provenance chain.
+trace_finding.py - Trace a finding ID to its full provenance chain.
 
 Reads from:
   ./analysis/audit.jsonl   (execution records, one JSON line each)
-  ./analysis/state.json    (or findings.json — final finding state)
+  ./analysis/state.json    (or findings.json - final finding state)
 
 Usage:
   python3 scripts/trace_finding.py <finding_id>
@@ -19,7 +19,7 @@ Options:
   --verbose       Show full raw parameters and outputs_summary for each execution
   --no-color      Disable colored output
 
-Copyright (c) 2026 Kismat Kunwar — MIT License
+Copyright (c) 2026 Kismat Kunwar - MIT License
 """
 
 import argparse

@@ -37,7 +37,7 @@ def _derive_execution_confidence(artifact_sources: set[str]) -> tuple[float, str
     """
     Determine execution confidence based on artifact combination.
 
-    Professional hierarchy (from SANS DFIR):
+    Professional hierarchy:
     - Observation (0.70): ShellBags, ShimCache, Amcache alone
     - Probable (0.85): Prefetch OR BAM/DAM
     - Definitive (1.00): Prefetch + EVTX 4688 + MFT
@@ -306,7 +306,7 @@ _ARTIFACTS_PATH_RE = re.compile(r"/artifacts/(?:raw/)?([a-z0-9_]+)(?:/|$)")
 # disk findings that arrive with artifact_type="disk" already canonical (so
 # _canonicalize_artifact_type returns no subtype) but carry the producing
 # extractor in tool_name (e.g. "disk.extract_registry_run_keys"). Spelling
-# matches _PATH_SUBTYPE_CANONICAL so both derives agree (peer reviewer sign-off
+# matches _PATH_SUBTYPE_CANONICAL so both derives agree (
 # 2026-05-30). The category prefix ("disk."/"memory.") is stripped before lookup.
 _TOOL_NAME_TO_SUBTYPE = {
     "extract_mft_timeline": "mft",
@@ -347,8 +347,7 @@ def _derive_artifact_subtype_from_path(artifact_path: Any) -> Optional[str]:
     (tool_name="state.submit_finding") that set artifact_type="disk" and an
     artifact_path like ``/cases/<id>/artifacts/mft/mft_timeline.csv`` but leave
     artifact_subtype blank. The staging-dir name is the framework's authoritative
-    subtype signal (tier-1 only; no filename-keyword heuristics — peer reviewer
-    sign-off 2026-05-30).
+    subtype signal (tier-1 only; no filename-keyword heuristics - ).
 
     Returns the canonical subtype string, or None when the path has no
     recognised ``/artifacts/<kind>/`` segment (kept blank, never guessed).
@@ -555,12 +554,12 @@ def _build_model_input(
 def _execution_id_resolvable(
     finding: dict[str, Any], state_manager: Any
 ) -> tuple[bool, str]:
-    """peer reviewer consensus 2026-05-19 Tier-A1 gate — strict.
+    """Tier-A1 gate - strict.
 
-    Return (ok, reason) — True ONLY when the finding's execution_id
+    Return (ok, reason) - True ONLY when the finding's execution_id
     resolves to an auditable execution record in the current evidence
     ledger. The ``requires_re_extraction`` flag is a STATE marker
-    describing why a finding is non-CONFIRMED — it is NOT a bypass.
+    describing why a finding is non-CONFIRMED - it is NOT a bypass.
     Operator override happens at the report layer (allow_partial=True),
     not at the finding layer.
 
@@ -580,7 +579,7 @@ def _execution_id_resolvable(
 
     if state_manager is None:
         # No ledger context available (e.g., migration mode, isolated unit
-        # test). Accept here — the reporting-layer gate is the second
+        # test). Accept here - the reporting-layer gate is the second
         # line of defense before the report is written.
         return True, "no_state_manager_context"
 
@@ -598,9 +597,9 @@ def _execution_id_resolvable(
 def _alternative_hypothesis_complete(
     finding: dict[str, Any],
 ) -> tuple[bool, str]:
-    """peer reviewer consensus 2026-05-19 Tier-A2 gate.
+    """Tier-A2 gate.
 
-    Return (ok, reason) — True when the finding has populated structured
+    Return (ok, reason) - True when the finding has populated structured
     alternative-hypothesis fields sufficient for a CONFIRMED state.
 
     Acceptable shapes:
@@ -612,7 +611,7 @@ def _alternative_hypothesis_complete(
     Rejected shapes (return False):
       * empty disposition
       * disposition='not_resolved' or 'partially_plausible' (unresolved
-        alternative must downgrade per peer reviewer sign-off)
+        alternative must downgrade per )
     """
     disposition = _normalize_whitespace(finding.get("disposition"))
     if disposition == "ruled_out":
@@ -638,7 +637,7 @@ def _alternative_hypothesis_complete(
 def _apply_confirmed_gates(
     normalized: dict[str, Any], state_manager: Any
 ) -> dict[str, Any]:
-    """peer reviewer consensus 2026-05-19 — combined Tier-A1 + Tier-A2 gate.
+    """combined Tier-A1 + Tier-A2 gate.
 
     If the incoming finding is CONFIRMED but fails either gate, demote
     to ACTIVE, set ``requires_re_extraction`` for the provenance case,
@@ -719,12 +718,12 @@ def validate_and_prepare_finding(
     # Source-of-truth fallbacks for disk findings that arrive with a blank
     # artifact_subtype. Recovers it so state.json is correct for every
     # downstream consumer (graph, report, correlation) rather than each
-    # guessing. Precedence (peer reviewer sign-off 2026-05-30):
+    # guessing. Precedence:
     #   explicit subtype > _canonicalize alias subtype (above)
     #   > tool_name derive (auto-generated findings) > path derive (analyst
     #     findings) > blank.
     # tool_name is the authoritative producing tool, so it runs before the
-    # path parse. Both are metadata-only — they do NOT feed fk_source_class /
+    # path parse. Both are metadata-only - they do NOT feed fk_source_class /
     # confidence / status gates (classify_fk_source never reads subtype).
     if artifact_type == "disk" and not _normalize_whitespace(
         normalized.get("artifact_subtype")
@@ -787,7 +786,7 @@ def validate_and_prepare_finding(
     merged = dict(normalized)
     merged.update(validated)
     merged["finding_status"] = _normalize_status(merged.get("finding_status"))
-    # peer reviewer consensus 2026-05-19 Tier-A: apply CONFIRMED gates AFTER the
+    # Tier-A: apply CONFIRMED gates AFTER the
     # Pydantic validation pass so the new fields (requires_re_extraction,
     # alternative_hypothesis, disposition) are in their canonical form
     # before we decide whether to allow CONFIRMED status.

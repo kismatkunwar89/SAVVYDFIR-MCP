@@ -1,6 +1,6 @@
 # Professional Forensic Correlation Methodology
 
-**Source**: Synthesized from DFIR, Windows Prefetch Deep Dive, and Forensics-course1 training materials via reference
+**Source**: Synthesized from , Windows and training materials via 
 
 **Purpose**: Translate professional analyst workflows into agnostic correlation logic for SAVVYDFIR-MCP
 
@@ -9,10 +9,8 @@
 ## Core Principles from Professional Practice
 
 ### 1. **Artifacts Never Exist in Isolation**
-> "Recovering a single forensic artifact is akin to reading a single isolated word in a sentence—its true meaning is only revealed through surrounding context."
-> — DFIR
-
-**Implication for Our Framework**: Individual specialist agents (mft-analyst, evtx-analyst, etc.) produce CLUES, not CONCLUSIONS. Timeline-analyst must synthesize.
+> "Recovering a single forensic artifact is akin to reading a single isolated word in a sentence-its true meaning is only revealed through surrounding context."
+> - **Implication for Our Framework**: Individual specialist agents (mft-analyst, evtx-analyst, etc.) produce CLUES, not CONCLUSIONS. Timeline-analyst must synthesize.
 
 ---
 
@@ -24,7 +22,7 @@ Professional workflow:
 3. **Merge all artifacts chronologically** - MFT, USN, EVTX, Prefetch, Registry, Amcache, ShimCache
 4. **Observe the sequence** - artifacts don't appear magically; causality reveals attack flow
 
-**Example Attack Sequence** (from DFIR):
+**Example Attack Sequence** (from ):
 ```
 14:32:00 | EVTX 4624  | Network logon (Type 3) from 192.168.1.50
 14:32:01 | MFT        | malware.exe created (Modified time < Created time = copied over SMB)
@@ -67,7 +65,7 @@ Professional analysts **layer anomalies** to overcome artifact manipulation:
 
 ### 4. **Reliability Hierarchy: What Each Artifact Proves Alone**
 
-From Prefetch Deep Dive:
+From 
 
 | Artifact | What It Proves ALONE | What It CANNOT Prove | Needs Corroboration From |
 |----------|---------------------|----------------------|-------------------------|
@@ -105,7 +103,7 @@ Definitive Execution:
 
 ### 5. **Stacked Evidence and Filtering Layers**
 
-Professional methodology (from Forensics-course1):
+Professional methodology (from ):
 
 **"Having more will never hurt"** - collect all traces, then filter:
 
@@ -139,7 +137,7 @@ definitive_execution = executed[executed['Path'].isin(evtx_processes)]
 
 ### 6. **Defensible Timeline Construction** (Anti-Forensics Aware)
 
-From Forensics-course1 and DFIR:
+From and :
 
 **Problem**: Standard timestamps ($SI) are fully writable; attackers backdate files
 
@@ -194,8 +192,8 @@ Professional practice:
 6. Cross-validate anomalies
 
 **Our Current Implementation**:
-- `build_timeline()` creates unified Plaso timeline
-- `query_timeline()` filters to specific windows
+- `build_timeline` creates unified Plaso timeline
+- `query_timeline` filters to specific windows
 - timeline-analyst receives CSV with all sources merged
 
 **Gap**: We don't have focused time-window queries yet. Need to add:
@@ -233,7 +231,7 @@ def find_execution_clusters(timeline_df):
     - File creation → Execution → Network activity within 30 seconds
     """
     clusters = []
-    for entity in timeline_df['entity'].unique():
+    for entity in timeline_df['entity'].unique:
         entity_events = timeline_df[timeline_df['entity'] == entity].sort_values('timestamp')
         
         # Check for execution sequence within 30-second window
@@ -242,17 +240,17 @@ def find_execution_clusters(timeline_df):
         network = entity_events[entity_events['event_type'].str.contains('5156|network')]
         
         if not creates.empty and not executions.empty:
-            time_delta = (executions['timestamp'].min() - creates['timestamp'].min()).total_seconds()
+            time_delta = (executions['timestamp'].min - creates['timestamp'].min).total_seconds
             if time_delta < 30:  # Execution within 30s of creation
                 cluster = {
                     'entity': entity,
                     'pattern': 'drop_and_execute',
                     'time_delta': time_delta,
-                    'sources': entity_events['source'].unique().tolist(),
-                    'confidence': 'CONFIRMED' if len(entity_events['source'].unique()) >= 3 else 'PROBABLE'
+                    'sources': entity_events['source'].unique.tolist,
+                    'confidence': 'CONFIRMED' if len(entity_events['source'].unique) >= 3 else 'PROBABLE'
                 }
                 if not network.empty:
-                    network_delta = (network['timestamp'].min() - executions['timestamp'].min()).total_seconds()
+                    network_delta = (network['timestamp'].min - executions['timestamp'].min).total_seconds
                     if network_delta < 5:  # C2 beacon within 5s
                         cluster['pattern'] = 'drop_execute_beacon'
                         cluster['c2_delta'] = network_delta
@@ -293,15 +291,15 @@ def detect_anti_forensics(mft_df, usn_df, prefetch_df, shimcache_df, amcache_df)
     ]
     if not timestomped.empty:
         # Cross-validate with USN
-        for idx, row in timestomped.iterrows():
+        for idx, row in timestomped.iterrows:
             usn_entry = usn_df[usn_df['FRN'] == row['FRN']]
             if not usn_entry.empty:
-                if row['$SI_Modified'] < usn_entry['Timestamp'].min():
+                if row['$SI_Modified'] < usn_entry['Timestamp'].min:
                     anomalies.append({
                         'pattern': 'timestomping_confirmed',
                         'file': row['Path'],
                         'mft_time': row['$SI_Modified'],
-                        'usn_time': usn_entry['Timestamp'].min(),
+                        'usn_time': usn_entry['Timestamp'].min,
                         'confidence': 'CONFIRMED',
                         'anti_forensics': True
                     })
@@ -419,7 +417,7 @@ Add to timeline-analyst:
 
 ## 4. **Browser-Based C2 Detection and Correlation**
 
-### Professional Pattern (from DFIR & Network Forensics)
+### Professional Pattern (from & Network Forensics)
 
 **Beaconing Detection**:
 - Fixed intervals (every N seconds) = automated C2
@@ -445,7 +443,7 @@ for conn in memory_conns:
     process = conn['process_name']
     
     # Check 1: Non-browser on web ports
-    if dest_port in [80, 443, 8080] and 'chrome' not in process.lower() and 'firefox' not in process.lower():
+    if dest_port in [80, 443, 8080] and 'chrome' not in process.lower and 'firefox' not in process.lower:
         flag_as(confidence=0.90, reason="non_browser_web_traffic")
     
     # Check 2: Browser history correlation
@@ -473,7 +471,7 @@ for row in srum_df:
 
 ## 5. **LNK Files and Jump Lists: Proving File Access**
 
-### Professional Pattern (from Prefetch Deep Dive)
+### Professional Pattern (from )
 
 **What LNK Files Prove**:
 - User interaction: File was accessed via Explorer or Desktop shortcut
@@ -522,7 +520,7 @@ for lnk in lnk_files:
 
 ## 6. **VSS Recovery Workflows: Post-Incident Artifact Extraction**
 
-### Professional Pattern (from DFIR VSS Module)
+### Professional Pattern (from VSS Module)
 
 **VSS Structure**:
 - Catalog file: Tracks active shadow copies (GUID + creation timestamp)
@@ -572,7 +570,7 @@ if log_cleared:
 
 ## 7. **Ransomware-Specific Forensic Patterns**
 
-### Professional Pattern (from DFIR Ransomware Module)
+### Professional Pattern (from Ransomware Module)
 
 **Initial Infection Vector Correlation**:
 
@@ -592,14 +590,14 @@ LNK file created (attachment opened) → Prefetch first run → Event ID 4688
 ```python
 # USN Journal: DATA_OVERWRITE sequences
 usn_df = run_analysis(usn_csv, "df[df['Reason'].str.contains('DATA_OVERWRITE')]")
-overwrite_burst = usn_df.groupby(usn_df['Timestamp'].dt.floor('1min')).size()
-if (overwrite_burst > 1000).any():
+overwrite_burst = usn_df.groupby(usn_df['Timestamp'].dt.floor('1min')).size
+if (overwrite_burst > 1000).any:
     add_finding("USN Journal shows 1000+ DATA_OVERWRITE in 1 minute - file encryption detected", confidence=1.00)
 
 # MFT: Rapid modification timestamps
 mft_df = run_analysis(mft_csv, "df[df['$SI_Modified'] > '2024-03-15T14:00:00']")
-rapid_mods = mft_df.groupby(mft_df['$SI_Modified'].dt.floor('1s')).size()
-if (rapid_mods > 100).any():
+rapid_mods = mft_df.groupby(mft_df['$SI_Modified'].dt.floor('1s')).size
+if (rapid_mods > 100).any:
     add_finding("MFT shows 100+ file modifications per second - encryption in progress", confidence=0.95)
 ```
 
@@ -615,10 +613,10 @@ Registry: VSS key modifications
 # SRUM: Bytes sent spike before encryption timestamp
 srum_df = run_analysis(srum_csv, "df.sort_values('Timestamp')")
 # Find spike >10GB within 1 hour before encryption
-encryption_time = get_encryption_timestamp()
+encryption_time = get_encryption_timestamp
 pre_encryption = srum_df[srum_df['Timestamp'] < encryption_time]
 exfil_window = pre_encryption[pre_encryption['Timestamp'] > (encryption_time - timedelta(hours=1))]
-total_sent = exfil_window['BytesSent'].sum()
+total_sent = exfil_window['BytesSent'].sum
 if total_sent > 10*1024**3:
     add_finding(f"SRUM shows {total_sent/1e9:.2f}GB sent in 1h before encryption - data exfiltration", confidence=0.95)
 ```
@@ -627,7 +625,7 @@ if total_sent > 10*1024**3:
 
 ## 8. **Email Phishing Correlation: Patient Zero Identification**
 
-### Professional Pattern (from DFIR Email Forensics)
+### Professional Pattern (from Email Forensics)
 
 **Zone.Identifier ADS: Attachment Download Proof**:
 - `ReferrerUrl`: Email client or webmail URL
@@ -737,7 +735,7 @@ for finding in amcache_findings:
         hash_groups.setdefault(sha1, []).append(finding)
 
 # Flag same hash, different paths = renamed malware
-for sha1, findings in hash_groups.items():
+for sha1, findings in hash_groups.items:
     if len(findings) > 1:
         paths = [f['file_path'] for f in findings]
         add_finding(
@@ -751,15 +749,15 @@ for sha1, findings in hash_groups.items():
 **PE Metadata Linking**:
 ```python
 # Compile timestamp correlation
-amcache_df = run_analysis(amcache_csv, "df[['FilePath', 'LinkDate', 'FileSize']].drop_duplicates()")
-mft_df = run_analysis(mft_csv, "df[['FullPath', '$FN_Birth']].drop_duplicates()")
+amcache_df = run_analysis(amcache_csv, "df[['FilePath', 'LinkDate', 'FileSize']].drop_duplicates")
+mft_df = run_analysis(mft_csv, "df[['FullPath', '$FN_Birth']].drop_duplicates")
 
 # Staged malware: LinkDate << $FN_Birth (compiled months before deployment)
 merged = amcache_df.merge(mft_df, left_on='FilePath', right_on='FullPath')
 merged['days_diff'] = (merged['$FN_Birth'] - merged['LinkDate']).dt.days
 staged = merged[merged['days_diff'] > 30]
 
-for row in staged.itertuples():
+for row in staged.itertuples:
     add_finding(
         f"Staged malware: {row.FilePath} compiled {row.days_diff} days before appearing on system",
         confidence=0.90,
@@ -853,7 +851,7 @@ orphaned = prefetch_paths - mft_paths
 ```python
 # Process in memory but no Prefetch/Amcache/MFT = injected or DKOM
 memory_processes = get_findings(artifact_type="memory_process")
-disk_executables = get_all_disk_executable_paths()
+disk_executables = get_all_disk_executable_paths
 hidden = [p for p in memory_processes if p['image_path'] not in disk_executables]
 ```
 
@@ -946,7 +944,7 @@ Indicators:
 ```python
 initial_compromise = datetime.fromisoformat("2024-03-15T09:47:23Z")
 detection_time = datetime.fromisoformat("2024-03-17T08:15:00Z")
-dwell_time = (detection_time - initial_compromise).total_seconds() / 3600
+dwell_time = (detection_time - initial_compromise).total_seconds / 3600
 # 46.5 hours dwell time
 ```
 
@@ -954,7 +952,7 @@ dwell_time = (detection_time - initial_compromise).total_seconds() / 3600
 ```python
 initial_access = datetime.fromisoformat("2024-03-15T09:47:23Z")
 lateral_movement = datetime.fromisoformat("2024-03-15T14:32:00Z")
-breakout_time = (lateral_movement - initial_access).total_seconds() / 60
+breakout_time = (lateral_movement - initial_access).total_seconds / 60
 # 285 minutes = 4h 45m (slower than median)
 ```
 

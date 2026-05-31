@@ -5,7 +5,7 @@ allowed-tools:
   - Bash
 ---
 
-# Pivot Methodology — Universal Investigation Chains
+# Pivot Methodology - Universal Investigation Chains
 
 ## From a Suspicious Process
 ```
@@ -94,5 +94,5 @@ ArtifactHit (detector, severity, description, pivot_suggestion)
 1. **Always pivot both directions:** disk → memory AND memory → disk
 2. **Follow the timestamps:** earliest timestamp = closest to initial access
 3. **Hash everything suspicious:** SHA-256 for disk, SHA-1 from amcache
-4. **Check what was deleted:** attackers clean up — deleted evidence is evidence
+4. **Check what was deleted:** attackers clean up - deleted evidence is evidence
 5. **Map to ATT&CK:** every finding should map to at least one technique

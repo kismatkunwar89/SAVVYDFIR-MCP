@@ -2,16 +2,16 @@
 sift_mcp.runners.yara_runner
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-YaraRunner — subprocess wrapper for **YARA** on SIFT Workstation.
+YaraRunner - subprocess wrapper for **YARA** on SIFT Workstation.
 
 Tool path (from Protocol SIFT's global/CLAUDE.md):
     ``yara`` is in ``$PATH`` on SIFT Workstation.
 
 YARA is used in SAVVYDFIR-MCP for two purposes:
 
-1. **File / directory scanning** — scan extracted files or a mounted
+1. **File / directory scanning** - scan extracted files or a mounted
    filesystem for matches against known-malware or IOC rule sets.
-2. **Memory dump scanning** — scan a raw memory image (e.g. ``.raw``,
+2. **Memory dump scanning** - scan a raw memory image (e.g. ``.raw``,
    ``.vmem``) to find patterns that may not appear on disk (in-memory
    shellcode, reflectively loaded DLLs, etc.).
 
@@ -78,7 +78,7 @@ class YaraRunner(SafeRunner):
     * A single ``.yar`` / ``.yara`` file.
     * A directory of rule files (YARA will process all ``.yar`` files
       in the directory if the ``-r`` flag is passed to the rule path
-      argument — but note this is a YARA-side feature, not TSK-side).
+      argument - but note this is a YARA-side feature, not TSK-side).
     * A compiled rules file (``.yarc``).
 
     For a single compiled rule set with multiple signatures, compile them
@@ -86,7 +86,7 @@ class YaraRunner(SafeRunner):
 
     Memory scanning
     ---------------
-    Scanning a raw memory dump with YARA is a direct file scan — YARA
+    Scanning a raw memory dump with YARA is a direct file scan - YARA
     treats the dump as a flat byte stream.  Matches will include virtual
     addresses relative to the dump file offset, not the original virtual
     memory address.  Cross-reference hits with Volatility 3 ``malfind``
@@ -103,7 +103,7 @@ class YaraRunner(SafeRunner):
     ``scan_memory()`` for details.
     """
 
-    # YARA's stdout IS the match list — _parse_yara_output reads it directly.
+    # YARA's stdout IS the match list - _parse_yara_output reads it directly.
     # See SafeRunner.DROP_CAPTURED_OUTPUT_AFTER_AUDIT.
     DROP_CAPTURED_OUTPUT_AFTER_AUDIT: bool = False
 
@@ -191,7 +191,7 @@ class YaraRunner(SafeRunner):
         dump_path:
             Absolute path to the raw memory dump (e.g. ``.raw``, ``.mem``,
             ``.lime``, ``.vmem``).  The file is treated as a flat binary
-            blob — no memory structure parsing is performed by YARA itself.
+            blob - no memory structure parsing is performed by YARA itself.
             Use Volatility 3 for structured memory analysis; use this method
             for pattern-based hunting.
 
@@ -232,15 +232,15 @@ class YaraRunner(SafeRunner):
         str
             One of:
 
-            * ``"tool_not_found"`` — ``yara`` binary missing from PATH.
-            * ``"rule_syntax_error"`` — YARA rules file contains a syntax
+            * ``"tool_not_found"`` - ``yara`` binary missing from PATH.
+            * ``"rule_syntax_error"`` - YARA rules file contains a syntax
               error; the agent should validate rules before re-scanning.
-            * ``"target_not_found"`` — target file or directory not found.
-            * ``"rules_not_found"`` — rules file not found.
-            * ``"permission_denied"`` — OS-level read permission denied
+            * ``"target_not_found"`` - target file or directory not found.
+            * ``"rules_not_found"`` - rules file not found.
+            * ``"permission_denied"`` - OS-level read permission denied
               (distinct from SafeRunner's deny-list PermissionError).
-            * ``"timeout"`` — process exceeded the timeout.
-            * ``"unknown"`` — inspect ``result.stderr`` directly.
+            * ``"timeout"`` - process exceeded the timeout.
+            * ``"unknown"`` - inspect ``result.stderr`` directly.
         """
         if result.timed_out:
             return "timeout"

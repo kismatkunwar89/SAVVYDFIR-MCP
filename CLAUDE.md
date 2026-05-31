@@ -1,25 +1,25 @@
-# SAVVYDFIR-MCP — DFIR Investigation Framework
+# SAVVYDFIR-MCP - DFIR Investigation Framework
 
 ## What This Is
 AI-driven Digital Forensics & Incident Response on SANS SIFT Workstation.
 You are the investigator. All evidence is READ-ONLY. Chain of custody applies.
 
 ## Critical Rules
-1. **NEVER write to `/evidence/` or `/mnt/`** — read-only evidence and mount paths
-2. **Write output ONLY to `analysis/`, `reports/`, `/cases/`, or `/tmp/`** — RBAC-enforced in server.py
+1. **NEVER write to `/evidence/` or `/mnt/`** - read-only evidence and mount paths
+2. **Write output ONLY to `analysis/`, `reports/`, `/cases/`, or `/tmp/`** - RBAC-enforced in server.py
 3. **Every finding must cite**: artifact path + exact command + timestamp
-4. **Load skills on-demand** — do not preload all skills at once
-5. **Case-agnostic**: no hardcoded IPs, usernames, or filenames — universal patterns only
+4. **Load skills on-demand** - do not preload all skills at once
+5. **Case-agnostic**: no hardcoded IPs, usernames, or filenames - universal patterns only
 
 ## Forensic Knowledge in Tool Responses
 Every tool response now carries forensic_caveat, corroborate_with, and discipline_reminder
 injected from Valhuntir forensic-knowledge YAMLs at the point of interpretation.
-**Read these fields** — they tell you what this artifact does NOT prove and what to run next.
+**Read these fields** - they tell you what this artifact does NOT prove and what to run next.
 CLAUDE.md is for investigation structure. Tool responses carry the artifact-specific rules.
 
 ## Investigation Workflow (7 Phases)
 
-### PHASE 1: Volatile Data — Memory First (5–10 min)
+### PHASE 1: Volatile Data - Memory First (5-10 min)
 Run ALL in one batch (parallel-safe):
 ```
 list_processes(case_id)
@@ -30,12 +30,12 @@ list_dlls(case_id, pid)            ← MANDATORY for each PID from scan_network
 load_memory(memory_image_path)
 ```
 
-### PHASE 2: Triage Baseline — Disk Artifacts (15–30 min)
-**Run dotnet tools SEQUENTIALLY** — never parallel (saturates 4 vCPU):
+### PHASE 2: Triage Baseline - Disk Artifacts (15-30 min)
+**Run dotnet tools SEQUENTIALLY** - never parallel (saturates 4 vCPU):
 ```
-mount_image()
+mount_image
 extract_mft_timeline(case_id)
-extract_usn_journal(case_id)       ← do NOT delay — USN rolls over
+extract_usn_journal(case_id)       ← do NOT delay - USN rolls over
 summarize_evtx(case_id)            ← 2-stage: channel inventory + extraction
 extract_prefetch(case_id)
 get_amcache(case_id)
@@ -45,23 +45,23 @@ extract_srum(mount_point, case_id)
 extract_windows_artifacts(case_id) ← fallback if direct mount failed
 ```
 
-### PHASE 3: Detection Engines (10–15 min)
+### PHASE 3: Detection Engines (10-15 min)
 ```
 sigma_hunt(evtx_path, case_id)     ← MANDATORY, 2,278 Chainsaw rules
 analyze_vss(disk_image_path, case_id)  ← only if sigma finds EID 1102
 ```
 
-### PHASE 4: AI Hypothesis Formation — Main-Agent Inline (5–10 min)
+### PHASE 4: AI Hypothesis Formation - Main-Agent Inline (5-10 min)
 
 **W1.7 architecture (main-agent inline primary, opt-in specialist spawn):**
 the missing brain step between detection anchors and the pivot loop. Main-agent
 inline analysis is the **primary path**; specialist Task spawn remains opt-in
 for cross-artifact isolation (synthesis/corroboration). Task subagents hit the
-hardcoded 32K output-token ceiling (anthropics/claude-code#25569) — don't use
+hardcoded 32K output-token ceiling (anthropics/claude-code#25569) - don't use
 them for artifact-level analysis.
 
 **Heuristic delivery is now deterministic via MCP injection (W1.7):**
-- Every extraction tool returns `applicable_heuristics` in its payload —
+- Every extraction tool returns `applicable_heuristics` in its payload -
   the relevant slice of `.claude/agents/<artifact>-analyst.md` (your
   forensic-heuristic knowledge base) travels WITH the data. Each slice
   carries a `ctx_id` (CTX-NNN) for court-defensible provenance.
@@ -70,7 +70,7 @@ them for artifact-level analysis.
 
 For each artifact whose extraction returned `csv_path`:
 1. **Read the `applicable_heuristics` block** in the extraction response.
-   The relevant DFIR patterns are inline. Note the `ctx_id`.
+   The relevant patterns are inline. Note the `ctx_id`.
 2. **Run targeted queries** via `run_analysis(data_path=csv_path, query=...)`.
    Each call gets an `execution_id` and audit row (W1.5).
 3. **Persist evidence-backed conclusions** via `submit_finding(...)` with
@@ -116,11 +116,11 @@ Artifact-to-heuristic source mapping:
 - `sigma_hunt` → `.claude/agents/sigma-analyst.md`
 - Memory tools (`list_processes`, `scan_processes`, etc.) → `.claude/agents/memory-analyst.md`
 
-**Opt-in escape hatch — Task subagent spawn:** if you need genuine context
+**Opt-in escape hatch - Task subagent spawn:** if you need genuine context
 isolation (synthesis or corroboration that benefits from a clean room), you
 MAY spawn `@synthesis-analyst`, `@corroboration-analyst`, or
 `@timeline-analyst` via Task. Do NOT spawn artifact specialists
-(`@mft-analyst` etc.) — they're retired from default orchestration.
+(`@mft-analyst` etc.) - they're retired from default orchestration.
 
 ### PHASE 5: Cross-Artifact Correlation (5 min)
 ```
@@ -129,27 +129,27 @@ find_temporal_clusters(case_id, window_seconds=300, min_sources=2, min_events=3)
 ```
 
 Discrepancies detected here trigger **`CorrectionEvent`** writes to
-`audit.jsonl` (W1.5) — the structural self-correction proof for hackathon
+`audit.jsonl` (W1.5) - the structural self-correction proof for hackathon
 criterion #1 (Autonomous Execution Quality, the tiebreaker).
 
 ### PHASE 6: Cross-Artifact Synthesis (5 min)
 
-**MANDATORY — main-agent inline. Delegate synthesis is opt-in.** Run 2
+**MANDATORY - main-agent inline. Delegate synthesis is opt-in.** Run 2
 demonstrated the failure mode of waiting for `@synthesis-analyst`: the
 specialist Task subagent never recorded its lane, `synthesis_corroboration`
 was missing from state, `generate_report` blocked on `needs_delegate`, the
 operator forced `allow_partial=True`, and the report shipped with 0 CONFIRMED
 (no 3+ source stacking happened). Per W1.7 (Run 2 consensus 2026-05-24,
-peer reviewer+peer reviewer signed): **do not rely on delegate synthesis as the only path.**
++signed): **do not rely on delegate synthesis as the only path.**
 
 **Main-agent inline synthesis SOP (run BEFORE generate_report once all 4
 prereq lanes are COMPLETE / COMPLETE_WITH_GAPS):**
 
-1. `compare_disk_and_memory(case_id)` — MANDATORY (10 anti-forensics checks)
+1. `compare_disk_and_memory(case_id)` - MANDATORY (10 anti-forensics checks)
 2. `find_temporal_clusters(case_id, window_seconds=300, min_sources=2, min_events=3)`
 3. For each cluster with 3+ independent sources, promote via `submit_finding(...)`:
    - `evidence_kind="inference"` (synthesis = derived from multiple observations;
-     `"corroborated"` is NOT a valid enum value — only OBSERVATION / INFERENCE /
+     `"corroborated"` is NOT a valid enum value - only OBSERVATION / INFERENCE /
      HYPOTHESIS / REJECTED exist)
    - `corroborated_by=["F-007", "F-014", "F-017"]` (≥2, preferably ≥3 source finding IDs)
    - `status="CONFIRMED"` + the A2 alternative-hypothesis bundle:
@@ -164,7 +164,7 @@ prereq lanes are COMPLETE / COMPLETE_WITH_GAPS):**
      so you can self-correct without waiting for the report gate. Re-submit if
      `eligible: false` and you wanted CONFIRMED.
 
-   **Schema template (Phase 6 synthesis-to-CONFIRMED) — replace `<placeholders>`
+   **Schema template (Phase 6 synthesis-to-CONFIRMED) - replace `<placeholders>`
    with case-specific values from your actual evidence. Do NOT copy literal values:**
    ```python
    submit_finding(
@@ -195,10 +195,10 @@ prereq lanes are COMPLETE / COMPLETE_WITH_GAPS):**
    EVERY hypothesis you recorded in Phase 4. Re-call
    `record_hypotheses(case_id, hypotheses=[...])` passing back the **FULL**
    hypothesis object (preserve `attack_class`, `initial_pivot`,
-   `expected_evidence_chain`, `rank`, `source_context_refs` — `record_hypotheses`
+   `expected_evidence_chain`, `rank`, `source_context_refs` - `record_hypotheses`
    REPLACES by `hypothesis_id`, so a partial object loses data), changing only:
-   - `status` → `CONFIRMED` (proven — malicious activity confirmed),
-     `REFUTED` (disproven — ruled out), or `SUSPENDED` (inconclusive —
+   - `status` → `CONFIRMED` (proven - malicious activity confirmed),
+     `REFUTED` (disproven - ruled out), or `SUSPENDED` (inconclusive -
      tested but insufficient evidence). Do NOT leave a tested hypothesis `ACTIVE`.
    - `related_finding_ids` → the F-NNN findings that proved, refuted, or
      materially informed the verdict (may be empty for SUSPENDED).
@@ -219,11 +219,11 @@ The post-Phase-5 hook nudges this transition.
 ```
 generate_report(case_id)
 generate_graph(case_id)
-merge_host_graphs()        ← only after all hosts complete
-build_reports_index()
+merge_host_graphs        ← only after all hosts complete
+build_reports_index
 ```
 
-**Total wall-clock per host**: ~60–90 min on 4 vCPU / 7.6 GB.
+**Total wall-clock per host**: ~60-90 min on 4 vCPU / 7.6 GB.
 
 ## EVTX Tier System
 
@@ -238,20 +238,20 @@ Sysmon, PowerShell, RDPClient, LocalSessionManager, TaskScheduler, WinRM,
 WMI-Activity, SMBServer, SMBClient, Firewall
 
 The inventory is persisted to `state.json:artifact_coverage.evtx_inventory`.
-`coverage_debt` lists high-value channels that were present but empty — these represent
+`coverage_debt` lists high-value channels that were present but empty - these represent
 evidence of absence (logging disabled or no activity), not a tool failure.
 
 ## Investigation Entry Point (quick reference)
 1. Read manifest: `start_investigation(manifest_path)`
 2. Follow 7-phase workflow above
-3. Generate report: `generate_report(case_id)` — mandatory coverage gate enforced
+3. Generate report: `generate_report(case_id)` - mandatory coverage gate enforced
 
 ## Additional Detection Tools (invoke as needed)
-- `sigma_hunt(evtx_path, case_id)` — run 2,278 Sigma community rules via Chainsaw on EVTX files. Produces ATT&CK-mapped findings from deterministic rule-based detection. Use after `summarize_evtx` to validate LLM interpretations against community consensus. If EID 1102 (log cleared) is found → immediately call `analyze_vss`.
-- `analyze_vss(disk_image_path, case_id)` — enumerate Volume Shadow Copies via libvshadow. Shadow copies pre-dating the incident may contain intact Security.evtx after attacker log clearing. Reports artifact presence (Security.evtx, System.evtx, registry hives) per shadow store with creation timestamps. Cross-reference store dates against the incident timeline to identify pre-attack snapshots for log recovery.
-- `extract_pca(mount_point, case_id)` — parse Windows 11 22H2+ Program Compatibility Assistant execution artifacts (PcaAppLaunchDic.txt). Plain-text, pipe-delimited: {path}|{last_execution_UTC}. Corroborates Prefetch + Amcache. Not present on Windows 10 / Server.
-- `extract_shimcache(mount_point, case_id)` — parse ShimCache (AppCompatCache) from SYSTEM hive via AppCompatCacheParser + rla.exe (transaction log replay). Records every executable path Windows observed. Does NOT record run count — cross-reference with Amcache/Prefetch to confirm execution. Absence of an expected entry → binary was timestomped or deleted post-compromise. Entries outside System32/Program Files/WinSxS are flagged as suspicious for analyst review.
-- `extract_srum(mount_point, case_id)` — parse SRUM (System Resource Utilization Monitor) via esedbexport. Network table: bytes_sent / bytes_recv per process per 60-day window. App resource table: CPU/disk I/O per 30-day window. SRUM records deleted applications — critical for anti-forensics detection. Use to quantify exfiltration volume per process and identify processes no longer on disk (AppIds with no matching binary — key anti-forensics indicator). Cross-reference with EVTX network events and memory scan_network findings.
+- `sigma_hunt(evtx_path, case_id)` - run 2,278 Sigma community rules via Chainsaw on EVTX files. Produces ATT&CK-mapped findings from deterministic rule-based detection. Use after `summarize_evtx` to validate LLM interpretations against community consensus. If EID 1102 (log cleared) is found → immediately call `analyze_vss`.
+- `analyze_vss(disk_image_path, case_id)` - enumerate Volume Shadow Copies via libvshadow. Shadow copies pre-dating the incident may contain intact Security.evtx after attacker log clearing. Reports artifact presence (Security.evtx, System.evtx, registry hives) per shadow store with creation timestamps. Cross-reference store dates against the incident timeline to identify pre-attack snapshots for log recovery.
+- `extract_pca(mount_point, case_id)` - parse Windows 11 22H2+ Program Compatibility Assistant execution artifacts (PcaAppLaunchDic.txt). Plain-text, pipe-delimited: {path}|{last_execution_UTC}. Corroborates Prefetch + Amcache. Not present on Windows 10 / Server.
+- `extract_shimcache(mount_point, case_id)` - parse ShimCache (AppCompatCache) from SYSTEM hive via AppCompatCacheParser + rla.exe (transaction log replay). Records every executable path Windows observed. Does NOT record run count - cross-reference with Amcache/Prefetch to confirm execution. Absence of an expected entry → binary was timestomped or deleted post-compromise. Entries outside System32/Program Files/WinSxS are flagged as suspicious for analyst review.
+- `extract_srum(mount_point, case_id)` - parse SRUM (System Resource Utilization Monitor) via esedbexport. Network table: bytes_sent / bytes_recv per process per 60-day window. App resource table: CPU/disk I/O per 30-day window. SRUM records deleted applications - critical for anti-forensics detection. Use to quantify exfiltration volume per process and identify processes no longer on disk (AppIds with no matching binary - key anti-forensics indicator). Cross-reference with EVTX network events and memory scan_network findings.
 - `read_state(case_id)` is summary-only. Use it to resume, inspect counts, and get the latest finding window.
 - `get_findings(case_id, ...)` is the full finding retrieval surface. Use filters plus `limit`/`offset` when you need the full corpus.
 - `get_finding(case_id, finding_id)` drills into a single `F-NNN` finding.
@@ -264,7 +264,7 @@ run `rla.exe` before parsing to replay those logs and produce clean, accurate ou
 Always ensure hives are clean before cross-referencing registry evidence.
 
 **Per-user NTUSER staging:** when the raw-fallback extraction (`extract_windows_artifacts`)
-stages per-user registry hives, the user slug is applied to ALL variants — the hive
+stages per-user registry hives, the user slug is applied to ALL variants - the hive
 itself stages as `{user}_NTUSER.DAT` and its transaction logs as
 `{user}_NTUSER.DAT.LOG1` / `{user}_NTUSER.DAT.LOG2`. Downstream tools must discover
 logs RELATIVE to the staged hive (`hive_path.parent / (hive_path.name + ".LOG1")`),
@@ -301,8 +301,8 @@ If investigation fails with permission errors:
 4. If different, remount evidence as the MCP server user
 
 ## RBAC Path Model
-- **Read-only**: `/evidence/`, `/mnt/` — evidence and mount points
-- **Read-write**: repo `analysis/`, `reports/`, `/cases/`, and `/tmp/` — analysis output
+- **Read-only**: `/evidence/`, `/mnt/` - evidence and mount points
+- **Read-write**: repo `analysis/`, `reports/`, `/cases/`, and `/tmp/` - analysis output
 - **Blocked commands**: rm, dd, mkfs, shred, wget, curl, ssh, scp, fdisk, parted, nc
 
 ## Tool Paths (SIFT Workstation)
@@ -338,24 +338,24 @@ timeline reconstruction, and writing the forensic narrative.
 **MANDATORY DATA RULES:**
 1. NEVER try to read raw data outputs or massive logs directly in this chat.
 2. ALWAYS treat large tool outputs as external databases.
-3. When a tool response includes `csv_path` and `total_rows`, first run `run_analysis(data_path=csv_path, query="df.dtypes")` to learn the schema, then write targeted Pandas queries to hunt for anomalies — never read all rows into context.
+3. When a tool response includes `csv_path` and `total_rows`, first run `run_analysis(data_path=csv_path, query="df.dtypes")` to learn the schema, then write targeted Pandas queries to hunt for anomalies - never read all rows into context.
 4. Write Python/Pandas code, pass it to `run_analysis` to execute locally, and read ONLY the filtered anomalies back into your context.
 5. After every finding, write one follow-up `run_analysis` query targeting that finding's artifact before moving to the next phase.
 
 **MANDATORY TOOL SEQUENCING:**
 - Run Volatility memory tools together (fast): `list_processes` + `scan_processes` + `scan_network`
 - Run heavy dotnet disk tools ONE AT A TIME (slow): `summarize_evtx`, then `extract_mft_timeline`, then `extract_registry_run_keys`
-- Never run two dotnet tools in parallel — this saturates the 4 vCPU server and kills the MCP connection.
+- Never run two dotnet tools in parallel - this saturates the 4 vCPU server and kills the MCP connection.
 
 ## The Forensic Trinity
-Every Windows investigation anchors on three pillars — never neglect any one:
+Every Windows investigation anchors on three pillars - never neglect any one:
 - **Filesystem** ($MFT, $UsnJrnl, Prefetch, Amcache, ShimCache, Recycle Bin)
 - **Memory** (processes, network connections, injected code, credentials, unflushed ShimCache)
 - **Registry** (persistence ASEPs, user behavior, hardware history, credential stores)
 
 ## Forensic Investigator Mindset
 
-**Navigation ≠ Access ≠ Execution** — respect artifact boundaries:
+**Navigation ≠ Access ≠ Execution** - respect artifact boundaries:
 - ShellBag = shell rendered the folder, NOT that the user read files inside
 - Amcache/ShimCache = file existed on disk, NOT that it executed
 - UserAssist = key was written, NOT that a human clicked it (background tasks populate it)
@@ -373,7 +373,7 @@ Align timestamps with active logon sessions before drawing conclusions.
 Registry key LastWriteTimestamp = when the KEY changed, not when a specific value changed.
 Always standardise to UTC across all artifacts.
 
-**Targeted corroboration** — ask the next logical question, not a general pile of data:
+**Targeted corroboration** - ask the next logical question, not a general pile of data:
 - Finding → What would I expect to see if this finding is real? → Look for that specific artifact.
 - Stacking threshold: 1 source = UNCONFIRMED. 2+ independent sources = CONFIRMED.
 
@@ -383,48 +383,48 @@ Always standardise to UTC across all artifacts.
 - Write: "Prefetch and EVTX EID 4688 corroborate execution at 03:01:58 UTC"
 - Not: "the attacker ran the binary"
 
-## Analyst Methodology (peer reviewer consensus 2026-05-19)
+## Analyst Methodology
 
-### Tabular artifact discipline — bounds before filters
+### Tabular artifact discipline - bounds before filters
 
 For any CSV / dataframe artifact (MFT, USN, EVTX, Prefetch, Amcache, ShimCache, SRUM, browser history, registry exports), the **FIRST query** must establish:
 
 1. **row count**
-2. **schema** — column names and dtypes
+2. **schema** - column names and dtypes
 3. **timestamp column min/max bounds**
 
 Filtering for case events BEFORE establishing bounds risks **misinterpretation of absence**:
 
 - A clean filter result may mean *"no evidence of the attacker action"* OR *"the data was capped/cleared before our attack window."* These are very different conclusions.
-- Common failure mode: Amcache CSV capped some days before the incident window. A clean filter on the case-relevant date range returns zero rows — but that does NOT mean "no attacker activity"; it may mean "no Amcache data covers the window." A single `df['FileKeyLastWriteTimestamp'].max()` would surface the cap immediately.
+- Common failure mode: Amcache CSV capped some days before the incident window. A clean filter on the case-relevant date range returns zero rows - but that does NOT mean "no attacker activity"; it may mean "no Amcache data covers the window." A single `df['FileKeyLastWriteTimestamp'].max` would surface the cap immediately.
 
 Always know the bounds before drawing conclusions about gaps.
 
 ### Suspicious-network-process disposition checklist
 
-When `scan_network` reveals a process with an active connection to a suspicious peer — especially generic Windows binaries like `svchost.exe`, `rundll32.exe`, `dllhost.exe`, or browser-named processes — calling `list_dlls(pid)` alone is **not a disposition**. The analyst MUST close the loop with all of:
+When `scan_network` reveals a process with an active connection to a suspicious peer - especially generic Windows binaries like `svchost.exe`, `rundll32.exe`, `dllhost.exe`, or browser-named processes - calling `list_dlls(pid)` alone is **not a disposition**. The analyst MUST close the loop with all of:
 
-1. **Process identity + binary path** — legitimate System32 path or off-path (`C:\Users\Public\...`, `\AppData\Local\Temp\...`)?
-2. **Parent process + command line** — for `svchost.exe`, the service group (`-k DcomLaunch`, `-k netsvcs`, `-k LocalServiceNetworkRestricted`). Mismatched parent/group is a strong injection indicator.
-3. **Module/DLL abnormalities** — explicit list of any non-Microsoft, unsigned, or user-writable-path DLLs loaded into the process, OR an explicit "none found after enumeration of N modules" statement.
-4. **Peer interpretation** — is the destination IP known-internal infrastructure (DC, proxy, file server), case-relevant host (attacker, victim, lateral target), or unknown? Cross-reference against the case manifest.
-5. **Corroborating artifacts checked** — explicit list: EVTX EID 4688 process creation, Sysmon EID 1/3, Firewall, DNS query logs. "Found nothing" is rigorous only if the artifacts were searched.
-6. **Final confidence rationale** — what specifically supports the chosen confidence level based on what was actually examined.
+1. **Process identity + binary path** - legitimate System32 path or off-path (`C:\Users\Public\...`, `\AppData\Local\Temp\...`)?
+2. **Parent process + command line** - for `svchost.exe`, the service group (`-k DcomLaunch`, `-k netsvcs`, `-k LocalServiceNetworkRestricted`). Mismatched parent/group is a strong injection indicator.
+3. **Module/DLL abnormalities** - explicit list of any non-Microsoft, unsigned, or user-writable-path DLLs loaded into the process, OR an explicit "none found after enumeration of N modules" statement.
+4. **Peer interpretation** - is the destination IP known-internal infrastructure (DC, proxy, file server), case-relevant host (attacker, victim, lateral target), or unknown? Cross-reference against the case manifest.
+5. **Corroborating artifacts checked** - explicit list: EVTX EID 4688 process creation, Sysmon EID 1/3, Firewall, DNS query logs. "Found nothing" is rigorous only if the artifacts were searched.
+6. **Final confidence rationale** - what specifically supports the chosen confidence level based on what was actually examined.
 
-**"No corroboration found" is rigorous only when it follows documented enumeration.** A finding demoted to PROBABLE because "DLL analysis was incomplete" is not rigorous — finish the analysis or mark the finding with `requires_re_extraction=True` so the report layer can partition it correctly.
+**"No corroboration found" is rigorous only when it follows documented enumeration.** A finding demoted to PROBABLE because "DLL analysis was incomplete" is not rigorous - finish the analysis or mark the finding with `requires_re_extraction=True` so the report layer can partition it correctly.
 
 ### CONFIRMED-status invariants (enforced by code)
 
-Two invariants are now **enforced by the framework** — the agent cannot bypass them via the finding API; only `generate_report(allow_partial=True)` at the report layer can partition affected findings into a clearly-labeled non-defensible section:
+Two invariants are now **enforced by the framework** - the agent cannot bypass them via the finding API; only `generate_report(allow_partial=True)` at the report layer can partition affected findings into a clearly-labeled non-defensible section:
 
-1. **Provenance invariant** — A CONFIRMED finding's `execution_id` MUST resolve to a real audit record in the current evidence ledger. Inherited claims from prior compacted sessions, placeholder `E-000` IDs, and `state_autogenerated` IDs all fail this gate. The finding is auto-demoted to ACTIVE with `requires_re_extraction=True`.
+1. **Provenance invariant** - A CONFIRMED finding's `execution_id` MUST resolve to a real audit record in the current evidence ledger. Inherited claims from prior compacted sessions, placeholder `E-000` IDs, and `state_autogenerated` IDs all fail this gate. The finding is auto-demoted to ACTIVE with `requires_re_extraction=True`.
 
-2. **Alternative-hypothesis invariant** — A CONFIRMED finding MUST carry structured disposition fields:
+2. **Alternative-hypothesis invariant** - A CONFIRMED finding MUST carry structured disposition fields:
    - `alternative_hypothesis` (the strongest competing benign explanation)
    - `evidence_against_it` (≥1 entry, what was actually observed that rules the alternative out)
    - `disposition` set to `"ruled_out"` (with the above) OR `"not_applicable"` (with `alternative_hypothesis_not_applicable_reason`)
 
-   `disposition="not_resolved"` or `"partially_plausible"` MUST downgrade — peer reviewer sign-off requires unresolved alternatives to cause partitioning, not CONFIRMED labeling.
+   `disposition="not_resolved"` or `"partially_plausible"` MUST downgrade - requires unresolved alternatives to cause partitioning, not CONFIRMED labeling.
 
 The `@corroboration-analyst` agent is the natural place to populate both invariants. See `.claude/agents/corroboration-analyst.md` Step 6 for the structured-field template.
 
@@ -435,7 +435,7 @@ If `summarize_evtx(mount_point)` fails with "cannot resolve Windows partition", 
 - Non-standard partition layouts
 - Mount points that are not partition roots
 
-**Solution**: Always extract EVTX first using `extract_windows_artifacts()`:
+**Solution**: Always extract EVTX first using `extract_windows_artifacts`:
 ```python
 extract_windows_artifacts(mount_point="/mnt/disk", case_id="CASE-ID")
 ```
@@ -449,18 +449,18 @@ The tool's path resolution prefers durable artifact directories first, so subseq
 
 ## Mandatory Tools
 
-These tools must run in every investigation before `generate_report()`. The coverage gate blocks report generation if these are missing:
+These tools must run in every investigation before `generate_report`. The coverage gate blocks report generation if these are missing:
 
 | Tool | Why Mandatory | What It Detects | Enforced |
 |------|---------------|-----------------|----------|
 | `sigma_hunt(evtx_path, case_id)` | 2,278 community Sigma rules provide deterministic ATT&CK-mapped detection. Validates LLM interpretations against consensus. Rule-based detection catches patterns LLMs miss. | Lateral movement (PsExec, WinRM), credential theft (Mimikatz, LSASS dumps), persistence (scheduled tasks, services), defense evasion (log clearing, AV tampering). | ✅ YES |
 | `hayabusa_hunt(evtx_path, case_id)` | 3,700+ Sigma rules (superset of Chainsaw). Emits MITRE ATT&CK matrix HTML. Critical for comprehensive threat hunting beyond Chainsaw's coverage. | Additional C2 patterns, rare LOLBin abuse, Windows Defender event correlation, timeline-aware threat scoring. | ❌ NO |
 | `compare_disk_and_memory(case_id)` | 6 forensic contradiction checks. Detects anti-forensics: code injection, process hiding (DKOM), prefetch deletion, timestamp manipulation. Cross-artifact validation LLMs cannot perform. | Hidden processes (in memory but no disk artifact), injected code (memory-only malware), deleted Prefetch (anti-forensics), orphaned network connections (no matching process). | ✅ YES |
-| `build_timeline(case_id)` | Plaso super-timeline reconstructs attacker activity across all artifact types simultaneously. Temporal proximity analysis reveals staged attacks that single-artifact analysis misses. **OPTIONAL** — specialists work from individual CSV extracts; comprehensive timeline enhances but is not required. | Multi-stage intrusions (reconnaissance → credential theft → lateral movement), dwell time quantification, exfiltration staging windows, cleanup activity timestamps. | ❌ NO (optional) |
+| `build_timeline(case_id)` | Plaso super-timeline reconstructs attacker activity across all artifact types simultaneously. Temporal proximity analysis reveals staged attacks that single-artifact analysis misses. **OPTIONAL** - specialists work from individual CSV extracts; comprehensive timeline enhances but is not required. | Multi-stage intrusions (reconnaissance → credential theft → lateral movement), dwell time quantification, exfiltration staging windows, cleanup activity timestamps. | ❌ NO (optional) |
 | `detect_injection(case_id)` | Memory-only malware detection. Reflective PE injection and shellcode are invisible to disk forensics. Required for fileless attacks. | Cobalt Strike beacons, Metasploit payloads, process hollowing, thread injection, reflective DLL loading. | ✅ YES |
 | `list_dlls(case_id, pid)` | Per-PID DLL enumeration for suspicious network processes. Unsigned DLLs, out-of-place paths, and missing-on-disk DLLs indicate compromise. | Malicious DLLs loaded into legitimate processes (svchost.exe, explorer.exe), DLL side-loading, missing DLLs (memory-only injection). | ✅ YES |
 
-**Coverage Gate Enforcement**: The report gate (`evaluate_ir_coverage_gate()`) checks:
+**Coverage Gate Enforcement**: The report gate (`evaluate_ir_coverage_gate`) checks:
 - `sigma_hunt` completed with exit_code=0 AND valid output (not just `sigma_scan`)
 - `compare_disk_and_memory` completed
 - `detect_injection` completed
@@ -468,22 +468,22 @@ These tools must run in every investigation before `generate_report()`. The cove
 
 **Note**: `build_timeline` is OPTIONAL (not enforced by gate). Specialists analyze individual CSV extracts (MFT, EVTX, Prefetch, Amcache, Registry) for fast response. Plaso super-timeline remains available for deep-dive analysis but does not block report generation.
 
-If any mandatory tool is missing or failed, `generate_report()` blocks with a specific error listing the gaps.
+If any mandatory tool is missing or failed, `generate_report` blocks with a specific error listing the gaps.
 
 ---
 
 ## Professional Forensic Workflows
 
-The framework implements professional analyst workflows from SANS DFIR, Prefetch Deep Dive, and Forensics-course1 training materials.
+The framework implements professional analyst workflows and training materials.
 
 ### Execution Validation Hierarchy
 
 The correlation engine **automatically applies** professional execution confidence levels when promoting findings (implemented in `semantics.py`):
 
-- **Observation (0.70)**: ShellBags, ShimCache, Amcache alone — proves file existed, NOT that it executed
-- **Probable (0.85)**: Prefetch OR BAM/DAM — strong execution indicator but single source
-- **Definitive (1.00)**: Prefetch + Event ID 4688 + MFT — all three forensic pillars confirm execution
-- **Stacked (1.00)**: 3+ independent sources — defeats anti-forensics through layered evidence
+- **Observation (0.70)**: ShellBags, ShimCache, Amcache alone - proves file existed, NOT that it executed
+- **Probable (0.85)**: Prefetch OR BAM/DAM - strong execution indicator but single source
+- **Definitive (1.00)**: Prefetch + Event ID 4688 + MFT - all three forensic pillars confirm execution
+- **Stacked (1.00)**: 3+ independent sources - defeats anti-forensics through layered evidence
 
 **Framework Application**:
 ```python
@@ -496,10 +496,10 @@ The correlation engine **automatically applies** professional execution confiden
 
 Time windows define attack phase correlation:
 
-- **±10 seconds**: Causality window — Event A caused Event B
+- **±10 seconds**: Causality window - Event A caused Event B
   - Example: EVTX 4688 process creation → network connection within 10s = C2 beacon
   
-- **±5 minutes**: Attack phase window — reconnaissance, exploitation, cleanup
+- **±5 minutes**: Attack phase window - reconnaissance, exploitation, cleanup
   - Example: MFT file drop → Prefetch execution → Registry persistence within 5 min = staged attack
   
 - **Multi-source bursts**: FILE+REG+EVT at same second = confirmed attacker action
@@ -515,28 +515,28 @@ Time windows define attack phase correlation:
 The correlation engine runs **10 automated checks** (6 original + 4 new professional patterns):
 
 **Original Checks**:
-1. **Process in memory with no disk binary** — fileless malware or post-execution deletion
-2. **Prefetch/Amcache entry for deleted binary** — proves execution then cleanup
-3. **VAD anomaly on legitimate-path process** — process injection into System32/Program Files binaries
-4. **Network connection with no disk artifact** — injected shellcode or memory-resident malware
-5. **Registry persistence for missing binary** — compromised then cleaned
-6. **Timestomping detection** — $SI vs $FN mismatch (>1 hour difference)
+1. **Process in memory with no disk binary** - fileless malware or post-execution deletion
+2. **Prefetch/Amcache entry for deleted binary** - proves execution then cleanup
+3. **VAD anomaly on legitimate-path process** - process injection into System32/Program Files binaries
+4. **Network connection with no disk artifact** - injected shellcode or memory-resident malware
+5. **Registry persistence for missing binary** - compromised then cleaned
+6. **Timestomping detection** - $SI vs $FN mismatch (>1 hour difference)
 
-**NEW Professional Checks** (from DFIR training):
-7. **USN Journal validation** — authoritative timestamp source (cannot be forged)
+**NEW Professional Checks** (from training):
+7. **USN Journal validation** - authoritative timestamp source (cannot be forged)
    - MFT $SI timestamp differs from USN entry by >1 hour = timestomping confirmed
    - MFT shows file but no USN Journal entry = backdating or journal tampering
    
-8. **ShimCache vs Amcache presence** — cache clearing detection
+8. **ShimCache vs Amcache presence** - cache clearing detection
    - ShimCache entry but no Amcache = possible selective cache clearing
    - ShimCache buffers in memory, Amcache persists on disk
    
-9. **Event log clearing** — Event ID 1102 + VSS recovery workflow
+9. **Event log clearing** - Event ID 1102 + VSS recovery workflow
    - Security log cleared = attacker cleanup activity (CRITICAL severity)
    - If VSS available → recommend extracting Security.evtx from pre-clearing snapshot
    - If VSS unavailable → logs unrecoverable (document gap)
    
-10. **SRUM exfiltration detection** — high-volume data transfer
+10. **SRUM exfiltration detection** - high-volume data transfer
     - >100MB bytes_sent per process = potential exfiltration
     - Correlate with memory network connections and EVTX
     - HIGH severity if network connection match, MEDIUM if no match
@@ -548,13 +548,13 @@ The correlation engine runs **10 automated checks** (6 original + 4 new professi
 
 ### Stacked Evidence Principle
 
-**1 source = POSSIBLE (0.70)** — insufficient for defensible conclusion
+**1 source = POSSIBLE (0.70)** - insufficient for defensible conclusion
 - Example: Only ShellBag shows folder navigation → observation, not proof of file access
 
-**2 sources = PROBABLE (0.85)** — strong indicator, needs one more
+**2 sources = PROBABLE (0.85)** - strong indicator, needs one more
 - Example: Prefetch + MFT → probable execution, need EVTX 4688 or memory confirmation
 
-**3+ sources = CONFIRMED (1.00)** — defensible in court
+**3+ sources = CONFIRMED (1.00)** - defensible in court
 - Example: LNK + ShellBag + RecentDocs → confirmed file access
 - Example: Prefetch + EVTX 4688 + MFT + Memory process → definitive execution
 
@@ -590,7 +590,7 @@ The correlation engine runs **10 automated checks** (6 original + 4 new professi
 - "Shell state indicates the directory was rendered through Explorer"
 - "Prefetch and EVTX 4688 corroborate execution at 03:01:58 UTC"
 - "3 independent sources confirm file access: LNK + ShellBag + RecentDocs"
-- "USN Journal (authoritative) contradicts MFT $SI timestamp — timestomping confirmed"
+- "USN Journal (authoritative) contradicts MFT $SI timestamp - timestomping confirmed"
 
 **NOT**:
 - "The user accessed the directory" (ShellBag alone doesn't prove user action)
@@ -619,8 +619,8 @@ The correlation engine runs **10 automated checks** (6 original + 4 new professi
 - Within ±10 seconds = causality confirmed
 
 **All patterns documented in**:
-- `CORRELATION_METHODOLOGY.md` (980 lines) — professional workflows → framework implementation
-- `FORENSIC_ARTIFACTS.md` (1060 lines) — artifact significance, limitations, corroboration needs
+- `CORRELATION_METHODOLOGY.md` (980 lines) - professional workflows → framework implementation
+- `FORENSIC_ARTIFACTS.md` (1060 lines) - artifact significance, limitations, corroboration needs
 
 ---
 
@@ -628,7 +628,7 @@ The correlation engine runs **10 automated checks** (6 original + 4 new professi
 
 ### MCP Tool Workflow (no external scripts)
 
-**Per host** — run as separate Claude sessions, clear analysis/ between each:
+**Per host** - run as separate Claude sessions, clear analysis/ between each:
 
 ```bash
 rm -f analysis/state.json analysis/audit.jsonl
@@ -638,11 +638,11 @@ claude --allowedTools "mcp__savvydfir__*" -p "Read case-templates/manifest.json 
 Claude calls: `start_investigation` → forensic tools → `generate_graph(case_id)`
 Output: `reports/{case_id}/graph.html` + `reports/{case_id}/graph.json`
 
-**After all hosts** — final session or same session:
+**After all hosts** - final session or same session:
 
 ```
-merge_host_graphs()      # → reports/unified/graph.html (cross-host lateral movement)
-build_reports_index()    # → reports/index.html (dashboard of all investigations)
+merge_host_graphs      # → reports/unified/graph.html (cross-host lateral movement)
+build_reports_index    # → reports/index.html (dashboard of all investigations)
 ```
 
 ### Directory Layout
@@ -653,28 +653,28 @@ investigations/{SCENARIO}-{HOST}/   ← per-host working state (gitignored)
     state.json
     audit.jsonl
 reports/
-    index.html                       ← build_reports_index()
+    index.html                       ← build_reports_index
     {SCENARIO}-{HOST}/
         graph.html                   ← generate_graph(case_id)
         graph.json
     unified/
-        graph.html                   ← merge_host_graphs()
+        graph.html                   ← merge_host_graphs
         graph.json
 ```
 
 ### Cross-host Edge Types (merge_host_graphs)
-- `lateral_movement`  — TA0008 finding shares IOC with finding on another host
-- `shared_ioc`        — same IP / hash / domain in 2+ hosts' findings
-- `shared_account`    — same domain\\user account seen on 2+ hosts
+- `lateral_movement`  - TA0008 finding shares IOC with finding on another host
+- `shared_ioc`        - same IP / hash / domain in 2+ hosts' findings
+- `shared_account`    - same domain\\user account seen on 2+ hosts
 
 ### Case ID Convention
-`{SCENARIO}-{HOST}` — uppercased, spaces/slashes → hyphens.
+`{SCENARIO}-{HOST}` - uppercased, spaces/slashes → hyphens.
 Examples: `SRL-2018-WKSTN01`, `SRL-2018-DC`, `SRL-2018-MAIL`
 
 ### Per-host Isolation
 `server.py` reads `SAVVYDFIR_ANALYSIS_DIR` at startup.
 Set this env var before launching Claude to redirect all tool writes to that dir.
-The MCP binary is unchanged between hosts — only the env var routes data.
+The MCP binary is unchanged between hosts - only the env var routes data.
 
 <!-- code-review-graph MCP tools -->
 ## MCP Tools: code-review-graph
@@ -699,8 +699,8 @@ Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 
 | Tool | Use when |
 |------|----------|
-| `detect_changes` | Reviewing code changes — gives risk-scored analysis |
-| `get_review_context` | Need source snippets for review — token-efficient |
+| `detect_changes` | Reviewing code changes - gives risk-scored analysis |
+| `get_review_context` | Need source snippets for review - token-efficient |
 | `get_impact_radius` | Understanding blast radius of a change |
 | `get_affected_flows` | Finding which execution paths are impacted |
 | `query_graph` | Tracing callers, callees, imports, tests, dependencies |

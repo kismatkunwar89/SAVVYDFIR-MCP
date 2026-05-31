@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-build_index.py — Generates reports/index.html for SAVVYDFIR-MCP.
+build_index.py - Generates reports/index.html for SAVVYDFIR-MCP.
 
 Scans the reports directory for per-host ``graph.json`` files, reads
 investigation metadata from each, and produces a self-contained HTML index
@@ -38,7 +38,7 @@ _HTML_TEMPLATE = """\
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SAVVYDFIR-MCP — Investigation Reports</title>
+<title>SAVVYDFIR-MCP - Investigation Reports</title>
 <style>
   :root {
     --bg:        #0f172a;
@@ -216,7 +216,7 @@ _UNIFIED_BLOCK = """\
 <div class="unified-section">
   <div class="card unified-card">
     <div class="card-header">
-      <span class="case-id">&#x25c6; UNIFIED — All Hosts</span>
+      <span class="case-id">&#x25c6; UNIFIED - All Hosts</span>
       <a class="btn btn-unified" href="unified/graph.html">Open Unified Graph &rarr;</a>
     </div>
     <div class="card-body">

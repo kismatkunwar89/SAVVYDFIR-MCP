@@ -3,9 +3,9 @@
 ``CaseStateManager`` is the single source of truth for an investigation.  It
 owns:
 
-* **Findings** — forensic observations, inferences, and hypotheses with full
+* **Findings** - forensic observations, inferences, and hypotheses with full
   provenance chains.
-* **Executions** — lightweight metadata records for every tool invocation
+* **Executions** - lightweight metadata records for every tool invocation
   (the full JSONL audit trail lives in :mod:`sift_mcp.audit`).
 
 The state is persisted as a JSON file at ``./analysis/state.json`` and
@@ -212,7 +212,7 @@ class CaseStateManager:
             original.setdefault("created_at", created_at)
             original.setdefault("updated_at", original["created_at"])
 
-            # Resolve a real execution_id BEFORE validation so the peer reviewer
+            # Resolve a real execution_id BEFORE validation so the
             # provenance gate (A1) sees a resolvable ID and does not
             # pre-emptively demote CONFIRMED findings.
             resolved_eid: Optional[str] = None
@@ -284,7 +284,7 @@ class CaseStateManager:
             self._state["findings_count"] = len(self._state["findings"])
             # W1.7 (CR-revised plan 2026-05-23): activity-thread classification
             # MUST run in CaseStateManager.add_finding (not only server.add_finding /
-            # submit_finding) — most extraction-tool findings go through state
+            # submit_finding) - most extraction-tool findings go through state
             # directly. Normalizes both mitre_techniques (list) and
             # mitre_technique (singular legacy).
             try:
@@ -607,7 +607,7 @@ class CaseStateManager:
             if index is None:
                 return None
             # MCP segfault fix 2026-05-23: executions carry artifact_hashes
-            # nested lists — deepcopy detaches them from live state.
+            # nested lists - deepcopy detaches them from live state.
             return copy.deepcopy(self._state["executions"][index])
 
     def get_executions(self, tool_name: Optional[str] = None) -> list[dict[str, Any]]:
@@ -922,12 +922,12 @@ class CaseStateManager:
         """Return persisted analysis-lane records (independent snapshots)."""
         with self._lock:
             self._assert_loaded()
-            # MCP segfault fix 2026-05-23: deepcopy lanes — they hold
+            # MCP segfault fix 2026-05-23: deepcopy lanes - they hold
             # finding_ids, data_gaps, confidence_notes nested lists.
             return [copy.deepcopy(lane) for lane in self._state.get("analysis_lanes", [])]
 
     # ------------------------------------------------------------------
-    # W1.7 — heuristic refs (dedup), hypotheses, activity thread
+    # W1.7 - heuristic refs (dedup), hypotheses, activity thread
     # ------------------------------------------------------------------
 
     def next_context_id(self) -> str:
@@ -949,7 +949,7 @@ class CaseStateManager:
     ) -> Optional[dict[str, Any]]:
         """Return the existing CTX bundle record for (artifact, excerpt_hash),
         or None if not yet loaded for this case. Lets prepare_hypothesis_context
-        skip duplicate slice delivery (peer reviewer CR13-3 dedup requirement).
+        skip duplicate slice delivery (CR13-3 dedup requirement).
         """
         with self._lock:
             self._assert_loaded()
@@ -1031,8 +1031,7 @@ class CaseStateManager:
     def _extract_mitre_techniques(finding: dict[str, Any]) -> list[str]:
         """Normalize MITRE techniques across the two field-name conventions
         in use: `mitre_techniques` (list, EvidenceFinding/Section 3-lite) and
-        `mitre_technique` (singular string, legacy Finding model). Per peer reviewer
-        consensus 2026-05-23 — without this normalization, activity-thread
+        `mitre_technique` (singular string, legacy Finding model). without this normalization, activity-thread
         classification silently no-ops on the majority of disk/memory findings.
         """
         out: list[str] = []
@@ -1055,7 +1054,7 @@ class CaseStateManager:
         mitre_techniques: list[str],
     ) -> Optional[str]:
         """Lock-free variant for callers already holding self._lock (add_finding,
-        update_finding). Does NOT call _save_locked — caller is responsible.
+        update_finding). Does NOT call _save_locked - caller is responsible.
         """
         from sift_mcp.models.activity_thread import classify_finding_to_phase
 
@@ -1120,8 +1119,8 @@ class CaseStateManager:
     ) -> bool:
         """Atomic compare-and-set on a status_flags boolean.
 
-        peer reviewer Phase-C-boundary #high: corroboration dispatch must be a
-        single atomic transition under the state lock — read the flag,
+        corroboration dispatch must be a
+        single atomic transition under the state lock - read the flag,
         check the readiness predicate against current state, and set
         the flag, all in one critical section. Two concurrent callers
         can no longer both pass the false-flag check and both write a
@@ -1318,7 +1317,7 @@ class CaseStateManager:
             "data_gaps": [],
             "migration_warnings": [],
             "enabled_detectors": None,
-            # W1.7 (CR13 Option X) — backfill for older state files
+            # W1.7 (CR13 Option X) - backfill for older state files
             "heuristic_refs_loaded": [],
             "hypotheses": [],
             "activity_thread": {
@@ -1555,7 +1554,7 @@ def _new_state(case_id: str) -> dict[str, Any]:
         "enabled_detectors": None,
         "created_at": now,
         "updated_at": now,
-        # ID counters — persisted so they survive server restarts.
+        # ID counters - persisted so they survive server restarts.
         "_finding_counter": 0,
         "_execution_counter": 0,
         # Collections
@@ -1566,11 +1565,11 @@ def _new_state(case_id: str) -> dict[str, Any]:
         # Derived counts (denormalised for quick summary)
         "findings_count": 0,
         "executions_count": 0,
-        # W1.7 (CR13 Option X) — heuristic injection dedup + hypothesis registry
+        # W1.7 (CR13 Option X) - heuristic injection dedup + hypothesis registry
         # + Activity Thread state for kill-chain phase mapping.
         # heuristic_refs_loaded tracks (case_id, artifact, section_hash) tuples
         # so prepare_hypothesis_context can return refs-only on repeat calls,
-        # avoiding the 5K-per-cycle context bloat that peer reviewer flagged in CR13-3.
+        # avoiding the 5K-per-cycle context bloat that flagged in CR13-3.
         "heuristic_refs_loaded": [],   # list of {"context_id", "artifact", "source_hash", "excerpt_hash"}
         "hypotheses": [],              # list of Hypothesis.model_dump() entries
         "activity_thread": {           # ActivityThread.model_dump()
@@ -1585,6 +1584,6 @@ def _new_state(case_id: str) -> dict[str, Any]:
             },
             "blindspot_notes": {},
         },
-        # CTX counter — persisted so CTX-NNN IDs are stable across server restarts
+        # CTX counter - persisted so CTX-NNN IDs are stable across server restarts
         "_context_counter": 0,
     }

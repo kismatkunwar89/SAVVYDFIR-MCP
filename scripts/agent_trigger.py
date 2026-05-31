@@ -24,18 +24,18 @@ from delegate_queue import (
     is_tool_already_queued,
 )
 
-# Phase 3a observation-only ledger (peer reviewer consensus 2026-05-19).
-# Import is best-effort — ledger absence must never break the hook.
+# Phase 3a observation-only ledger.
+# Import is best-effort - ledger absence must never break the hook.
 try:
     import delegation_ledger as _ledger  # type: ignore  # noqa: WPS433
-except Exception:  # pragma: no cover — import safety net
+except Exception:  # pragma: no cover - import safety net
     _ledger = None  # type: ignore[assignment]
 
 
 def _ledger_specialist_for_lane(lane_id: str) -> str:
     """Resolve a specialist subagent name from a lane id by scanning the
     TOOL_AGENT_MAP. Used when a Task tool fires without an originating
-    MCP tool linkage — we recover the specialist by lane."""
+    MCP tool linkage - we recover the specialist by lane."""
     if not lane_id:
         return ""
     for _tool, (specialist, mapped_lane, _instruction) in TOOL_AGENT_MAP.items():
@@ -107,7 +107,7 @@ def _ledger_classify_task_outcome(response_text: str) -> tuple[str, str]:
     """Classify a Task return into one of FAILED_OUTCOMES / 'success' /
     'success_with_gaps'.
 
-    peer reviewer consensus 2026-05-20 (C-PRIME):
+    (C-PRIME):
       * Specialists now emit interim JSON after every run_analysis call,
         producing MULTIPLE JSON objects in the response. We must prefer
         the LAST contract-shaped JSON, not the first.
@@ -178,19 +178,19 @@ def _ledger_classify_task_outcome(response_text: str) -> tuple[str, str]:
 
 
 def _ledger_handle_task_event(event: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """PostToolUse handler for Task — emits task_attempt + task_outcome
+    """PostToolUse handler for Task - emits task_attempt + task_outcome
     ledger rows. Best-effort, never raises.
 
-    C-PRIME (peer reviewer consensus 2026-05-20 final): on outcome ∈
+    C-PRIME: on outcome ∈
     {prose_only, malformed_json}, also emit a repair_required ledger row
     AND return a non-blocking hookSpecificOutput dict instructing the
-    parent agent to spawn a json-repair Task. Idempotent — if a
+    parent agent to spawn a json-repair Task. Idempotent - if a
     repair_attempted row already exists for the same delegate_key in
     this session, no instruction is emitted.
 
     Returns the hook response dict (or None for clean outcomes).
     """
-    import re as _re  # function-scoped — used for lane recovery on repair Tasks
+    import re as _re  # function-scoped - used for lane recovery on repair Tasks
     if _ledger is None:
         return None
     inputs = _event_input_dicts(event)
@@ -210,10 +210,10 @@ def _ledger_handle_task_event(event: dict[str, Any]) -> Optional[dict[str, Any]]
 
     lane_id = _ledger_lane_for_specialist(subagent_type)
     if not lane_id and not is_repair_invocation:
-        # Unknown specialist (not in the SAVVYDFIR set) — ignore entirely.
+        # Unknown specialist (not in the SAVVYDFIR set) - ignore entirely.
         return None
 
-    # peer reviewer adversarial review 2026-05-22 [HIGH]: when this is a json-repair
+    # adversarial review 2026-05-22 [HIGH]: when this is a json-repair
     # Task, recover the ORIGINAL lane_id (the lane the specialist that
     # truncated belongs to) so the Phase 5 investigation-success gate can
     # credit the lane for the repair_succeeded fallback. Without this, the
@@ -221,7 +221,7 @@ def _ledger_handle_task_event(event: dict[str, Any]) -> Optional[dict[str, Any]]
     original_lane_id = ""
     original_specialist = ""
     if is_repair_invocation:
-        # Source 1: parse the repair Task's prompt — it's templated with
+        # Source 1: parse the repair Task's prompt - it's templated with
         # "lane_id=<lane>" + "@<specialist> on lane".
         try:
             for payload in inputs:
@@ -369,7 +369,7 @@ def _ledger_emit_repair_directive(
         return None
 
     # Trim the failed response text for inclusion in the repair prompt.
-    # peer reviewer insisted the repair Task get the raw text — otherwise a fresh
+    # insisted the repair Task get the raw text - otherwise a fresh
     # Task has no context to repair from.
     max_len = 6000
     trimmed = failed_response_text or ""
@@ -393,7 +393,7 @@ def _ledger_emit_repair_directive(
 
     # Non-blocking telemetry-first: PostToolUse decision is omitted; we
     # instead surface the directive in `additionalContext` so the parent
-    # sees it but isn't blocked. (peer reviewer required telemetry-first.)
+    # sees it but isn't blocked. (required telemetry-first.)
     return {
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",
@@ -574,12 +574,12 @@ except ValueError:
     _trigger_age_raw = 21600
 TRIGGER_MAX_AGE_SECONDS = max(0, _trigger_age_raw)
 DELEGATION_BYPASS_TOOLS = {
-    # Lane control — unblocks the pending delegate
+    # Lane control - unblocks the pending delegate
     "mcp__savvydfir__read_state",
     "mcp__savvydfir__record_analysis_lane",
     "read_state",
     "record_analysis_lane",
-    # State inspection — needed to write a useful lane summary before calling record_analysis_lane
+    # State inspection - needed to write a useful lane summary before calling record_analysis_lane
     "mcp__savvydfir__get_findings",
     "mcp__savvydfir__get_finding",
     "mcp__savvydfir__get_investigation_gates",
@@ -1017,11 +1017,11 @@ _CONTEXT_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def _bounded_csv_inspect(csv_path: str) -> dict[str, Any]:
-    """Phase 2 (peer reviewer consensus 2026-05-22): bounded local inspect of a
+    """Phase 2: bounded local inspect of a
     CSV header + timestamp column min/max. Returns a dict with schema +
     timestamp_bounds, or empty dict on any failure.
 
-    peer reviewer required: NO MCP callback from the hook. This reads pandas
+    required: NO MCP callback from the hook. This reads pandas
     directly with usecols + nrows, so the cost is bounded regardless
     of CSV size. Results are cached by csv_path so repeat invocations
     do not re-scan.
@@ -1046,7 +1046,7 @@ def _bounded_csv_inspect(csv_path: str) -> dict[str, Any]:
         inspect["schema"] = schema
         # Identify a primary timestamp column (heuristic: name contains
         # 'time'/'date'/'created'/'modified'/'timestamp'). Universal,
-        # case-agnostic — works on any CSV with a timestamp-shaped column.
+        # case-agnostic - works on any CSV with a timestamp-shaped column.
         ts_candidates = [
             str(c) for c in header_df.columns
             if any(needle in str(c).lower()
@@ -1075,7 +1075,7 @@ def _bounded_csv_inspect(csv_path: str) -> dict[str, Any]:
 
 
 def _load_manifest_attack_window(cwd: Optional[str] = None) -> dict[str, Any]:
-    """Read the case manifest's attack_window if present. Case-agnostic —
+    """Read the case manifest's attack_window if present. Case-agnostic -
     we just surface the manifest's own declared window; the field is
     optional in manifest.json.
     """
@@ -1095,7 +1095,7 @@ def _load_manifest_attack_window(cwd: Optional[str] = None) -> dict[str, Any]:
             continue
         if not isinstance(data, dict):
             continue
-        # The manifest may carry an attack_window under several names —
+        # The manifest may carry an attack_window under several names -
         # we accept any of them. Case-agnostic surface.
         for key in ("attack_window", "attackWindow", "incident_window",
                     "known_attack_window"):
@@ -1127,14 +1127,14 @@ def _augment_instruction(
 ) -> str:
     """Append high-signal artifact context to the base instruction.
 
-    Phase 2 extension (peer reviewer consensus 2026-05-22): in addition to the
+    Phase 2 extension: in addition to the
     existing summary / csv_path / storage_path / summary_markdown hints,
     inject schema, timestamp_bounds, attack_window, and originating
     execution_id into the prompt. This is the pre-computed context the
     playbook specialist will read instead of running schema-discovery
     queries.
 
-    peer reviewer specifically forbade MCP callbacks from this hook. The bounded
+    specifically forbade MCP callbacks from this hook. The bounded
     CSV inspect runs pandas locally with nrows=0 / usecols=[ts_col].
     """
     parts = [instruction.strip()]
@@ -1159,9 +1159,9 @@ def _augment_instruction(
     if "summary_markdown" in result_data and result_data.get("summary_markdown"):
         parts.append("Use summary_markdown to orient before drilling down.")
 
-    # Phase 2 — Pre-computed context injection
+    # Phase 2 - Pre-computed context injection
     # Schema can come from the tool result itself (preferred path) OR from a
-    # bounded local CSV inspect (fallback). peer reviewer required NOT calling MCP.
+    # bounded local CSV inspect (fallback). required NOT calling MCP.
     schema = result_data.get("schema")
     timestamp_bounds = result_data.get("timestamp_bounds")
     if (not schema or not timestamp_bounds) and isinstance(csv_path, str) and csv_path:
@@ -1186,7 +1186,7 @@ def _augment_instruction(
         if ts_min and ts_max:
             parts.append(f"Timestamp bounds: {ts_min} → {ts_max}.")
 
-    # Attack window from manifest (case-specific INPUT — flows through
+    # Attack window from manifest (case-specific INPUT - flows through
     # manifest.json, not hardcoded anywhere in the framework).
     attack_window = result_data.get("attack_window")
     if not attack_window:
@@ -1199,7 +1199,7 @@ def _augment_instruction(
         elif start:
             parts.append(f"Manifest attack window start: {start}.")
 
-    # Originating execution_id — useful so the specialist can pass it as
+    # Originating execution_id - useful so the specialist can pass it as
     # source_execution_id when calling submit_finding (Phase 1 provenance).
     eid = originating_execution_id or result_data.get("execution_id")
     if isinstance(eid, str) and eid:
@@ -1367,7 +1367,7 @@ def _pending_requires_hard_block(
     if lane_id != pending_lane:
         return False  # Different lane, no blocking
 
-    # Same lane — check if this specific tool is already queued
+    # Same lane - check if this specific tool is already queued
     return is_tool_already_queued(lane_id, tool_name)
 
 
@@ -1458,7 +1458,7 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
     """Process one PostToolUse event and return a hook response dict or None."""
     tool_name, result_data, raw_text = _extract_event_payload(event)
 
-    # Diagnostic trace — verify the hook is being invoked by Claude Code.
+    # Diagnostic trace - verify the hook is being invoked by Claude Code.
     # event-level keys (NOT inner data) + a sample of session_id are enough.
     _debug_trace(
         f"process_event tool={tool_name!r} "
@@ -1534,10 +1534,10 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
                 pending_lane = str(pending.get("lane_id") or "").strip()
                 if pending_lane and recorded_lane == pending_lane:
                     _mark_trigger_processed(trigger_path=trigger_path)
-            # W1.7 Run-2 consensus 2026-05-24 (peer reviewer+peer reviewer Q2 D): soft nudge
+            # W1.7 Run-2 consensus 2026-05-24: soft nudge
             # toward inline main-agent synthesis when a prereq lane closes.
             # Run 2 showed Claude completed all 4 prereq lanes then jumped
-            # straight to generate_report — never crossed the "should I
+            # straight to generate_report - never crossed the "should I
             # synthesize?" decision point. This is the forcing function.
             try:
                 _PREREQ_LANES = {
@@ -1597,7 +1597,7 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
             }
         # NEW (H.1 fix): If tool doesn't hard block, continue to dispatch logic
         # below so different tools in same lane can queue concurrently.
-        # Don't return None here — that would skip queueing.
+        # Don't return None here - that would skip queueing.
 
     block_reason = _detect_block_reason(result_data, raw_text)
     if block_reason:
@@ -1616,9 +1616,9 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
         return None
 
     subagent_type, lane_id, base_instruction = dispatch
-    # Phase 2 — pre-compute context for the specialist (schema, timestamp
-    # bounds, manifest attack_window, originating execution_id). peer reviewer
-    # consensus 2026-05-22 — NOT via an MCP callback; bounded local inspect
+    # Phase 2 - pre-compute context for the specialist (schema, timestamp
+    # bounds, manifest attack_window, originating execution_id).
+    # consensus 2026-05-22 - NOT via an MCP callback; bounded local inspect
     # of the CSV header + the manifest file on disk.
     instruction = _augment_instruction(
         base_instruction,

@@ -1,4 +1,4 @@
-"""evidence_finding.py — Section 3-lite Pydantic schema for FIND EVIL! hackathon.
+"""evidence_finding.py - Section 3-lite Pydantic schema for FIND EVIL! hackathon.
 
 This is the canonical Finding contract introduced in Architecture.pdf Section 3
 (Yash + Kismat, April 2026 hackathon blueprint). It replaces the prior
@@ -14,7 +14,7 @@ free-form Finding shape for structural enforcement of:
 
 Pydantic validation REJECTS findings that lack the structural fields. This
 is the structural-enforcement layer that judges score on Criterion #4
-(Constraint Implementation — architectural vs prompt-based guardrails).
+(Constraint Implementation - architectural vs prompt-based guardrails).
 
 Adoption path (W1 of PLAN-FIND-EVIL-HACKATHON-2026-05-23.md):
   - Existing Finding model stays in finding.py for backward compat
@@ -24,7 +24,7 @@ Adoption path (W1 of PLAN-FIND-EVIL-HACKATHON-2026-05-23.md):
     extract_srum, extract_shimcache) emit Section 3-lite findings first
   - All other tools migrate post-W2 if time permits
 
-peer reviewer sign-off 2026-05-23. See PLAN Section 4 + DECISION-2026-05-23-branch-triage.md.
+See PLAN Section 4 + DECISION-2026-05-23-branch-triage.md.
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
-# ULID generation (Crockford base32 timestamp+random — sorts lexicographically)
+# ULID generation (Crockford base32 timestamp+random - sorts lexicographically)
 # ---------------------------------------------------------------------------
 
 _CROCKFORD_BASE32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -146,7 +146,7 @@ _MITRE_TECHNIQUE_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
-# EvidenceFinding — Section 3 canonical schema
+# EvidenceFinding - Section 3 canonical schema
 # ---------------------------------------------------------------------------
 
 
@@ -157,7 +157,7 @@ class EvidenceFinding(BaseModel):
       - finding_id (ULID, sortable)
       - source_mcp_server (always "savvydfir" in hackathon submission)
       - source_tool (which MCP tool produced this)
-      - claim (single sentence — the assertion)
+      - claim (single sentence - the assertion)
       - evidence_excerpt (fenced raw evidence quote)
       - confidence (enum, not free-form)
 
@@ -166,7 +166,7 @@ class EvidenceFinding(BaseModel):
       - tool_input_hash / tool_output_hash (provenance to specific tool run)
       - artifact_path (the evidence file this came from)
       - timestamp (ISO-8601 UTC)
-      - specialist (which agent/specialist produced this — empty for main-agent)
+      - specialist (which agent/specialist produced this - empty for main-agent)
       - mitre_techniques (T1XXX or T1XXX.NNN)
       - confidence_rationale (required if confidence ∈ {HIGH, CONFIRMED})
       - contradicts (list of finding_ids this finding refutes)
@@ -218,7 +218,7 @@ class EvidenceFinding(BaseModel):
     contradicts: list[str] = Field(default_factory=list, description="Finding IDs this finding refutes")
     corroborates: list[str] = Field(default_factory=list, description="Finding IDs this finding supports")
 
-    # W1.7 (CR13 sign-off) — heuristic provenance chain. Cite the CTX bundles
+    # W1.7 (CR13 sign-off) - heuristic provenance chain. Cite the CTX bundles
     # delivered by prepare_hypothesis_context / extract_<artifact> /
     # get_heuristic when this finding's reasoning was informed by them.
     # Each CTX-NNN traces back to canonical .md path + SHA256 hash.
@@ -352,7 +352,7 @@ class EvidenceFinding(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# CorrectionEvent — Section 3 self-correction record (tiebreaker #1)
+# CorrectionEvent - Section 3 self-correction record (tiebreaker #1)
 # ---------------------------------------------------------------------------
 
 
@@ -361,7 +361,7 @@ class CorrectionEvent(BaseModel):
 
     Written to audit.jsonl when a finding is CORRECTED. This is the
     structural artifact that judges look for on criterion #1
-    (Autonomous Execution Quality — does the agent reason about
+    (Autonomous Execution Quality - does the agent reason about
     failures and self-correct in real time?).
 
     The CorrectionEvent links the original finding to the contradicting
