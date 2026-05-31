@@ -1008,6 +1008,57 @@ def _render_lane_rows(lanes: list[dict[str, Any]]) -> str:
     return "\n".join(rows)
 
 
+# Closes the hypothesis-driven threat-hunting loop (PEAK/TaHiTI): renders each
+# RECORDED hunting hypothesis with its resolved verdict + the finding IDs that
+# informed it. Distinct from the finding-level evidence_kind=HYPOTHESIS metric.
+# Read-only over the get_hypotheses() snapshot; never mutates state.
+# Verdict → (existing .tag modifier class, label). Reuses the report's tag
+# palette (covered=green, uncovered=amber, muted=grey) + one added .tag.refuted
+# (red) so proven / disproven / inconclusive / unresolved are visually distinct.
+_HYPOTHESIS_VERDICT_BADGES: dict[str, tuple[str, str]] = {
+    "CONFIRMED":     ("covered",   "CONFIRMED — proven"),
+    "REFUTED":       ("refuted",   "REFUTED — disproven"),
+    "SUSPENDED":     ("uncovered", "SUSPENDED — inconclusive"),
+    "INVESTIGATING": ("muted",     "INVESTIGATING — open"),
+    "ACTIVE":        ("muted",     "ACTIVE — unresolved"),
+}
+_MONO = "font-family: var(--mono)"
+
+
+def _render_hypothesis_validation(hypotheses: list[dict[str, Any]]) -> str:
+    if not hypotheses:
+        return "<tr><td colspan='5'>No hunting hypotheses recorded (triage-only case).</td></tr>"
+    rows: list[str] = []
+    for h in hypotheses:
+        if not isinstance(h, dict):
+            continue
+        hid = str(h.get("hypothesis_id") or "")
+        status = str(h.get("status") or "ACTIVE").upper()
+        tag_cls, badge_text = _HYPOTHESIS_VERDICT_BADGES.get(
+            status, ("muted", html.escape(status))
+        )
+        # Defensive normalisation — state should be clean, but never assume.
+        linked = h.get("related_finding_ids")
+        linked = linked if isinstance(linked, list) else ([linked] if linked else [])
+        linked_text = ", ".join(html.escape(str(fid)) for fid in linked if fid) or "—"
+        techs = h.get("mitre_techniques") or h.get("mitre_technique")
+        techs = techs if isinstance(techs, list) else ([techs] if techs else [])
+        techs_text = ", ".join(html.escape(str(t)) for t in techs if t) or "—"
+        attack = html.escape(str(h.get("attack_class") or "—"))
+        rank = h.get("rank")
+        rank_text = html.escape(str(rank)) if rank is not None else "—"
+        rows.append(
+            "<tr>"
+            f"<td style='{_MONO}' title='{html.escape(hid)}'>{html.escape(hid)}</td>"
+            f"<td>{attack} <span style='color: var(--muted)'>(rank {rank_text})</span></td>"
+            f"<td><span class='tag {tag_cls}'>{html.escape(badge_text)}</span></td>"
+            f"<td style='{_MONO}'>{linked_text}</td>"
+            f"<td>{techs_text}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
 _LANE_SPECS: dict[str, dict[str, Any]] = {
     "evidence_access": {"title": "Evidence Access", "required": False, "phase": "phase0"},
     "memory": {"title": "Memory Analyst", "required": True, "phase": "analysis"},
@@ -2122,6 +2173,7 @@ def render_report_html(payload: dict[str, Any]) -> str:
     orchestration_warnings = payload.get("orchestration_warnings", [])
     # W1.7 — Activity Thread state for blindspot reporting
     activity_thread = payload.get("activity_thread", {"phases": {}, "blindspot_notes": {}})
+    hypotheses = payload.get("hypotheses", [])
 
     confirmed_count = status_breakdown.get("CONFIRMED", 0)
     hypothesis_count = status_breakdown.get("HYPOTHESIS", 0) + status_breakdown.get("ACTIVE", 0)
@@ -2185,6 +2237,7 @@ def render_report_html(payload: dict[str, Any]) -> str:
   .tag.covered {{ background: rgba(34,197,94,0.15); color: #86efac; border: 1px solid rgba(34,197,94,0.25); }}
   .tag.uncovered {{ background: rgba(245,158,11,0.15); color: #fcd34d; border: 1px solid rgba(245,158,11,0.25); }}
   .tag.muted {{ background: rgba(156,163,175,0.12); color: var(--muted); border: 1px solid rgba(156,163,175,0.18); }}
+  .tag.refuted {{ background: rgba(239,68,68,0.15); color: #fca5a5; border: 1px solid rgba(239,68,68,0.25); }}
   pre {{ white-space: pre-wrap; overflow-wrap: anywhere; background: rgba(15,23,42,0.85); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; font-family: var(--mono); color: #dbeafe; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 0.92rem; }}
   th, td {{ text-align: left; padding: 0.7rem 0.6rem; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; }}
@@ -2228,6 +2281,19 @@ def render_report_html(payload: dict[str, Any]) -> str:
   {no_confirmed_banner}
 
   {render_activity_thread_html(activity_thread)}
+
+  <section class="card">
+    <h2>Recorded Hunting Hypotheses</h2>
+    <p style="color: var(--muted); font-size: 0.92em;">Each hypothesis formed during the hunt and its verdict after testing against the evidence — proven (CONFIRMED), disproven (REFUTED), or inconclusive (SUSPENDED). Distinct from finding-level evidence kinds; "Linked finding IDs" are the F-NNN that proved, refuted, or materially informed the verdict.</p>
+    <table>
+      <thead>
+        <tr><th>Hypothesis ID</th><th>Attack Class</th><th>Verdict</th><th>Linked finding IDs</th><th>MITRE</th></tr>
+      </thead>
+      <tbody>
+        {_render_hypothesis_validation(hypotheses)}
+      </tbody>
+    </table>
+  </section>
 
   <section class="card">
     <h2>Sigma Anomaly Summary</h2>
@@ -2728,6 +2794,7 @@ def generate_report_payload(
         "anti_forensics_warnings": anti_forensics_warnings,
         "data_gaps": data_gaps,
         "activity_thread": activity_thread_state,
+        "hypotheses": state_manager.get_hypotheses(),
         "findings_count": pre_summary.get("findings_count", 0),
         "unresolved_count": unresolved,
         "unresolved_discrepancies": unresolved_discrepancies,

@@ -257,5 +257,79 @@ class ReportingHtmlTests(unittest.TestCase):
             self.assertEqual(result["unresolved_count"], len(result["unresolved_discrepancies"]))
 
 
+class HypothesisValidationRenderTests(unittest.TestCase):
+    """Closes the hunting loop: the report surfaces each recorded hypothesis
+    with its resolved verdict + linked findings (consensus 2026-05-30)."""
+
+    def test_empty_renders_graceful_message(self) -> None:
+        from sift_mcp.reporting import _render_hypothesis_validation
+        html_out = _render_hypothesis_validation([])
+        self.assertIn("No hunting hypotheses recorded", html_out)
+
+    def test_verdicts_render_badges_and_linked_findings(self) -> None:
+        from sift_mcp.reporting import _render_hypothesis_validation
+        hyps = [
+            {"hypothesis_id": "H-AAA", "attack_class": "rdp_intrusion", "rank": 1,
+             "status": "CONFIRMED", "related_finding_ids": ["F-088", "F-089"],
+             "mitre_techniques": ["T1021.001"]},
+            {"hypothesis_id": "H-BBB", "attack_class": "insider_threat", "rank": 2,
+             "status": "REFUTED", "related_finding_ids": []},
+            {"hypothesis_id": "H-CCC", "attack_class": "malware", "rank": 3,
+             "status": "SUSPENDED", "related_finding_ids": ["F-040"]},
+            {"hypothesis_id": "H-DDD", "attack_class": "lateral", "rank": 4,
+             "status": "ACTIVE", "related_finding_ids": []},
+        ]
+        html_out = _render_hypothesis_validation(hyps)
+        # full id preserved, verdict labels present, linked findings rendered
+        for token in ("H-AAA", "H-BBB", "H-CCC", "H-DDD",
+                      "CONFIRMED — proven", "REFUTED — disproven",
+                      "SUSPENDED — inconclusive", "ACTIVE — unresolved",
+                      "F-088", "F-089", "F-040", "T1021.001"):
+            self.assertIn(token, html_out)
+        # verdict tag classes
+        self.assertIn("tag covered", html_out)
+        self.assertIn("tag refuted", html_out)
+        self.assertIn("tag uncovered", html_out)
+        self.assertIn("tag muted", html_out)
+
+    def test_defensive_against_malformed_entries(self) -> None:
+        from sift_mcp.reporting import _render_hypothesis_validation
+        # non-list related_finding_ids / mitre, missing fields, a non-dict entry
+        hyps = [
+            "not-a-dict",
+            {"hypothesis_id": "H-X", "status": "confirmed",
+             "related_finding_ids": "F-001", "mitre_technique": "T1059"},
+            {"hypothesis_id": "H-Y"},  # bare; defaults to ACTIVE
+        ]
+        html_out = _render_hypothesis_validation(hyps)  # must not raise
+        self.assertIn("F-001", html_out)         # singleton string normalized
+        self.assertIn("T1059", html_out)
+        self.assertIn("CONFIRMED — proven", html_out)  # case-insensitive status
+        self.assertIn("ACTIVE — unresolved", html_out)  # bare entry default
+
+    def test_payload_includes_hypotheses_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
+            manager.load("CASE-HYP-PAYLOAD")
+            add_windows_ir_baseline_executions(manager, "CASE-HYP-PAYLOAD")
+            report_dir = Path(tmp_dir) / "CASE-HYP-PAYLOAD"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            (report_dir / "graph.json").write_text("{}", encoding="utf-8")  # pass graph gate
+            result = generate_report_payload(
+                case_id="CASE-HYP-PAYLOAD",
+                state_manager=manager,
+                sigma_scan_fn=lambda case_id: {"status": "ok", "total_hits": 0,
+                                               "critical_count": 0, "high_count": 0,
+                                               "summary_markdown": "none"},
+                coverage_fn=lambda case_id: {"covered_tactics": [], "uncovered_tactics": [],
+                                             "coverage_percent": 0.0, "suggested_next_tools": {}},
+                reports_root=tmp_dir,
+                delegate_path=str(Path(tmp_dir) / "no_delegate.json"),
+                allow_partial=True,  # bypass specialist-contribution gate to reach full payload
+            )
+            self.assertIn("hypotheses", result)
+            self.assertIsInstance(result["hypotheses"], list)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -191,6 +191,21 @@ prereq lanes are COMPLETE / COMPLETE_WITH_GAPS):**
 
 4. `record_analysis_lane(lane_id="synthesis_corroboration", assigned_agent="main-agent", status="COMPLETE", execution_ids=[...], finding_ids=[<promoted CONFIRMED ids>], summary=<one-sentence narrative>)`
 
+5. **Close the hypothesis loop (PEAK/TaHiTI).** Before `generate_report`, resolve
+   EVERY hypothesis you recorded in Phase 4. Re-call
+   `record_hypotheses(case_id, hypotheses=[...])` passing back the **FULL**
+   hypothesis object (preserve `attack_class`, `initial_pivot`,
+   `expected_evidence_chain`, `rank`, `source_context_refs` — `record_hypotheses`
+   REPLACES by `hypothesis_id`, so a partial object loses data), changing only:
+   - `status` → `CONFIRMED` (proven — malicious activity confirmed),
+     `REFUTED` (disproven — ruled out), or `SUSPENDED` (inconclusive —
+     tested but insufficient evidence). Do NOT leave a tested hypothesis `ACTIVE`.
+   - `related_finding_ids` → the F-NNN findings that proved, refuted, or
+     materially informed the verdict (may be empty for SUSPENDED).
+   The report's "Recorded Hunting Hypotheses" section renders each verdict +
+   linked findings, so the report reads as a closed hunt: hypothesis → tested →
+   verdict + evidence.
+
 **Opt-in escape hatch (only when context isolation outweighs Task ceiling risk):**
 Spawn `@synthesis-analyst` or `@corroboration-analyst` via Task. The Task path
 has a hardcoded 32K output-token ceiling that truncated 7/8 specialists in
