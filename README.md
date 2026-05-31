@@ -159,13 +159,24 @@ Notes:
 
 ## Usage
 
+> **Working directory:** the examples below use `/opt/SAVVYDFIR-MCP` (the optional
+> production deploy from Installation step 11). If you only ran `bash install.sh`
+> in your clone, use your clone directory instead (e.g. `cd ~/SAVVYDFIR-MCP`).
+> Always launch `claude` from inside the repo so the project-local
+> `.claude/settings.json` (hooks + MCP server) is picked up.
+
 ### Single Host
 
 ```bash
-cd /opt/SAVVYDFIR-MCP
+cd SAVVYDFIR-MCP   # your clone, or /opt/SAVVYDFIR-MCP if you deployed to production
 claude --allowedTools "mcp__savvydfir__*" \
-  -p "Read case-templates/manifest.json and start the investigation. Investigate fully, run compare_disk_and_memory(case_id), run sigma_scan(case_id), call generate_report(case_id), call generate_graph(case_id), and stop only after both report outputs are written."
+  -p "Read case-templates/manifest.json and start the investigation. Investigate fully following the 7-phase workflow, run the mandatory tools detect_injection(case_id), compare_disk_and_memory(case_id), and sigma_hunt(case_id), then call generate_report(case_id) and generate_graph(case_id), and stop only after both report outputs are written."
 ```
+
+> **Note:** `sigma_hunt` (Chainsaw, 2,278 Sigma rules) is the mandatory detection
+> tool the report coverage gate checks for - do not confuse it with `sigma_scan`
+> (a separate anomaly-detector tool). Naming `sigma_hunt` explicitly avoids the
+> report blocking on a missing-coverage gate.
 
 Claude calls MCP tools → accumulates findings → writes `analysis/state.json` + `analysis/audit.jsonl` → calls `generate_report(case_id)` and `generate_graph(case_id)`.
 Output: `reports/{case_id}/report.html` and `reports/{case_id}/graph.html`.
