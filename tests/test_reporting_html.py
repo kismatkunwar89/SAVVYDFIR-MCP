@@ -307,6 +307,19 @@ class HypothesisValidationRenderTests(unittest.TestCase):
         self.assertIn("CONFIRMED — proven", html_out)  # case-insensitive status
         self.assertIn("ACTIVE — unresolved", html_out)  # bare entry default
 
+    def test_unresolved_counter(self) -> None:
+        from sift_mcp.reporting import _count_unresolved_hypotheses
+        hyps = [
+            {"status": "CONFIRMED"}, {"status": "REFUTED"}, {"status": "SUSPENDED"},
+            {"status": "ACTIVE"}, {"status": "INVESTIGATING"}, {}, "bad",
+        ]
+        # ACTIVE + INVESTIGATING + bare(default ACTIVE) = 3 unresolved; non-dict ignored
+        self.assertEqual(_count_unresolved_hypotheses(hyps), 3)
+        self.assertEqual(_count_unresolved_hypotheses([]), 0)
+        self.assertEqual(
+            _count_unresolved_hypotheses([{"status": "confirmed"}]), 0  # case-insensitive
+        )
+
     def test_payload_includes_hypotheses_key(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))

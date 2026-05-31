@@ -1023,6 +1023,21 @@ _HYPOTHESIS_VERDICT_BADGES: dict[str, tuple[str, str]] = {
     "ACTIVE":        ("muted",     "ACTIVE — unresolved"),
 }
 _MONO = "font-family: var(--mono)"
+_TERMINAL_HYPOTHESIS_STATUSES = {"CONFIRMED", "REFUTED", "SUSPENDED"}
+
+
+def _count_unresolved_hypotheses(hypotheses: list[dict[str, Any]]) -> int:
+    """Count recorded hypotheses still open (not a terminal verdict). The loop
+    is 'closed' only when every hypothesis is CONFIRMED/REFUTED/SUSPENDED.
+    Surfaced as an honest quality signal (warning + status_flag), NOT a gate
+    (v1 Simplicity-First; enforcement gate is the deferred Scope-B hardening)."""
+    n = 0
+    for h in hypotheses:
+        if not isinstance(h, dict):
+            continue
+        if str(h.get("status") or "ACTIVE").upper() not in _TERMINAL_HYPOTHESIS_STATUSES:
+            n += 1
+    return n
 
 
 def _render_hypothesis_validation(hypotheses: list[dict[str, Any]]) -> str:
@@ -2014,6 +2029,12 @@ def validate_report(
         "anti_forensics_warning": bool(anti_forensics_warnings),
         "unresolved_discrepancy": unresolved > 0,
         "specialist_lanes_inferred": specialist_lanes_inferred,
+        # Honest quality signal: hunt loop not fully closed if any recorded
+        # hypothesis is still ACTIVE/INVESTIGATING (not a gate — see
+        # _count_unresolved_hypotheses).
+        "hypotheses_unresolved": _count_unresolved_hypotheses(
+            state_manager.get_hypotheses()
+        ),
     }
     triage_status = (
         "TRIAGE_COMPLETE"
@@ -2285,6 +2306,7 @@ def render_report_html(payload: dict[str, Any]) -> str:
   <section class="card">
     <h2>Recorded Hunting Hypotheses</h2>
     <p style="color: var(--muted); font-size: 0.92em;">Each hypothesis formed during the hunt and its verdict after testing against the evidence — proven (CONFIRMED), disproven (REFUTED), or inconclusive (SUSPENDED). Distinct from finding-level evidence kinds; "Linked finding IDs" are the F-NNN that proved, refuted, or materially informed the verdict.</p>
+    {(f'<p class="tag uncovered" style="display:inline-block">⚠ Hunt loop not fully closed — {_count_unresolved_hypotheses(hypotheses)} of {len(hypotheses)} hypotheses still unresolved (ACTIVE/INVESTIGATING). Resolve each via record_hypotheses before final reporting.</p>' if _count_unresolved_hypotheses(hypotheses) else '')}
     <table>
       <thead>
         <tr><th>Hypothesis ID</th><th>Attack Class</th><th>Verdict</th><th>Linked finding IDs</th><th>MITRE</th></tr>
