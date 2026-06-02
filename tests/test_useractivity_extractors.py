@@ -495,33 +495,166 @@ class BrowserTests(_Base):
             self.assertTrue(ff_errs)
 
 
+_FILEACCESS_CSV = (
+    "HivePath,HiveType,Description,Category,KeyPath,ValueName,LastWriteTimestamp\n"
+    "ROOT,NtUser,UserAssist,Program Execution,"
+    "ROOT\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist,"
+    "synthetic.exe,2024-01-02 03:04:05\n"
+    "ROOT,Software,Run,Autoruns,ROOT\\...\\Run,unrelated,2024-01-02 03:04:05\n"
+)
+
+
 class RegistryFileAccessTests(_Base):
+    def _seed_run_keys_cache(
+        self, state, image_path, *, csv_path, source_execution_id,
+        user_hives, cache_image_path=None,
+    ):
+        """Seed the state cache EXACTLY as extract_registry_run_keys would.
+
+        Mirrors the real cache write path: build the key via
+        ``disk._registry_run_keys_cache_params`` (key incl. image_path) and
+        persist metadata with csv_path + source_execution_id + image_path +
+        user_hives_scanned. ``cache_image_path`` lets a test seed a DIFFERENT
+        image into the metadata to exercise the mismatch guard.
+        """
+        resolved_hive_dir = disk._resolved_path_str(
+            disk._resolve_registry_hive_dir_input(image_path, None)
+        )
+        batch_file = None
+        for candidate in disk.DFIR_BATCH_PATHS:
+            if os.path.isfile(candidate):
+                batch_file = candidate
+                break
+        key = disk.build_cache_key(
+            "disk.extract_registry_run_keys",
+            disk._registry_run_keys_cache_params(
+                resolved_hive_dir=resolved_hive_dir,
+                batch_mode=True,
+                batch_file_used=batch_file,
+                user_hives_found=user_hives,
+                sync_batch=False,
+                image_path=image_path,
+            ),
+        )
+        meta_image = cache_image_path if cache_image_path is not None else image_path
+        state.cache_artifact(
+            key,
+            {
+                "source_execution_id": source_execution_id,
+                "csv_path": str(csv_path),
+                "image_path": disk._resolved_path_str(meta_image),
+                "user_hives_scanned": list(user_hives),
+                "total_records": 2,
+            },
+        )
+        return key
+
     def test_reuse_combined_csv(self):
+        """Provenance-MATCHED reuse: the state cache holds a run-keys entry whose
+        image_path equals THIS image and whose csv_path exists on disk. RECmd must
+        NOT run; the audit/raw_command must cite the cached source_execution_id."""
         with tempfile.TemporaryDirectory() as tmp:
             runner, audit, state = self._init(tmp)
             root = Path(tmp) / "mnt" / "C"
             (root / "Windows").mkdir(parents=True, exist_ok=True)
-            (root / "Users" / "alpha").mkdir(parents=True, exist_ok=True)
+            self._make_profiles(root, ["alpha"])
             with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
                  mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
-                # seed a durable registry_combined.csv with a UserAssist row
+                # durable run-keys CSV on disk (OUTPUT_BASE now points at tmp)
                 combined = disk._artifact_output_dir("registry") / "registry_combined.csv"
                 combined.parent.mkdir(parents=True, exist_ok=True)
-                combined.write_text(
-                    "HivePath,HiveType,Description,Category,KeyPath,ValueName,LastWriteTimestamp\n"
-                    "ROOT,NtUser,UserAssist,Program Execution,"
-                    "ROOT\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist,"
-                    "synthetic.exe,2024-01-02 03:04:05\n"
-                    "ROOT,Software,Run,Autoruns,ROOT\\...\\Run,unrelated,2024-01-02 03:04:05\n",
-                    encoding="utf-8",
+                combined.write_text(_FILEACCESS_CSV, encoding="utf-8")
+                user_hives = disk._discover_run_keys_user_hives(str(root))
+                self._seed_run_keys_cache(
+                    state, str(root), csv_path=combined,
+                    source_execution_id="E-RK-001", user_hives=user_hives,
                 )
                 r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
             self.assertEqual(r["status"], "success")
             self.assertTrue(r["reused_combined_csv"])
+            self.assertTrue(r["cache_hit"])
+            self.assertEqual(r["cache_source_execution_id"], "E-RK-001")
             self.assertEqual(r["total_rows"], 1)  # only the UserAssist row matches
             self.assertIn("userassist", r["fragment_counts"])
-            # runner was NOT invoked (reuse path)
+            # RECmd was NOT invoked (cache-keyed reuse path)
             self.assertFalse(any(c.startswith("recmd:") for c in runner.calls))
+            # audit raw_command cites the cached source_execution_id
+            lines = (Path(tmp) / "audit.jsonl").read_text(encoding="utf-8")
+            self.assertIn("E-RK-001", lines)
+            self.assertIn("CACHE_HIT", lines)
+            # profiles_checked reflects the CACHED hive metadata (alpha profile dir)
+            self.assertIn("alpha", r["profiles_checked"])
+
+    def test_orphan_csv_no_cache_runs_recmd(self):
+        """ORPHAN CSV: registry_combined.csv on disk but NO matching cache entry.
+        Must NOT silently reuse - RECmd runs and an orphan-ignored warning is set."""
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, audit, state = self._init(tmp)
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha"])
+            # NO cache seeded.
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                combined = disk._artifact_output_dir("registry") / "registry_combined.csv"
+                combined.parent.mkdir(parents=True, exist_ok=True)
+                combined.write_text(_FILEACCESS_CSV, encoding="utf-8")
+                r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
+            self.assertEqual(r["status"], "success")
+            self.assertFalse(r["reused_combined_csv"])
+            self.assertFalse(r["cache_hit"])
+            self.assertTrue(any(c.startswith("recmd:") for c in runner.calls))
+            self.assertIn("orphan_csv_warning", r)
+
+    def test_image_mismatch_no_reuse(self):
+        """IMAGE MISMATCH: cache+CSV seeded for image A; calling with image B must
+        NOT reuse A's data - RECmd runs for B."""
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, audit, state = self._init(tmp)
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha"])
+            other_image = str(Path(tmp) / "mnt" / "OTHER_IMAGE")
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                combined = disk._artifact_output_dir("registry") / "registry_combined.csv"
+                combined.parent.mkdir(parents=True, exist_ok=True)
+                combined.write_text(_FILEACCESS_CSV, encoding="utf-8")
+                user_hives = disk._discover_run_keys_user_hives(str(root))
+                # Seed cache keyed/metadata for a DIFFERENT image (other_image).
+                self._seed_run_keys_cache(
+                    state, other_image, csv_path=combined,
+                    source_execution_id="E-RK-OTHER", user_hives=user_hives,
+                )
+                r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
+            self.assertEqual(r["status"], "success")
+            self.assertFalse(r["reused_combined_csv"])
+            self.assertFalse(r["cache_hit"])
+            self.assertTrue(any(c.startswith("recmd:") for c in runner.calls))
+
+    def test_metadata_image_mismatch_no_reuse(self):
+        """Even if the cache KEY happened to match, a metadata image_path that
+        differs from the call image must block reuse (defense in depth)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, audit, state = self._init(tmp)
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha"])
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                combined = disk._artifact_output_dir("registry") / "registry_combined.csv"
+                combined.parent.mkdir(parents=True, exist_ok=True)
+                combined.write_text(_FILEACCESS_CSV, encoding="utf-8")
+                user_hives = disk._discover_run_keys_user_hives(str(root))
+                # KEY built for THIS image, but metadata image_path points elsewhere.
+                self._seed_run_keys_cache(
+                    state, str(root), csv_path=combined,
+                    source_execution_id="E-RK-BAD", user_hives=user_hives,
+                    cache_image_path=str(Path(tmp) / "mnt" / "WRONG"),
+                )
+                r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
+            self.assertFalse(r["reused_combined_csv"])
+            self.assertTrue(any(c.startswith("recmd:") for c in runner.calls))
 
     def test_run_recmd_when_no_combined_csv(self):
         with tempfile.TemporaryDirectory() as tmp:

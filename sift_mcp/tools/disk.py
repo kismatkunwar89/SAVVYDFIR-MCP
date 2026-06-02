@@ -3871,6 +3871,78 @@ def summarize_evtx(
 # Tool: extract_registry_run_keys
 # ---------------------------------------------------------------------------
 
+
+def _discover_run_keys_user_hives(image_path: str) -> list[str]:
+    """Discover per-user ``NTUSER.DAT`` hives the way ``extract_registry_run_keys``
+    does, as a sorted list of resolved path strings.
+
+    Shared by ``extract_registry_run_keys`` (cache write) and
+    ``extract_registry_fileaccess`` (cache read) so the ``user_hives`` slot of
+    the cache key is byte-identical between the two callers. Case-agnostic: no
+    profile name is ever hardcoded; non-interactive profile dirs are skipped via
+    ``_NON_USER_PROFILE_DIRS``.
+    """
+    user_hives_found: list[str] = []
+    seen: set[str] = set()
+    user_roots: list[Path] = []
+    seen_user_roots: set[str] = set()
+    for volume_root in _candidate_windows_volume_roots(image_path):
+        for users_root in (volume_root / "Users", volume_root / "Documents and Settings"):
+            text = str(users_root)
+            if text not in seen_user_roots:
+                seen_user_roots.add(text)
+                user_roots.append(users_root)
+    for users_root in user_roots:
+        if _path_exists(users_root) and _path_is_dir(users_root):
+            try:
+                children = sorted(users_root.iterdir(), key=lambda p: p.name.lower())
+            except OSError:
+                continue
+            for user_dir in children:
+                # NOTE: preserve extract_registry_run_keys' ORIGINAL skip set
+                # exactly (narrower than _NON_USER_PROFILE_DIRS) so run-keys
+                # behavior is unchanged AND the cache key stays aligned.
+                if _path_is_dir(user_dir) and user_dir.name not in (
+                    "Public",
+                    "Default",
+                    "Default User",
+                    "All Users",
+                ):
+                    ntuser = user_dir / "NTUSER.DAT"
+                    if _path_exists(ntuser):
+                        resolved = _resolved_path_str(str(ntuser))
+                        if resolved not in seen:
+                            seen.add(resolved)
+                            user_hives_found.append(str(ntuser))
+    return user_hives_found
+
+
+def _registry_run_keys_cache_params(
+    *,
+    resolved_hive_dir: str,
+    batch_mode: bool,
+    batch_file_used: Optional[str],
+    user_hives_found: list[str],
+    sync_batch: bool,
+    image_path: str,
+) -> dict[str, Any]:
+    """Build the cache-key params dict for ``disk.extract_registry_run_keys``.
+
+    Shared between the run-keys cache write and the file-access cache read so the
+    key matches exactly. ``image_path`` is included so a SECOND image in the same
+    case dir produces a DIFFERENT key (provenance fix - prevents one host's CSV
+    being mis-attributed to another).
+    """
+    return {
+        "hive_dir": resolved_hive_dir,
+        "batch_mode": batch_mode,
+        "batch_file": batch_file_used or "",
+        "user_hives": sorted(_resolved_path_str(path) for path in user_hives_found),
+        "sync_batch": bool(sync_batch),
+        "image_path": _resolved_path_str(image_path),
+    }
+
+
 # Persistence key path fragments to match (lower-case)
 _PERSISTENCE_FRAGMENTS: list[tuple[str, str]] = [
     # Run keys - absolute path (NTUSER.DAT or full SOFTWARE path)
@@ -4042,34 +4114,20 @@ def extract_registry_run_keys(
                 "Install EZ Tools batch files or set batch_mode=False."
             )
 
-    user_hives_found: list[str] = []
-
-    # Discover user NTUSER.DAT hives
-    user_roots: list[Path] = []
-    seen_user_roots: set[str] = set()
-    for volume_root in _candidate_windows_volume_roots(image_path):
-        for users_root in (volume_root / "Users", volume_root / "Documents and Settings"):
-            text = str(users_root)
-            if text not in seen_user_roots:
-                seen_user_roots.add(text)
-                user_roots.append(users_root)
-    for users_root in user_roots:
-        if users_root.exists() and users_root.is_dir():
-            for user_dir in users_root.iterdir():
-                if user_dir.is_dir() and user_dir.name not in ("Public", "Default", "Default User", "All Users"):
-                    ntuser = user_dir / "NTUSER.DAT"
-                    if ntuser.exists():
-                        user_hives_found.append(str(ntuser))
+    # Discover user NTUSER.DAT hives (shared discovery so the cache key matches
+    # exactly between extract_registry_run_keys and extract_registry_fileaccess).
+    user_hives_found: list[str] = _discover_run_keys_user_hives(image_path)
 
     cache_key = build_cache_key(
         tool,
-        {
-            "hive_dir": resolved_hive_dir,
-            "batch_mode": batch_mode,
-            "batch_file": batch_file_used or "",
-            "user_hives": sorted(_resolved_path_str(path) for path in user_hives_found),
-            "sync_batch": bool(sync_batch),
-        },
+        _registry_run_keys_cache_params(
+            resolved_hive_dir=resolved_hive_dir,
+            batch_mode=batch_mode,
+            batch_file_used=batch_file_used,
+            user_hives_found=user_hives_found,
+            sync_batch=sync_batch,
+            image_path=image_path,
+        ),
     )
     cached = None
     if not sync_batch:
@@ -4458,6 +4516,7 @@ def extract_registry_run_keys(
             {
                 "source_execution_id": result.execution_id,
                 "csv_path": durable_csv,
+                "image_path": _resolved_path_str(image_path),
                 "suppressed_csv_path": durable_suppressed_csv,
                 "suppressed_row_count": len(suppressed_rows),
                 "findings_created": finding_ids,
@@ -5561,43 +5620,109 @@ def extract_registry_fileaccess(
     exec_id = _audit.next_execution_id()
     started_at = time.monotonic()
 
-    # 1) Reuse a prior durable registry_combined.csv if present.
-    reuse_csv = _artifact_output_dir("registry") / "registry_combined.csv"
     source_rows: list[dict[str, str]] = []
     source_artifact = ""
     raw_command = ""
     profiles_checked: list[str] = []
     parser_failures: list[dict[str, Any]] = []
     tmp_dirs: list[Path] = []
-    # ``discovered`` = did we find ANY source of registry data to parse? The
-    # reuse CSV existing OR any NTUSER hive being located both count as
+    reused_via_cache = False
+    cache_source_execution_id: Optional[str] = None
+    orphan_note: Optional[str] = None
+    # ``discovered`` = did we find ANY source of registry data to parse? A
+    # provenance-matched cache hit OR any NTUSER hive being located both count as
     # discovery. A zero-row outcome with discovered=False is a true
     # artifact_absent; discovered=True routes to no_data / collection_failed.
     discovered = False
 
-    if _path_exists(reuse_csv) and _path_is_file(reuse_csv):
+    # 1) Provenance-keyed reuse: ONLY reuse a prior run-keys CSV when the state
+    #    cache holds a matching entry whose image_path equals THIS image. The
+    #    bare registry_combined.csv path is scoped to the case dir, NOT to this
+    #    image/hive set - reusing it by path existence alone mis-attributes one
+    #    host's UserAssist/RecentDocs to another (peer reviewer/peer reviewer consensus fix).
+    resolved_hive_dir = _resolved_path_str(
+        _resolve_registry_hive_dir_input(image_path, None)
+    )
+    cache_batch_file: Optional[str] = None
+    for candidate in DFIR_BATCH_PATHS:
+        if os.path.isfile(candidate):
+            cache_batch_file = candidate
+            break
+    cache_user_hives = _discover_run_keys_user_hives(image_path)
+    run_keys_cache_key = build_cache_key(
+        "disk.extract_registry_run_keys",
+        _registry_run_keys_cache_params(
+            resolved_hive_dir=resolved_hive_dir,
+            batch_mode=True,
+            batch_file_used=cache_batch_file,
+            user_hives_found=cache_user_hives,
+            sync_batch=False,
+            image_path=image_path,
+        ),
+    )
+    cached = get_valid_cached_artifact(
+        _state,
+        run_keys_cache_key,
+        path_key="csv_path",
+        required_keys=("csv_path", "source_execution_id", "image_path"),
+    )
+    orphan_csv = _artifact_output_dir("registry") / "registry_combined.csv"
+    orphan_present = _path_exists(orphan_csv) and _path_is_file(orphan_csv)
+
+    if (
+        cached is not None
+        and str(cached.get("image_path")) == _resolved_path_str(image_path)
+        and _path_exists(Path(str(cached["csv_path"])))
+        and _path_is_file(Path(str(cached["csv_path"])))
+    ):
         discovered = True
+        reused_via_cache = True
+        cache_source_execution_id = str(cached.get("source_execution_id") or "")
+        reuse_csv = Path(str(cached["csv_path"]))
         source_rows = _read_csv(str(reuse_csv))
         source_artifact = str(reuse_csv)
-        raw_command = f"reuse registry_combined.csv ({reuse_csv})"
+        raw_command = (
+            f"CACHE_HIT disk.extract_registry_run_keys "
+            f"(source_execution_id={cache_source_execution_id}, csv={reuse_csv})"
+        )
         _audit.log_execution(
             execution_id=exec_id, tool_name=tool,
-            parameters={"image_path": image_path, "reuse_csv": str(reuse_csv)},
+            parameters={
+                "image_path": image_path,
+                "reuse_csv": str(reuse_csv),
+                "cache_key": run_keys_cache_key,
+                "cache_source_execution_id": cache_source_execution_id,
+            },
             command_line=raw_command,
         )
-        profiles_checked = sorted({name for name, _ in _iter_user_profile_dirs(image_path)})
+        # profiles_checked reflects the CACHED hive set (what produced the CSV),
+        # not just the current mount listing - the cached run is the provenance.
+        cached_hive_names = sorted(
+            {Path(str(h)).parent.name for h in cached.get("user_hives_scanned", [])}
+        )
+        profiles_checked = cached_hive_names or sorted(
+            {name for name, _ in _iter_user_profile_dirs(image_path)}
+        )
     else:
-        # 2) Run RECmd DFIRBatch over SYSTEM + per-profile NTUSER.
+        # 2) No matching cache entry -> run RECmd ourselves (same invocation
+        #    run-keys uses). NEVER silently reuse an unverified orphan CSV.
+        if orphan_present:
+            orphan_note = (
+                "Ignored unverified orphan registry_combined.csv at "
+                f"{orphan_csv}: no matching state-cache entry for this image "
+                "(image_path mismatch or absent provenance). Re-parsed via RECmd "
+                "to avoid mis-attributing another image's file-access evidence."
+            )
         raw_command = "RECmd.dll --bn DFIRBatch over SYSTEM + per-profile NTUSER"
         _audit.log_execution(
             execution_id=exec_id, tool_name=tool,
-            parameters={"image_path": image_path}, command_line=raw_command,
+            parameters={
+                "image_path": image_path,
+                **({"orphan_csv_ignored": str(orphan_csv)} if orphan_present else {}),
+            },
+            command_line=raw_command,
         )
-        batch_file_used: Optional[str] = None
-        for candidate in DFIR_BATCH_PATHS:
-            if os.path.isfile(candidate):
-                batch_file_used = candidate
-                break
+        batch_file_used: Optional[str] = cache_batch_file
         ntuser_hives = _discover_user_hives(image_path, ("NTUSER.DAT",))
         discovered = bool(ntuser_hives)
         # Absence matrix: ALWAYS list every discovered profile (see shellbags note).
@@ -5683,6 +5808,11 @@ def extract_registry_fileaccess(
             discovered=discovered,
         )
         resp["fragment_counts"] = fragment_counts
+        resp["reused_combined_csv"] = reused_via_cache
+        resp["cache_hit"] = reused_via_cache
+        resp["cache_source_execution_id"] = cache_source_execution_id
+        if orphan_note:
+            resp["orphan_csv_warning"] = orphan_note
         return resp
 
     def _finding(durable_csv, total_rows):
@@ -5711,5 +5841,9 @@ def extract_registry_fileaccess(
         finding_factory=_finding, max_entries=max_entries,
     )
     response["fragment_counts"] = fragment_counts
-    response["reused_combined_csv"] = bool(source_artifact and "registry_combined" in source_artifact)
+    response["reused_combined_csv"] = reused_via_cache
+    response["cache_hit"] = reused_via_cache
+    response["cache_source_execution_id"] = cache_source_execution_id
+    if orphan_note:
+        response["orphan_csv_warning"] = orphan_note
     return response
