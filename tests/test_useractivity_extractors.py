@@ -287,7 +287,11 @@ class ShellbagsTests(_Base):
             lines = (Path(tmp) / "audit.jsonl").read_text(encoding="utf-8").splitlines()
             self.assertTrue(any("status=artifact_absent" in ln for ln in lines))
 
-    def test_parser_failure_recorded(self):
+    def test_parser_failure_is_collection_failed_not_absent(self):
+        """Consensus-signed 4-way taxonomy: a discovered hive whose parse FAILS
+        and yields zero rows must report ``collection_failed`` (exit_code=1),
+        NEVER ``artifact_absent`` - a failed collection is not evidence that no
+        evidence exists (false-negative bug)."""
         with tempfile.TemporaryDirectory() as tmp:
             runner, audit, state = self._init(tmp)
             runner.sbe_behavior = "fail"
@@ -297,10 +301,39 @@ class ShellbagsTests(_Base):
                  mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
                  mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
                 r = disk.extract_shellbags(image_path=str(root), case_id="CASE-UA")
-            # no rows produced -> artifact_absent with parser_failures populated
-            self.assertEqual(r["status"], "artifact_absent")
+            self.assertEqual(r["status"], "collection_failed")
             self.assertTrue(r["parser_failures"])
             self.assertTrue(any("parser_error" in pf["status"] for pf in r["parser_failures"]))
+            # audit row: exit_code=1 AND summary must NOT contain artifact_absent.
+            lines = (Path(tmp) / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+            import json
+            results = [json.loads(ln) for ln in lines]
+            cf = [e for e in results
+                  if e.get("event_type") == "completed"
+                  and "status=collection_failed" in (e.get("outputs_summary") or "")]
+            self.assertTrue(cf, "expected a collection_failed audit result row")
+            self.assertEqual(cf[-1]["exit_code"], 1)
+            self.assertNotIn("artifact_absent", cf[-1]["outputs_summary"])
+
+    def test_no_data_when_discovered_but_zero_rows(self):
+        """Discovered hive + clean parse + zero rows -> ``no_data`` (exit_code=0),
+        distinct from both artifact_absent (nothing discovered) and
+        collection_failed (parse failed)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, audit, state = self._init(tmp)
+            runner.sbe_behavior = "empty"  # parser succeeds, emits no CSV rows
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha"])
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_shellbags(image_path=str(root), case_id="CASE-UA")
+            self.assertEqual(r["status"], "no_data")
+            self.assertEqual(r["total_rows"], 0)
+            self.assertFalse(r["parser_failures"])
+            lines = (Path(tmp) / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+            self.assertTrue(any("status=no_data" in ln for ln in lines))
+            self.assertFalse(any("status=artifact_absent" in ln for ln in lines))
 
 
 class LnkTests(_Base):
@@ -413,6 +446,54 @@ class BrowserTests(_Base):
                 r = disk.extract_browser_history(image_path=str(root), case_id="CASE-UA")
             self.assertEqual(r["status"], "artifact_absent")
 
+    def test_incompatible_db_is_collection_failed_not_absent(self):
+        """A discovered DB that CONNECTS but whose queries fail (schema drift /
+        incompatible / encrypted History) yields zero rows AND populated
+        parser_failures -> ``collection_failed``, NEVER artifact_absent. This is
+        the consensus-signed false-negative guard for the browser path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, audit, state = self._init(tmp)
+            root = Path(tmp) / "mnt" / "C"
+            (root / "Windows").mkdir(parents=True, exist_ok=True)
+            prof = root / "Users" / "alpha"
+            # A valid sqlite DB that connects fine but lacks the urls/downloads
+            # tables Chromium history expects -> every query raises sqlite3.Error.
+            db = prof / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default" / "History"
+            db.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(db))
+            conn.execute("CREATE TABLE unrelated (x INT)")
+            conn.execute("INSERT INTO unrelated VALUES (1)")
+            conn.commit(); conn.close()
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_browser_history(image_path=str(root), case_id="CASE-UA")
+            self.assertEqual(r["status"], "collection_failed")
+            self.assertTrue(r["parser_failures"])
+            self.assertTrue(any("query_error" in pf["status"] for pf in r["parser_failures"]))
+            lines = (Path(tmp) / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+            self.assertFalse(any("status=artifact_absent" in ln for ln in lines))
+
+    def test_query_helper_signatures_return_errors(self):
+        """The browser query helpers must RETURN (rows..., query_errors) so a
+        failed query is observable - the old swallow-and-pass hid collection
+        failures behind an empty row set."""
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "bad.sqlite"
+            conn = sqlite3.connect(str(bad))
+            conn.execute("CREATE TABLE noop (x INT)")
+            conn.commit(); conn.close()
+            visits, downloads, q_errs = disk._query_chromium_history(bad)
+            self.assertEqual(visits, [])
+            self.assertEqual(downloads, [])
+            self.assertTrue(q_errs)  # both chromium queries failed
+            ff = Path(tmp) / "places.sqlite"
+            conn = sqlite3.connect(str(ff))
+            conn.execute("CREATE TABLE noop (x INT)")
+            conn.commit(); conn.close()
+            rows, ff_errs = disk._query_firefox_history(ff)
+            self.assertEqual(rows, [])
+            self.assertTrue(ff_errs)
+
 
 class RegistryFileAccessTests(_Base):
     def test_reuse_combined_csv(self):
@@ -456,7 +537,10 @@ class RegistryFileAccessTests(_Base):
             self.assertTrue(any(c.startswith("recmd:") for c in runner.calls))
             self.assertIn("userassist", r["fragment_counts"])
 
-    def test_artifact_absent_when_no_fileaccess_rows(self):
+    def test_no_data_when_discovered_but_no_fileaccess_rows(self):
+        """RECmd ran cleanly over a discovered NTUSER hive but no row matched the
+        file-access fragment set -> ``no_data`` (discovered=True, no failures),
+        NOT artifact_absent (which would falsely claim no evidence existed)."""
         with tempfile.TemporaryDirectory() as tmp:
             runner, audit, state = self._init(tmp)
             runner.recmd_behavior = "empty"  # produces only non-fileaccess rows
@@ -466,7 +550,25 @@ class RegistryFileAccessTests(_Base):
                  mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
                  mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
                 r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
+            self.assertEqual(r["status"], "no_data")
+            self.assertFalse(r["parser_failures"])
+
+    def test_artifact_absent_when_nothing_discovered(self):
+        """No reuse CSV and no NTUSER hive discovered -> true ``artifact_absent``
+        (discovered=False). This is the only path that legitimately reports
+        absence for the registry file-access tool."""
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, audit, state = self._init(tmp)
+            root = Path(tmp) / "mnt" / "C"
+            # profile dir exists but carries NO NTUSER.DAT hive
+            (root / "Users" / "alpha").mkdir(parents=True, exist_ok=True)
+            (root / "Windows").mkdir(parents=True, exist_ok=True)
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
             self.assertEqual(r["status"], "artifact_absent")
+            self.assertFalse(any(c.startswith("recmd:") for c in runner.calls))
 
 
 if __name__ == "__main__":

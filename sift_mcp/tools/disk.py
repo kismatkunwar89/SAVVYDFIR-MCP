@@ -4599,7 +4599,7 @@ def _discover_user_dirs(
     return discovered
 
 
-def _useractivity_absent_response(
+def _useractivity_zero_row_response(
     *,
     tool: str,
     exec_id: str,
@@ -4608,20 +4608,54 @@ def _useractivity_absent_response(
     profiles_checked: list[str],
     parser_failures: list[dict[str, Any]],
     artifact_label: str,
+    discovered: bool,
 ) -> dict[str, Any]:
-    """Standard ``artifact_absent`` response + audit row for user-activity tools.
+    """Zero-row response + audit row for user-activity tools (4-way taxonomy).
 
-    Emits an audit ``log_result`` whose ``outputs_summary`` contains the
-    literal ``status=artifact_absent`` token (constraint 5).
+    A failed collection MUST NOT masquerade as "no evidence exists" (false
+    negative). The response ``status`` branches on whether anything was
+    discovered and whether any parser/query failures were recorded:
+
+    * ``not discovered``               -> ``artifact_absent`` (exit_code 0).
+      Nothing to collect existed (no hives/dirs/DBs found). True negative.
+    * ``discovered`` + ``parser_failures`` -> ``collection_failed`` (exit_code 1).
+      Evidence existed but the collection FAILED; absence is NOT proven.
+      The ``outputs_summary`` MUST NOT contain ``artifact_absent`` (hooks
+      substring-match it) so a failed run is never read as a clean negative.
+    * ``discovered`` + no failures     -> ``no_data`` (exit_code 0).
+      Evidence existed, parsed cleanly, yielded zero rows. Honest negative.
+
+    The success (rows present) branch lives in ``_finalize_useractivity_response``.
     """
-    summary = (
-        f"status=artifact_absent: no {artifact_label} discovered across "
-        f"{len(profiles_checked)} profile(s)."
-    )
+    if not discovered:
+        status = "artifact_absent"
+        exit_code = 0
+        summary = (
+            f"status=artifact_absent: no {artifact_label} discovered across "
+            f"{len(profiles_checked)} profile(s)."
+        )
+    elif parser_failures:
+        status = "collection_failed"
+        exit_code = 1
+        # MUST NOT contain the substring ``artifact_absent`` (constraint 2).
+        summary = (
+            f"status=collection_failed: {artifact_label} discovered but "
+            f"{len(parser_failures)} parser/query failure(s) across "
+            f"{len(profiles_checked)} profile(s); zero rows collected - "
+            "absence is NOT evidence of absence."
+        )
+    else:
+        status = "no_data"
+        exit_code = 0
+        summary = (
+            f"status=no_data: {artifact_label} discovered and parsed cleanly "
+            f"across {len(profiles_checked)} profile(s) but yielded zero rows."
+        )
+
     if _audit is not None:
         _audit.log_result(
             execution_id=exec_id,
-            exit_code=0,
+            exit_code=exit_code,
             duration=time.monotonic() - started_at,
             outputs_summary=summary,
             finding_ids=[],
@@ -4631,7 +4665,7 @@ def _useractivity_absent_response(
         )
     return {
         "tool_name": tool,
-        "status": "artifact_absent",
+        "status": status,
         "execution_id": exec_id,
         "raw_command": raw_command,
         "csv_path": None,
@@ -4809,10 +4843,11 @@ def extract_shellbags(
     )
 
     if not hives:
-        return _useractivity_absent_response(
+        return _useractivity_zero_row_response(
             tool=tool, exec_id=exec_id, raw_command=raw_command,
             started_at=started_at, profiles_checked=profiles_checked,
             parser_failures=[], artifact_label="ShellBag hives (UsrClass.dat/NTUSER.DAT)",
+            discovered=False,
         )
 
     merged_rows: list[dict[str, Any]] = []
@@ -4870,10 +4905,13 @@ def extract_shellbags(
             shutil.rmtree(d, ignore_errors=True)
 
     if not merged_rows:
-        return _useractivity_absent_response(
+        # Hives were discovered (else we returned above) - zero rows is
+        # ``no_data`` if parsing was clean, ``collection_failed`` if not.
+        return _useractivity_zero_row_response(
             tool=tool, exec_id=exec_id, raw_command=raw_command,
             started_at=started_at, profiles_checked=profiles_checked,
             parser_failures=parser_failures, artifact_label="ShellBag entries",
+            discovered=True,
         )
 
     def _finding(durable_csv, total_rows):
@@ -4943,10 +4981,11 @@ def extract_lnk_files(
     )
 
     if not dirs:
-        return _useractivity_absent_response(
+        return _useractivity_zero_row_response(
             tool=tool, exec_id=exec_id, raw_command=raw_command,
             started_at=started_at, profiles_checked=profiles_checked,
             parser_failures=[], artifact_label="Recent (LNK) directories",
+            discovered=False,
         )
 
     merged_rows: list[dict[str, Any]] = []
@@ -4987,10 +5026,12 @@ def extract_lnk_files(
             shutil.rmtree(d, ignore_errors=True)
 
     if not merged_rows:
-        return _useractivity_absent_response(
+        # Recent dirs were discovered (else returned above).
+        return _useractivity_zero_row_response(
             tool=tool, exec_id=exec_id, raw_command=raw_command,
             started_at=started_at, profiles_checked=profiles_checked,
             parser_failures=parser_failures, artifact_label="LNK shortcut files",
+            discovered=True,
         )
 
     def _finding(durable_csv, total_rows):
@@ -5058,10 +5099,11 @@ def extract_jump_lists(
     )
 
     if not dirs:
-        return _useractivity_absent_response(
+        return _useractivity_zero_row_response(
             tool=tool, exec_id=exec_id, raw_command=raw_command,
             started_at=started_at, profiles_checked=profiles_checked,
             parser_failures=[], artifact_label="Jump List destination directories",
+            discovered=False,
         )
 
     merged_rows: list[dict[str, Any]] = []
@@ -5102,10 +5144,12 @@ def extract_jump_lists(
             shutil.rmtree(d, ignore_errors=True)
 
     if not merged_rows:
-        return _useractivity_absent_response(
+        # Destination dirs were discovered (else returned above).
+        return _useractivity_zero_row_response(
             tool=tool, exec_id=exec_id, raw_command=raw_command,
             started_at=started_at, profiles_checked=profiles_checked,
             parser_failures=parser_failures, artifact_label="Jump List entries",
+            discovered=True,
         )
 
     def _finding(durable_csv, total_rows):
@@ -5182,11 +5226,19 @@ def _copy_sqlite_db(db_path: Path, dest_dir: Path) -> Path:
 
 def _query_chromium_history(
     db_copy: Path,
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    """Return ``(visit_rows, download_rows)`` from a Chromium History DB copy."""
+) -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict[str, str]]]:
+    """Return ``(visit_rows, download_rows, query_errors)`` from a Chromium DB.
+
+    A DB that connects but whose queries fail (schema drift, corruption,
+    encryption) yields zero rows AND a populated ``query_errors`` list so the
+    caller can distinguish "connected, parsed cleanly, no rows" (``no_data``)
+    from "connected, queries failed" (``collection_failed``) - the latter must
+    never be reported as ``artifact_absent``.
+    """
     import sqlite3
     visits: list[dict[str, str]] = []
     downloads: list[dict[str, str]] = []
+    query_errors: list[dict[str, str]] = []
     conn = sqlite3.connect(f"file:{db_copy}?mode=ro", uri=True)
     try:
         conn.row_factory = sqlite3.Row
@@ -5203,8 +5255,11 @@ def _query_chromium_history(
                     "target_path": "",
                     "total_bytes": "",
                 })
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            query_errors.append({
+                "db": str(db_copy), "query": "chromium.urls",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
         try:
             for r in conn.execute(
                 "SELECT target_path, total_bytes, start_time, tab_url FROM downloads"
@@ -5218,19 +5273,28 @@ def _query_chromium_history(
                     "target_path": str(r["target_path"] or ""),
                     "total_bytes": str(r["total_bytes"] or ""),
                 })
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            query_errors.append({
+                "db": str(db_copy), "query": "chromium.downloads",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
     finally:
         conn.close()
-    return visits, downloads
+    return visits, downloads, query_errors
 
 
 def _query_firefox_history(
     db_copy: Path,
-) -> list[dict[str, str]]:
-    """Return visit + download rows from a Firefox places.sqlite copy."""
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Return ``(rows, query_errors)`` from a Firefox places.sqlite copy.
+
+    See ``_query_chromium_history`` for the query_errors contract: a connected
+    DB whose queries fail must surface those failures so the caller never
+    reports a failed collection as ``artifact_absent``.
+    """
     import sqlite3
     rows: list[dict[str, str]] = []
+    query_errors: list[dict[str, str]] = []
     conn = sqlite3.connect(f"file:{db_copy}?mode=ro", uri=True)
     try:
         conn.row_factory = sqlite3.Row
@@ -5247,8 +5311,11 @@ def _query_firefox_history(
                     "target_path": "",
                     "total_bytes": "",
                 })
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            query_errors.append({
+                "db": str(db_copy), "query": "firefox.moz_places",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
         # Firefox downloads: moz_annos annotation 'downloads/destinationFileURI'
         try:
             for r in conn.execute(
@@ -5266,11 +5333,14 @@ def _query_firefox_history(
                     "target_path": str(r["dest"] or ""),
                     "total_bytes": "",
                 })
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            query_errors.append({
+                "db": str(db_copy), "query": "firefox.moz_annos",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
     finally:
         conn.close()
-    return rows
+    return rows, query_errors
 
 
 def extract_browser_history(
@@ -5348,10 +5418,11 @@ def extract_browser_history(
     )
 
     if not discovered:
-        return _useractivity_absent_response(
+        return _useractivity_zero_row_response(
             tool=tool, exec_id=exec_id, raw_command=raw_command,
             started_at=started_at, profiles_checked=profiles_checked,
             parser_failures=[], artifact_label="browser history databases",
+            discovered=False,
         )
 
     merged_rows: list[dict[str, Any]] = []
@@ -5363,10 +5434,19 @@ def extract_browser_history(
         try:
             db_copy = _copy_sqlite_db(db_path, tmp_dir)
             if browser.startswith("firefox"):
-                rows = _query_firefox_history(db_copy)
+                rows, query_errors = _query_firefox_history(db_copy)
             else:
-                visits, downloads = _query_chromium_history(db_copy)
+                visits, downloads, query_errors = _query_chromium_history(db_copy)
                 rows = visits + downloads
+            # A DB that connects but whose queries fail is a COLLECTION failure,
+            # not absence of evidence - record each failed query so a zero-row
+            # outcome resolves to collection_failed, never artifact_absent.
+            for qe in query_errors:
+                parser_failures.append(
+                    {"profile": profile_name, "browser": browser,
+                     "db": qe.get("db", str(db_path)), "query": qe.get("query", ""),
+                     "status": f"query_error:{qe.get('error', '')}"}
+                )
         except Exception as exc:
             status = f"exception:{type(exc).__name__}"
             rows = []
@@ -5389,10 +5469,13 @@ def extract_browser_history(
             profiles_with_data.add(profile_name)
 
     if not merged_rows:
-        return _useractivity_absent_response(
+        # DBs were discovered (else returned above) - zero rows is no_data if
+        # all queries ran cleanly, collection_failed if any DB failed to parse.
+        return _useractivity_zero_row_response(
             tool=tool, exec_id=exec_id, raw_command=raw_command,
             started_at=started_at, profiles_checked=profiles_checked,
             parser_failures=parser_failures, artifact_label="browser history records",
+            discovered=True,
         )
 
     def _finding(durable_csv, total_rows):
@@ -5486,8 +5569,14 @@ def extract_registry_fileaccess(
     profiles_checked: list[str] = []
     parser_failures: list[dict[str, Any]] = []
     tmp_dirs: list[Path] = []
+    # ``discovered`` = did we find ANY source of registry data to parse? The
+    # reuse CSV existing OR any NTUSER hive being located both count as
+    # discovery. A zero-row outcome with discovered=False is a true
+    # artifact_absent; discovered=True routes to no_data / collection_failed.
+    discovered = False
 
     if _path_exists(reuse_csv) and _path_is_file(reuse_csv):
+        discovered = True
         source_rows = _read_csv(str(reuse_csv))
         source_artifact = str(reuse_csv)
         raw_command = f"reuse registry_combined.csv ({reuse_csv})"
@@ -5510,6 +5599,7 @@ def extract_registry_fileaccess(
                 batch_file_used = candidate
                 break
         ntuser_hives = _discover_user_hives(image_path, ("NTUSER.DAT",))
+        discovered = bool(ntuser_hives)
         # Absence matrix: ALWAYS list every discovered profile (see shellbags note).
         profiles_checked = sorted({name for name, _ in _iter_user_profile_dirs(image_path)})
         try:
@@ -5581,11 +5671,16 @@ def extract_registry_fileaccess(
             profiles_with_data.add(str(profile))
 
     if not merged_rows:
-        resp = _useractivity_absent_response(
+        # discovered=True when a reuse CSV existed OR NTUSER hives were found
+        # but no row matched the file-access fragment set (no_data), or parsing
+        # failed (collection_failed). discovered=False only when nothing at all
+        # was located to parse - a true artifact_absent.
+        resp = _useractivity_zero_row_response(
             tool=tool, exec_id=exec_id, raw_command=raw_command,
             started_at=started_at, profiles_checked=profiles_checked,
             parser_failures=parser_failures,
             artifact_label="file-access registry artifacts (UserAssist/RecentDocs/etc.)",
+            discovered=discovered,
         )
         resp["fragment_counts"] = fragment_counts
         return resp
