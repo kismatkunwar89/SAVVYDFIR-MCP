@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 # Eric Zimmerman's Registry Log Analyzer, shipped with the EZ Tools suite.
 _RLA_BIN = Path("/opt/zimmermantools/rla.dll")
@@ -39,41 +40,55 @@ def replay_hive_with_rla(hive_path: Path, label: str) -> tuple[Path, Path, Path]
         the hive was already clean / rla produced no output). The caller MUST
         remove ``tmp_in`` and ``tmp_out`` in a ``finally`` block.
     """
+    # Exception-safe: both temp dirs are owned by this helper. If anything raises
+    # before we hand the paths back (missing dotnet -> FileNotFoundError, rla
+    # exceeds the timeout -> TimeoutExpired, tmp_out.iterdir() -> OSError, or the
+    # second mkdtemp fails after the first), the caller never receives the tuple
+    # and cannot clean up. So we destroy whatever we allocated, then re-raise -
+    # preserving each caller's intended fallback-vs-fatal handling while leaking
+    # nothing (these copies are multi-MB hives, repeated per profile).
     tmp_in = Path(tempfile.mkdtemp(prefix=f"savvydfir_rla_in_{label}_"))
-    tmp_out = Path(tempfile.mkdtemp(prefix=f"savvydfir_rla_out_{label}_"))
-
-    # Copy hive (read-only evidence -> writable temp) plus any transaction logs.
-    shutil.copy2(str(hive_path), str(tmp_in / hive_path.name))
-    # Transaction logs must be matched CASE-INSENSITIVELY: on a case-sensitive
-    # Linux NTFS mount the hive can be ``NTUSER.DAT`` while its logs are the
-    # lowercase ``ntuser.dat.LOG1`` / ``.LOG2`` the OS actually wrote. A
-    # case-exact lookup misses them, rla replays nothing, and RECmd then aborts
-    # on the dirty hive ("0 key/value pairs") - silently dropping that user's
-    # evidence. Discover each log by case-folded name, and stage it under a name
-    # matching the copied hive base so rla pairs them.
-    want = {
-        f"{hive_path.name.lower()}.log1": f"{hive_path.name}.LOG1",
-        f"{hive_path.name.lower()}.log2": f"{hive_path.name}.LOG2",
-    }
+    tmp_out: Optional[Path] = None
     try:
-        for entry in hive_path.parent.iterdir():
-            staged = want.get(entry.name.lower())
-            if staged and entry.is_file():
-                shutil.copy2(str(entry), str(tmp_in / staged))
-    except OSError:
-        pass  # log directory unreadable -> proceed with hive only
+        tmp_out = Path(tempfile.mkdtemp(prefix=f"savvydfir_rla_out_{label}_"))
 
-    subprocess.run(
-        ["/usr/bin/dotnet", str(_RLA_BIN), "-d", str(tmp_in), "--out", str(tmp_out)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-        check=False,
-    )
+        # Copy hive (read-only evidence -> writable temp) plus any transaction logs.
+        shutil.copy2(str(hive_path), str(tmp_in / hive_path.name))
+        # Transaction logs must be matched CASE-INSENSITIVELY: on a case-sensitive
+        # Linux NTFS mount the hive can be ``NTUSER.DAT`` while its logs are the
+        # lowercase ``ntuser.dat.LOG1`` / ``.LOG2`` the OS actually wrote. A
+        # case-exact lookup misses them, rla replays nothing, and RECmd then aborts
+        # on the dirty hive ("0 key/value pairs") - silently dropping that user's
+        # evidence. Discover each log by case-folded name, and stage it under a name
+        # matching the copied hive base so rla pairs them.
+        want = {
+            f"{hive_path.name.lower()}.log1": f"{hive_path.name}.LOG1",
+            f"{hive_path.name.lower()}.log2": f"{hive_path.name}.LOG2",
+        }
+        try:
+            for entry in hive_path.parent.iterdir():
+                staged = want.get(entry.name.lower())
+                if staged and entry.is_file():
+                    shutil.copy2(str(entry), str(tmp_in / staged))
+        except OSError:
+            pass  # log directory unreadable -> proceed with hive only
 
-    # rla writes the cleaned hive with a path-flattened name; glob for it.
-    cleaned_files = [candidate for candidate in tmp_out.iterdir() if candidate.is_file()]
-    cleaned_hive = cleaned_files[0] if cleaned_files else (tmp_in / hive_path.name)
-    return cleaned_hive, tmp_in, tmp_out
+        subprocess.run(
+            ["/usr/bin/dotnet", str(_RLA_BIN), "-d", str(tmp_in), "--out", str(tmp_out)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+
+        # rla writes the cleaned hive with a path-flattened name; glob for it.
+        cleaned_files = [candidate for candidate in tmp_out.iterdir() if candidate.is_file()]
+        cleaned_hive = cleaned_files[0] if cleaned_files else (tmp_in / hive_path.name)
+        return cleaned_hive, tmp_in, tmp_out
+    except BaseException:
+        shutil.rmtree(tmp_in, ignore_errors=True)
+        if tmp_out is not None:
+            shutil.rmtree(tmp_out, ignore_errors=True)
+        raise

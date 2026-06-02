@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -966,6 +968,38 @@ class ParserFailureDominatesPersistenceTests(_Base):
             results = [e for e in lines if "exit_code" in e]
             self.assertEqual(results[-1]["exit_code"], 1)
             self.assertIn("status=partial_collection", results[-1].get("outputs_summary", ""))
+
+
+class HiveReplayLeakTests(unittest.TestCase):
+    """Regression for the temp-dir leak: replay_hive_with_rla allocates two temp
+    dirs (one holding a multi-MB hive copy). If rla/dotnet raises before the
+    helper returns (dotnet missing, timeout, iterdir error), the caller never
+    gets the paths and cannot clean them. The helper must clean its own temp
+    dirs on any exception and re-raise (preserving caller fallback semantics)."""
+
+    def _run_with(self, exc):
+        from sift_mcp.tools import _hive_replay
+        tmp_base = Path(tempfile.mkdtemp(prefix="hivereplay_leak_base_"))
+        src = Path(tempfile.mkdtemp(prefix="hivereplay_src_"))
+        try:
+            (src / "NTUSER.DAT").write_bytes(b"regf-stub")
+            (src / "ntuser.dat.LOG1").write_bytes(b"log1")
+            # Isolate temp allocation so the leak assertion is deterministic.
+            with mock.patch.dict(os.environ, {"TMPDIR": str(tmp_base)}, clear=False), \
+                 mock.patch.object(_hive_replay.subprocess, "run", side_effect=exc):
+                with self.assertRaises(type(exc)):
+                    _hive_replay.replay_hive_with_rla(src / "NTUSER.DAT", "leak")
+            remaining = list(tmp_base.glob("savvydfir_rla_*"))
+            self.assertEqual(remaining, [], f"leaked temp dirs: {remaining}")
+        finally:
+            shutil.rmtree(tmp_base, ignore_errors=True)
+            shutil.rmtree(src, ignore_errors=True)
+
+    def test_no_leak_on_timeout(self):
+        self._run_with(subprocess.TimeoutExpired(cmd="rla", timeout=60))
+
+    def test_no_leak_on_dotnet_missing(self):
+        self._run_with(FileNotFoundError("dotnet not found"))
 
 
 if __name__ == "__main__":
