@@ -715,5 +715,44 @@ class HiveReplayCaseInsensitiveLogTests(unittest.TestCase):
             _sh.rmtree(src, ignore_errors=True)
 
 
+class UserActivityRootIsolationTests(unittest.TestCase):
+    """Regression for the cross-mount contamination finding: a stale or
+    concurrent ``/mnt/disk`` must NOT be merged into an explicit ``image_path``
+    during user-profile discovery, or one case's evidence gets attributed to
+    another (a forensic case-isolation failure). Empirically the unfixed code
+    even *shadowed* the requested image entirely when its base lacked a
+    top-level ``Windows`` marker."""
+
+    def setUp(self) -> None:
+        self.stale = Path(tempfile.mkdtemp(prefix="stale_shared_"))
+        self.explicit = Path(tempfile.mkdtemp(prefix="explicit_img_"))
+        (self.stale / "Users" / "OTHERCASE_user").mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self.stale, ignore_errors=True)
+        shutil.rmtree(self.explicit, ignore_errors=True)
+
+    def test_explicit_image_isolates_from_stale_shared_mount(self) -> None:
+        # explicit image_path resolves as a Windows volume (has Users/)
+        (self.explicit / "Users" / "fredr").mkdir(parents=True)
+        with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[self.stale]):
+            names = sorted({n for n, _ in disk._iter_user_profile_dirs(str(self.explicit))})
+        self.assertIn("fredr", names)
+        self.assertNotIn(
+            "OTHERCASE_user", names,
+            "stale /mnt/disk profile leaked into an explicit image_path (case contamination)",
+        )
+
+    def test_falls_back_to_shared_mount_when_image_path_not_a_volume(self) -> None:
+        # explicit path has NO Windows/Users/Documents markers -> shared fallback preserved
+        with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[self.stale]):
+            names = sorted({n for n, _ in disk._iter_user_profile_dirs(str(self.explicit))})
+        self.assertEqual(
+            names, ["OTHERCASE_user"],
+            "shared-mount fallback should still resolve when image_path is not a Windows volume",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

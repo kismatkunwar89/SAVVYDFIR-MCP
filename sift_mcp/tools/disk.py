@@ -4578,18 +4578,55 @@ _PROVENANCE_COLUMNS = (
 )
 
 
+def _user_activity_volume_roots(image_path: str) -> list[Path]:
+    """Volume roots for user-profile discovery, ISOLATED to the requested image.
+
+    Unlike :func:`_candidate_windows_volume_roots` (which prepends the shared
+    ``/mnt/disk`` root for single-target tools that select ONE resolved path),
+    the user-activity extractors ENUMERATE every profile across roots and merge
+    them. A stale or concurrent ``/mnt/disk`` mount from another case must
+    therefore never be mixed into an explicit ``image_path`` - that would
+    attribute another case's ShellBags/LNK/Jump Lists/browser/NTUSER evidence to
+    this case (a case-isolation failure). So: prefer roots derived from
+    ``image_path``, and fall back to the shared ``/mnt/disk`` root ONLY when the
+    supplied path does not itself resolve to a Windows volume.
+    """
+    base = Path(image_path)
+    explicit: list[Path] = []
+    seen: set[str] = set()
+
+    def _add(path: Path) -> None:
+        text = str(path)
+        if text not in seen:
+            seen.add(text)
+            explicit.append(path)
+
+    if _path_is_dir(base):
+        if any(_path_exists(base / m) for m in ("Windows", "Users", "Documents and Settings")):
+            _add(base)
+        nested = base / "mnt" / "C"
+        if any(_path_exists(nested / m) for m in ("Windows", "Users")):
+            _add(nested)
+
+    if explicit:
+        return explicit
+    # image_path did not resolve to a Windows volume -> shared-mount fallback only.
+    return _candidate_windows_volume_roots(image_path)
+
+
 def _iter_user_profile_dirs(image_path: str) -> list[tuple[str, Path]]:
     """Yield ``(profile_name, profile_dir)`` for every discoverable user profile.
 
     Auto-discovers profiles under BOTH ``Users/*`` and
-    ``Documents and Settings/*`` across all candidate Windows volume roots.
-    Skips well-known non-interactive profile directories. Case-agnostic - no
-    profile name is ever hardcoded.
+    ``Documents and Settings/*``, ISOLATED to the requested ``image_path`` (see
+    :func:`_user_activity_volume_roots` - a stale ``/mnt/disk`` is never merged
+    in). Skips well-known non-interactive profile directories. Case-agnostic -
+    no profile name is ever hardcoded.
     """
     seen_roots: set[str] = set()
     profiles: list[tuple[str, Path]] = []
     seen_profiles: set[str] = set()
-    for volume_root in _candidate_windows_volume_roots(image_path):
+    for volume_root in _user_activity_volume_roots(image_path):
         for users_root in (
             volume_root / "Users",
             volume_root / "Documents and Settings",
