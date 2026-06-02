@@ -42,12 +42,17 @@ def replay_hive_with_rla(
 
     Replay-success semantics
     ------------------------
-    ``replay_ok`` is ``True`` iff the rla process returned exit code ``0``.
-    An exit code of ``0`` with NO cleaned output is the COMMON case of an
-    already-clean hive - that stays ``replay_ok=True`` (the original copy is
-    returned as ``cleaned_hive``). Only a NON-ZERO exit code means the replay
-    FAILED (``replay_ok=False``); the caller must then treat the source as a
-    collection gap rather than a clean success.
+    ``replay_ok`` is ``True`` iff the rla process returned exit code ``0`` AND
+    the log directory was enumerable. An exit code of ``0`` with NO cleaned
+    output is the COMMON case of an already-clean hive - that stays
+    ``replay_ok=True`` (the original copy is returned as ``cleaned_hive``). A
+    NON-ZERO exit code means the replay FAILED (``replay_ok=False``). A log
+    directory that could not be enumerated (``iterdir`` raised ``OSError``) ALSO
+    forces ``replay_ok=False`` even when rla exited 0, because committed
+    transaction logs may have been missed (an exact-case ``.LOG1``/``.LOG2``
+    fallback stage is still attempted). A successful enumeration that simply
+    finds no logs keeps ``replay_ok=True``. When ``replay_ok=False`` the caller
+    must treat the source as a collection gap rather than a clean success.
 
     Returns
     -------
@@ -81,13 +86,27 @@ def replay_hive_with_rla(
             f"{hive_path.name.lower()}.log1": f"{hive_path.name}.LOG1",
             f"{hive_path.name.lower()}.log2": f"{hive_path.name}.LOG2",
         }
+        log_enum_failed = False
         try:
             for entry in hive_path.parent.iterdir():
                 staged = want.get(entry.name.lower())
                 if staged and entry.is_file():
                     shutil.copy2(str(entry), str(tmp_in / staged))
         except OSError:
-            pass  # log directory unreadable -> proceed with hive only
+            # Log directory unreadable: we cannot enumerate to discover logs
+            # case-insensitively, so committed transaction logs MAY have been
+            # missed. Flag the enumeration failure (forces replay_ok=False below
+            # for want_status callers) AND attempt an EXACT-CASE fallback - the
+            # OS-written ``NTUSER.DAT.LOG1`` / ``.LOG2`` paths can still be
+            # stat-able even when the parent dir is not listable.
+            log_enum_failed = True
+            for suffix in (".LOG1", ".LOG2"):
+                src = hive_path.parent / f"{hive_path.name}{suffix}"
+                try:
+                    if src.exists():
+                        shutil.copy2(str(src), str(tmp_in / f"{hive_path.name}{suffix}"))
+                except OSError:
+                    pass  # individual log unreadable -> proceed without it
 
         proc = subprocess.run(
             ["/usr/bin/dotnet", str(_RLA_BIN), "-d", str(tmp_in), "--out", str(tmp_out)],
@@ -102,7 +121,16 @@ def replay_hive_with_rla(
         # FAILED. A None proc (e.g. patched-out subprocess in tests) is treated
         # as not-ok for the want_status path; the back-compat 3-tuple path never
         # inspects replay_ok so it is unaffected.
-        replay_ok = bool(proc is not None and getattr(proc, "returncode", 1) == 0)
+        # log_enum_failed forces replay_ok=False even on rla exit 0: an
+        # unreadable log directory means committed transaction logs may have been
+        # missed, so the result cannot read as a clean success. A SUCCESSFUL
+        # iterdir that simply found no logs (clean hive) leaves log_enum_failed
+        # False and stays replay_ok=True.
+        replay_ok = bool(
+            proc is not None
+            and getattr(proc, "returncode", 1) == 0
+            and not log_enum_failed
+        )
 
         # rla writes the cleaned hive with a path-flattened name; glob for it.
         cleaned_files = [candidate for candidate in tmp_out.iterdir() if candidate.is_file()]

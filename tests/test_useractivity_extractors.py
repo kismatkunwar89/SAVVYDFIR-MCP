@@ -546,6 +546,78 @@ class BrowserTests(_Base):
             self.assertEqual(rows, [])
             self.assertTrue(ff_errs)
 
+    def test_salvaged_rows_carry_nonok_status_and_recovered_rows(self):
+        """ITEM 1: a Firefox DB whose visits query SUCCEEDS (yields rows) but whose
+        downloads query FAILS (missing moz_annos table -> sqlite "no such table")
+        must (a) drive status=='partial_collection', (b) stamp the salvaged rows
+        with a NON-ok parser_status, and (c) emit ONE consolidated browser
+        parser_failure carrying recovered_rows>0 - matching EZ/RECmd salvage parity."""
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, audit, state = self._init(tmp)
+            root = Path(tmp) / "mnt" / "C"
+            (root / "Windows").mkdir(parents=True, exist_ok=True)
+            prof = root / "Users" / "alpha"
+            ff = prof / "AppData" / "Roaming" / "Mozilla" / "Firefox" / "Profiles" / "p1.default" / "places.sqlite"
+            ff.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(ff))
+            # moz_places present + populated -> visits query yields rows.
+            conn.execute("CREATE TABLE moz_places (id INT, url TEXT, title TEXT, visit_count INT, last_visit_date INT)")
+            conn.execute("INSERT INTO moz_places VALUES (1,'https://synthetic.example/','S',2,1640000000000000)")
+            # moz_annos / moz_anno_attributes ABSENT -> downloads query raises
+            # "no such table" (a genuine query_error, not an empty-but-present table).
+            conn.commit(); conn.close()
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_browser_history(image_path=str(root), case_id="CASE-UA")
+            self.assertEqual(r["status"], "partial_collection")
+            self.assertGreaterEqual(r["total_rows"], 1)  # the salvaged visit row survives
+            # ONE consolidated failure for this DB, with rows recovered from it.
+            self.assertTrue(r["parser_failures"])
+            salvaged = [pf for pf in r["parser_failures"]
+                        if pf.get("recovered_rows", 0) > 0 and "query_error" in pf.get("status", "")]
+            self.assertTrue(salvaged, f"no salvaged-with-recovered_rows failure: {r['parser_failures']}")
+            # The salvaged rows in the CSV carry a NON-ok parser_status.
+            rows = disk._read_csv(r["csv_path"])
+            statuses = {row.get("parser_status") for row in rows}
+            self.assertTrue(
+                any(s and s != "ok" for s in statuses),
+                f"salvaged rows did not carry a non-ok parser_status: {statuses}",
+            )
+
+    def test_empty_but_present_table_stays_ok_no_overflag(self):
+        """ITEM 1 control: a Chromium DB whose urls/downloads tables exist but are
+        EMPTY (queries succeed, 0 rows, no sqlite error) must NOT be over-flagged -
+        an empty-but-present table is legitimate no_data, not a query_error. With a
+        second populated DB present, the run stays a clean success: the empty DB
+        produces NO parser_failure and the populated DB's rows stay parser_status=ok."""
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, audit, state = self._init(tmp)
+            root = Path(tmp) / "mnt" / "C"
+            (root / "Windows").mkdir(parents=True, exist_ok=True)
+            prof = root / "Users" / "alpha"
+            # Chrome DB: tables present but EMPTY (no rows, no error on query).
+            empty = prof / "AppData" / "Local" / "Google" / "Chrome" / "User Data" / "Default" / "History"
+            empty.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(empty))
+            conn.execute("CREATE TABLE urls (url TEXT, title TEXT, visit_count INT, last_visit_time INT)")
+            conn.execute("CREATE TABLE downloads (target_path TEXT, total_bytes INT, start_time INT, tab_url TEXT)")
+            conn.commit(); conn.close()
+            # Edge DB: populated -> ensures the run has rows and resolves to success.
+            self._make_chromium_db(
+                prof / "AppData" / "Local" / "Microsoft" / "Edge" / "User Data" / "Default" / "History"
+            )
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_browser_history(image_path=str(root), case_id="CASE-UA")
+            self.assertEqual(r["status"], "success")
+            self.assertFalse(r["parser_failures"], f"empty-but-present table over-flagged: {r['parser_failures']}")
+            rows = disk._read_csv(r["csv_path"])
+            self.assertTrue(rows)
+            self.assertTrue(
+                all((row.get("parser_status") or "ok") == "ok" for row in rows),
+                "rows from clean DBs must stay parser_status=ok when no query errored",
+            )
+
 
 _FILEACCESS_CSV = (
     "HivePath,HiveType,Description,Category,KeyPath,ValueName,LastWriteTimestamp\n"
@@ -740,6 +812,58 @@ class HiveReplayCaseInsensitiveLogTests(unittest.TestCase):
                     "lowercase ntuser.dat.LOG2 was not staged for rla",
                 )
                 # rla was invoked with the staged input dir
+                self.assertTrue(m_sub.run.called)
+            finally:
+                import shutil as _sh
+                _sh.rmtree(tmp_in, ignore_errors=True)
+                _sh.rmtree(tmp_out, ignore_errors=True)
+        finally:
+            import shutil as _sh
+            _sh.rmtree(src, ignore_errors=True)
+
+    def test_log_enum_failure_flips_replay_ok_and_exact_case_fallback(self) -> None:
+        """ITEM 2: when the log directory cannot be enumerated (iterdir raises
+        OSError) the replay must (a) flip replay_ok=False even though rla exits 0
+        (committed logs may have been missed), and (b) still attempt an EXACT-CASE
+        .LOG1/.LOG2 fallback stage directly via Path stat/copy (no iterdir)."""
+        from sift_mcp.tools import _hive_replay
+
+        src = Path(tempfile.mkdtemp(prefix="hiveenum_src_"))
+        try:
+            (src / "NTUSER.DAT").write_bytes(b"regf-stub")
+            # Exact-case OS-written logs - stat-able even when the dir is not listable.
+            (src / "NTUSER.DAT.LOG1").write_bytes(b"log1")
+            (src / "NTUSER.DAT.LOG2").write_bytes(b"log2")
+
+            real_iterdir = Path.iterdir
+
+            def _raising_iterdir(self):
+                if self == src:
+                    raise OSError("simulated unreadable log directory")
+                return real_iterdir(self)
+
+            # rla "succeeds" (exit 0); only the enumeration is broken.
+            class _Proc:
+                returncode = 0
+
+            with mock.patch.object(_hive_replay, "subprocess") as m_sub, \
+                 mock.patch.object(Path, "iterdir", _raising_iterdir):
+                m_sub.run.return_value = _Proc()
+                cleaned, tmp_in, tmp_out, replay_ok = _hive_replay.replay_hive_with_rla(
+                    src / "NTUSER.DAT", "enum", want_status=True
+                )
+            try:
+                # Enumeration failure forces replay_ok False despite rla exit 0.
+                self.assertIs(replay_ok, False)
+                # Exact-case fallback staged the logs directly (no iterdir).
+                self.assertTrue(
+                    (tmp_in / "NTUSER.DAT.LOG1").exists(),
+                    "exact-case .LOG1 fallback stage was not attempted",
+                )
+                self.assertTrue(
+                    (tmp_in / "NTUSER.DAT.LOG2").exists(),
+                    "exact-case .LOG2 fallback stage was not attempted",
+                )
                 self.assertTrue(m_sub.run.called)
             finally:
                 import shutil as _sh

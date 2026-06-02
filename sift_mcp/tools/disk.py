@@ -5754,20 +5754,23 @@ def extract_browser_history(
                 visits, downloads, query_errors = _query_chromium_history(db_copy)
                 rows = visits + downloads
             # A DB that connects but whose queries fail is a COLLECTION failure,
-            # not absence of evidence - record each failed query so a zero-row
-            # outcome resolves to collection_failed, never artifact_absent.
-            for qe in query_errors:
-                parser_failures.append(
-                    {"profile": profile_name, "browser": browser,
-                     "db": qe.get("db", str(db_path)), "query": qe.get("query", ""),
-                     "status": f"query_error:{qe.get('error', '')}"}
-                )
+            # not absence of evidence. A genuine query_error (e.g. "no such
+            # table") appends to query_errors; a query that succeeds with 0 rows
+            # (legitimately-empty/present table) does NOT - so an empty-but-present
+            # table keeps status="ok" and produces no parser_failure. Only a
+            # NON-EMPTY query_errors flips this DB's status to a non-ok token so
+            # the salvaged rows from it are stamped non-ok by _tag_provenance,
+            # matching the EZ/RECmd/ShellBag/LNK/Jump salvage parity.
+            if query_errors:
+                status = "query_error:partial"
         except Exception as exc:
             status = f"exception:{type(exc).__name__}"
             rows = []
+            query_errors = []
             parser_failures.append(
                 {"profile": profile_name, "browser": browser,
-                 "db": str(db_path), "status": status}
+                 "db": str(db_path), "status": status,
+                 "reason": f"{type(exc).__name__}", "recovered_rows": 0}
             )
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -5782,6 +5785,20 @@ def extract_browser_history(
                 parser_status=status,
             ))
             profiles_with_data.add(profile_name)
+        # ONE consolidated parser_failure per DB whose queries genuinely errored
+        # (status flipped non-ok above), matching the EZ/RECmd entry shape and
+        # carrying recovered_rows = rows salvaged from THIS DB. The except-branch
+        # already recorded its own failure (and cleared query_errors), so this
+        # only fires for the connected-but-partial-query-failure path.
+        if query_errors:
+            reason = "; ".join(
+                f"{qe.get('query', '')}:{qe.get('error', '')}" for qe in query_errors
+            ) or "browser_query_error"
+            parser_failures.append(
+                {"profile": profile_name, "browser": browser,
+                 "db": str(db_path), "status": status,
+                 "reason": reason, "recovered_rows": len(rows)}
+            )
 
     if not merged_rows:
         # DBs were discovered (else returned above) - zero rows is no_data if
