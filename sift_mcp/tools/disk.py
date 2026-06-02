@@ -4794,9 +4794,9 @@ def extract_shellbags(
             "NTUSER.DAT",
         ),
     )
-    profiles_checked = sorted({name for name, _, _ in hives}) or sorted(
-        {name for name, _ in _iter_user_profile_dirs(image_path)}
-    )
+    # Absence matrix: ALWAYS list every discovered profile, not only the ones
+    # that yielded this artifact - profiles_with_data tracks coverage separately.
+    profiles_checked = sorted({name for name, _ in _iter_user_profile_dirs(image_path)})
 
     exec_id = _audit.next_execution_id()
     started_at = time.monotonic()
@@ -4930,9 +4930,8 @@ def extract_lnk_files(
         image_path,
         ("AppData/Roaming/Microsoft/Windows/Recent",),
     )
-    profiles_checked = sorted({name for name, _, _ in dirs}) or sorted(
-        {name for name, _ in _iter_user_profile_dirs(image_path)}
-    )
+    # Absence matrix: ALWAYS list every discovered profile (see shellbags note).
+    profiles_checked = sorted({name for name, _ in _iter_user_profile_dirs(image_path)})
 
     exec_id = _audit.next_execution_id()
     started_at = time.monotonic()
@@ -5046,9 +5045,8 @@ def extract_jump_lists(
             "AppData/Roaming/Microsoft/Windows/Recent/CustomDestinations",
         ),
     )
-    profiles_checked = sorted({name for name, _, _ in dirs}) or sorted(
-        {name for name, _ in _iter_user_profile_dirs(image_path)}
-    )
+    # Absence matrix: ALWAYS list every discovered profile (see shellbags note).
+    profiles_checked = sorted({name for name, _ in _iter_user_profile_dirs(image_path)})
 
     exec_id = _audit.next_execution_id()
     started_at = time.monotonic()
@@ -5286,8 +5284,13 @@ def extract_browser_history(
     profile, auto-detects Chrome/Edge ``History`` and Firefox ``places.sqlite``
     DBs (including sub-profiles like ``Default`` / ``Profile N``), copies the
     DB plus ``-wal``/``-shm`` sidecars to a tmp dir to avoid lock issues, and
-    queries visits + downloads. Each DB is wrapped in try/except so one corrupt
-    DB never aborts the tool. Timestamps are normalized to UTC ISO.
+    queries URL history (last-visit summary from ``urls`` / ``moz_places``,
+    not a full per-visit timeline from ``visits`` / ``moz_historyvisits``) and
+    downloads. Each DB is wrapped in try/except so one corrupt DB never aborts
+    the tool. Timestamps are normalized to UTC ISO.
+
+    ``max_entries`` caps only the in-response ``preview``; the FULL row set is
+    always written to the durable CSV (``truncated`` flags when rows exceed it).
 
     A history/download record proves the BROWSER PROCESS recorded the event,
     NOT that a specific human initiated it; synced history can originate on
@@ -5507,9 +5510,8 @@ def extract_registry_fileaccess(
                 batch_file_used = candidate
                 break
         ntuser_hives = _discover_user_hives(image_path, ("NTUSER.DAT",))
-        profiles_checked = sorted({name for name, _, _ in ntuser_hives}) or sorted(
-            {name for name, _ in _iter_user_profile_dirs(image_path)}
-        )
+        # Absence matrix: ALWAYS list every discovered profile (see shellbags note).
+        profiles_checked = sorted({name for name, _ in _iter_user_profile_dirs(image_path)})
         try:
             for idx, (profile_name, hive_path, rel) in enumerate(ntuser_hives, start=1):
                 replay_in: Optional[Path] = None
