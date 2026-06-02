@@ -5603,11 +5603,12 @@ def extract_registry_fileaccess(
     """Surface per-user file-access registry artifacts (UserAssist, RecentDocs,
     OpenSavePidlMRU, TypedPaths, LastVisitedPidlMRU, RunMRU, WordWheelQuery).
 
-    HYBRID: if a durable ``registry_combined.csv`` from a prior
-    ``extract_registry_run_keys`` run exists, it is reused (no re-parse);
-    otherwise RECmd is run with DFIRBatch over SYSTEM + per-profile NTUSER
-    (mirroring run-keys discovery). Rows are then filtered to the file-access
-    fragment set and tagged with provenance. Does NOT alter run-keys semantics.
+    Parses SYSTEM + per-profile NTUSER directly via RECmd with DFIRBatch (no
+    cache reuse). Each NTUSER hive is parsed in isolation and every row is
+    stamped with its actual source profile BEFORE merge, so file-access evidence
+    is never mis-attributed across users/hosts. Rows are then filtered to the
+    file-access fragment set and tagged with provenance at parse time. Does NOT
+    alter run-keys semantics.
 
     These keys prove a path was WRITTEN to a user-activity list - NOT that a
     human clicked/opened it (background tasks also populate UserAssist).
@@ -5626,151 +5627,77 @@ def extract_registry_fileaccess(
     profiles_checked: list[str] = []
     parser_failures: list[dict[str, Any]] = []
     tmp_dirs: list[Path] = []
-    reused_via_cache = False
-    cache_source_execution_id: Optional[str] = None
-    orphan_note: Optional[str] = None
-    # ``discovered`` = did we find ANY source of registry data to parse? A
-    # provenance-matched cache hit OR any NTUSER hive being located both count as
-    # discovery. A zero-row outcome with discovered=False is a true
-    # artifact_absent; discovered=True routes to no_data / collection_failed.
+    # ``discovered`` = did we find ANY source of registry data to parse? Any
+    # NTUSER hive being located counts as discovery. A zero-row outcome with
+    # discovered=False is a true artifact_absent; discovered=True routes to
+    # no_data / collection_failed.
     discovered = False
 
-    # 1) Provenance-keyed reuse: ONLY reuse a prior run-keys CSV when the state
-    #    cache holds a matching entry whose image_path equals THIS image. The
-    #    bare registry_combined.csv path is scoped to the case dir, NOT to this
-    #    image/hive set - reusing it by path existence alone mis-attributes one
-    #    host's UserAssist/RecentDocs to another (peer reviewer/peer reviewer consensus fix).
-    resolved_hive_dir = _resolved_path_str(
-        _resolve_registry_hive_dir_input(image_path, None)
-    )
-    cache_batch_file: Optional[str] = None
+    # Run RECmd with DFIRBatch directly over each discovered NTUSER hive. There
+    # is NO cache-reuse path: the run-keys ``registry_combined.csv`` is scoped to
+    # the case dir, NOT to this image/hive set, so reusing it risks mis-attributing
+    # one host's UserAssist/RecentDocs to another. Parsing per-NTUSER here is
+    # correct-by-construction - each row is stamped with its actual source profile
+    # BEFORE merge (peer reviewer + peer reviewer tri-agent consensus 2026-06-02).
+    batch_file_used: Optional[str] = None
     for candidate in DFIR_BATCH_PATHS:
         if os.path.isfile(candidate):
-            cache_batch_file = candidate
+            batch_file_used = candidate
             break
-    cache_user_hives = _discover_run_keys_user_hives(image_path)
-    run_keys_cache_key = build_cache_key(
-        "disk.extract_registry_run_keys",
-        _registry_run_keys_cache_params(
-            resolved_hive_dir=resolved_hive_dir,
-            batch_mode=True,
-            batch_file_used=cache_batch_file,
-            user_hives_found=cache_user_hives,
-            sync_batch=False,
-            image_path=image_path,
-        ),
+    raw_command = "RECmd.dll --bn DFIRBatch over SYSTEM + per-profile NTUSER"
+    _audit.log_execution(
+        execution_id=exec_id, tool_name=tool,
+        parameters={"image_path": image_path},
+        command_line=raw_command,
     )
-    cached = get_valid_cached_artifact(
-        _state,
-        run_keys_cache_key,
-        path_key="csv_path",
-        required_keys=("csv_path", "source_execution_id", "image_path"),
-    )
-    orphan_csv = _artifact_output_dir("registry") / "registry_combined.csv"
-    orphan_present = _path_exists(orphan_csv) and _path_is_file(orphan_csv)
-
-    if (
-        cached is not None
-        and str(cached.get("image_path")) == _resolved_path_str(image_path)
-        and _path_exists(Path(str(cached["csv_path"])))
-        and _path_is_file(Path(str(cached["csv_path"])))
-    ):
-        discovered = True
-        reused_via_cache = True
-        cache_source_execution_id = str(cached.get("source_execution_id") or "")
-        reuse_csv = Path(str(cached["csv_path"]))
-        source_rows = _read_csv(str(reuse_csv))
-        source_artifact = str(reuse_csv)
-        raw_command = (
-            f"CACHE_HIT disk.extract_registry_run_keys "
-            f"(source_execution_id={cache_source_execution_id}, csv={reuse_csv})"
-        )
-        _audit.log_execution(
-            execution_id=exec_id, tool_name=tool,
-            parameters={
-                "image_path": image_path,
-                "reuse_csv": str(reuse_csv),
-                "cache_key": run_keys_cache_key,
-                "cache_source_execution_id": cache_source_execution_id,
-            },
-            command_line=raw_command,
-        )
-        # profiles_checked reflects the CACHED hive set (what produced the CSV),
-        # not just the current mount listing - the cached run is the provenance.
-        cached_hive_names = sorted(
-            {Path(str(h)).parent.name for h in cached.get("user_hives_scanned", [])}
-        )
-        profiles_checked = cached_hive_names or sorted(
-            {name for name, _ in _iter_user_profile_dirs(image_path)}
-        )
-    else:
-        # 2) No matching cache entry -> run RECmd ourselves (same invocation
-        #    run-keys uses). NEVER silently reuse an unverified orphan CSV.
-        if orphan_present:
-            orphan_note = (
-                "Ignored unverified orphan registry_combined.csv at "
-                f"{orphan_csv}: no matching state-cache entry for this image "
-                "(image_path mismatch or absent provenance). Re-parsed via RECmd "
-                "to avoid mis-attributing another image's file-access evidence."
-            )
-        raw_command = "RECmd.dll --bn DFIRBatch over SYSTEM + per-profile NTUSER"
-        _audit.log_execution(
-            execution_id=exec_id, tool_name=tool,
-            parameters={
-                "image_path": image_path,
-                **({"orphan_csv_ignored": str(orphan_csv)} if orphan_present else {}),
-            },
-            command_line=raw_command,
-        )
-        batch_file_used: Optional[str] = cache_batch_file
-        ntuser_hives = _discover_user_hives(image_path, ("NTUSER.DAT",))
-        discovered = bool(ntuser_hives)
-        # Absence matrix: ALWAYS list every discovered profile (see shellbags note).
-        profiles_checked = sorted({name for name, _ in _iter_user_profile_dirs(image_path)})
-        try:
-            for idx, (profile_name, hive_path, rel) in enumerate(ntuser_hives, start=1):
-                replay_in: Optional[Path] = None
-                replay_out: Optional[Path] = None
-                try:
-                    cleaned_hive, replay_in, replay_out = _replay_hive_with_rla(
-                        hive_path, f"{profile_name}_{idx}"
-                    )
-                except Exception:
-                    cleaned_hive = hive_path
-                csv_out = Path(tempfile.mkdtemp(prefix="savvydfir_refa_"))
-                tmp_dirs.append(csv_out)
-                csv_name = f"refa_{idx}.csv"
-                status = "ok"
-                try:
-                    result = _ez_runner.run_recmd(
-                        hive_dir=str(Path(cleaned_hive).parent),
-                        csv_dir=str(csv_out), csv_filename=csv_name,
-                        batch_file=batch_file_used, sync_batch=False, tool_name=tool,
-                    )
-                    if not result.ok:
-                        status = f"parser_error:{_ez_runner.classify_error(result)}"
-                except Exception as exc:
-                    status = f"exception:{type(exc).__name__}"
-                finally:
-                    if replay_in is not None:
-                        shutil.rmtree(replay_in, ignore_errors=True)
-                    if replay_out is not None:
-                        shutil.rmtree(replay_out, ignore_errors=True)
-                produced = csv_out / csv_name
-                hive_rows = _read_csv(str(produced)) if _path_exists(produced) else []
-                if hive_rows:
-                    for r in hive_rows:
-                        r.setdefault("__source_profile", profile_name)
-                        r.setdefault("__source_hive", hive_path.name)
-                        r.setdefault("__source_path", str(hive_path))
-                    source_rows.extend(hive_rows)
-                elif status != "ok":
-                    parser_failures.append(
-                        {"profile": profile_name, "hive": str(hive_path), "status": status}
-                    )
-        finally:
-            for d in tmp_dirs:
-                shutil.rmtree(d, ignore_errors=True)
+    ntuser_hives = _discover_user_hives(image_path, ("NTUSER.DAT",))
+    discovered = bool(ntuser_hives)
+    # Absence matrix: ALWAYS list every discovered profile (see shellbags note).
+    profiles_checked = sorted({name for name, _ in _iter_user_profile_dirs(image_path)})
+    try:
+        for idx, (profile_name, hive_path, rel) in enumerate(ntuser_hives, start=1):
+            replay_in: Optional[Path] = None
+            replay_out: Optional[Path] = None
+            try:
+                cleaned_hive, replay_in, replay_out = _replay_hive_with_rla(
+                    hive_path, f"{profile_name}_{idx}"
+                )
+            except Exception:
+                cleaned_hive = hive_path
+            csv_out = Path(tempfile.mkdtemp(prefix="savvydfir_refa_"))
+            tmp_dirs.append(csv_out)
+            csv_name = f"refa_{idx}.csv"
+            status = "ok"
+            try:
+                result = _ez_runner.run_recmd(
+                    hive_dir=str(Path(cleaned_hive).parent),
+                    csv_dir=str(csv_out), csv_filename=csv_name,
+                    batch_file=batch_file_used, sync_batch=False, tool_name=tool,
+                )
+                if not result.ok:
+                    status = f"parser_error:{_ez_runner.classify_error(result)}"
+            except Exception as exc:
+                status = f"exception:{type(exc).__name__}"
+            finally:
+                if replay_in is not None:
+                    shutil.rmtree(replay_in, ignore_errors=True)
+                if replay_out is not None:
+                    shutil.rmtree(replay_out, ignore_errors=True)
+            produced = csv_out / csv_name
+            hive_rows = _read_csv(str(produced)) if _path_exists(produced) else []
+            if hive_rows:
+                for r in hive_rows:
+                    r.setdefault("__source_profile", profile_name)
+                    r.setdefault("__source_hive", hive_path.name)
+                    r.setdefault("__source_path", str(hive_path))
+                source_rows.extend(hive_rows)
+            elif status != "ok":
+                parser_failures.append(
+                    {"profile": profile_name, "hive": str(hive_path), "status": status}
+                )
+    finally:
+        for d in tmp_dirs:
+            shutil.rmtree(d, ignore_errors=True)
 
     # 3) Filter to file-access fragments and tag provenance.
     merged_rows: list[dict[str, Any]] = []
@@ -5796,10 +5723,10 @@ def extract_registry_fileaccess(
             profiles_with_data.add(str(profile))
 
     if not merged_rows:
-        # discovered=True when a reuse CSV existed OR NTUSER hives were found
-        # but no row matched the file-access fragment set (no_data), or parsing
-        # failed (collection_failed). discovered=False only when nothing at all
-        # was located to parse - a true artifact_absent.
+        # discovered=True when NTUSER hives were found but no row matched the
+        # file-access fragment set (no_data), or parsing failed
+        # (collection_failed). discovered=False only when nothing at all was
+        # located to parse - a true artifact_absent.
         resp = _useractivity_zero_row_response(
             tool=tool, exec_id=exec_id, raw_command=raw_command,
             started_at=started_at, profiles_checked=profiles_checked,
@@ -5808,11 +5735,6 @@ def extract_registry_fileaccess(
             discovered=discovered,
         )
         resp["fragment_counts"] = fragment_counts
-        resp["reused_combined_csv"] = reused_via_cache
-        resp["cache_hit"] = reused_via_cache
-        resp["cache_source_execution_id"] = cache_source_execution_id
-        if orphan_note:
-            resp["orphan_csv_warning"] = orphan_note
         return resp
 
     def _finding(durable_csv, total_rows):
@@ -5841,9 +5763,4 @@ def extract_registry_fileaccess(
         finding_factory=_finding, max_entries=max_entries,
     )
     response["fragment_counts"] = fragment_counts
-    response["reused_combined_csv"] = reused_via_cache
-    response["cache_hit"] = reused_via_cache
-    response["cache_source_execution_id"] = cache_source_execution_id
-    if orphan_note:
-        response["orphan_csv_warning"] = orphan_note
     return response

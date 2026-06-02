@@ -1914,10 +1914,11 @@ def extract_registry_fileaccess(
     """Surface per-user file-access registry artifacts (UserAssist, RecentDocs,
     OpenSavePidlMRU, TypedPaths, LastVisitedPidlMRU, RunMRU, WordWheelQuery).
 
-    HYBRID: reuses a prior durable registry_combined.csv if present, else runs
-    RECmd DFIRBatch over SYSTEM + per-profile NTUSER. Does NOT alter run-keys
-    semantics. These keys prove a path was WRITTEN to a user-activity list -
-    NOT that a human clicked it (background tasks also populate UserAssist).
+    Parses SYSTEM + per-profile NTUSER directly via RECmd DFIRBatch (no cache
+    reuse); each hive is parsed in isolation and rows are stamped with their
+    actual source profile at parse time. Does NOT alter run-keys semantics.
+    These keys prove a path was WRITTEN to a user-activity list - NOT that a
+    human clicked it (background tasks also populate UserAssist).
     """
     try:
         _r = _extract_registry_fileaccess(image_path=image_path, case_id=case_id,
