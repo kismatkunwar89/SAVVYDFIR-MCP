@@ -4896,9 +4896,48 @@ def _finalize_useractivity_response(
 
     preview = rows[:preview_cap]
 
+    # Status taxonomy: rows persisted + a discovered source failed to parse is a
+    # PARTIAL collection, not a clean success - the CSV is missing the failed
+    # source's evidence and a downstream gate/scorer must see that gap rather
+    # than read it as "no activity". Distinct from the CSV-persistence `warning`.
+    partial = bool(durable_csv) and bool(parser_failures)
+    if not durable_csv:
+        status = "warning"
+        audit_exit = 0
+    elif partial:
+        status = "partial_collection"
+        audit_exit = 1
+    else:
+        status = "success"
+        audit_exit = 0
+
+    failed_sources = [
+        str(f.get("profile") or f.get("artifact") or f.get("source") or "?")
+        for f in parser_failures
+    ]
+
+    if not durable_csv:
+        note = (
+            f"{total_rows} rows parsed but CSV could not be persisted to a durable "
+            "path; fix OUTPUT_BASE and rerun."
+        )
+    elif partial:
+        note = (
+            f"PARTIAL COLLECTION: {total_rows} rows merged across "
+            f"{len(profiles_with_data)} profile(s), but {len(parser_failures)} "
+            f"source(s) FAILED to parse and are MISSING from the CSV: "
+            f"{', '.join(failed_sources)}. Treat their absence as a collection "
+            f"gap, NOT as 'no activity'. Full data at {durable_csv}."
+        )
+    else:
+        note = (
+            f"{total_rows} rows merged across {len(profiles_with_data)} profile(s). "
+            f"Full data at {durable_csv}. Preview capped at {preview_cap}."
+        )
+
     response: dict[str, Any] = {
         "tool_name": tool,
-        "status": "success" if durable_csv else "warning",
+        "status": status,
         "execution_id": exec_id,
         "raw_command": raw_command,
         "csv_path": durable_csv,
@@ -4908,18 +4947,11 @@ def _finalize_useractivity_response(
         "profiles_checked": profiles_checked,
         "profiles_with_data": profiles_with_data,
         "parser_failures": parser_failures,
+        "partial_failure_count": len(parser_failures),
         "findings_created": finding_ids,
         "preview": preview,
         "artifact_persistence": artifact_persistence,
-        "note": (
-            f"{total_rows} rows merged across {len(profiles_with_data)} profile(s). "
-            f"Full data at {durable_csv}. Preview capped at {preview_cap}."
-            if durable_csv
-            else (
-                f"{total_rows} rows parsed but CSV could not be persisted to a durable "
-                "path; fix OUTPUT_BASE and rerun."
-            )
-        ),
+        "note": note,
     }
     if not durable_csv:
         response["warning"] = (
@@ -4930,11 +4962,13 @@ def _finalize_useractivity_response(
     if _audit is not None:
         _audit.log_result(
             execution_id=exec_id,
-            exit_code=0,
+            exit_code=audit_exit,
             duration=time.monotonic() - started_at,
             outputs_summary=(
-                f"merged {total_rows} rows from {len(profiles_with_data)} profile(s); "
+                f"status={status} merged {total_rows} rows from "
+                f"{len(profiles_with_data)} profile(s); "
                 f"{len(parser_failures)} parser failure(s)"
+                + (f" [{', '.join(failed_sources)}]" if parser_failures else "")
             ),
             finding_ids=finding_ids,
             tool_name=tool,

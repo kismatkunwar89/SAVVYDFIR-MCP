@@ -465,8 +465,10 @@ class BrowserTests(_Base):
                  mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
                 r = disk.extract_browser_history(image_path=str(root), case_id="CASE-UA")
             # firefox rows survive even though the edge DB is unreadable -
-            # one corrupt DB must NOT abort the whole tool.
-            self.assertEqual(r["status"], "success")
+            # one corrupt DB must NOT abort the whole tool, but it IS recorded as
+            # a partial-collection gap (honest reporting), never silently dropped.
+            self.assertEqual(r["status"], "partial_collection")
+            self.assertTrue(r["parser_failures"])
             self.assertGreaterEqual(r["total_rows"], 1)
             self.assertIn("alpha", r["profiles_with_data"])
 
@@ -641,10 +643,12 @@ class RegistryFileAccessTests(_Base):
             )
             self.assertEqual(r["parser_failures"][0].get("status"), "parser_failed")
 
-    def test_dirty_hive_partial_keeps_success_with_failures(self):
+    def test_partial_collection_status_when_some_sources_fail(self):
         """One hive parses with file-access rows, a second aborts dirty. The
-        successful hive yields rows so status stays ``success``, but the dirty
-        hive is recorded in ``parser_failures`` (partial), never silently dropped."""
+        successful hive yields rows (persisted to CSV) while the dirty hive is
+        recorded in ``parser_failures`` - so the run is a PARTIAL collection, not
+        a clean success: status=='partial_collection', audit exit_code=1, and the
+        failed source is surfaced. The collected rows are never silently dropped."""
         # First recmd call -> rows; subsequent -> dirty abort.
         class _PartialRunner(_FakeRunner):
             def run_recmd(self, **kw):
@@ -665,11 +669,27 @@ class RegistryFileAccessTests(_Base):
                  mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
                  mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
                 r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
-            self.assertEqual(r["status"], "success")
+            # Partial, not clean success.
+            self.assertEqual(r["status"], "partial_collection")
             self.assertTrue(r["parser_failures"])
+            self.assertEqual(r["partial_failure_count"], len(r["parser_failures"]))
             self.assertEqual(
                 r["parser_failures"][0].get("reason"), "recmd_dirty_hive_or_zero_keys"
             )
+            # Collected rows are still persisted (not dropped).
+            self.assertTrue(r["csv_path"])
+            self.assertGreater(r["total_rows"], 0)
+            # Audit surfaces the gap: exit_code=1 + status token, not artifact_absent.
+            lines = [
+                __import__("json").loads(ln)
+                for ln in Path(tmp).joinpath("audit.jsonl").read_text().splitlines() if ln.strip()
+            ]
+            results = [e for e in lines if "exit_code" in e]
+            self.assertTrue(results, "no audit result row")
+            last = results[-1]
+            self.assertEqual(last["exit_code"], 1)
+            self.assertIn("status=partial_collection", last.get("outputs_summary", ""))
+            self.assertNotIn("artifact_absent", last.get("outputs_summary", ""))
 
 
 class HiveReplayCaseInsensitiveLogTests(unittest.TestCase):
