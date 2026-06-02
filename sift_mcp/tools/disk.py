@@ -4896,38 +4896,48 @@ def _finalize_useractivity_response(
 
     preview = rows[:preview_cap]
 
-    # Status taxonomy: rows persisted + a discovered source failed to parse is a
-    # PARTIAL collection, not a clean success - the CSV is missing the failed
-    # source's evidence and a downstream gate/scorer must see that gap rather
-    # than read it as "no activity". Distinct from the CSV-persistence `warning`.
-    partial = bool(durable_csv) and bool(parser_failures)
-    if not durable_csv:
-        status = "warning"
-        audit_exit = 0
-    elif partial:
-        status = "partial_collection"
-        audit_exit = 1
-    else:
-        status = "success"
-        audit_exit = 0
-
+    # Status taxonomy: a discovered source that FAILED to parse is a PARTIAL
+    # collection, not a clean success - the CSV is missing the failed source's
+    # evidence and a downstream gate/scorer must see that gap rather than read
+    # it as "no activity". parser_failures DOMINATES the persistence `warning`:
+    # an incomplete collection that ALSO failed to persist is still primarily a
+    # collection gap (exit 1), and the persistence problem is surfaced alongside
+    # it via artifact_persistence / warning / note (consensus 2026-06-02).
     failed_sources = [
         str(f.get("profile") or f.get("artifact") or f.get("source") or "?")
         for f in parser_failures
     ]
 
-    if not durable_csv:
+    if parser_failures:
+        status = "partial_collection"
+        audit_exit = 1
+    elif not durable_csv:
+        status = "warning"
+        audit_exit = 0
+    else:
+        status = "success"
+        audit_exit = 0
+
+    if parser_failures and not durable_csv:
         note = (
-            f"{total_rows} rows parsed but CSV could not be persisted to a durable "
-            "path; fix OUTPUT_BASE and rerun."
+            f"PARTIAL COLLECTION + PERSISTENCE FAILURE: {total_rows} rows merged "
+            f"across {len(profiles_with_data)} profile(s), but {len(parser_failures)} "
+            f"source(s) FAILED to parse and are MISSING: {', '.join(failed_sources)} "
+            f"(treat as a collection gap, NOT 'no activity'); ADDITIONALLY the CSV "
+            f"could not be persisted to a durable path - fix OUTPUT_BASE and rerun."
         )
-    elif partial:
+    elif parser_failures:
         note = (
             f"PARTIAL COLLECTION: {total_rows} rows merged across "
             f"{len(profiles_with_data)} profile(s), but {len(parser_failures)} "
             f"source(s) FAILED to parse and are MISSING from the CSV: "
             f"{', '.join(failed_sources)}. Treat their absence as a collection "
             f"gap, NOT as 'no activity'. Full data at {durable_csv}."
+        )
+    elif not durable_csv:
+        note = (
+            f"{total_rows} rows parsed but CSV could not be persisted to a durable "
+            "path; fix OUTPUT_BASE and rerun."
         )
     else:
         note = (
@@ -5108,9 +5118,18 @@ def extract_shellbags(
                     parser_status=status,
                 ))
                 profiles_with_data.add(profile_name)
-            elif status != "ok":
+            # A non-ok run is a collection gap REGARDLESS of salvage: record it so
+            # the response cannot read as a clean success. recovered_rows lets an
+            # analyst distinguish "failed empty" from "failed with partial salvage".
+            if status != "ok":
                 parser_failures.append(
-                    {"profile": profile_name, "hive": str(hive_path), "status": status}
+                    {
+                        "profile": profile_name,
+                        "hive": str(hive_path),
+                        "status": status,
+                        "reason": "sbecmd_nonzero_or_error",
+                        "recovered_rows": len(profile_rows),
+                    }
                 )
     finally:
         for d in tmp_dirs:
@@ -5239,9 +5258,16 @@ def extract_lnk_files(
                     parser_command="LECmd", parser_status=status,
                 ))
                 profiles_with_data.add(profile_name)
-            elif status != "ok":
+            # A non-ok run is a collection gap REGARDLESS of salvage (see shellbags).
+            if status != "ok":
                 parser_failures.append(
-                    {"profile": profile_name, "dir": str(target_dir), "status": status}
+                    {
+                        "profile": profile_name,
+                        "dir": str(target_dir),
+                        "status": status,
+                        "reason": "lecmd_nonzero_or_error",
+                        "recovered_rows": len(profile_rows),
+                    }
                 )
     finally:
         for d in tmp_dirs:
@@ -5367,9 +5393,16 @@ def extract_jump_lists(
                     parser_command="JLECmd", parser_status=status,
                 ))
                 profiles_with_data.add(profile_name)
-            elif status != "ok":
+            # A non-ok run is a collection gap REGARDLESS of salvage (see shellbags).
+            if status != "ok":
                 parser_failures.append(
-                    {"profile": profile_name, "dir": str(target_dir), "status": status}
+                    {
+                        "profile": profile_name,
+                        "dir": str(target_dir),
+                        "status": status,
+                        "reason": "jlecmd_nonzero_or_error",
+                        "recovered_rows": len(profile_rows),
+                    }
                 )
     finally:
         for d in tmp_dirs:
@@ -5915,10 +5948,22 @@ def extract_registry_fileaccess(
                     r.setdefault("__source_profile", profile_name)
                     r.setdefault("__source_hive", hive_path.name)
                     r.setdefault("__source_path", str(hive_path))
+                    # Propagate the REAL per-hive parser status downstream so the
+                    # tagging site stamps salvaged-from-failed rows with the actual
+                    # failure status, not a hardcoded "ok".
+                    r.setdefault("__source_status", status)
                 source_rows.extend(hive_rows)
-            elif status != "ok":
+            # A non-ok run is a collection gap REGARDLESS of salvage: record it even
+            # when rows were recovered, so the response cannot read as clean success.
+            if status != "ok":
                 parser_failures.append(
-                    {"profile": profile_name, "hive": str(hive_path), "status": status}
+                    {
+                        "profile": profile_name,
+                        "hive": str(hive_path),
+                        "status": status,
+                        "reason": "recmd_nonzero_or_error",
+                        "recovered_rows": len(hive_rows),
+                    }
                 )
             elif _recmd_dirty_hive_abort(result):
                 # RECmd reported ok/exit_code=0 yet produced ZERO rows AND its
@@ -5933,6 +5978,7 @@ def extract_registry_fileaccess(
                         "profile": profile_name,
                         "status": "parser_failed",
                         "reason": "recmd_dirty_hive_or_zero_keys",
+                        "recovered_rows": 0,
                     }
                 )
     finally:
@@ -5951,12 +5997,16 @@ def extract_registry_fileaccess(
         profile = row.get("__source_profile") or row.get("HiveType") or "unknown"
         src_hive = row.get("__source_hive") or row.get("HiveType") or ""
         src_path = row.get("__source_path") or source_artifact or row.get("HivePath") or ""
+        # Real per-hive status (set above); rows salvaged from a failed hive must
+        # carry that failure status, NOT a hardcoded "ok" (registry was strictly
+        # worse than the EZ-backed loops - peer reviewer flag, consensus 2026-06-02).
+        src_status = row.get("__source_status") or "ok"
         clean = {k: v for k, v in row.items() if not k.startswith("__")}
         clean["fileaccess_artifact"] = frag
         tagged = _tag_provenance(
             [clean], source_profile=str(profile), source_hive=str(src_hive),
             source_artifact_path=str(src_path), parser_command="RECmd:DFIRBatch",
-            parser_status="ok",
+            parser_status=str(src_status),
         )
         merged_rows.extend(tagged)
         if profile and profile != "unknown":

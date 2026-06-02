@@ -36,7 +36,10 @@ class _FakeRunner(SafeRunner):
             tool_name="disk.fake",
             state_manager=state_manager,
         )
-        # per-tool behavior: map call -> "rows" | "empty" | "fail"
+        # per-tool behavior: map call -> "rows" | "empty" | "fail" |
+        # "rows_then_fail" (emit a CSV WITH rows AND return a non-ok result -
+        # simulates an EZ tool that timed out / exited non-zero AFTER writing a
+        # PARTIAL CSV: the rows must be salvaged AND a parser_failure recorded).
         self.sbe_behavior = "rows"
         self.le_behavior = "rows"
         self.jle_behavior = "rows"
@@ -62,33 +65,36 @@ class _FakeRunner(SafeRunner):
 
     def run_sbecmd(self, *, hive_dir, csv_dir, csv_filename=None, tool_name=None, timeout=1800):
         self.calls.append(f"sbe:{hive_dir}")
-        if self.sbe_behavior == "rows":
+        if self.sbe_behavior in ("rows", "rows_then_fail"):
             self._emit(csv_dir, "UsrClass_shellbags.csv",
                        "BagPath,AbsolutePath,LastWriteTime",
                        "1\\2,C:\\Synthetic\\Folder,2024-01-02 03:04:05")
-            return self._fake_result(True, {"hive_dir": hive_dir}, tool_name)
+            ok = self.sbe_behavior == "rows"
+            return self._fake_result(ok, {"hive_dir": hive_dir}, tool_name)
         if self.sbe_behavior == "empty":
             return self._fake_result(True, {"hive_dir": hive_dir}, tool_name)
         return self._fake_result(False, {"hive_dir": hive_dir}, tool_name)
 
     def run_lecmd(self, *, target_dir, csv_dir, csv_filename, tool_name=None, timeout=1800):
         self.calls.append(f"le:{target_dir}")
-        if self.le_behavior == "rows":
+        if self.le_behavior in ("rows", "rows_then_fail"):
             self._emit(csv_dir, csv_filename,
                        "SourceFile,TargetIDAbsolutePath,LastModified",
                        "a.lnk,C:\\Synthetic\\target.txt,2024-01-02 03:04:05")
-            return self._fake_result(True, {"target_dir": target_dir}, tool_name)
+            ok = self.le_behavior == "rows"
+            return self._fake_result(ok, {"target_dir": target_dir}, tool_name)
         if self.le_behavior == "empty":
             return self._fake_result(True, {"target_dir": target_dir}, tool_name)
         return self._fake_result(False, {"target_dir": target_dir}, tool_name)
 
     def run_jlecmd(self, *, target_dir, csv_dir, csv_filename, tool_name=None, timeout=1800):
         self.calls.append(f"jle:{target_dir}")
-        if self.jle_behavior == "rows":
+        if self.jle_behavior in ("rows", "rows_then_fail"):
             self._emit(csv_dir, csv_filename,
                        "SourceFile,AppId,Path,LastModified",
                        "auto.dat,abc123,C:\\Synthetic\\doc.docx,2024-01-02 03:04:05")
-            return self._fake_result(True, {"target_dir": target_dir}, tool_name)
+            ok = self.jle_behavior == "rows"
+            return self._fake_result(ok, {"target_dir": target_dir}, tool_name)
         if self.jle_behavior == "empty":
             return self._fake_result(True, {"target_dir": target_dir}, tool_name)
         return self._fake_result(False, {"target_dir": target_dir}, tool_name)
@@ -96,7 +102,7 @@ class _FakeRunner(SafeRunner):
     def run_recmd(self, *, hive_dir, csv_dir, csv_filename, batch_file=None,
                   sync_batch=False, tool_name=None, timeout=1800):
         self.calls.append(f"recmd:{hive_dir}")
-        if self.recmd_behavior == "rows":
+        if self.recmd_behavior in ("rows", "rows_then_fail"):
             # One UserAssist row (file-access fragment) + one unrelated row.
             self._emit(
                 csv_dir, csv_filename,
@@ -105,7 +111,8 @@ class _FakeRunner(SafeRunner):
                 "ROOT\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist,"
                 "synthetic.exe,2024-01-02 03:04:05",
             )
-            return self._fake_result(True, {"hive_dir": hive_dir}, tool_name)
+            ok = self.recmd_behavior == "rows"
+            return self._fake_result(ok, {"hive_dir": hive_dir}, tool_name)
         if self.recmd_behavior == "empty":
             self._emit(csv_dir, csv_filename,
                        "HivePath,HiveType,Description,Category,KeyPath,ValueName,LastWriteTimestamp",
@@ -813,6 +820,152 @@ class UserActivityHardFailTests(_Base):
                 any("status=error reason=no_windows_volume_at_image_path" in ln for ln in lines)
             )
             self.assertFalse(any("artifact_absent" in ln for ln in lines))
+
+
+# ---------------------------------------------------------------------------
+# CONVERGENCE: salvage-from-failed-parser must still record a parser_failure.
+# A run that recovered SOME rows from a source that exited non-zero / timed out
+# is a PARTIAL collection, NEVER a clean success (the "incomplete-collection-
+# looks-complete" family). Consensus-signed 2026-06-02.
+# ---------------------------------------------------------------------------
+
+class SalvageFromFailedParserTests(_Base):
+    def test_shellbags_rows_then_fail_is_partial_not_success(self):
+        """One profile's hive parses cleanly; the other emits a PARTIAL CSV (rows)
+        BUT the parser exits non-zero. The salvaged rows must be MERGED, a
+        parser_failure recorded (with recovered_rows>0), status=='partial_collection',
+        audit exit_code==1 - never a clean 'success'."""
+        # First sbecmd call -> rows_then_fail (salvage + non-ok); second -> clean rows.
+        class _SbeSalvageRunner(_FakeRunner):
+            def run_sbecmd(self, **kw):
+                self.sbe_behavior = "rows_then_fail" if not any(
+                    c.startswith("sbe:") for c in self.calls
+                ) else "rows"
+                return super().run_sbecmd(**kw)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLogger(str(Path(tmp) / "audit.jsonl"))
+            state = CaseStateManager(str(Path(tmp) / "state.json"))
+            state.load("CASE-UA")
+            runner = _SbeSalvageRunner(audit_logger=audit, case_id="CASE-UA", state_manager=state)
+            disk.init_tools(state, audit, ez_runner=runner)
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha", "beta"])
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_shellbags(image_path=str(root), case_id="CASE-UA")
+            # Partial, not clean success.
+            self.assertEqual(r["status"], "partial_collection")
+            self.assertTrue(r["parser_failures"])
+            # The failed source recorded its salvage count.
+            salvaged = [pf for pf in r["parser_failures"]
+                        if int(pf.get("recovered_rows", 0)) > 0]
+            self.assertTrue(salvaged, "failed-with-salvage source had no recovered_rows>0 entry")
+            # Salvaged rows are NOT dropped: total includes both profiles' rows.
+            self.assertTrue(r["csv_path"])
+            self.assertGreaterEqual(r["total_rows"], 2)
+            # Audit row surfaces the gap.
+            import json
+            lines = [json.loads(ln) for ln in
+                     Path(tmp).joinpath("audit.jsonl").read_text().splitlines() if ln.strip()]
+            results = [e for e in lines if "exit_code" in e]
+            self.assertTrue(results)
+            self.assertEqual(results[-1]["exit_code"], 1)
+            self.assertIn("status=partial_collection", results[-1].get("outputs_summary", ""))
+
+    def test_registry_rows_then_fail_propagates_status_and_partial(self):
+        """Registry sub-fix: a hive that yields file-access rows BUT exits non-zero
+        must (a) merge its salvaged rows, (b) tag those rows with the REAL failure
+        ``parser_status`` (NOT hardcoded 'ok'), (c) record a parser_failure with
+        recovered_rows>0, and (d) drive status=='partial_collection' / exit 1."""
+        # First recmd call -> rows_then_fail (salvage + non-ok); second -> clean rows.
+        class _RecmdSalvageRunner(_FakeRunner):
+            def run_recmd(self, **kw):
+                self.recmd_behavior = "rows_then_fail" if not any(
+                    c.startswith("recmd:") for c in self.calls
+                ) else "rows"
+                return super().run_recmd(**kw)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLogger(str(Path(tmp) / "audit.jsonl"))
+            state = CaseStateManager(str(Path(tmp) / "state.json"))
+            state.load("CASE-UA")
+            runner = _RecmdSalvageRunner(audit_logger=audit, case_id="CASE-UA", state_manager=state)
+            disk.init_tools(state, audit, ez_runner=runner)
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha", "beta"])
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
+            self.assertEqual(r["status"], "partial_collection")
+            self.assertTrue(r["parser_failures"])
+            salvaged = [pf for pf in r["parser_failures"]
+                        if int(pf.get("recovered_rows", 0)) > 0]
+            self.assertTrue(salvaged, "failed-with-salvage hive had no recovered_rows>0 entry")
+            # Rows from BOTH hives persisted (salvage not dropped).
+            self.assertTrue(r["csv_path"])
+            rows = disk._read_csv(r["csv_path"])
+            self.assertGreaterEqual(len(rows), 2)
+            # The salvaged-from-failed rows carry a NON-'ok' parser_status; at least
+            # one row reflects the real per-hive failure, not the hardcoded 'ok'.
+            statuses = {row.get("parser_status") for row in rows}
+            self.assertTrue(
+                any(s and s != "ok" for s in statuses),
+                f"no row carried a non-ok parser_status (propagation broken): {statuses}",
+            )
+            self.assertIn("ok", statuses)  # the clean hive's rows still tagged ok
+            import json
+            lines = [json.loads(ln) for ln in
+                     Path(tmp).joinpath("audit.jsonl").read_text().splitlines() if ln.strip()]
+            results = [e for e in lines if "exit_code" in e]
+            self.assertEqual(results[-1]["exit_code"], 1)
+
+
+# ---------------------------------------------------------------------------
+# ITEM 2: parser_failures DOMINATES the persistence-warning status. An
+# incomplete collection that ALSO failed to persist is still primarily a
+# collection gap (partial_collection / exit 1), with the persistence problem
+# surfaced alongside it - never demoted to a benign 'warning' / exit 0.
+# ---------------------------------------------------------------------------
+
+class ParserFailureDominatesPersistenceTests(_Base):
+    def test_partial_plus_persistence_failure_stays_partial(self):
+        class _SbeSalvageRunner(_FakeRunner):
+            def run_sbecmd(self, **kw):
+                self.sbe_behavior = "rows_then_fail" if not any(
+                    c.startswith("sbe:") for c in self.calls
+                ) else "rows"
+                return super().run_sbecmd(**kw)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLogger(str(Path(tmp) / "audit.jsonl"))
+            state = CaseStateManager(str(Path(tmp) / "state.json"))
+            state.load("CASE-UA")
+            runner = _SbeSalvageRunner(audit_logger=audit, case_id="CASE-UA", state_manager=state)
+            disk.init_tools(state, audit, ez_runner=runner)
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha", "beta"])
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
+                 mock.patch.object(disk, "_persist_rows_as_csv", return_value=None), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_shellbags(image_path=str(root), case_id="CASE-UA")
+            # parser_failures dominate: still partial_collection / exit 1, NOT warning/0.
+            self.assertEqual(r["status"], "partial_collection")
+            self.assertTrue(r["parser_failures"])
+            self.assertIsNone(r["csv_path"])
+            # Persistence problem is STILL surfaced.
+            self.assertIn("warning", r)
+            self.assertIn("artifact_persistence", r)
+            self.assertIn("PERSISTENCE", r["note"].upper())
+            import json
+            lines = [json.loads(ln) for ln in
+                     Path(tmp).joinpath("audit.jsonl").read_text().splitlines() if ln.strip()]
+            results = [e for e in lines if "exit_code" in e]
+            self.assertEqual(results[-1]["exit_code"], 1)
+            self.assertIn("status=partial_collection", results[-1].get("outputs_summary", ""))
 
 
 if __name__ == "__main__":
