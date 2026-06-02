@@ -44,10 +44,24 @@ def replay_hive_with_rla(hive_path: Path, label: str) -> tuple[Path, Path, Path]
 
     # Copy hive (read-only evidence -> writable temp) plus any transaction logs.
     shutil.copy2(str(hive_path), str(tmp_in / hive_path.name))
-    for suffix in (".LOG1", ".LOG2"):
-        log = hive_path.parent / f"{hive_path.name}{suffix}"
-        if log.exists():
-            shutil.copy2(str(log), str(tmp_in / log.name))
+    # Transaction logs must be matched CASE-INSENSITIVELY: on a case-sensitive
+    # Linux NTFS mount the hive can be ``NTUSER.DAT`` while its logs are the
+    # lowercase ``ntuser.dat.LOG1`` / ``.LOG2`` the OS actually wrote. A
+    # case-exact lookup misses them, rla replays nothing, and RECmd then aborts
+    # on the dirty hive ("0 key/value pairs") - silently dropping that user's
+    # evidence. Discover each log by case-folded name, and stage it under a name
+    # matching the copied hive base so rla pairs them.
+    want = {
+        f"{hive_path.name.lower()}.log1": f"{hive_path.name}.LOG1",
+        f"{hive_path.name.lower()}.log2": f"{hive_path.name}.LOG2",
+    }
+    try:
+        for entry in hive_path.parent.iterdir():
+            staged = want.get(entry.name.lower())
+            if staged and entry.is_file():
+                shutil.copy2(str(entry), str(tmp_in / staged))
+    except OSError:
+        pass  # log directory unreadable -> proceed with hive only
 
     subprocess.run(
         ["/usr/bin/dotnet", str(_RLA_BIN), "-d", str(tmp_in), "--out", str(tmp_out)],

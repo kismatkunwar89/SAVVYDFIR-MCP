@@ -48,8 +48,11 @@ class _FakeRunner(SafeRunner):
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(header + "\n" + row + "\n", encoding="utf-8")
 
-    def _fake_result(self, ok: bool, params, tool_name):
-        cmd = ["printf", "ok"] if ok else ["false"]
+    def _fake_result(self, ok: bool, params, tool_name, stdout: str = "ok"):
+        # Emit ``stdout`` verbatim so callers can simulate RECmd's dirty-hive /
+        # zero-key abort banner (exit_code 0 yet a warning in stdout). ``printf``
+        # with a single %s arg keeps spaces intact.
+        cmd = ["printf", "%s", stdout] if ok else ["false"]
         return self.run(cmd, parameters=params, tool_name=tool_name, timeout=30)
 
     def classify_error(self, result):  # mirror EZToolsRunner API
@@ -108,6 +111,20 @@ class _FakeRunner(SafeRunner):
                        "HivePath,HiveType,Description,Category,KeyPath,ValueName,LastWriteTimestamp",
                        "ROOT,Software,Run,Autoruns,ROOT\\...\\Run,synthetic,2024-01-02 03:04:05")
             return self._fake_result(True, {"hive_dir": hive_dir}, tool_name)
+        if self.recmd_behavior == "dirty":
+            # Simulate RECmd aborting on a dirty hive: exit_code 0 (ok=True),
+            # header-only CSV (ZERO data rows), and the abort banner in stdout.
+            p = Path(csv_dir) / (csv_filename or "out.csv")
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(
+                "HivePath,HiveType,Description,Category,KeyPath,ValueName,"
+                "LastWriteTimestamp\n",  # header only -> _read_csv yields 0 rows
+                encoding="utf-8",
+            )
+            return self._fake_result(
+                True, {"hive_dir": hive_dir}, tool_name,
+                stdout="Found 0 key/value pairs across 1 file",
+            )
         return self._fake_result(False, {"hive_dir": hive_dir}, tool_name)
 
 
@@ -210,6 +227,24 @@ class DiscoveryTests(_Base):
             self.assertIn("alpha", profiles)
             self.assertIn("bravo", profiles)
             self.assertIn("charlie", profiles)
+
+    def test_documents_and_settings_junction_to_users_deduped(self):
+        """On modern Windows ``Documents and Settings`` is a junction to ``Users``.
+        Iterating both roots would discover every profile (and its hives) TWICE,
+        causing RECmd to run 2x per user. Resolving each profile dir's real path
+        before dedup collapses the junction so each profile appears exactly once."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha", "bravo"])
+            # Documents and Settings -> symlink to Users (the junction analogue).
+            (root / "Documents and Settings").symlink_to(
+                root / "Users", target_is_directory=True
+            )
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]):
+                names = [n for n, _ in disk._iter_user_profile_dirs(str(root))]
+            # Each profile discovered exactly once despite two roots pointing at it.
+            self.assertEqual(sorted(names), ["alpha", "bravo"])
+            self.assertEqual(len(names), len(set(names)))
 
     def test_non_user_profiles_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -582,6 +617,59 @@ class RegistryFileAccessTests(_Base):
                 r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
             self.assertEqual(r["status"], "artifact_absent")
             self.assertFalse(any(c.startswith("recmd:") for c in runner.calls))
+
+    def test_dirty_hive_zero_rows_becomes_collection_failed(self):
+        """RECmd reported exit_code 0 (ok=True) yet ABORTED on a dirty hive:
+        zero rows produced and the abort banner ('Found 0 key/value pairs across
+        1 file') in stdout. This must NOT masquerade as no_data/success - it is a
+        silent-drop. With the ONLY discovered hive failing this way the 4-way
+        taxonomy must route to ``collection_failed`` (exit_code 1) with a
+        populated ``parser_failures`` entry tagged ``recmd_dirty_hive_or_zero_keys``."""
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, audit, state = self._init(tmp)
+            runner.recmd_behavior = "dirty"
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha"])
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
+            self.assertEqual(r["status"], "collection_failed")
+            self.assertTrue(r["parser_failures"])
+            self.assertEqual(
+                r["parser_failures"][0].get("reason"), "recmd_dirty_hive_or_zero_keys"
+            )
+            self.assertEqual(r["parser_failures"][0].get("status"), "parser_failed")
+
+    def test_dirty_hive_partial_keeps_success_with_failures(self):
+        """One hive parses with file-access rows, a second aborts dirty. The
+        successful hive yields rows so status stays ``success``, but the dirty
+        hive is recorded in ``parser_failures`` (partial), never silently dropped."""
+        # First recmd call -> rows; subsequent -> dirty abort.
+        class _PartialRunner(_FakeRunner):
+            def run_recmd(self, **kw):
+                self.recmd_behavior = "rows" if not any(
+                    c.startswith("recmd:") for c in self.calls
+                ) else "dirty"
+                return super().run_recmd(**kw)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLogger(str(Path(tmp) / "audit.jsonl"))
+            state = CaseStateManager(str(Path(tmp) / "state.json"))
+            state.load("CASE-UA")
+            runner = _PartialRunner(audit_logger=audit, case_id="CASE-UA", state_manager=state)
+            disk.init_tools(state, audit, ez_runner=runner)
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha", "beta"])
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
+            self.assertEqual(r["status"], "success")
+            self.assertTrue(r["parser_failures"])
+            self.assertEqual(
+                r["parser_failures"][0].get("reason"), "recmd_dirty_hive_or_zero_keys"
+            )
 
 
 if __name__ == "__main__":

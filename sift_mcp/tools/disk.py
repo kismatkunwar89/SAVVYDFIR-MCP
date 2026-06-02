@@ -4609,7 +4609,18 @@ def _iter_user_profile_dirs(image_path: str) -> list[tuple[str, Path]]:
                     continue
                 if profile_dir.name in _NON_USER_PROFILE_DIRS:
                     continue
-                key = str(profile_dir).lower()
+                # Dedup on the RESOLVED real path, not the symbolic path. On
+                # modern Windows ``Documents and Settings`` is a junction to
+                # ``Users``, so every profile (and its hives) would otherwise be
+                # discovered TWICE -> RECmd runs 2x per user (wasteful + latent
+                # double-count). Resolving collapses the junction to its target.
+                # Preserve order: ``Users/`` is iterated first, so the canonical
+                # entry wins. Fall back to the lowercased path string if the
+                # filesystem cannot resolve the link (e.g. broken junction).
+                try:
+                    key = str(profile_dir.resolve()).lower()
+                except OSError:
+                    key = str(profile_dir).lower()
                 if key in seen_profiles:
                     continue
                 seen_profiles.add(key)
@@ -5595,6 +5606,35 @@ def _classify_fileaccess_row(row: dict[str, str]) -> Optional[str]:
     return None
 
 
+# RECmd exit_code can be 0 (run.ok=True) even when it internally ABORTS on a
+# dirty hive: it prints a warning and writes zero rows. Treated as legitimate
+# no_data, that silently drops the subject user's entire file-access evidence -
+# a large NTUSER can yield 0 rows yet the tool returns success/parser_failures=[].
+# These case-insensitive markers, found in RECmd stdout/stderr, distinguish a
+# dirty-hive abort from a clean parse that simply matched no file-access fragments.
+_RECMD_DIRTY_HIVE_MARKERS = (
+    "hive is dirty",
+    "aborting",
+    "found 0 key/value pairs across",
+)
+
+
+def _recmd_dirty_hive_abort(result: Any) -> bool:
+    """True if a RunResult's RECmd output indicates a dirty-hive / zero-key abort.
+
+    Inspects ``.stdout`` and ``.stderr`` (the real attributes on ``RunResult``)
+    case-insensitively. Used ONLY when the produced CSV had zero rows: a clean
+    parse that simply matched nothing leaves no such marker, so this never
+    mis-flags legitimate no_data.
+    """
+    if result is None:
+        return False
+    blob = " ".join(
+        str(getattr(result, attr, "") or "") for attr in ("stdout", "stderr")
+    ).lower()
+    return any(marker in blob for marker in _RECMD_DIRTY_HIVE_MARKERS)
+
+
 def extract_registry_fileaccess(
     image_path: str,
     case_id: Optional[str] = None,
@@ -5668,6 +5708,7 @@ def extract_registry_fileaccess(
             tmp_dirs.append(csv_out)
             csv_name = f"refa_{idx}.csv"
             status = "ok"
+            result = None
             try:
                 result = _ez_runner.run_recmd(
                     hive_dir=str(Path(cleaned_hive).parent),
@@ -5694,6 +5735,21 @@ def extract_registry_fileaccess(
             elif status != "ok":
                 parser_failures.append(
                     {"profile": profile_name, "hive": str(hive_path), "status": status}
+                )
+            elif _recmd_dirty_hive_abort(result):
+                # RECmd reported ok/exit_code=0 yet produced ZERO rows AND its
+                # output carries a dirty-hive / zero-key abort marker. This is a
+                # silent-drop, NOT legitimate no_data - the hive's evidence was
+                # never parsed (rla failed to clean it). Record a parser_failure
+                # so the 4-way zero-row taxonomy fires (collection_failed if ALL
+                # hives fail this way; success-with-failures if only some do).
+                parser_failures.append(
+                    {
+                        "artifact": str(hive_path),
+                        "profile": profile_name,
+                        "status": "parser_failed",
+                        "reason": "recmd_dirty_hive_or_zero_keys",
+                    }
                 )
     finally:
         for d in tmp_dirs:
