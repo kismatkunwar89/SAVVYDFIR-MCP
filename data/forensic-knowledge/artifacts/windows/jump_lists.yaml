@@ -1,0 +1,12 @@
+# Forensic-knowledge: Windows Jump Lists (Automatic/CustomDestinations).
+artifact: jump_lists
+does_not_prove:
+  - "A Jump List entry proves an application referenced a target, NOT that a human interactively clicked it."
+  - "AppId maps to an application, not to a specific user action or intent."
+  - "DestList ordering reflects recency/pinning heuristics, not a precise click timeline."
+  - "Custom vs Automatic destinations differ: pinned/custom entries may be curated, not organically used."
+corroborate_with:
+  lnk_files: "Standalone LNKs corroborate the same target-open events."
+  shellbags: "ShellBags corroborate navigation to the target's folder."
+  registry_fileaccess: "UserAssist/RecentDocs corroborate the application launch and document open."
+  prefetch: "Prefetch confirms the associated application actually executed."

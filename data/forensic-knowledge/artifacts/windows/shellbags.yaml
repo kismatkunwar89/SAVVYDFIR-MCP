@@ -1,0 +1,13 @@
+# Forensic-knowledge: ShellBags (UsrClass.dat / NTUSER.DAT BagMRU).
+# Generic Windows forensic discipline - no case specifics.
+artifact: shellbags
+does_not_prove:
+  - "A ShellBag proves Explorer RENDERED the folder, NOT that files inside it were opened or read."
+  - "ShellBag timestamps record shell interaction with the folder, not file access or execution."
+  - "Absence of a ShellBag does NOT prove the folder was never visited - command-line/script navigation leaves no ShellBags."
+  - "ShellBags can reference removable, network, or now-deleted volumes that are no longer present."
+corroborate_with:
+  lnk_files: "LNK shortcuts confirm a specific file was opened from the navigated folder."
+  jump_lists: "Jump Lists tie a target file to the application that opened it (AppId)."
+  registry_fileaccess: "RecentDocs / OpenSavePidlMRU corroborate file open/save activity for the user."
+  mft: "$MFT confirms the folder/file existed on the volume at the relevant time."

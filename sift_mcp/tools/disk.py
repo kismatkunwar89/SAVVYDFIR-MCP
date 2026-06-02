@@ -36,7 +36,7 @@ import shutil
 import subprocess
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -1347,34 +1347,9 @@ def _registry_contract_payload(
     )
 
 
-def _replay_hive_with_rla(hive_path: Path, label: str) -> tuple[Path, Path, Path]:
-    """Copy one hive plus transaction logs to temp dirs and replay via rla."""
-    tmp_in = Path(tempfile.mkdtemp(prefix=f"savvydfir_rla_in_{label}_"))
-    tmp_out = Path(tempfile.mkdtemp(prefix=f"savvydfir_rla_out_{label}_"))
-
-    shutil.copy2(str(hive_path), str(tmp_in / hive_path.name))
-    for suffix in (".LOG1", ".LOG2"):
-        log = hive_path.parent / f"{hive_path.name}{suffix}"
-        if log.exists():
-            shutil.copy2(str(log), str(tmp_in / log.name))
-
-    rla_bin = Path("/opt/zimmermantools/rla.dll")
-    subprocess.run(
-        ["/usr/bin/dotnet", str(rla_bin), "-d",
-         str(tmp_in), "--out", str(tmp_out)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-        check=False,
-    )
-
-    cleaned_files = [candidate for candidate in tmp_out.iterdir()
-                     if candidate.is_file()]
-    cleaned_hive = cleaned_files[0] if cleaned_files else (
-        tmp_in / hive_path.name)
-    return cleaned_hive, tmp_in, tmp_out
+# Canonical hive-replay lives in tools/_hive_replay.py (shared with shimcache /
+# SRUM in server.py). Aliased here so existing call sites keep working.
+from sift_mcp.tools._hive_replay import replay_hive_with_rla as _replay_hive_with_rla
 
 
 def _not_initialised(tool_name: str) -> dict[str, Any]:
@@ -4504,3 +4479,1140 @@ def extract_registry_run_keys(
         csv_path=durable_csv,
         suppressed_csv_path=durable_suppressed_csv,
     )
+
+
+# ===========================================================================
+# User-activity extractors (ShellBags / LNK / Jump Lists / Browser / RegFA)
+# ---------------------------------------------------------------------------
+# Path-B FK-only tools: forensic guidance is injected by server.py's
+# _forensic_envelope (Valhuntir/vendored YAMLs) at the response layer; these
+# tools do NOT carry an applicable_heuristics slice. CSV-passthrough design:
+# the EZ tool's own CSV is read via _read_csv, tagged with provenance columns,
+# merged across profiles, and persisted via _persist_rows_as_csv /
+# _finalize_artifact_persistence. OPTIONAL tools - never added to a mandatory
+# gate (server OS legitimately lacks Prefetch/ShellBags/etc.).
+#
+# Universal / case-agnostic: every user profile under BOTH ``Users/*`` and
+# ``Documents and Settings/*`` is auto-discovered. No hardcoded usernames,
+# dates, paths, domains, or IPs anywhere in this section.
+# ===========================================================================
+
+#: Profile directories that are never real interactive users.
+_NON_USER_PROFILE_DIRS = {
+    "Public",
+    "Default",
+    "Default User",
+    "All Users",
+    "DefaultAppPool",
+    "systemprofile",
+    "LocalService",
+    "NetworkService",
+}
+
+#: Standard provenance columns added to every merged user-activity CSV row.
+_PROVENANCE_COLUMNS = (
+    "source_profile",
+    "source_hive",
+    "source_artifact_path",
+    "parser_command",
+    "parser_status",
+)
+
+
+def _iter_user_profile_dirs(image_path: str) -> list[tuple[str, Path]]:
+    """Yield ``(profile_name, profile_dir)`` for every discoverable user profile.
+
+    Auto-discovers profiles under BOTH ``Users/*`` and
+    ``Documents and Settings/*`` across all candidate Windows volume roots.
+    Skips well-known non-interactive profile directories. Case-agnostic - no
+    profile name is ever hardcoded.
+    """
+    seen_roots: set[str] = set()
+    profiles: list[tuple[str, Path]] = []
+    seen_profiles: set[str] = set()
+    for volume_root in _candidate_windows_volume_roots(image_path):
+        for users_root in (
+            volume_root / "Users",
+            volume_root / "Documents and Settings",
+        ):
+            root_text = str(users_root)
+            if root_text in seen_roots:
+                continue
+            seen_roots.add(root_text)
+            if not (_path_exists(users_root) and _path_is_dir(users_root)):
+                continue
+            try:
+                children = sorted(users_root.iterdir(), key=lambda p: p.name.lower())
+            except OSError:
+                continue
+            for profile_dir in children:
+                if not _path_is_dir(profile_dir):
+                    continue
+                if profile_dir.name in _NON_USER_PROFILE_DIRS:
+                    continue
+                key = str(profile_dir).lower()
+                if key in seen_profiles:
+                    continue
+                seen_profiles.add(key)
+                profiles.append((profile_dir.name, profile_dir))
+    return profiles
+
+
+def _discover_user_hives(
+    image_path: str,
+    hive_relpaths: tuple[str, ...],
+) -> list[tuple[str, Path, str]]:
+    """Discover per-profile registry hives across all user profiles.
+
+    Parameters
+    ----------
+    image_path:
+        Evidence image path / mounted Windows root.
+    hive_relpaths:
+        Profile-relative hive locations to probe, e.g.
+        ``("NTUSER.DAT", "AppData/Local/Microsoft/Windows/UsrClass.dat")``.
+
+    Returns
+    -------
+    list of ``(profile_name, hive_path, rel)`` for every hive that exists.
+    """
+    discovered: list[tuple[str, Path, str]] = []
+    for profile_name, profile_dir in _iter_user_profile_dirs(image_path):
+        for rel in hive_relpaths:
+            hive_path = profile_dir.joinpath(*rel.split("/"))
+            if _path_exists(hive_path) and _path_is_file(hive_path):
+                discovered.append((profile_name, hive_path, rel))
+    return discovered
+
+
+def _discover_user_dirs(
+    image_path: str,
+    dir_relpaths: tuple[str, ...],
+) -> list[tuple[str, Path, str]]:
+    """Discover per-profile directories (LNK/JumpLists/browser data roots)."""
+    discovered: list[tuple[str, Path, str]] = []
+    for profile_name, profile_dir in _iter_user_profile_dirs(image_path):
+        for rel in dir_relpaths:
+            target = profile_dir.joinpath(*rel.split("/"))
+            if _path_exists(target) and _path_is_dir(target):
+                discovered.append((profile_name, target, rel))
+    return discovered
+
+
+def _useractivity_absent_response(
+    *,
+    tool: str,
+    exec_id: str,
+    raw_command: str,
+    started_at: float,
+    profiles_checked: list[str],
+    parser_failures: list[dict[str, Any]],
+    artifact_label: str,
+) -> dict[str, Any]:
+    """Standard ``artifact_absent`` response + audit row for user-activity tools.
+
+    Emits an audit ``log_result`` whose ``outputs_summary`` contains the
+    literal ``status=artifact_absent`` token (constraint 5).
+    """
+    summary = (
+        f"status=artifact_absent: no {artifact_label} discovered across "
+        f"{len(profiles_checked)} profile(s)."
+    )
+    if _audit is not None:
+        _audit.log_result(
+            execution_id=exec_id,
+            exit_code=0,
+            duration=time.monotonic() - started_at,
+            outputs_summary=summary,
+            finding_ids=[],
+            tool_name=tool,
+            command_line=raw_command,
+            parameters={"profiles_checked": profiles_checked},
+        )
+    return {
+        "tool_name": tool,
+        "status": "artifact_absent",
+        "execution_id": exec_id,
+        "raw_command": raw_command,
+        "csv_path": None,
+        "records_count": 0,
+        "total_rows": 0,
+        "truncated": False,
+        "profiles_checked": profiles_checked,
+        "profiles_with_data": [],
+        "parser_failures": parser_failures,
+        "findings_created": [],
+        "preview": [],
+        "note": summary,
+    }
+
+
+def _finalize_useractivity_response(
+    *,
+    tool: str,
+    exec_id: str,
+    raw_command: str,
+    started_at: float,
+    rows: list[dict[str, Any]],
+    profiles_checked: list[str],
+    profiles_with_data: list[str],
+    parser_failures: list[dict[str, Any]],
+    tool_short_name: str,
+    csv_filename: str,
+    finding_factory,
+    max_entries: int,
+    preview_cap: int = 10,
+) -> dict[str, Any]:
+    """Persist rows + build the standard user-activity response contract.
+
+    ``finding_factory`` is a callable ``(durable_csv, total_rows) -> Finding``
+    invoked only when rows are present, so each tool words its own defensible
+    OBSERVATION finding.
+    """
+    total_rows = len(rows)
+    truncated = bool(max_entries and max_entries > 0 and total_rows > max_entries)
+
+    persistent_csv = _persist_rows_as_csv(
+        rows,
+        tool_short_name=tool_short_name,
+        filename=csv_filename,
+    )
+    durable_csv, artifact_persistence = _finalize_artifact_persistence(
+        artifact_label=f"{tool_short_name} CSV",
+        persisted_path=persistent_csv,
+        preflight=None,
+    )
+
+    finding_ids: list[str] = []
+    if rows and finding_factory is not None and _state is not None:
+        try:
+            finding = finding_factory(durable_csv, total_rows)
+            if finding is not None:
+                finding_ids.append(_state.add_finding(finding.model_dump(mode="json")))
+        except Exception:
+            pass
+
+    preview = rows[:preview_cap]
+
+    response: dict[str, Any] = {
+        "tool_name": tool,
+        "status": "success" if durable_csv else "warning",
+        "execution_id": exec_id,
+        "raw_command": raw_command,
+        "csv_path": durable_csv,
+        "records_count": total_rows,
+        "total_rows": total_rows,
+        "truncated": truncated,
+        "profiles_checked": profiles_checked,
+        "profiles_with_data": profiles_with_data,
+        "parser_failures": parser_failures,
+        "findings_created": finding_ids,
+        "preview": preview,
+        "artifact_persistence": artifact_persistence,
+        "note": (
+            f"{total_rows} rows merged across {len(profiles_with_data)} profile(s). "
+            f"Full data at {durable_csv}. Preview capped at {preview_cap}."
+            if durable_csv
+            else (
+                f"{total_rows} rows parsed but CSV could not be persisted to a durable "
+                "path; fix OUTPUT_BASE and rerun."
+            )
+        ),
+    }
+    if not durable_csv:
+        response["warning"] = (
+            f"Rows were parsed but the {tool_short_name} CSV could not be persisted "
+            "to a durable analyst-facing path."
+        )
+
+    if _audit is not None:
+        _audit.log_result(
+            execution_id=exec_id,
+            exit_code=0,
+            duration=time.monotonic() - started_at,
+            outputs_summary=(
+                f"merged {total_rows} rows from {len(profiles_with_data)} profile(s); "
+                f"{len(parser_failures)} parser failure(s)"
+            ),
+            finding_ids=finding_ids,
+            tool_name=tool,
+            command_line=raw_command,
+            parameters={"profiles_checked": profiles_checked},
+        )
+    return response
+
+
+def _tag_provenance(
+    rows: list[dict[str, str]],
+    *,
+    source_profile: str,
+    source_hive: str,
+    source_artifact_path: str,
+    parser_command: str,
+    parser_status: str,
+) -> list[dict[str, Any]]:
+    """Add the 5 standard provenance columns to each EZ-tool CSV row."""
+    tagged: list[dict[str, Any]] = []
+    for row in rows:
+        merged = dict(row)
+        merged["source_profile"] = source_profile
+        merged["source_hive"] = source_hive
+        merged["source_artifact_path"] = source_artifact_path
+        merged["parser_command"] = parser_command
+        merged["parser_status"] = parser_status
+        tagged.append(merged)
+    return tagged
+
+
+# ---------------------------------------------------------------------------
+# Tool: extract_shellbags (SBECmd)
+# ---------------------------------------------------------------------------
+
+def extract_shellbags(
+    image_path: str,
+    case_id: Optional[str] = None,
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract Windows ShellBags (folder navigation) per user profile via SBECmd.
+
+    Discovers ``UsrClass.dat`` and ``NTUSER.DAT`` for every profile under
+    ``Users/*`` and ``Documents and Settings/*``, replays transaction logs
+    with rla.exe, runs SBECmd per hive, merges the per-hive CSVs, and tags
+    each row with provenance columns.
+
+    A ShellBag proves Explorer RENDERED a folder - NOT that files inside it
+    were opened or read. Corroborate with LNK / Jump Lists / RecentDocs.
+    """
+    tool = "disk.extract_shellbags"
+    if _ez_runner is None or _state is None or _audit is None:
+        return _not_initialised(tool)
+
+    hives = _discover_user_hives(
+        image_path,
+        (
+            "AppData/Local/Microsoft/Windows/UsrClass.dat",
+            "NTUSER.DAT",
+        ),
+    )
+    profiles_checked = sorted({name for name, _, _ in hives}) or sorted(
+        {name for name, _ in _iter_user_profile_dirs(image_path)}
+    )
+
+    exec_id = _audit.next_execution_id()
+    started_at = time.monotonic()
+    raw_command = "SBECmd.dll -d <per-profile-hive-dir> --csv <tmp>"
+    _audit.log_execution(
+        execution_id=exec_id,
+        tool_name=tool,
+        parameters={"image_path": image_path, "profiles_checked": profiles_checked},
+        command_line=raw_command,
+    )
+
+    if not hives:
+        return _useractivity_absent_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=[], artifact_label="ShellBag hives (UsrClass.dat/NTUSER.DAT)",
+        )
+
+    merged_rows: list[dict[str, Any]] = []
+    profiles_with_data: set[str] = set()
+    parser_failures: list[dict[str, Any]] = []
+    tmp_dirs: list[Path] = []
+    try:
+        for profile_name, hive_path, rel in hives:
+            replay_in: Optional[Path] = None
+            replay_out: Optional[Path] = None
+            try:
+                cleaned_hive, replay_in, replay_out = _replay_hive_with_rla(
+                    hive_path, f"{profile_name}_{hive_path.name}"
+                )
+            except Exception:
+                cleaned_hive = hive_path
+            csv_out = Path(tempfile.mkdtemp(prefix="savvydfir_sbe_"))
+            tmp_dirs.append(csv_out)
+            status = "ok"
+            try:
+                result = _ez_runner.run_sbecmd(
+                    hive_dir=str(Path(cleaned_hive).parent),
+                    csv_dir=str(csv_out),
+                    tool_name=tool,
+                )
+                if not result.ok:
+                    status = f"parser_error:{_ez_runner.classify_error(result)}"
+            except Exception as exc:
+                status = f"exception:{type(exc).__name__}"
+            finally:
+                if replay_in is not None:
+                    shutil.rmtree(replay_in, ignore_errors=True)
+                if replay_out is not None:
+                    shutil.rmtree(replay_out, ignore_errors=True)
+
+            profile_rows: list[dict[str, str]] = []
+            for produced in sorted(csv_out.glob("*.csv")):
+                profile_rows.extend(_read_csv(str(produced)))
+            if profile_rows:
+                merged_rows.extend(_tag_provenance(
+                    profile_rows,
+                    source_profile=profile_name,
+                    source_hive=hive_path.name,
+                    source_artifact_path=str(hive_path),
+                    parser_command="SBECmd",
+                    parser_status=status,
+                ))
+                profiles_with_data.add(profile_name)
+            elif status != "ok":
+                parser_failures.append(
+                    {"profile": profile_name, "hive": str(hive_path), "status": status}
+                )
+    finally:
+        for d in tmp_dirs:
+            shutil.rmtree(d, ignore_errors=True)
+
+    if not merged_rows:
+        return _useractivity_absent_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=parser_failures, artifact_label="ShellBag entries",
+        )
+
+    def _finding(durable_csv, total_rows):
+        return Finding(
+            case_id=_case_id(),
+            finding_type="other",
+            artifact_type="disk",
+            artifact_path=durable_csv or str(hives[0][1]),
+            tool_name=tool,
+            execution_id=exec_id,
+            iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION,
+            finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"ShellBags: parsed {total_rows} BagMRU entries across "
+                f"{len(profiles_with_data)} profile(s). A ShellBag indicates Explorer "
+                "RENDERED the folder, NOT that files inside were opened or read; "
+                "corroborate with LNK files / Jump Lists / RecentDocs."
+            ),
+            supporting_indicators=sorted(profiles_with_data)[:20],
+        )
+
+    return _finalize_useractivity_response(
+        tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
+        rows=merged_rows, profiles_checked=profiles_checked,
+        profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
+        tool_short_name="shellbags", csv_filename="shellbags.csv",
+        finding_factory=_finding, max_entries=max_entries,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool: extract_lnk_files (LECmd)
+# ---------------------------------------------------------------------------
+
+def extract_lnk_files(
+    image_path: str,
+    case_id: Optional[str] = None,
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract LNK shortcut metadata per user profile via LECmd.
+
+    Discovers each profile's ``AppData/Roaming/Microsoft/Windows/Recent``
+    directory, runs LECmd recursively, merges per-profile CSVs, and tags
+    provenance. A LNK file records that a target was referenced/navigated -
+    corroborate with ShellBags + RecentDocs for file-open intent.
+    """
+    tool = "disk.extract_lnk_files"
+    if _ez_runner is None or _state is None or _audit is None:
+        return _not_initialised(tool)
+
+    dirs = _discover_user_dirs(
+        image_path,
+        ("AppData/Roaming/Microsoft/Windows/Recent",),
+    )
+    profiles_checked = sorted({name for name, _, _ in dirs}) or sorted(
+        {name for name, _ in _iter_user_profile_dirs(image_path)}
+    )
+
+    exec_id = _audit.next_execution_id()
+    started_at = time.monotonic()
+    raw_command = "LECmd.dll -d <per-profile-Recent> --csv <tmp> --all -q"
+    _audit.log_execution(
+        execution_id=exec_id, tool_name=tool,
+        parameters={"image_path": image_path, "profiles_checked": profiles_checked},
+        command_line=raw_command,
+    )
+
+    if not dirs:
+        return _useractivity_absent_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=[], artifact_label="Recent (LNK) directories",
+        )
+
+    merged_rows: list[dict[str, Any]] = []
+    profiles_with_data: set[str] = set()
+    parser_failures: list[dict[str, Any]] = []
+    tmp_dirs: list[Path] = []
+    try:
+        for idx, (profile_name, target_dir, rel) in enumerate(dirs, start=1):
+            csv_out = Path(tempfile.mkdtemp(prefix="savvydfir_lecmd_"))
+            tmp_dirs.append(csv_out)
+            csv_name = f"lnk_{idx}.csv"
+            status = "ok"
+            try:
+                result = _ez_runner.run_lecmd(
+                    target_dir=str(target_dir), csv_dir=str(csv_out),
+                    csv_filename=csv_name, tool_name=tool,
+                )
+                if not result.ok:
+                    status = f"parser_error:{_ez_runner.classify_error(result)}"
+            except Exception as exc:
+                status = f"exception:{type(exc).__name__}"
+            profile_rows: list[dict[str, str]] = []
+            for produced in sorted(csv_out.glob("*.csv")):
+                profile_rows.extend(_read_csv(str(produced)))
+            if profile_rows:
+                merged_rows.extend(_tag_provenance(
+                    profile_rows, source_profile=profile_name,
+                    source_hive="", source_artifact_path=str(target_dir),
+                    parser_command="LECmd", parser_status=status,
+                ))
+                profiles_with_data.add(profile_name)
+            elif status != "ok":
+                parser_failures.append(
+                    {"profile": profile_name, "dir": str(target_dir), "status": status}
+                )
+    finally:
+        for d in tmp_dirs:
+            shutil.rmtree(d, ignore_errors=True)
+
+    if not merged_rows:
+        return _useractivity_absent_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=parser_failures, artifact_label="LNK shortcut files",
+        )
+
+    def _finding(durable_csv, total_rows):
+        return Finding(
+            case_id=_case_id(), finding_type="other", artifact_type="disk",
+            artifact_path=durable_csv or str(dirs[0][1]), tool_name=tool,
+            execution_id=exec_id, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"LNK files: parsed {total_rows} shortcuts across "
+                f"{len(profiles_with_data)} profile(s). A LNK records that a target "
+                "path was referenced, NOT that a human clicked it; corroborate with "
+                "ShellBags + RecentDocs + Prefetch for open/execution intent."
+            ),
+            supporting_indicators=sorted(profiles_with_data)[:20],
+        )
+
+    return _finalize_useractivity_response(
+        tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
+        rows=merged_rows, profiles_checked=profiles_checked,
+        profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
+        tool_short_name="lnk_files", csv_filename="lnk_files.csv",
+        finding_factory=_finding, max_entries=max_entries,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool: extract_jump_lists (JLECmd)
+# ---------------------------------------------------------------------------
+
+def extract_jump_lists(
+    image_path: str,
+    case_id: Optional[str] = None,
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract Jump Lists per user profile via JLECmd.
+
+    Discovers each profile's ``AutomaticDestinations`` and
+    ``CustomDestinations`` directories, runs JLECmd recursively, merges
+    per-profile CSVs, tags provenance. Jump Lists tie a target file to the
+    application (AppId) that opened it.
+    """
+    tool = "disk.extract_jump_lists"
+    if _ez_runner is None or _state is None or _audit is None:
+        return _not_initialised(tool)
+
+    dirs = _discover_user_dirs(
+        image_path,
+        (
+            "AppData/Roaming/Microsoft/Windows/Recent/AutomaticDestinations",
+            "AppData/Roaming/Microsoft/Windows/Recent/CustomDestinations",
+        ),
+    )
+    profiles_checked = sorted({name for name, _, _ in dirs}) or sorted(
+        {name for name, _ in _iter_user_profile_dirs(image_path)}
+    )
+
+    exec_id = _audit.next_execution_id()
+    started_at = time.monotonic()
+    raw_command = "JLECmd.dll -d <per-profile-Destinations> --csv <tmp> --all -q"
+    _audit.log_execution(
+        execution_id=exec_id, tool_name=tool,
+        parameters={"image_path": image_path, "profiles_checked": profiles_checked},
+        command_line=raw_command,
+    )
+
+    if not dirs:
+        return _useractivity_absent_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=[], artifact_label="Jump List destination directories",
+        )
+
+    merged_rows: list[dict[str, Any]] = []
+    profiles_with_data: set[str] = set()
+    parser_failures: list[dict[str, Any]] = []
+    tmp_dirs: list[Path] = []
+    try:
+        for idx, (profile_name, target_dir, rel) in enumerate(dirs, start=1):
+            csv_out = Path(tempfile.mkdtemp(prefix="savvydfir_jlecmd_"))
+            tmp_dirs.append(csv_out)
+            csv_name = f"jl_{idx}.csv"
+            status = "ok"
+            try:
+                result = _ez_runner.run_jlecmd(
+                    target_dir=str(target_dir), csv_dir=str(csv_out),
+                    csv_filename=csv_name, tool_name=tool,
+                )
+                if not result.ok:
+                    status = f"parser_error:{_ez_runner.classify_error(result)}"
+            except Exception as exc:
+                status = f"exception:{type(exc).__name__}"
+            profile_rows: list[dict[str, str]] = []
+            for produced in sorted(csv_out.glob("*.csv")):
+                profile_rows.extend(_read_csv(str(produced)))
+            if profile_rows:
+                merged_rows.extend(_tag_provenance(
+                    profile_rows, source_profile=profile_name,
+                    source_hive="", source_artifact_path=str(target_dir),
+                    parser_command="JLECmd", parser_status=status,
+                ))
+                profiles_with_data.add(profile_name)
+            elif status != "ok":
+                parser_failures.append(
+                    {"profile": profile_name, "dir": str(target_dir), "status": status}
+                )
+    finally:
+        for d in tmp_dirs:
+            shutil.rmtree(d, ignore_errors=True)
+
+    if not merged_rows:
+        return _useractivity_absent_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=parser_failures, artifact_label="Jump List entries",
+        )
+
+    def _finding(durable_csv, total_rows):
+        return Finding(
+            case_id=_case_id(), finding_type="other", artifact_type="disk",
+            artifact_path=durable_csv or str(dirs[0][1]), tool_name=tool,
+            execution_id=exec_id, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"Jump Lists: parsed {total_rows} destination entries across "
+                f"{len(profiles_with_data)} profile(s). A Jump List ties a target "
+                "file to the application (AppId) that referenced it; corroborate with "
+                "LNK + ShellBags before asserting a human opened the file."
+            ),
+            supporting_indicators=sorted(profiles_with_data)[:20],
+        )
+
+    return _finalize_useractivity_response(
+        tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
+        rows=merged_rows, profiles_checked=profiles_checked,
+        profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
+        tool_short_name="jump_lists", csv_filename="jump_lists.csv",
+        finding_factory=_finding, max_entries=max_entries,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool: extract_browser_history (native sqlite3)
+# ---------------------------------------------------------------------------
+
+def _webkit_to_iso(value: str) -> str:
+    """Convert a Chromium WebKit timestamp (micros since 1601-01-01) to UTC ISO."""
+    try:
+        micros = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if micros <= 0:
+        return ""
+    try:
+        epoch = datetime(1601, 1, 1, tzinfo=timezone.utc)
+        return (epoch + timedelta(microseconds=micros)).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _gecko_to_iso(value: str) -> str:
+    """Convert a Firefox/Gecko timestamp (micros since 1970-01-01) to UTC ISO."""
+    try:
+        micros = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if micros <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(micros / 1_000_000, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _copy_sqlite_db(db_path: Path, dest_dir: Path) -> Path:
+    """Copy a sqlite DB + its -wal/-shm sidecars into ``dest_dir`` (locks)."""
+    dest = dest_dir / db_path.name
+    shutil.copy2(str(db_path), str(dest))
+    for suffix in ("-wal", "-shm"):
+        sidecar = db_path.parent / (db_path.name + suffix)
+        if _path_exists(sidecar) and _path_is_file(sidecar):
+            try:
+                shutil.copy2(str(sidecar), str(dest_dir / sidecar.name))
+            except OSError:
+                pass
+    return dest
+
+
+def _query_chromium_history(
+    db_copy: Path,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """Return ``(visit_rows, download_rows)`` from a Chromium History DB copy."""
+    import sqlite3
+    visits: list[dict[str, str]] = []
+    downloads: list[dict[str, str]] = []
+    conn = sqlite3.connect(f"file:{db_copy}?mode=ro", uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        try:
+            for r in conn.execute(
+                "SELECT url, title, visit_count, last_visit_time FROM urls"
+            ):
+                visits.append({
+                    "record_type": "visit",
+                    "url": str(r["url"] or ""),
+                    "title": str(r["title"] or ""),
+                    "visit_count": str(r["visit_count"] or ""),
+                    "timestamp_utc": _webkit_to_iso(str(r["last_visit_time"] or "")),
+                    "target_path": "",
+                    "total_bytes": "",
+                })
+        except sqlite3.Error:
+            pass
+        try:
+            for r in conn.execute(
+                "SELECT target_path, total_bytes, start_time, tab_url FROM downloads"
+            ):
+                downloads.append({
+                    "record_type": "download",
+                    "url": str(r["tab_url"] or ""),
+                    "title": "",
+                    "visit_count": "",
+                    "timestamp_utc": _webkit_to_iso(str(r["start_time"] or "")),
+                    "target_path": str(r["target_path"] or ""),
+                    "total_bytes": str(r["total_bytes"] or ""),
+                })
+        except sqlite3.Error:
+            pass
+    finally:
+        conn.close()
+    return visits, downloads
+
+
+def _query_firefox_history(
+    db_copy: Path,
+) -> list[dict[str, str]]:
+    """Return visit + download rows from a Firefox places.sqlite copy."""
+    import sqlite3
+    rows: list[dict[str, str]] = []
+    conn = sqlite3.connect(f"file:{db_copy}?mode=ro", uri=True)
+    try:
+        conn.row_factory = sqlite3.Row
+        try:
+            for r in conn.execute(
+                "SELECT url, title, visit_count, last_visit_date FROM moz_places"
+            ):
+                rows.append({
+                    "record_type": "visit",
+                    "url": str(r["url"] or ""),
+                    "title": str(r["title"] or ""),
+                    "visit_count": str(r["visit_count"] or ""),
+                    "timestamp_utc": _gecko_to_iso(str(r["last_visit_date"] or "")),
+                    "target_path": "",
+                    "total_bytes": "",
+                })
+        except sqlite3.Error:
+            pass
+        # Firefox downloads: moz_annos annotation 'downloads/destinationFileURI'
+        try:
+            for r in conn.execute(
+                "SELECT p.url AS url, a.content AS dest, a.dateAdded AS dateadded "
+                "FROM moz_annos a JOIN moz_places p ON p.id = a.place_id "
+                "JOIN moz_anno_attributes attr ON attr.id = a.anno_attribute_id "
+                "WHERE attr.name = 'downloads/destinationFileURI'"
+            ):
+                rows.append({
+                    "record_type": "download",
+                    "url": str(r["url"] or ""),
+                    "title": "",
+                    "visit_count": "",
+                    "timestamp_utc": _gecko_to_iso(str(r["dateadded"] or "")),
+                    "target_path": str(r["dest"] or ""),
+                    "total_bytes": "",
+                })
+        except sqlite3.Error:
+            pass
+    finally:
+        conn.close()
+    return rows
+
+
+def extract_browser_history(
+    image_path: str,
+    case_id: Optional[str] = None,
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract Chromium (Chrome/Edge) + Firefox history & downloads per profile.
+
+    Uses the Python ``sqlite3`` stdlib (NOT an EZ tool). For every user
+    profile, auto-detects Chrome/Edge ``History`` and Firefox ``places.sqlite``
+    DBs (including sub-profiles like ``Default`` / ``Profile N``), copies the
+    DB plus ``-wal``/``-shm`` sidecars to a tmp dir to avoid lock issues, and
+    queries visits + downloads. Each DB is wrapped in try/except so one corrupt
+    DB never aborts the tool. Timestamps are normalized to UTC ISO.
+
+    A history/download record proves the BROWSER PROCESS recorded the event,
+    NOT that a specific human initiated it; synced history can originate on
+    another device.
+    """
+    tool = "disk.extract_browser_history"
+    if _state is None or _audit is None:
+        return _not_initialised(tool)
+
+    # (browser_label, profile_glob_root, db_filename, kind, sub_glob)
+    chromium_specs = (
+        ("chrome", "AppData/Local/Google/Chrome/User Data", "History"),
+        ("edge", "AppData/Local/Microsoft/Edge/User Data", "History"),
+    )
+    firefox_spec = ("firefox", "AppData/Roaming/Mozilla/Firefox/Profiles", "places.sqlite")
+
+    discovered: list[tuple[str, str, Path]] = []  # (profile, browser, db_path)
+    profiles_all = _iter_user_profile_dirs(image_path)
+    for profile_name, profile_dir in profiles_all:
+        for browser, root_rel, db_name in chromium_specs:
+            user_data = profile_dir.joinpath(*root_rel.split("/"))
+            if not (_path_exists(user_data) and _path_is_dir(user_data)):
+                continue
+            # Chromium sub-profiles: Default, Profile 1, Profile 2, ...
+            try:
+                sub_dirs = [d for d in user_data.iterdir() if _path_is_dir(d)]
+            except OSError:
+                sub_dirs = []
+            for sub in sub_dirs:
+                db_path = sub / db_name
+                if _path_exists(db_path) and _path_is_file(db_path):
+                    discovered.append((profile_name, f"{browser}:{sub.name}", db_path))
+        # Firefox profiles
+        ff_browser, ff_root_rel, ff_db = firefox_spec
+        ff_root = profile_dir.joinpath(*ff_root_rel.split("/"))
+        if _path_exists(ff_root) and _path_is_dir(ff_root):
+            try:
+                ff_subs = [d for d in ff_root.iterdir() if _path_is_dir(d)]
+            except OSError:
+                ff_subs = []
+            for sub in ff_subs:
+                db_path = sub / ff_db
+                if _path_exists(db_path) and _path_is_file(db_path):
+                    discovered.append((profile_name, f"{ff_browser}:{sub.name}", db_path))
+
+    profiles_checked = sorted({name for name, _ in profiles_all})
+
+    exec_id = _audit.next_execution_id()
+    started_at = time.monotonic()
+    raw_command = "sqlite3(ro) Chromium urls/downloads + Firefox moz_places/moz_annos"
+    _audit.log_execution(
+        execution_id=exec_id, tool_name=tool,
+        parameters={"image_path": image_path, "profiles_checked": profiles_checked},
+        command_line=raw_command,
+    )
+
+    if not discovered:
+        return _useractivity_absent_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=[], artifact_label="browser history databases",
+        )
+
+    merged_rows: list[dict[str, Any]] = []
+    profiles_with_data: set[str] = set()
+    parser_failures: list[dict[str, Any]] = []
+    for profile_name, browser, db_path in discovered:
+        status = "ok"
+        tmp_dir = Path(tempfile.mkdtemp(prefix="savvydfir_browser_"))
+        try:
+            db_copy = _copy_sqlite_db(db_path, tmp_dir)
+            if browser.startswith("firefox"):
+                rows = _query_firefox_history(db_copy)
+            else:
+                visits, downloads = _query_chromium_history(db_copy)
+                rows = visits + downloads
+        except Exception as exc:
+            status = f"exception:{type(exc).__name__}"
+            rows = []
+            parser_failures.append(
+                {"profile": profile_name, "browser": browser,
+                 "db": str(db_path), "status": status}
+            )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        if rows:
+            for r in rows:
+                r["browser"] = browser.split(":", 1)[0]
+                r["profile"] = browser
+            merged_rows.extend(_tag_provenance(
+                rows, source_profile=profile_name, source_hive="",
+                source_artifact_path=str(db_path),
+                parser_command=f"sqlite3:{browser.split(':',1)[0]}",
+                parser_status=status,
+            ))
+            profiles_with_data.add(profile_name)
+
+    if not merged_rows:
+        return _useractivity_absent_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=parser_failures, artifact_label="browser history records",
+        )
+
+    def _finding(durable_csv, total_rows):
+        return Finding(
+            case_id=_case_id(), finding_type="other", artifact_type="disk",
+            artifact_path=durable_csv or str(discovered[0][2]), tool_name=tool,
+            execution_id=exec_id, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"Browser history: parsed {total_rows} visit/download records across "
+                f"{len(profiles_with_data)} profile(s). A record proves the browser "
+                "PROCESS logged the event, NOT that a specific human initiated it; "
+                "synced history may originate on another device. Normalize to UTC and "
+                "corroborate downloads with $MFT / Prefetch before asserting execution."
+            ),
+            supporting_indicators=sorted(profiles_with_data)[:20],
+        )
+
+    return _finalize_useractivity_response(
+        tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
+        rows=merged_rows, profiles_checked=profiles_checked,
+        profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
+        tool_short_name="browser", csv_filename="browser_history.csv",
+        finding_factory=_finding, max_entries=max_entries,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool: extract_registry_fileaccess (hybrid - reuse run-keys CSV or run RECmd)
+# ---------------------------------------------------------------------------
+
+#: Well-known per-user file-access registry artifacts. Matched case-insensitively
+#: against the DFIRBatch CSV's KeyPath / Category / Description (VM-verified
+#: 2026-06-02: real columns are KeyPath/Category/Description/ValueName/
+#: LastWriteTimestamp). KeyPath is the authoritative discriminator - DFIRBatch
+#: Description strings vary by hive/plugin coverage.
+_FILEACCESS_FRAGMENTS = (
+    "userassist",
+    "opensavepidlmru",
+    "typedpaths",
+    "recentdocs",
+    "lastvisitedpidlmru",
+    "runmru",
+    "wordwheelquery",
+)
+
+
+def _classify_fileaccess_row(row: dict[str, str]) -> Optional[str]:
+    """Return the matched file-access fragment for a registry row, else None."""
+    blob = " | ".join(
+        str(row.get(col, "") or "")
+        for col in ("Category", "KeyPath", "Description", "ValueName")
+    ).lower()
+    for frag in _FILEACCESS_FRAGMENTS:
+        if frag in blob:
+            return frag
+    return None
+
+
+def extract_registry_fileaccess(
+    image_path: str,
+    case_id: Optional[str] = None,
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Surface per-user file-access registry artifacts (UserAssist, RecentDocs,
+    OpenSavePidlMRU, TypedPaths, LastVisitedPidlMRU, RunMRU, WordWheelQuery).
+
+    HYBRID: if a durable ``registry_combined.csv`` from a prior
+    ``extract_registry_run_keys`` run exists, it is reused (no re-parse);
+    otherwise RECmd is run with DFIRBatch over SYSTEM + per-profile NTUSER
+    (mirroring run-keys discovery). Rows are then filtered to the file-access
+    fragment set and tagged with provenance. Does NOT alter run-keys semantics.
+
+    These keys prove a path was WRITTEN to a user-activity list - NOT that a
+    human clicked/opened it (background tasks also populate UserAssist).
+    LastWriteTimestamp = when the KEY changed, not when a specific value changed.
+    """
+    tool = "disk.extract_registry_fileaccess"
+    if _ez_runner is None or _state is None or _audit is None:
+        return _not_initialised(tool)
+
+    exec_id = _audit.next_execution_id()
+    started_at = time.monotonic()
+
+    # 1) Reuse a prior durable registry_combined.csv if present.
+    reuse_csv = _artifact_output_dir("registry") / "registry_combined.csv"
+    source_rows: list[dict[str, str]] = []
+    source_artifact = ""
+    raw_command = ""
+    profiles_checked: list[str] = []
+    parser_failures: list[dict[str, Any]] = []
+    tmp_dirs: list[Path] = []
+
+    if _path_exists(reuse_csv) and _path_is_file(reuse_csv):
+        source_rows = _read_csv(str(reuse_csv))
+        source_artifact = str(reuse_csv)
+        raw_command = f"reuse registry_combined.csv ({reuse_csv})"
+        _audit.log_execution(
+            execution_id=exec_id, tool_name=tool,
+            parameters={"image_path": image_path, "reuse_csv": str(reuse_csv)},
+            command_line=raw_command,
+        )
+        profiles_checked = sorted({name for name, _ in _iter_user_profile_dirs(image_path)})
+    else:
+        # 2) Run RECmd DFIRBatch over SYSTEM + per-profile NTUSER.
+        raw_command = "RECmd.dll --bn DFIRBatch over SYSTEM + per-profile NTUSER"
+        _audit.log_execution(
+            execution_id=exec_id, tool_name=tool,
+            parameters={"image_path": image_path}, command_line=raw_command,
+        )
+        batch_file_used: Optional[str] = None
+        for candidate in DFIR_BATCH_PATHS:
+            if os.path.isfile(candidate):
+                batch_file_used = candidate
+                break
+        ntuser_hives = _discover_user_hives(image_path, ("NTUSER.DAT",))
+        profiles_checked = sorted({name for name, _, _ in ntuser_hives}) or sorted(
+            {name for name, _ in _iter_user_profile_dirs(image_path)}
+        )
+        try:
+            for idx, (profile_name, hive_path, rel) in enumerate(ntuser_hives, start=1):
+                replay_in: Optional[Path] = None
+                replay_out: Optional[Path] = None
+                try:
+                    cleaned_hive, replay_in, replay_out = _replay_hive_with_rla(
+                        hive_path, f"{profile_name}_{idx}"
+                    )
+                except Exception:
+                    cleaned_hive = hive_path
+                csv_out = Path(tempfile.mkdtemp(prefix="savvydfir_refa_"))
+                tmp_dirs.append(csv_out)
+                csv_name = f"refa_{idx}.csv"
+                status = "ok"
+                try:
+                    result = _ez_runner.run_recmd(
+                        hive_dir=str(Path(cleaned_hive).parent),
+                        csv_dir=str(csv_out), csv_filename=csv_name,
+                        batch_file=batch_file_used, sync_batch=False, tool_name=tool,
+                    )
+                    if not result.ok:
+                        status = f"parser_error:{_ez_runner.classify_error(result)}"
+                except Exception as exc:
+                    status = f"exception:{type(exc).__name__}"
+                finally:
+                    if replay_in is not None:
+                        shutil.rmtree(replay_in, ignore_errors=True)
+                    if replay_out is not None:
+                        shutil.rmtree(replay_out, ignore_errors=True)
+                produced = csv_out / csv_name
+                hive_rows = _read_csv(str(produced)) if _path_exists(produced) else []
+                if hive_rows:
+                    for r in hive_rows:
+                        r.setdefault("__source_profile", profile_name)
+                        r.setdefault("__source_hive", hive_path.name)
+                        r.setdefault("__source_path", str(hive_path))
+                    source_rows.extend(hive_rows)
+                elif status != "ok":
+                    parser_failures.append(
+                        {"profile": profile_name, "hive": str(hive_path), "status": status}
+                    )
+        finally:
+            for d in tmp_dirs:
+                shutil.rmtree(d, ignore_errors=True)
+
+    # 3) Filter to file-access fragments and tag provenance.
+    merged_rows: list[dict[str, Any]] = []
+    profiles_with_data: set[str] = set()
+    fragment_counts: dict[str, int] = {}
+    for row in source_rows:
+        frag = _classify_fileaccess_row(row)
+        if not frag:
+            continue
+        fragment_counts[frag] = fragment_counts.get(frag, 0) + 1
+        profile = row.get("__source_profile") or row.get("HiveType") or "unknown"
+        src_hive = row.get("__source_hive") or row.get("HiveType") or ""
+        src_path = row.get("__source_path") or source_artifact or row.get("HivePath") or ""
+        clean = {k: v for k, v in row.items() if not k.startswith("__")}
+        clean["fileaccess_artifact"] = frag
+        tagged = _tag_provenance(
+            [clean], source_profile=str(profile), source_hive=str(src_hive),
+            source_artifact_path=str(src_path), parser_command="RECmd:DFIRBatch",
+            parser_status="ok",
+        )
+        merged_rows.extend(tagged)
+        if profile and profile != "unknown":
+            profiles_with_data.add(str(profile))
+
+    if not merged_rows:
+        resp = _useractivity_absent_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=parser_failures,
+            artifact_label="file-access registry artifacts (UserAssist/RecentDocs/etc.)",
+        )
+        resp["fragment_counts"] = fragment_counts
+        return resp
+
+    def _finding(durable_csv, total_rows):
+        return Finding(
+            case_id=_case_id(), finding_type="other", artifact_type="disk",
+            artifact_path=durable_csv or source_artifact or image_path, tool_name=tool,
+            execution_id=exec_id, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"Registry file-access: surfaced {total_rows} entries "
+                f"({', '.join(sorted(fragment_counts))}). A file-access key proves a "
+                "path was WRITTEN to a user-activity list, NOT that a human clicked it "
+                "(background tasks populate UserAssist). LastWriteTimestamp = when the "
+                "KEY changed, not when a value changed; corroborate with LNK / Jump "
+                "Lists / ShellBags."
+            ),
+            supporting_indicators=sorted(fragment_counts)[:20],
+        )
+
+    response = _finalize_useractivity_response(
+        tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
+        rows=merged_rows, profiles_checked=profiles_checked,
+        profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
+        tool_short_name="registry_fileaccess", csv_filename="registry_fileaccess.csv",
+        finding_factory=_finding, max_entries=max_entries,
+    )
+    response["fragment_counts"] = fragment_counts
+    response["reused_combined_csv"] = bool(source_artifact and "registry_combined" in source_artifact)
+    return response

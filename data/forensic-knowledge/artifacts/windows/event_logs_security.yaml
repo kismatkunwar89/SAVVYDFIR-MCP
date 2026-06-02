@@ -1,0 +1,14 @@
+# Forensic-knowledge: Windows Security/System event logs (EVTX).
+# Generic Windows forensic discipline - no case specifics.
+artifact: event_logs_security
+does_not_prove:
+  - "An event proves the logging subsystem RECORDED an action, NOT necessarily that a human performed it - service accounts and automation generate the same EIDs."
+  - "A logon event (4624) records a session type and account, NOT that the named user was physically present."
+  - "Absence of an expected event does NOT prove the action never happened - audit policy may have been disabled, or the log cleared (EID 1102)."
+  - "EID 1102 (audit log cleared) is itself evidence of anti-forensics; the cleared content is gone unless recoverable from a Volume Shadow Copy."
+  - "Event timestamps depend on the host clock; normalize to UTC and account for possible clock tampering before sequencing."
+corroborate_with:
+  volume_shadow_copies: "Shadow copies pre-dating a 1102 clear event may retain the intact Security.evtx."
+  prefetch: "Prefetch corroborates execution that 4688 records."
+  mft: "$MFT corroborates file creation/staging referenced by events."
+  hayabusa_alerts: "Sigma/Hayabusa rule hits provide deterministic ATT&CK mapping over the same events."

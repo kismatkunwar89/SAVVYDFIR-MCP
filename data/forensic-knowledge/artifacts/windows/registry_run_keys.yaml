@@ -1,0 +1,13 @@
+# Forensic-knowledge: Registry ASEP / Run-key persistence.
+# Generic Windows forensic discipline - no case specifics.
+artifact: registry_run_keys
+does_not_prove:
+  - "An ASEP/Run-key entry proves a persistence MECHANISM was configured, NOT that the referenced binary ever executed."
+  - "Key LastWriteTimestamp records when the KEY changed, NOT when a specific value was written or when the payload ran."
+  - "A Run key pointing to a now-missing binary suggests install-then-cleanup, but could also be stale/orphaned configuration."
+  - "Absence of Run-key persistence does NOT prove no persistence - scheduled tasks, services, WMI, and COM hijacks leave no Run-key trace."
+corroborate_with:
+  prefetch: "Prefetch confirms the persisted binary actually executed."
+  event_logs_security: "EID 4688 / service-install events corroborate auto-start execution."
+  mft: "$MFT confirms whether the referenced payload still exists on disk."
+  amcache: "Amcache SHA-1 identifies the payload even if it was renamed or deleted."

@@ -1,0 +1,15 @@
+# Forensic-knowledge: Sigma / Hayabusa / Chainsaw rule-based EVTX alerts.
+# Generic detection-engine discipline - no case specifics. Filed under linux/
+# because the detection host is Linux; the analyzed logs may be any Windows host.
+artifact: hayabusa_alerts
+does_not_prove:
+  - "A rule hit proves a pattern MATCHED the logs, NOT that the activity was malicious - community rules carry false positives that require triage."
+  - "A high-severity alert reflects the rule author's risk weighting, NOT a confirmed incident on this host."
+  - "Absence of alerts does NOT prove a clean host - rules only cover known techniques, and the underlying logs may be incomplete or cleared."
+  - "An ATT&CK technique label on an alert is the rule's mapping, NOT independently corroborated attribution."
+  - "Alert timestamps inherit the source event clock; normalize to UTC and corroborate before sequencing."
+corroborate_with:
+  event_logs_security: "Inspect the raw underlying events behind each alert before promoting it to a finding."
+  volatility_memory: "Memory artifacts corroborate process/network alerts (e.g. C2 beaconing)."
+  prefetch: "Prefetch corroborates execution-class alerts."
+  mft: "$MFT corroborates file-staging or drop alerts."

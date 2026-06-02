@@ -1,0 +1,14 @@
+# Forensic-knowledge: Windows Prefetch (.pf execution evidence).
+# Generic Windows forensic discipline - no case specifics.
+artifact: prefetch
+does_not_prove:
+  - "Prefetch proves a binary EXECUTED, but the embedded path is the path Windows recorded - it does not prove WHO launched it."
+  - "last_run_times records up to 8 runs (v26+); a single .pf cannot reconstruct the full execution history beyond that window."
+  - "Absence of a .pf does NOT prove non-execution: Prefetch is often disabled on Server OS, on SSDs, or wiped as anti-forensics."
+  - ".pf file create/modify times are filesystem metadata, NOT the exact execution timestamps - use last_run_times for run history."
+  - "Two binaries with the same name but different paths produce distinct .pf files; do not collapse them into one execution claim."
+corroborate_with:
+  event_logs_security: "EID 4688 process creation pins execution to a specific time, user, and parent process."
+  mft: "$MFT confirms the binary existed at the recorded path at the relevant time."
+  amcache: "Amcache SHA-1 identifies the binary even if it was later renamed or deleted."
+  registry_run_keys: "ASEP persistence keys explain WHY a binary ran (auto-start) versus interactive launch."

@@ -1,0 +1,14 @@
+# Forensic-knowledge: NTFS $MFT / $UsnJrnl timeline.
+# Generic Windows forensic discipline - no case specifics.
+artifact: mft
+does_not_prove:
+  - "An $MFT entry proves a file EXISTED on the volume, NOT that it was executed or that a human opened it."
+  - "$SI (StandardInformation) timestamps are trivially forged by timestomping; $FN (FileName) timestamps are harder to forge - prefer $FN and the USN journal."
+  - "A $SI vs $FN mismatch >1 hour is a timestomping indicator, but cross-volume copies also inherit original timestamps and look identical to timestomping."
+  - "Local moves/renames change NO timestamps at all and are invisible to timestamp-only analysis."
+  - "Absence of an $MFT record does NOT prove a file never existed - it may have been deleted and its record reused."
+corroborate_with:
+  usn_journal: "$UsnJrnl:$J is an append-only authoritative change log - it cannot be backdated the way $SI can."
+  prefetch: "Prefetch confirms a binary actually executed, not merely that it existed on disk."
+  event_logs_security: "EID 4688 process creation corroborates execution at a specific time."
+  amcache: "Amcache/ShimCache corroborate that the executable was present and observed by Windows."

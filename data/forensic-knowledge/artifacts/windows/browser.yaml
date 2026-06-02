@@ -1,0 +1,14 @@
+# Forensic-knowledge: Browser history / downloads (Chromium + Firefox).
+artifact: browser
+does_not_prove:
+  - "A history/download record proves the browser process recorded the event, NOT that a specific human initiated it."
+  - "A download row proves a file was written to a target path, NOT that it was opened, executed, or exfiltrated."
+  - "Synced history can originate on another device under the same account, not the local machine."
+  - "Absence of history does NOT prove no browsing - history can be cleared, or a portable/incognito session used."
+  - "Visit/download timestamps are local-clock dependent; normalize to UTC and corroborate before sequencing."
+corroborate_with:
+  registry_fileaccess: "OpenSavePidlMRU / RecentDocs corroborate that a downloaded file was subsequently opened."
+  prefetch: "Prefetch confirms execution if a downloaded binary was run."
+  srum: "SRUM per-app network bytes corroborate upload/exfiltration volume for the browser process."
+  mft: "$MFT confirms the downloaded file existed at the recorded target path."
+  lnk_files: "LNK/Recent corroborate opening of a downloaded document."

@@ -42,8 +42,24 @@ get_amcache(case_id)
 extract_shimcache(mount_point, case_id)
 extract_registry_run_keys(case_id)
 extract_srum(mount_point, case_id)
+extract_shellbags(image_path, case_id)        ← per-profile Explorer folder navigation (SBECmd)
+extract_lnk_files(image_path, case_id)        ← per-profile Recent LNK shortcuts (LECmd)
+extract_jump_lists(image_path, case_id)       ← per-profile Jump Lists / AppId-to-file (JLECmd)
+extract_browser_history(image_path, case_id)  ← Chrome/Edge/Firefox visits+downloads (native sqlite3)
+extract_registry_fileaccess(image_path, case_id) ← UserAssist/RecentDocs/OpenSavePidlMRU/TypedPaths (hybrid RECmd)
 extract_windows_artifacts(case_id) ← fallback if direct mount failed
 ```
+
+**Note - new file-access / browser artifacts are FK-only.** The five
+user-activity extractors above (`extract_shellbags`, `extract_lnk_files`,
+`extract_jump_lists`, `extract_browser_history`, `extract_registry_fileaccess`)
+are OPTIONAL (never block `generate_report`) and carry forensic guidance ONLY
+via the injected `forensic_caveat` / `corroborate_with` envelope - they do NOT
+return an `applicable_heuristics` slice and have no `*-analyst.md` knowledge
+base. Read the caveat: these artifacts prove navigation / referencing, NOT file
+access or execution. Each tool auto-discovers EVERY user profile under both
+`Users/*` and `Documents and Settings/*`; the manifest incident_date may
+annotate but never filters rows.
 
 ### PHASE 3: Detection Engines (10-15 min)
 ```

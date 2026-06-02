@@ -1,0 +1,14 @@
+# Forensic-knowledge: ShimCache / AppCompatCache (SYSTEM hive).
+# Generic Windows forensic discipline - no case specifics.
+artifact: shimcache
+does_not_prove:
+  - "A ShimCache entry proves Windows OBSERVED an executable path, NOT that the binary executed."
+  - "ShimCache does NOT record run count - presence in the cache is not proof of execution on modern Windows."
+  - "ShimCache buffers in kernel memory and flushes to the SYSTEM hive on shutdown; recent entries may be missing from an offline hive."
+  - "Absence of an expected entry can mean the binary was timestomped, deleted, or simply never observed - not that nothing ran."
+  - "Entries outside System32/Program Files/WinSxS are flagged for review, but are not inherently malicious."
+corroborate_with:
+  amcache: "ShimCache-present but Amcache-absent can indicate selective cache clearing - cross-check both."
+  prefetch: "Prefetch confirms actual execution that ShimCache cannot."
+  event_logs_security: "EID 4688 corroborates execution at a specific time."
+  mft: "$MFT confirms the executable existed at the cached path."

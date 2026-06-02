@@ -479,6 +479,96 @@ class EZToolsRunner(SafeRunner):
         return self.run(cmd, timeout=timeout, tool_name=tool_name)
 
     # ------------------------------------------------------------------
+    # SBECmd - ShellBags Explorer (command line)
+    # ------------------------------------------------------------------
+
+    def run_sbecmd(
+        self,
+        hive_dir: str,
+        csv_dir: str,
+        csv_filename: Optional[str] = None,
+        tool_name: Optional[str] = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> RunResult:
+        """Parse ShellBags from registry hives in ``hive_dir`` with SBECmd.
+
+        SBECmd scans a directory of hives (UsrClass.dat / NTUSER.DAT) and
+        exports BagMRU shell-navigation entries. Provide a directory holding
+        the (already log-replayed) hive(s); SBECmd writes one CSV per hive
+        into ``csv_dir``.
+
+        Parameters
+        ----------
+        hive_dir:
+            Directory containing the registry hive(s) to parse.
+        csv_dir:
+            Directory where SBECmd writes its CSV output.
+        csv_filename:
+            Optional fixed output filename (``--csvf``); when omitted SBECmd
+            uses its default per-hive naming.
+        """
+        cmd: List[str] = [
+            *([_sift_bin("SBECmd")] if _sift_bin("SBECmd") else ["dotnet", _dll("SBECmd.dll")]),
+            "-d", hive_dir,
+            "--csv", csv_dir,
+        ]
+        if csv_filename:
+            cmd += ["--csvf", csv_filename]
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
+
+    # ------------------------------------------------------------------
+    # LECmd - LNK shortcut parser
+    # ------------------------------------------------------------------
+
+    def run_lecmd(
+        self,
+        target_dir: str,
+        csv_dir: str,
+        csv_filename: str,
+        tool_name: Optional[str] = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> RunResult:
+        """Recursively parse LNK shortcut files under ``target_dir`` with LECmd.
+
+        ``--all`` processes every file (not just ``*.lnk``) so automatic-
+        destination-embedded shortcuts and renamed links are not missed.
+        """
+        cmd: List[str] = [
+            *([_sift_bin("LECmd")] if _sift_bin("LECmd") else ["dotnet", _dll("LECmd.dll")]),
+            "-d", target_dir,
+            "--csv", csv_dir,
+            "--csvf", csv_filename,
+            "--all", "-q",
+        ]
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
+
+    # ------------------------------------------------------------------
+    # JLECmd - Jump List parser
+    # ------------------------------------------------------------------
+
+    def run_jlecmd(
+        self,
+        target_dir: str,
+        csv_dir: str,
+        csv_filename: str,
+        tool_name: Optional[str] = None,
+        timeout: int = DEFAULT_TIMEOUT,
+    ) -> RunResult:
+        """Recursively parse Jump Lists under ``target_dir`` with JLECmd.
+
+        ``--all`` covers both Automatic and Custom destinations; ``-q``
+        speeds up the CSV-only export.
+        """
+        cmd: List[str] = [
+            *([_sift_bin("JLECmd")] if _sift_bin("JLECmd") else ["dotnet", _dll("JLECmd.dll")]),
+            "-d", target_dir,
+            "--csv", csv_dir,
+            "--csvf", csv_filename,
+            "--all", "-q",
+        ]
+        return self.run(cmd, timeout=timeout, tool_name=tool_name)
+
+    # ------------------------------------------------------------------
     # Error classification
     # ------------------------------------------------------------------
 

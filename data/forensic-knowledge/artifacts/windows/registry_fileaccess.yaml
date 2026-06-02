@@ -1,0 +1,14 @@
+# Forensic-knowledge: user file-access registry keys (UserAssist, OpenSavePidlMRU,
+# TypedPaths, RecentDocs) - distinct from persistence/Run keys.
+artifact: registry_fileaccess
+does_not_prove:
+  - "UserAssist records that a GUI program was launched in the user's session, NOT command-line or service execution."
+  - "A key's LastWriteTime is when the KEY changed, NOT when a specific value within it was written."
+  - "OpenSavePidlMRU / RecentDocs prove a file-open/save dialog referenced a path, NOT that the file was read or modified."
+  - "TypedPaths records strings typed into the Explorer address bar, NOT that the location was successfully reached."
+  - "Cleared or reset MRU keys can mean anti-forensic tampering, not absence of activity - treat gaps as evidence."
+corroborate_with:
+  prefetch: "Prefetch corroborates actual execution of a UserAssist-listed program."
+  shellbags: "ShellBags corroborate folder navigation referenced by TypedPaths/OpenSavePidlMRU."
+  lnk_files: "LNK/RecentDocs corroborate the specific document open events."
+  mft: "$MFT confirms referenced files/paths existed; compare against MRU timestamps."

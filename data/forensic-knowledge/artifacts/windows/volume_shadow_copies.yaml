@@ -1,0 +1,12 @@
+# Forensic-knowledge: Volume Shadow Copies (VSS).
+# Generic Windows forensic discipline - no case specifics.
+artifact: volume_shadow_copies
+does_not_prove:
+  - "A shadow copy proves the volume state at the snapshot CREATION time, NOT continuous coverage - gaps between snapshots are blind spots."
+  - "Presence of a shadow store does NOT guarantee a specific artifact inside it is intact or uncorrupted - verify per-file."
+  - "Absence of shadow copies does NOT prove anti-forensics - VSS may simply be disabled, or snapshots aged out by retention policy."
+  - "A shadow snapshot dated after an incident is of limited value for recovering pre-incident state."
+corroborate_with:
+  event_logs_security: "Compare snapshot creation dates against the incident timeline to find pre-attack snapshots for log recovery (e.g. after EID 1102)."
+  mft: "Compare $MFT inside a shadow copy with the live volume to detect post-snapshot tampering or deletion."
+  registry_run_keys: "Registry hives inside a pre-incident shadow copy may retain persistence later removed."

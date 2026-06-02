@@ -1,0 +1,13 @@
+# Forensic-knowledge: Amcache.hve (program presence + SHA-1).
+# Generic Windows forensic discipline - no case specifics.
+artifact: amcache
+does_not_prove:
+  - "An Amcache entry proves a binary was PRESENT and observed by Windows compatibility tracking, NOT that it executed."
+  - "Amcache SHA-1 identifies the file even after deletion, but the timestamp reflects when Amcache recorded it, not necessarily first execution."
+  - "Absence from Amcache does NOT prove a binary never ran - Amcache coverage varies by Windows version and can be cleared."
+  - "An Amcache path outside System32/Program Files/WinSxS is suspicious for review, but legitimate software also installs to user paths."
+corroborate_with:
+  prefetch: "Prefetch confirms actual execution and run count; Amcache alone is presence-only."
+  event_logs_security: "EID 4688 ties the hash/path to a concrete execution event."
+  shimcache: "ShimCache corroborates that Windows observed the executable path."
+  mft: "$MFT confirms the file existed on the volume at the recorded path."

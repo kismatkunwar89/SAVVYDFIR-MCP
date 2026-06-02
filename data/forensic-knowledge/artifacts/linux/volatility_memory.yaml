@@ -1,0 +1,15 @@
+# Forensic-knowledge: Volatility 3 memory analysis (process / network / injection).
+# Generic memory-forensics discipline - no case specifics. Filed under linux/
+# because the SIFT analysis host is Linux; the analyzed image may be any OS.
+artifact: volatility_memory
+does_not_prove:
+  - "A process in the process list proves it was RESIDENT in memory at acquisition, NOT that it was malicious or that it executed from disk."
+  - "A network connection in memory proves a socket EXISTED at acquisition, NOT a sustained session or attacker intent - resolve the owning PID and binary first."
+  - "An injection/malfind hit flags anomalous executable memory; it requires DLL/module review and disk corroboration before being called confirmed injection."
+  - "A process present in scan (psscan) but absent from the active list may indicate DKOM hiding OR simply a terminated/exited process - distinguish before concluding."
+  - "Absence of a disk artifact for a memory-resident process points to fileless/injected execution OR post-execution deletion - state which, do not assume."
+corroborate_with:
+  event_logs_security: "EID 4688 / Sysmon EID 1 corroborate process creation that memory shows resident."
+  prefetch: "Prefetch corroborates that a memory-resident binary executed from disk."
+  mft: "$MFT presence/absence confirms whether a memory-only process has a disk binary."
+  srum: "SRUM corroborates the network volume for a process seen holding a socket."

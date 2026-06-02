@@ -50,6 +50,18 @@ or any PII. Use redacted/synthesized examples.
    in `_HEURISTIC_ARTIFACT_FOR_TOOL` and ensure the response carries
    `applicable_heuristics`.
 
+   **Exception - FK-only tools.** Not every tool feeds the heuristic-injection
+   layer. Tools whose forensic guidance is delivered purely via the
+   `_forensic_envelope` (Valhuntir/vendored `forensic-knowledge` YAMLs) - e.g.
+   the user-activity extractors `extract_shellbags`, `extract_lnk_files`,
+   `extract_jump_lists`, `extract_browser_history`,
+   `extract_registry_fileaccess` - intentionally do NOT carry an
+   `applicable_heuristics` slice and have NO `*-analyst.md` knowledge base. For
+   these, add the tool->artifact mapping in `server.py:_FK_MAP` and vendor a
+   `does_not_prove` + `corroborate_with` YAML under
+   `data/forensic-knowledge/artifacts/<platform>/`. Do NOT add them to
+   `_HEURISTIC_ARTIFACT_FOR_TOOL`.
+
 ## Adding a new heuristic / specialist agent
 
 1. Add `.claude/agents/<name>-analyst.md` with the canonical sections

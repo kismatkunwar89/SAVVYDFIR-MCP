@@ -66,6 +66,11 @@ from sift_mcp.tools.disk import extract_mft_timeline as _extract_mft_timeline
 from sift_mcp.tools.disk import extract_usn_journal as _extract_usn_journal
 from sift_mcp.tools.disk import get_amcache as _get_amcache
 from sift_mcp.tools.disk import extract_prefetch as _extract_prefetch
+from sift_mcp.tools.disk import extract_shellbags as _extract_shellbags
+from sift_mcp.tools.disk import extract_lnk_files as _extract_lnk_files
+from sift_mcp.tools.disk import extract_jump_lists as _extract_jump_lists
+from sift_mcp.tools.disk import extract_browser_history as _extract_browser_history
+from sift_mcp.tools.disk import extract_registry_fileaccess as _extract_registry_fileaccess
 from sift_mcp.tools.evidence import get_provenance as _get_provenance
 from sift_mcp.tools.evidence import verify_integrity as _verify_integrity
 from sift_mcp.state import CaseStateManager
@@ -271,16 +276,27 @@ def _memory_unavailable(tool_name: str) -> dict[str, Any]:
 # discipline is reinforced at the point of interpretation, not just at
 # session start via CLAUDE.md (which Claude drifts from after 50+ calls).
 # ===========================================================================
-_FK_BASE = Path("/opt/valhuntir-knowledge/packages/forensic-knowledge/data")
+# External Valhuntir package if installed; otherwise the in-repo vendored copy
+# so the forensic-knowledge feature is never silently inert on a fresh clone.
+_FK_BASE_EXTERNAL = Path("/opt/valhuntir-knowledge/packages/forensic-knowledge/data")
+_FK_BASE_VENDORED = Path(__file__).parent.parent / "data" / "forensic-knowledge"
+_FK_BASES = [_FK_BASE_EXTERNAL, _FK_BASE_VENDORED]
+# Back-compat alias: _init_fk()'s presence check uses _FK_BASE.
+_FK_BASE = _FK_BASE_EXTERNAL if _FK_BASE_EXTERNAL.exists() else _FK_BASE_VENDORED
 
 
 def _load_fk(artifact: str) -> dict:
-    """Load forensic knowledge YAML for an artifact. Returns {} if not found."""
-    for platform in ("windows", "linux"):
-        p = _FK_BASE / "artifacts" / platform / f"{artifact}.yaml"
-        if p.exists():
-            import yaml as _yaml
-            return _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    """Load forensic knowledge YAML for an artifact. Returns {} if not found.
+
+    Checks the external Valhuntir install first, then the in-repo vendored
+    copy, so caveats are present even when the external package is absent.
+    """
+    for base in _FK_BASES:
+        for platform in ("windows", "linux"):
+            p = base / "artifacts" / platform / f"{artifact}.yaml"
+            if p.exists():
+                import yaml as _yaml
+                return _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     return {}
 
 
@@ -298,6 +314,9 @@ _FK_MAP = {
     "disk.extract_jump_lists":        "jump_lists",
     "disk.extract_lnk_files":         "lnk_files",
     "disk.extract_recycle_bin":       "recycle_bin",
+    "disk.extract_shellbags":         "shellbags",
+    "disk.extract_browser_history":   "browser",
+    "disk.extract_registry_fileaccess": "registry_fileaccess",
     "memory.scan_processes":          "volatility_memory",
     "memory.scan_network":            "volatility_memory",
     "memory.detect_injection":        "volatility_memory",
@@ -1785,6 +1804,129 @@ def extract_registry_run_keys(
         return _finalize_tool_response("disk.extract_registry_run_keys", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "extract_registry_run_keys"}
+
+
+# ---------------------------------------------------------------------------
+# User-activity extractors (OPTIONAL - never in a mandatory coverage gate).
+# Path-B FK-only: forensic guidance comes from _forensic_envelope (Valhuntir/
+# vendored YAMLs); these tools carry NO applicable_heuristics slice.
+# All are case-agnostic: every Users/* and Documents and Settings/* profile is
+# auto-discovered. No hardcoded usernames/dates/paths/domains/IPs.
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def extract_shellbags(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract Windows ShellBags (Explorer folder navigation) per user profile.
+
+    Discovers UsrClass.dat + NTUSER.DAT for every user profile, replays
+    transaction logs, runs SBECmd, and merges per-hive output with provenance
+    columns. A ShellBag proves Explorer RENDERED a folder - NOT that files
+    inside were opened. Corroborate with LNK / Jump Lists / RecentDocs.
+    """
+    try:
+        _r = _extract_shellbags(image_path=image_path, case_id=case_id,
+                                max_entries=max_entries)
+        if isinstance(_r, dict) and _r.get("status") != "error":
+            _r.update(_forensic_envelope("disk.extract_shellbags"))
+        return _finalize_tool_response("disk.extract_shellbags", _r)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "extract_shellbags"}
+
+
+@mcp.tool()
+def extract_lnk_files(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract LNK shortcut metadata per user profile (LECmd).
+
+    Discovers each profile's Recent directory, runs LECmd recursively, merges
+    per-profile CSVs with provenance. A LNK records that a target path was
+    referenced - corroborate with ShellBags + RecentDocs + Prefetch.
+    """
+    try:
+        _r = _extract_lnk_files(image_path=image_path, case_id=case_id,
+                                max_entries=max_entries)
+        if isinstance(_r, dict) and _r.get("status") != "error":
+            _r.update(_forensic_envelope("disk.extract_lnk_files"))
+        return _finalize_tool_response("disk.extract_lnk_files", _r)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "extract_lnk_files"}
+
+
+@mcp.tool()
+def extract_jump_lists(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract Jump Lists per user profile (JLECmd).
+
+    Discovers AutomaticDestinations + CustomDestinations per profile, runs
+    JLECmd, merges with provenance. Jump Lists tie a target file to the
+    application (AppId) that referenced it; corroborate with LNK + ShellBags.
+    """
+    try:
+        _r = _extract_jump_lists(image_path=image_path, case_id=case_id,
+                                 max_entries=max_entries)
+        if isinstance(_r, dict) and _r.get("status") != "error":
+            _r.update(_forensic_envelope("disk.extract_jump_lists"))
+        return _finalize_tool_response("disk.extract_jump_lists", _r)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "extract_jump_lists"}
+
+
+@mcp.tool()
+def extract_browser_history(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract Chromium (Chrome/Edge) + Firefox history & downloads per profile.
+
+    Native sqlite3 (no EZ tool). Auto-detects Chrome/Edge History and Firefox
+    places.sqlite across profiles, copies each DB + WAL/SHM sidecars before
+    opening (locks), normalizes timestamps to UTC ISO, merges with provenance.
+    A record proves the browser PROCESS logged the event, NOT that a human did.
+    """
+    try:
+        _r = _extract_browser_history(image_path=image_path, case_id=case_id,
+                                      max_entries=max_entries)
+        if isinstance(_r, dict) and _r.get("status") != "error":
+            _r.update(_forensic_envelope("disk.extract_browser_history"))
+        return _finalize_tool_response("disk.extract_browser_history", _r)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "extract_browser_history"}
+
+
+@mcp.tool()
+def extract_registry_fileaccess(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Surface per-user file-access registry artifacts (UserAssist, RecentDocs,
+    OpenSavePidlMRU, TypedPaths, LastVisitedPidlMRU, RunMRU, WordWheelQuery).
+
+    HYBRID: reuses a prior durable registry_combined.csv if present, else runs
+    RECmd DFIRBatch over SYSTEM + per-profile NTUSER. Does NOT alter run-keys
+    semantics. These keys prove a path was WRITTEN to a user-activity list -
+    NOT that a human clicked it (background tasks also populate UserAssist).
+    """
+    try:
+        _r = _extract_registry_fileaccess(image_path=image_path, case_id=case_id,
+                                          max_entries=max_entries)
+        if isinstance(_r, dict) and _r.get("status") != "error":
+            _r.update(_forensic_envelope("disk.extract_registry_fileaccess"))
+        return _finalize_tool_response("disk.extract_registry_fileaccess", _r)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "extract_registry_fileaccess"}
 
 
 # ===========================================================================
@@ -5906,41 +6048,10 @@ def extract_pca(
 # ===========================================================================
 # REGISTRY HELPER - rla.exe dirty hive cleanup
 # ===========================================================================
-
-def _clean_hive_with_rla(hive_path: Path, label: str) -> tuple:
-    """Copy hive + transaction logs to temp dir, replay via rla.exe.
-
-    Returns (cleaned_hive_path, tmp_in, tmp_out).
-    Caller MUST clean up tmp_in and tmp_out in a finally block.
-    rla outputs the file with a path-flattened name; we glob for it.
-    If rla produces no output (hive was clean), falls back to original copy.
-    """
-    tmp_in = Path(tempfile.mkdtemp(prefix=f"savvy_rla_in_{label}_"))
-    tmp_out = Path(tempfile.mkdtemp(prefix=f"savvy_rla_out_{label}_"))
-
-    # Copy hive (read-only evidence → writable temp)
-    shutil.copy2(str(hive_path), str(tmp_in / hive_path.name))
-    for suffix in (".LOG1", ".LOG2"):
-        log = hive_path.parent / (hive_path.name + suffix)
-        if log.exists():
-            shutil.copy2(str(log), str(tmp_in / log.name))
-
-    rla_bin = Path("/opt/zimmermantools/rla.dll")
-    subprocess.run(
-        ["/usr/bin/dotnet", str(rla_bin),
-         "-d", str(tmp_in), "--out", str(tmp_out)],
-        capture_output=True, timeout=60,
-    )
-
-    # rla outputs with path-flattened filename - find whatever is in tmp_out
-    cleaned_files = [f for f in tmp_out.iterdir() if f.is_file()]
-    if cleaned_files:
-        cleaned_hive = cleaned_files[0]
-    else:
-        # Hive was already clean - use the original copy
-        cleaned_hive = tmp_in / hive_path.name
-
-    return cleaned_hive, tmp_in, tmp_out
+# Canonical implementation lives in tools/_hive_replay.py (shared with the
+# registry/shellbags tools in disk.py). Aliased here so shimcache/SRUM keep
+# working unchanged.
+from sift_mcp.tools._hive_replay import replay_hive_with_rla as _clean_hive_with_rla
 
 
 # ===========================================================================

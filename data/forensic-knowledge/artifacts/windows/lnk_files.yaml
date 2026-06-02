@@ -1,0 +1,12 @@
+# Forensic-knowledge: Windows LNK shortcut files.
+artifact: lnk_files
+does_not_prove:
+  - "A LNK file proves a target was referenced/opened at least once, NOT how many times or by whom interactively."
+  - "Automatically-created LNKs (Recent, install shortcuts) do not require deliberate user action."
+  - "LNK embedded target MAC times reflect the target at LNK creation, not necessarily the current file state."
+  - "A LNK to a removable/network path does not prove the volume is still present or the file still exists."
+corroborate_with:
+  jump_lists: "Jump Lists corroborate which application opened the target and when."
+  shellbags: "ShellBags corroborate navigation to the target's parent folder."
+  registry_fileaccess: "RecentDocs corroborates the document-open event for the user."
+  prefetch: "Prefetch confirms execution if the LNK target is an executable."

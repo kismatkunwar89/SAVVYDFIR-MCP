@@ -554,6 +554,33 @@ TOOL_AGENT_MAP: dict[str, tuple[str, str, str]] = {
         "timeline_correlation",
         "Review the bounded timeline slice, identify the strongest pivots, and refine the next query window.",
     ),
+    # User-activity extractors (OPTIONAL, FK-only). Mapped to the
+    # disk_execution_persistence lane for completeness; legacy/opt-in field.
+    "mcp__savvydfir__extract_shellbags": (
+        "registry-analyst",
+        "disk_execution_persistence",
+        "Review ShellBag folder-navigation entries: a ShellBag proves Explorer rendered the folder, NOT file access. Corroborate with LNK / Jump Lists / RecentDocs.",
+    ),
+    "mcp__savvydfir__extract_lnk_files": (
+        "registry-analyst",
+        "disk_execution_persistence",
+        "Review LNK shortcut targets: a LNK records a referenced path, NOT a human click. Corroborate with ShellBags + RecentDocs + Prefetch.",
+    ),
+    "mcp__savvydfir__extract_jump_lists": (
+        "registry-analyst",
+        "disk_execution_persistence",
+        "Review Jump List destinations: they tie a target file to the application AppId. Corroborate with LNK + ShellBags.",
+    ),
+    "mcp__savvydfir__extract_browser_history": (
+        "registry-analyst",
+        "disk_execution_persistence",
+        "Review browser visits/downloads: a record proves the browser process logged the event, NOT a human action. Corroborate downloads with $MFT / Prefetch.",
+    ),
+    "mcp__savvydfir__extract_registry_fileaccess": (
+        "registry-analyst",
+        "disk_execution_persistence",
+        "Review file-access registry artifacts (UserAssist/RecentDocs/OpenSavePidlMRU/etc.): they prove a path was written to a user-activity list, NOT that a human clicked it.",
+    ),
 }
 
 ERROR_PATTERNS: dict[str, str] = {

@@ -1,0 +1,14 @@
+# Forensic-knowledge: SRUM (System Resource Utilization Monitor).
+# Generic Windows forensic discipline - no case specifics.
+artifact: srum
+does_not_prove:
+  - "SRUM bytes_sent/bytes_recv per process is an AGGREGATE estimate over a polling window, NOT a precise byte-accurate exfiltration count."
+  - "High bytes_sent indicates volume, NOT intent - backups, sync clients, and updates also move large volumes."
+  - "A SRUM AppId with no matching binary on disk suggests the application was deleted (anti-forensics indicator), but does not by itself prove malice."
+  - "SRUM timestamps are bucketed to ~hourly intervals; do not treat them as exact event times."
+  - "Absence of a process from SRUM does NOT prove it had no network activity - SRUM coverage is sampled and rolls over (~30-60 days)."
+corroborate_with:
+  event_logs_security: "EID 5156 (firewall) and network connection events corroborate the actual connections."
+  volatility_memory: "Memory scan_network confirms live sockets for a process at acquisition time."
+  mft: "$MFT presence/absence confirms whether a SRUM AppId's binary still exists on disk."
+  browser: "For browser AppIds, browser history/downloads corroborate the nature of the traffic."

@@ -1,0 +1,13 @@
+# Forensic-knowledge: Windows Recycle Bin ($Recycle.Bin / $I + $R).
+# Generic Windows forensic discipline - no case specifics.
+artifact: recycle_bin
+does_not_prove:
+  - "A Recycle Bin entry proves a file was SENT to the bin under a user SID, NOT that the same human deleted it - any process running as that SID can delete."
+  - "The $I deletion timestamp records when the file entered the bin, NOT when it was created, opened, or last used."
+  - "Absence from the Recycle Bin does NOT prove a file was never deleted - shift-delete, command-line del, and secure-wipe bypass the bin entirely."
+  - "The recovered $R content is the file at deletion time; it does not establish prior versions or edit history."
+corroborate_with:
+  mft: "$MFT confirms the original path and timestamps of the deleted file."
+  usn_journal: "$UsnJrnl records the delete operation and any preceding rename/copy."
+  event_logs_security: "Object-access events (if audited) corroborate who accessed the file before deletion."
+  lnk_files: "LNK/Recent may reference the file's pre-deletion path."
