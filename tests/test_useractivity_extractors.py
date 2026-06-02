@@ -744,14 +744,55 @@ class UserActivityRootIsolationTests(unittest.TestCase):
             "stale /mnt/disk profile leaked into an explicit image_path (case contamination)",
         )
 
-    def test_falls_back_to_shared_mount_when_image_path_not_a_volume(self) -> None:
-        # explicit path has NO Windows/Users/Documents markers -> shared fallback preserved
+    def test_non_volume_image_path_hard_fails_no_shared_leak(self) -> None:
+        # explicit path has NO Windows/Users/Documents markers. Option A (signed
+        # fix): there is NO ambient /mnt/disk fallback - the volume-root resolver
+        # returns [] and profile discovery yields NOTHING, so a stale shared mount
+        # from OTHERCASE can never leak into this case's evidence.
         with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[self.stale]):
+            roots = disk._user_activity_volume_roots(str(self.explicit))
+            self.assertEqual(
+                roots, [],
+                "non-volume image_path must resolve to NO roots (no ambient fallback)",
+            )
             names = sorted({n for n, _ in disk._iter_user_profile_dirs(str(self.explicit))})
         self.assertEqual(
-            names, ["OTHERCASE_user"],
-            "shared-mount fallback should still resolve when image_path is not a Windows volume",
+            names, [],
+            "stale /mnt/disk (OTHERCASE) leaked into a non-volume image_path - case contamination",
         )
+
+
+class UserActivityHardFailTests(_Base):
+    """Tool-level hard-fail (Option A): a non-volume image_path returns
+    status=error and persists NO rows, even with a populated stale shared mount."""
+
+    def test_extract_shellbags_hard_fails_on_non_volume_image_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner, audit, state = self._init(tmp)
+            # image_path with NO Windows/Users markers.
+            non_volume = Path(tmp) / "not_a_volume"
+            non_volume.mkdir(parents=True, exist_ok=True)
+            # Populated stale shared mount that MUST NOT be scanned.
+            stale = Path(tmp) / "stale_shared"
+            (stale / "Users" / "OTHERCASE_user").mkdir(parents=True)
+            (stale / "Windows").mkdir(parents=True, exist_ok=True)
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[stale]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_shellbags(image_path=str(non_volume), case_id="CASE-UA")
+            self.assertEqual(r["status"], "error")
+            self.assertEqual(r["reason"], "no_windows_volume_at_image_path")
+            self.assertEqual(r["findings_created"], [])
+            self.assertEqual(r["total_rows"], 0)
+            self.assertIsNone(r["csv_path"])
+            # No SBECmd run happened (no stale rows could have been persisted).
+            self.assertEqual(runner.calls, [])
+            # Audit carries the error token and NOT artifact_absent.
+            lines = (Path(tmp) / "audit.jsonl").read_text(encoding="utf-8").splitlines()
+            self.assertTrue(
+                any("status=error reason=no_windows_volume_at_image_path" in ln for ln in lines)
+            )
+            self.assertFalse(any("artifact_absent" in ln for ln in lines))
 
 
 if __name__ == "__main__":

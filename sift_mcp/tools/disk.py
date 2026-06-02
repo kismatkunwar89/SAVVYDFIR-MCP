@@ -4587,9 +4587,11 @@ def _user_activity_volume_roots(image_path: str) -> list[Path]:
     them. A stale or concurrent ``/mnt/disk`` mount from another case must
     therefore never be mixed into an explicit ``image_path`` - that would
     attribute another case's ShellBags/LNK/Jump Lists/browser/NTUSER evidence to
-    this case (a case-isolation failure). So: prefer roots derived from
-    ``image_path``, and fall back to the shared ``/mnt/disk`` root ONLY when the
-    supplied path does not itself resolve to a Windows volume.
+    this case (a case-isolation failure). So: roots are derived ONLY from
+    ``image_path``. When ``image_path`` does not itself resolve to a mounted
+    Windows volume root, this returns an EMPTY list ``[]`` - there is NO
+    ambient/shared-mount fallback, so the caller hard-fails rather than scanning
+    a stale ``/mnt/disk`` from another case.
     """
     base = Path(image_path)
     explicit: list[Path] = []
@@ -4608,10 +4610,10 @@ def _user_activity_volume_roots(image_path: str) -> list[Path]:
         if any(_path_exists(nested / m) for m in ("Windows", "Users")):
             _add(nested)
 
-    if explicit:
-        return explicit
-    # image_path did not resolve to a Windows volume -> shared-mount fallback only.
-    return _candidate_windows_volume_roots(image_path)
+    # No ambient/shared-mount fallback: if image_path did not resolve to a
+    # Windows volume root, return [] so the caller hard-fails (status=error)
+    # instead of scanning a stale /mnt/disk from another case.
+    return explicit
 
 
 def _iter_user_profile_dirs(image_path: str) -> list[tuple[str, Path]]:
@@ -4704,6 +4706,65 @@ def _discover_user_dirs(
             if _path_exists(target) and _path_is_dir(target):
                 discovered.append((profile_name, target, rel))
     return discovered
+
+
+def _useractivity_no_volume_error(
+    *,
+    tool: str,
+    exec_id: str,
+    raw_command: str,
+    started_at: float,
+    image_path: str,
+) -> dict[str, Any]:
+    """Hard-fail response when ``image_path`` is not a mounted Windows volume root.
+
+    The user-activity extractors enumerate+merge every profile across volume
+    roots. If ``_user_activity_volume_roots(image_path)`` returns ``[]`` (the
+    supplied path does not resolve to a directory containing ``Windows/`` or
+    ``Users/``), there is NO ambient ``/mnt/disk`` fallback - falling back to a
+    shared mount would attribute another case's evidence to this one. So we
+    refuse: ``status=error`` (NOT ``artifact_absent`` - this is not a clean
+    negative, it is a misconfigured input). The ``outputs_summary`` carries the
+    literal ``status=error reason=no_windows_volume_at_image_path`` token and
+    MUST NOT contain the substring ``artifact_absent`` (hooks substring-match it).
+    """
+    summary = (
+        "status=error reason=no_windows_volume_at_image_path: image_path "
+        f"({image_path}) does not resolve to a mounted Windows volume root; "
+        "refusing ambient /mnt/disk fallback to avoid cross-case contamination."
+    )
+    if _audit is not None:
+        _audit.log_result(
+            execution_id=exec_id,
+            exit_code=1,
+            duration=time.monotonic() - started_at,
+            outputs_summary=summary,
+            finding_ids=[],
+            tool_name=tool,
+            command_line=raw_command,
+            parameters={"image_path": image_path},
+        )
+    return {
+        "tool_name": tool,
+        "status": "error",
+        "execution_id": exec_id,
+        "raw_command": raw_command,
+        "error": (
+            "image_path does not resolve to a mounted Windows volume root "
+            "(expected a directory containing Windows/ or Users/); refusing to "
+            "fall back to an ambient /mnt/disk mount to avoid cross-case "
+            "evidence contamination."
+        ),
+        "reason": "no_windows_volume_at_image_path",
+        "csv_path": None,
+        "records_count": 0,
+        "total_rows": 0,
+        "profiles_checked": [],
+        "profiles_with_data": [],
+        "parser_failures": [],
+        "findings_created": [],
+        "preview": [],
+    }
 
 
 def _useractivity_zero_row_response(
@@ -4923,6 +4984,10 @@ def extract_shellbags(
 
     A ShellBag proves Explorer RENDERED a folder - NOT that files inside it
     were opened or read. Corroborate with LNK / Jump Lists / RecentDocs.
+
+    image_path MUST be a mounted Windows volume root (e.g. /mnt/disk or
+    /mnt/windows_mount after mount_image); a path that is not a Windows volume
+    returns status=error rather than scanning an ambient mount.
     """
     tool = "disk.extract_shellbags"
     if _ez_runner is None or _state is None or _audit is None:
@@ -4948,6 +5013,12 @@ def extract_shellbags(
         parameters={"image_path": image_path, "profiles_checked": profiles_checked},
         command_line=raw_command,
     )
+
+    if not _user_activity_volume_roots(image_path):
+        return _useractivity_no_volume_error(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, image_path=image_path,
+        )
 
     if not hives:
         return _useractivity_zero_row_response(
@@ -5066,6 +5137,10 @@ def extract_lnk_files(
     directory, runs LECmd recursively, merges per-profile CSVs, and tags
     provenance. A LNK file records that a target was referenced/navigated -
     corroborate with ShellBags + RecentDocs for file-open intent.
+
+    image_path MUST be a mounted Windows volume root (e.g. /mnt/disk or
+    /mnt/windows_mount after mount_image); a path that is not a Windows volume
+    returns status=error rather than scanning an ambient mount.
     """
     tool = "disk.extract_lnk_files"
     if _ez_runner is None or _state is None or _audit is None:
@@ -5086,6 +5161,12 @@ def extract_lnk_files(
         parameters={"image_path": image_path, "profiles_checked": profiles_checked},
         command_line=raw_command,
     )
+
+    if not _user_activity_volume_roots(image_path):
+        return _useractivity_no_volume_error(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, image_path=image_path,
+        )
 
     if not dirs:
         return _useractivity_zero_row_response(
@@ -5181,6 +5262,10 @@ def extract_jump_lists(
     ``CustomDestinations`` directories, runs JLECmd recursively, merges
     per-profile CSVs, tags provenance. Jump Lists tie a target file to the
     application (AppId) that opened it.
+
+    image_path MUST be a mounted Windows volume root (e.g. /mnt/disk or
+    /mnt/windows_mount after mount_image); a path that is not a Windows volume
+    returns status=error rather than scanning an ambient mount.
     """
     tool = "disk.extract_jump_lists"
     if _ez_runner is None or _state is None or _audit is None:
@@ -5204,6 +5289,12 @@ def extract_jump_lists(
         parameters={"image_path": image_path, "profiles_checked": profiles_checked},
         command_line=raw_command,
     )
+
+    if not _user_activity_volume_roots(image_path):
+        return _useractivity_no_volume_error(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, image_path=image_path,
+        )
 
     if not dirs:
         return _useractivity_zero_row_response(
@@ -5472,6 +5563,10 @@ def extract_browser_history(
     A history/download record proves the BROWSER PROCESS recorded the event,
     NOT that a specific human initiated it; synced history can originate on
     another device.
+
+    image_path MUST be a mounted Windows volume root (e.g. /mnt/disk or
+    /mnt/windows_mount after mount_image); a path that is not a Windows volume
+    returns status=error rather than scanning an ambient mount.
     """
     tool = "disk.extract_browser_history"
     if _state is None or _audit is None:
@@ -5523,6 +5618,12 @@ def extract_browser_history(
         parameters={"image_path": image_path, "profiles_checked": profiles_checked},
         command_line=raw_command,
     )
+
+    if not _user_activity_volume_roots(image_path):
+        return _useractivity_no_volume_error(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, image_path=image_path,
+        )
 
     if not discovered:
         return _useractivity_zero_row_response(
@@ -5691,6 +5792,10 @@ def extract_registry_fileaccess(
     These keys prove a path was WRITTEN to a user-activity list - NOT that a
     human clicked/opened it (background tasks also populate UserAssist).
     LastWriteTimestamp = when the KEY changed, not when a specific value changed.
+
+    image_path MUST be a mounted Windows volume root (e.g. /mnt/disk or
+    /mnt/windows_mount after mount_image); a path that is not a Windows volume
+    returns status=error rather than scanning an ambient mount.
     """
     tool = "disk.extract_registry_fileaccess"
     if _ez_runner is None or _state is None or _audit is None:
@@ -5728,6 +5833,13 @@ def extract_registry_fileaccess(
         parameters={"image_path": image_path},
         command_line=raw_command,
     )
+
+    if not _user_activity_volume_roots(image_path):
+        return _useractivity_no_volume_error(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, image_path=image_path,
+        )
+
     ntuser_hives = _discover_user_hives(image_path, ("NTUSER.DAT",))
     discovered = bool(ntuser_hives)
     # Absence matrix: ALWAYS list every discovered profile (see shellbags note).

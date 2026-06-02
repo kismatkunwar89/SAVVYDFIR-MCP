@@ -1827,6 +1827,10 @@ def extract_shellbags(
     transaction logs, runs SBECmd, and merges per-hive output with provenance
     columns. A ShellBag proves Explorer RENDERED a folder - NOT that files
     inside were opened. Corroborate with LNK / Jump Lists / RecentDocs.
+
+    image_path MUST be a mounted Windows volume root (e.g. /mnt/disk or
+    /mnt/windows_mount after mount_image); a path that is not a Windows volume
+    returns status=error rather than scanning an ambient mount.
     """
     try:
         _r = _extract_shellbags(image_path=image_path, case_id=case_id,
@@ -1849,6 +1853,10 @@ def extract_lnk_files(
     Discovers each profile's Recent directory, runs LECmd recursively, merges
     per-profile CSVs with provenance. A LNK records that a target path was
     referenced - corroborate with ShellBags + RecentDocs + Prefetch.
+
+    image_path MUST be a mounted Windows volume root (e.g. /mnt/disk or
+    /mnt/windows_mount after mount_image); a path that is not a Windows volume
+    returns status=error rather than scanning an ambient mount.
     """
     try:
         _r = _extract_lnk_files(image_path=image_path, case_id=case_id,
@@ -1871,6 +1879,10 @@ def extract_jump_lists(
     Discovers AutomaticDestinations + CustomDestinations per profile, runs
     JLECmd, merges with provenance. Jump Lists tie a target file to the
     application (AppId) that referenced it; corroborate with LNK + ShellBags.
+
+    image_path MUST be a mounted Windows volume root (e.g. /mnt/disk or
+    /mnt/windows_mount after mount_image); a path that is not a Windows volume
+    returns status=error rather than scanning an ambient mount.
     """
     try:
         _r = _extract_jump_lists(image_path=image_path, case_id=case_id,
@@ -1894,6 +1906,10 @@ def extract_browser_history(
     places.sqlite across profiles, copies each DB + WAL/SHM sidecars before
     opening (locks), normalizes timestamps to UTC ISO, merges with provenance.
     A record proves the browser PROCESS logged the event, NOT that a human did.
+
+    image_path MUST be a mounted Windows volume root (e.g. /mnt/disk or
+    /mnt/windows_mount after mount_image); a path that is not a Windows volume
+    returns status=error rather than scanning an ambient mount.
     """
     try:
         _r = _extract_browser_history(image_path=image_path, case_id=case_id,
@@ -1919,6 +1935,10 @@ def extract_registry_fileaccess(
     actual source profile at parse time. Does NOT alter run-keys semantics.
     These keys prove a path was WRITTEN to a user-activity list - NOT that a
     human clicked it (background tasks also populate UserAssist).
+
+    image_path MUST be a mounted Windows volume root (e.g. /mnt/disk or
+    /mnt/windows_mount after mount_image); a path that is not a Windows volume
+    returns status=error rather than scanning an ambient mount.
     """
     try:
         _r = _extract_registry_fileaccess(image_path=image_path, case_id=case_id,
