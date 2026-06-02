@@ -5575,7 +5575,7 @@ def extract_browser_history(
 
 
 # ---------------------------------------------------------------------------
-# Tool: extract_registry_fileaccess (hybrid - reuse run-keys CSV or run RECmd)
+# Tool: extract_registry_fileaccess (per-profile NTUSER via RECmd; no cache reuse)
 # ---------------------------------------------------------------------------
 
 #: Well-known per-user file-access registry artifacts. Matched case-insensitively
@@ -5643,8 +5643,9 @@ def extract_registry_fileaccess(
     """Surface per-user file-access registry artifacts (UserAssist, RecentDocs,
     OpenSavePidlMRU, TypedPaths, LastVisitedPidlMRU, RunMRU, WordWheelQuery).
 
-    Parses SYSTEM + per-profile NTUSER directly via RECmd with DFIRBatch (no
-    cache reuse). Each NTUSER hive is parsed in isolation and every row is
+    Parses each per-profile NTUSER hive directly via RECmd with DFIRBatch (no
+    cache reuse; file-access fragments are all HKCU/NTUSER). Each hive is
+    parsed in isolation and every row is
     stamped with its actual source profile BEFORE merge, so file-access evidence
     is never mis-attributed across users/hosts. Rows are then filtered to the
     file-access fragment set and tagged with provenance at parse time. Does NOT
@@ -5684,7 +5685,7 @@ def extract_registry_fileaccess(
         if os.path.isfile(candidate):
             batch_file_used = candidate
             break
-    raw_command = "RECmd.dll --bn DFIRBatch over SYSTEM + per-profile NTUSER"
+    raw_command = "RECmd.dll --bn DFIRBatch over per-profile NTUSER hives"
     _audit.log_execution(
         execution_id=exec_id, tool_name=tool,
         parameters={"image_path": image_path},

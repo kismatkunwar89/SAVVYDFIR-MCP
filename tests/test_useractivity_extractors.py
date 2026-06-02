@@ -672,5 +672,48 @@ class RegistryFileAccessTests(_Base):
             )
 
 
+class HiveReplayCaseInsensitiveLogTests(unittest.TestCase):
+    """Regression guard for the silent-drop bug: on a case-sensitive Linux NTFS
+    mount the hive is ``NTUSER.DAT`` but its transaction logs are lowercase
+    ``ntuser.dat.LOG1`` / ``.LOG2``. A case-exact lookup misses them, rla replays
+    nothing, RECmd aborts on the dirty hive, and the user's evidence vanishes.
+    The replay helper must discover the logs case-insensitively and stage them
+    under a name matching the copied hive so rla pairs them."""
+
+    def test_lowercase_logs_staged_for_uppercase_hive(self) -> None:
+        from sift_mcp.tools import _hive_replay
+
+        src = Path(tempfile.mkdtemp(prefix="hivecase_src_"))
+        try:
+            (src / "NTUSER.DAT").write_bytes(b"regf-stub")
+            # lowercase-base log names, as a real NTFS volume carries them
+            (src / "ntuser.dat.LOG1").write_bytes(b"log1")
+            (src / "ntuser.dat.LOG2").write_bytes(b"log2")
+            # Patch the CORRECT module's subprocess (replay runs rla here, not in disk).
+            with mock.patch.object(_hive_replay, "subprocess") as m_sub:
+                m_sub.run.return_value = None
+                cleaned, tmp_in, tmp_out = _hive_replay.replay_hive_with_rla(
+                    src / "NTUSER.DAT", "case"
+                )
+            try:
+                self.assertTrue(
+                    (tmp_in / "NTUSER.DAT.LOG1").exists(),
+                    "lowercase ntuser.dat.LOG1 was not staged for rla",
+                )
+                self.assertTrue(
+                    (tmp_in / "NTUSER.DAT.LOG2").exists(),
+                    "lowercase ntuser.dat.LOG2 was not staged for rla",
+                )
+                # rla was invoked with the staged input dir
+                self.assertTrue(m_sub.run.called)
+            finally:
+                import shutil as _sh
+                _sh.rmtree(tmp_in, ignore_errors=True)
+                _sh.rmtree(tmp_out, ignore_errors=True)
+        finally:
+            import shutil as _sh
+            _sh.rmtree(src, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
