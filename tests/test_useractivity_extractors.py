@@ -137,8 +137,14 @@ class _FakeRunner(SafeRunner):
         return self._fake_result(False, {"hive_dir": hive_dir}, tool_name)
 
 
-def _no_replay(hive_path, label):
-    """Mock _replay_hive_with_rla: pretend the hive is already clean."""
+def _no_replay(hive_path, label, *, want_status=False):
+    """Mock _replay_hive_with_rla: pretend the hive is already clean.
+
+    Honors ``want_status`` so the shellbags / registry_fileaccess callers (which
+    now request the 4-tuple) get a successful ``replay_ok=True``.
+    """
+    if want_status:
+        return Path(hive_path), None, None, True
     return Path(hive_path), None, None
 
 
@@ -968,6 +974,178 @@ class ParserFailureDominatesPersistenceTests(_Base):
             results = [e for e in lines if "exit_code" in e]
             self.assertEqual(results[-1]["exit_code"], 1)
             self.assertIn("status=partial_collection", results[-1].get("outputs_summary", ""))
+
+
+# ---------------------------------------------------------------------------
+# ITEM 1: a FAILED rla replay (rla exit!=0, or the replay helper RAISES) must
+# NOT be reported as a clean success even when the parser salvages rows from the
+# unreplayed base hive - and the parser must NEVER run against the live profile
+# dir on the failure path. Consensus-signed 2026-06-02.
+# ---------------------------------------------------------------------------
+
+class ReplayFailureNotSilentSuccessTests(_Base):
+    def test_shellbags_replay_nonzero_is_partial_with_salvage(self):
+        """ITEM 1a: rla returns replay_ok=False while SBECmd salvages rows from
+        the base hive -> status=='partial_collection', a parser_failure tagged
+        replay_error with recovered_rows>0, and salvaged rows carry a non-ok
+        parser_status (not 'ok')."""
+        def _replay_fail(hive_path, label, *, want_status=False):
+            # replay_ok=False, returning the base hive's OWN parent as the
+            # cleaned-hive parent (worst case: parser would see the profile dir).
+            if want_status:
+                return Path(hive_path), None, None, False
+            return Path(hive_path), None, None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLogger(str(Path(tmp) / "audit.jsonl"))
+            state = CaseStateManager(str(Path(tmp) / "state.json"))
+            state.load("CASE-UA")
+            runner = _FakeRunner(audit_logger=audit, case_id="CASE-UA", state_manager=state)
+            disk.init_tools(state, audit, ez_runner=runner)
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha"])
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _replay_fail), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_shellbags(image_path=str(root), case_id="CASE-UA")
+            self.assertEqual(r["status"], "partial_collection")
+            self.assertTrue(r["parser_failures"])
+            replay_pf = [pf for pf in r["parser_failures"]
+                         if pf.get("status") == "replay_error"]
+            self.assertTrue(replay_pf, f"no replay_error parser_failure: {r['parser_failures']}")
+            self.assertEqual(replay_pf[0].get("reason"), "rla_nonzero")
+            self.assertGreater(int(replay_pf[0].get("recovered_rows", 0)), 0)
+            # Salvaged rows tagged non-ok.
+            rows = disk._read_csv(r["csv_path"])
+            statuses = {row.get("parser_status") for row in rows}
+            self.assertTrue(
+                all(s and s != "ok" for s in statuses),
+                f"salvaged-from-failed-replay rows must NOT be tagged ok: {statuses}",
+            )
+
+    def test_registry_replay_nonzero_is_partial_with_salvage(self):
+        """ITEM 1a (registry): rla replay_ok=False while RECmd salvages file-access
+        rows -> partial_collection + replay_error parser_failure + non-ok status."""
+        def _replay_fail(hive_path, label, *, want_status=False):
+            if want_status:
+                return Path(hive_path), None, None, False
+            return Path(hive_path), None, None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLogger(str(Path(tmp) / "audit.jsonl"))
+            state = CaseStateManager(str(Path(tmp) / "state.json"))
+            state.load("CASE-UA")
+            runner = _FakeRunner(audit_logger=audit, case_id="CASE-UA", state_manager=state)
+            disk.init_tools(state, audit, ez_runner=runner)
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha"])
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _replay_fail), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
+            self.assertEqual(r["status"], "partial_collection")
+            replay_pf = [pf for pf in r["parser_failures"]
+                         if pf.get("status") == "replay_error"]
+            self.assertTrue(replay_pf, f"no replay_error parser_failure: {r['parser_failures']}")
+            self.assertEqual(replay_pf[0].get("reason"), "rla_nonzero")
+            self.assertGreater(int(replay_pf[0].get("recovered_rows", 0)), 0)
+            rows = disk._read_csv(r["csv_path"])
+            statuses = {row.get("parser_status") for row in rows}
+            self.assertTrue(
+                all(s and s != "ok" for s in statuses),
+                f"salvaged rows must carry non-ok status: {statuses}",
+            )
+
+    def test_shellbags_replay_raises_parses_single_hive_dir_not_profile(self):
+        """ITEM 1b: when the replay helper RAISES, a parser_failure is recorded
+        (NOT silent success) AND SBECmd is invoked against a FRESH single-hive temp
+        dir, NEVER the live ``Users/<profile>`` directory."""
+        def _replay_raise(hive_path, label, *, want_status=False):
+            raise FileNotFoundError("dotnet not found")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLogger(str(Path(tmp) / "audit.jsonl"))
+            state = CaseStateManager(str(Path(tmp) / "state.json"))
+            state.load("CASE-UA")
+            runner = _FakeRunner(audit_logger=audit, case_id="CASE-UA", state_manager=state)
+            disk.init_tools(state, audit, ez_runner=runner)
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha"])
+            profile_dir = root / "Users" / "alpha"
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _replay_raise), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_shellbags(image_path=str(root), case_id="CASE-UA")
+            # A parser_failure was recorded for the raised replay.
+            replay_pf = [pf for pf in r["parser_failures"]
+                         if pf.get("status") == "replay_error"]
+            self.assertTrue(replay_pf, f"raise path recorded no failure: {r['parser_failures']}")
+            self.assertEqual(replay_pf[0].get("reason"), "FileNotFoundError")
+            # The parser ran against a single-hive temp dir, NOT the profile dir.
+            sbe_calls = [c.split("sbe:", 1)[1] for c in runner.calls if c.startswith("sbe:")]
+            self.assertTrue(sbe_calls)
+            for hive_dir in sbe_calls:
+                self.assertNotEqual(
+                    Path(hive_dir), profile_dir,
+                    "SBECmd ran against the live profile dir on the raise path",
+                )
+                # And it must not be ANY ancestor that contains the profile layout.
+                self.assertNotIn(str(profile_dir), hive_dir)
+
+    def test_registry_replay_raises_parses_single_hive_dir_not_profile(self):
+        """ITEM 1b (registry): replay RAISE -> parser_failure recorded AND RECmd
+        runs against a fresh single-hive temp dir, NEVER ``Users/<profile>``."""
+        def _replay_raise(hive_path, label, *, want_status=False):
+            raise FileNotFoundError("dotnet not found")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            audit = AuditLogger(str(Path(tmp) / "audit.jsonl"))
+            state = CaseStateManager(str(Path(tmp) / "state.json"))
+            state.load("CASE-UA")
+            runner = _FakeRunner(audit_logger=audit, case_id="CASE-UA", state_manager=state)
+            disk.init_tools(state, audit, ez_runner=runner)
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha"])
+            profile_dir = root / "Users" / "alpha"
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _replay_raise), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_registry_fileaccess(image_path=str(root), case_id="CASE-UA")
+            replay_pf = [pf for pf in r["parser_failures"]
+                         if pf.get("status") == "replay_error"]
+            self.assertTrue(replay_pf, f"raise path recorded no failure: {r['parser_failures']}")
+            self.assertEqual(replay_pf[0].get("reason"), "FileNotFoundError")
+            recmd_calls = [c.split("recmd:", 1)[1] for c in runner.calls if c.startswith("recmd:")]
+            self.assertTrue(recmd_calls)
+            for hive_dir in recmd_calls:
+                self.assertNotEqual(Path(hive_dir), profile_dir)
+                self.assertNotIn(str(profile_dir), hive_dir)
+
+
+# ---------------------------------------------------------------------------
+# ITEM 2: the in-response preview honors a caller-supplied max_entries cap
+# (the durable CSV stays full-size). Consensus-signed 2026-06-02.
+# ---------------------------------------------------------------------------
+
+class PreviewHonorsMaxEntriesTests(_Base):
+    def test_shellbags_preview_capped_by_max_entries_csv_full(self):
+        """max_entries=1 over a >1-row run -> preview holds exactly 1 row while
+        the durable CSV still contains every row."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            root = Path(tmp) / "mnt" / "C"
+            self._make_profiles(root, ["alpha", "beta"])  # 2 hives -> >1 row
+            with mock.patch.object(disk, "_shared_windows_root_candidates", return_value=[root]), \
+                 mock.patch.object(disk, "_replay_hive_with_rla", _no_replay), \
+                 mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_shellbags(image_path=str(root), case_id="CASE-UA", max_entries=1)
+            self.assertGreater(r["total_rows"], 1)
+            self.assertEqual(len(r["preview"]), 1)
+            # Durable CSV stays full-size.
+            self.assertTrue(r["csv_path"])
+            csv_rows = disk._read_csv(r["csv_path"])
+            self.assertEqual(len(csv_rows), r["total_rows"])
+            self.assertGreater(len(csv_rows), 1)
 
 
 class HiveReplayLeakTests(unittest.TestCase):

@@ -4894,7 +4894,11 @@ def _finalize_useractivity_response(
         except Exception:
             pass
 
-    preview = rows[:preview_cap]
+    # Honor a caller-supplied max_entries cap on the preview as well as the
+    # hard preview_cap. The durable CSV stays full-size; only the in-response
+    # preview is bounded by min(preview_cap, max_entries).
+    preview_limit = min(preview_cap, max_entries) if (max_entries and max_entries > 0) else preview_cap
+    preview = rows[:preview_limit]
 
     # Status taxonomy: a discovered source that FAILED to parse is a PARTIAL
     # collection, not a clean success - the CSV is missing the failed source's
@@ -4942,7 +4946,7 @@ def _finalize_useractivity_response(
     else:
         note = (
             f"{total_rows} rows merged across {len(profiles_with_data)} profile(s). "
-            f"Full data at {durable_csv}. Preview capped at {preview_cap}."
+            f"Full data at {durable_csv}. Preview capped at {preview_limit}."
         )
 
     response: dict[str, Any] = {
@@ -5080,18 +5084,39 @@ def extract_shellbags(
         for profile_name, hive_path, rel in hives:
             replay_in: Optional[Path] = None
             replay_out: Optional[Path] = None
+            replay_ok = True
+            replay_reason: Optional[str] = None
+            # ``hive_dir`` MUST be a directory holding ONLY this hive - never
+            # ``hive_path.parent`` (the live profile dir). On a clean/successful
+            # replay that is the rla temp out dir. On a replay RAISE the temp
+            # dirs were already cleaned, so stage the lone hive into a fresh
+            # temp dir and parse THAT.
+            hive_dir: Optional[str] = None
             try:
-                cleaned_hive, replay_in, replay_out = _replay_hive_with_rla(
-                    hive_path, f"{profile_name}_{hive_path.name}"
+                cleaned_hive, replay_in, replay_out, replay_ok = _replay_hive_with_rla(
+                    hive_path, f"{profile_name}_{hive_path.name}", want_status=True
                 )
-            except Exception:
-                cleaned_hive = hive_path
+                hive_dir = str(Path(cleaned_hive).parent)
+                if not replay_ok:
+                    replay_reason = "rla_nonzero"
+            except Exception as exc:
+                # Replay RAISED: do NOT fall back to hive_path (its parent is the
+                # profile dir). Stage just this hive into a fresh single-hive dir.
+                replay_ok = False
+                replay_reason = type(exc).__name__
+                staged = Path(tempfile.mkdtemp(prefix="savvydfir_sbe_stage_"))
+                tmp_dirs.append(staged)
+                try:
+                    shutil.copy2(str(hive_path), str(staged / hive_path.name))
+                except Exception:
+                    pass
+                hive_dir = str(staged)
             csv_out = Path(tempfile.mkdtemp(prefix="savvydfir_sbe_"))
             tmp_dirs.append(csv_out)
             status = "ok"
             try:
                 result = _ez_runner.run_sbecmd(
-                    hive_dir=str(Path(cleaned_hive).parent),
+                    hive_dir=hive_dir,
                     csv_dir=str(csv_out),
                     tool_name=tool,
                 )
@@ -5105,6 +5130,11 @@ def extract_shellbags(
                 if replay_out is not None:
                     shutil.rmtree(replay_out, ignore_errors=True)
 
+            # A failed replay is a collection gap even if the parser salvages
+            # rows from the unreplayed base hive: stamp the rows non-ok so they
+            # are not tagged "ok", and record a parser_failure below.
+            if not replay_ok and status == "ok":
+                status = "replay_error"
             profile_rows: list[dict[str, str]] = []
             for produced in sorted(csv_out.glob("*.csv")):
                 profile_rows.extend(_read_csv(str(produced)))
@@ -5121,7 +5151,17 @@ def extract_shellbags(
             # A non-ok run is a collection gap REGARDLESS of salvage: record it so
             # the response cannot read as a clean success. recovered_rows lets an
             # analyst distinguish "failed empty" from "failed with partial salvage".
-            if status != "ok":
+            if not replay_ok:
+                parser_failures.append(
+                    {
+                        "profile": profile_name,
+                        "hive": str(hive_path),
+                        "status": "replay_error",
+                        "reason": replay_reason or "rla_nonzero",
+                        "recovered_rows": len(profile_rows),
+                    }
+                )
+            elif status != "ok":
                 parser_failures.append(
                     {
                         "profile": profile_name,
@@ -5915,12 +5955,33 @@ def extract_registry_fileaccess(
         for idx, (profile_name, hive_path, rel) in enumerate(ntuser_hives, start=1):
             replay_in: Optional[Path] = None
             replay_out: Optional[Path] = None
+            replay_ok = True
+            replay_reason: Optional[str] = None
+            # ``hive_dir`` MUST be a directory holding ONLY this hive - never
+            # ``hive_path.parent`` (the live profile dir). On a clean/successful
+            # replay that is the rla temp out dir. On a replay RAISE the temp
+            # dirs were already cleaned, so stage the lone hive into a fresh
+            # temp dir and parse THAT.
+            hive_dir: Optional[str] = None
             try:
-                cleaned_hive, replay_in, replay_out = _replay_hive_with_rla(
-                    hive_path, f"{profile_name}_{idx}"
+                cleaned_hive, replay_in, replay_out, replay_ok = _replay_hive_with_rla(
+                    hive_path, f"{profile_name}_{idx}", want_status=True
                 )
-            except Exception:
-                cleaned_hive = hive_path
+                hive_dir = str(Path(cleaned_hive).parent)
+                if not replay_ok:
+                    replay_reason = "rla_nonzero"
+            except Exception as exc:
+                # Replay RAISED: do NOT fall back to hive_path (its parent is the
+                # profile dir). Stage just this hive into a fresh single-hive dir.
+                replay_ok = False
+                replay_reason = type(exc).__name__
+                staged = Path(tempfile.mkdtemp(prefix="savvydfir_refa_stage_"))
+                tmp_dirs.append(staged)
+                try:
+                    shutil.copy2(str(hive_path), str(staged / hive_path.name))
+                except Exception:
+                    pass
+                hive_dir = str(staged)
             csv_out = Path(tempfile.mkdtemp(prefix="savvydfir_refa_"))
             tmp_dirs.append(csv_out)
             csv_name = f"refa_{idx}.csv"
@@ -5928,7 +5989,7 @@ def extract_registry_fileaccess(
             result = None
             try:
                 result = _ez_runner.run_recmd(
-                    hive_dir=str(Path(cleaned_hive).parent),
+                    hive_dir=hive_dir,
                     csv_dir=str(csv_out), csv_filename=csv_name,
                     batch_file=batch_file_used, sync_batch=False, tool_name=tool,
                 )
@@ -5941,6 +6002,10 @@ def extract_registry_fileaccess(
                     shutil.rmtree(replay_in, ignore_errors=True)
                 if replay_out is not None:
                     shutil.rmtree(replay_out, ignore_errors=True)
+            # A failed replay is a collection gap even if the parser salvages rows
+            # from the unreplayed base hive: stamp rows non-ok and record a failure.
+            if not replay_ok and status == "ok":
+                status = "replay_error"
             produced = csv_out / csv_name
             hive_rows = _read_csv(str(produced)) if _path_exists(produced) else []
             if hive_rows:
@@ -5955,7 +6020,17 @@ def extract_registry_fileaccess(
                 source_rows.extend(hive_rows)
             # A non-ok run is a collection gap REGARDLESS of salvage: record it even
             # when rows were recovered, so the response cannot read as clean success.
-            if status != "ok":
+            if not replay_ok:
+                parser_failures.append(
+                    {
+                        "profile": profile_name,
+                        "hive": str(hive_path),
+                        "status": "replay_error",
+                        "reason": replay_reason or "rla_nonzero",
+                        "recovered_rows": len(hive_rows),
+                    }
+                )
+            elif status != "ok":
                 parser_failures.append(
                     {
                         "profile": profile_name,
