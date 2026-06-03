@@ -450,16 +450,16 @@ def _apply_response_format(
         payload["records_count"] = len(records)
         payload["total_records"] = total_records
         note = payload.get("note")
+        # NOTE: detailed mode returns a BOUNDED inline sample (memory-safety cap),
+        # not the full record set -- never advertise it as "the full array".
+        _detail_hint = (
+            'Raw records omitted by default; response_format="detailed" returns a '
+            "bounded inline sample. Use csv_path + run_analysis() for full fidelity."
+        )
         if isinstance(note, str) and note:
-            payload["note"] = (
-                f"{note} Raw records omitted by default; pass "
-                'response_format="detailed" for the full array.'
-            )
+            payload["note"] = f"{note} {_detail_hint}"
         else:
-            payload["note"] = (
-                'Raw records omitted by default; pass response_format="detailed" '
-                "for the full array."
-            )
+            payload["note"] = _detail_hint
         return payload
 
     if normalized == "detailed":
@@ -869,9 +869,13 @@ def _prefetch_mft_candidate_path(row: dict[str, str]) -> str:
 
 
 def _prefetch_mft_timestamp_lookup(csv_path: str) -> dict[str, dict[str, Any]]:
-    """Build a lookup of Prefetch file metadata from a durable MFT CSV."""
+    """Build a lookup of Prefetch file metadata from a durable MFT CSV.
+
+    Streams the (potentially large) MFT CSV one row at a time so this lookup
+    never materializes the whole file in memory (the MFT OOM twin).
+    """
     lookup: dict[str, dict[str, Any]] = {}
-    for row in _read_csv(csv_path):
+    for row in _iter_csv_rows(csv_path):
         candidate_path = _prefetch_mft_candidate_path(row)
         if not candidate_path.lower().endswith(".pf"):
             continue
@@ -1110,25 +1114,42 @@ def _mft_contract_payload(
     image_path: str,
     mft_path: str,
     csv_path: Optional[str],
+    normalized: Optional[list[dict[str, Any]]] = None,
+    pivot_entities: Optional[dict[str, Any]] = None,
+    evidence_excerpt: Optional[str] = None,
 ) -> dict[str, Any]:
-    normalized = [
-        {
-            "entry_number": record.entry_number,
-            "file_path": record.file_path,
-            "si_created": _dt_to_iso(record.si_created),
-            "fn_created": _dt_to_iso(record.fn_created),
-            "is_deleted": record.is_deleted,
-        }
-        for record in records[:20]
-    ]
+    # Streaming callers pass FULL-scan aggregates (over every row) so pivots
+    # reflect the whole CSV, not the retained sample. Legacy / direct tests
+    # derive them from `records`.
+    if normalized is None:
+        normalized = [
+            {
+                "entry_number": record.entry_number,
+                "file_path": record.file_path,
+                "si_created": _dt_to_iso(record.si_created),
+                "fn_created": _dt_to_iso(record.fn_created),
+                "is_deleted": record.is_deleted,
+            }
+            for record in records[:20]
+        ]
     summary = (
-        f"MFT timeline returned {response.get('records_count', len(records))} rows "
+        f"MFT timeline returned {response.get('total_records', response.get('records_count', len(records)))} rows "
         f"from {mft_path} with {response.get('timestomping_candidates', 0)} timestomping candidates."
     )
-    evidence_excerpt = next(
-        (record.file_path for record in records if record.file_path),
-        None,
-    )
+    if evidence_excerpt is None:
+        evidence_excerpt = next(
+            (record.file_path for record in records if record.file_path),
+            None,
+        )
+    if pivot_entities is None:
+        pivot_entities = {
+            "file_paths": compact_unique(record.file_path for record in records),
+            "entry_numbers": compact_unique(record.entry_number for record in records),
+            "timestamps": compact_unique(
+                _dt_to_iso(record.fn_created) or _dt_to_iso(record.si_created)
+                for record in records
+            ),
+        }
     return build_contract_response(
         response,
         case_id=_case_id(),
@@ -1391,6 +1412,307 @@ def _runner_error(tool_name: str, exc: Exception, execution_id: Optional[str] = 
     }
 
 
+# ---------------------------------------------------------------------------
+# MFT streaming-summary bounds (memory-safety; review 2026-06-03).
+# extract_mft_timeline previously did _read_csv (whole $MFT CSV -> list[dict])
+# + _build_mft_records (parallel list[MftEntry]) -- the same full-materialization
+# pattern that OOM-killed the server on a large EVTX CSV. A busy / DC-scale $MFT
+# is the highest residual crash twin. We stream the CSV in one pass, create the
+# per-entry timestomping findings INLINE (depth preserved exactly), and retain
+# only bounded aggregates + a head sample. Individual timestomping findings are
+# capped (state-bloat safety) with an aggregate-overflow finding + a truncation
+# flag; the candidate COUNT is always exact.
+# ---------------------------------------------------------------------------
+_MFT_SAMPLE_CAP = 500            # hard cap on retained MftEntry sample (inline + memory)
+_MFT_PIVOT_CAP = 64              # first-seen dedup cap per pivot dim (>> compact_unique limit 10)
+_MFT_TIMESTOMP_FINDING_CAP = 1000  # max individual timestomping Findings persisted; overflow -> 1 aggregate
+
+
+def _iter_csv_rows(csv_path: str):
+    """Yield EZ-tool CSV rows one dict at a time (streaming; never materializes
+    the whole file). NUL-stripped per line; field-size limit raised for wide
+    payloads. Yields nothing if the file is absent / empty / unreadable.
+    """
+    p = Path(csv_path)
+    try:
+        if not p.exists() or p.stat().st_size == 0:
+            return
+    except OSError:
+        return
+    try:
+        csv.field_size_limit(_EVTX_CSV_FIELD_LIMIT)
+    except (OverflowError, ValueError):
+        try:
+            csv.field_size_limit(2**31 - 1)
+        except (OverflowError, ValueError):
+            pass
+    try:
+        with p.open("r", encoding="utf-8-sig", errors="replace", newline="") as fh:
+            for row in csv.DictReader(_nul_stripped(fh)):
+                yield row
+    except OSError:
+        return
+
+
+def _mft_entry_from_row(row: dict[str, str]) -> Optional[MftEntry]:
+    """Parse one MFTECmd CSV row into an MftEntry (shared by _build_mft_records
+    and the streaming summary, so sample records are byte-identical). Returns
+    None on parse failure (preserving the legacy per-row skip semantics).
+    """
+    try:
+        entry_num_raw = row.get("EntryNumber") or row.get("MFTEntry") or "0"
+        try:
+            entry_num = int(entry_num_raw)
+        except (ValueError, TypeError):
+            entry_num = 0
+
+        seq_raw = row.get("SequenceNumber") or row.get("Sequence") or ""
+        try:
+            sequence = int(seq_raw) if seq_raw.strip() else None
+        except (ValueError, TypeError):
+            sequence = None
+
+        file_path_val = (
+            row.get("FileName") or row.get("FilePath") or row.get("ParentPath") or ""
+        ).strip()
+
+        si_created = _parse_dt(row.get("Created0x10") or row.get("SICreated") or "")
+        si_modified = _parse_dt(row.get("LastModified0x10") or row.get("SIModified") or "")
+        si_accessed = _parse_dt(row.get("LastAccess0x10") or row.get("SIAccessed") or "")
+        si_entry_mod = _parse_dt(
+            row.get("MFTRecordChange0x10") or row.get("SIEntryModified") or "")
+
+        fn_created = _parse_dt(row.get("Created0x30") or row.get("FNCreated") or "")
+        fn_modified = _parse_dt(row.get("LastModified0x30") or row.get("FNModified") or "")
+        fn_accessed = _parse_dt(row.get("LastAccess0x30") or row.get("FNAccessed") or "")
+        fn_entry_mod = _parse_dt(
+            row.get("MFTRecordChange0x30") or row.get("FNEntryModified") or "")
+
+        is_deleted = (row.get("InUse") or row.get("IsDeleted") or "").strip().lower() in (
+            "false", "0", "no", "deleted",
+        )
+        is_dir = (row.get("IsDirectory") or row.get("IsDir") or "").strip().lower() in (
+            "true", "1", "yes",
+        )
+
+        size_raw = row.get("FileSize") or row.get("LogicalSize") or ""
+        try:
+            file_size = int(size_raw) if size_raw.strip() else None
+        except (ValueError, TypeError):
+            file_size = None
+
+        parent_raw = row.get("ParentEntryNumber") or row.get("ParentMFTEntry") or ""
+        try:
+            parent_entry = int(parent_raw) if parent_raw.strip() else None
+        except (ValueError, TypeError):
+            parent_entry = None
+
+        return MftEntry(
+            entry_number=entry_num,
+            sequence=sequence,
+            file_path=file_path_val or None,
+            si_created=si_created,
+            si_modified=si_modified,
+            si_accessed=si_accessed,
+            si_entry_modified=si_entry_mod,
+            fn_created=fn_created,
+            fn_modified=fn_modified,
+            fn_accessed=fn_accessed,
+            fn_entry_modified=fn_entry_mod,
+            is_deleted=is_deleted,
+            is_directory=is_dir,
+            file_size=file_size,
+            parent_entry=parent_entry,
+        )
+    except Exception:
+        return None
+
+
+def _mft_timestomping_finding(
+    entry: MftEntry, *, mft_path: str, tool: str, execution_id: str
+) -> Finding:
+    """Build the exact per-entry timestomping Finding (T1070.006). Shared so the
+    streaming path and the legacy path emit byte-identical findings."""
+    file_path_val = entry.file_path or ""
+    return Finding(
+        case_id=_case_id(),
+        finding_type="timestomping",
+        artifact_type="disk",
+        artifact_path=mft_path,
+        artifact_offset=str(entry.entry_number),
+        tool_name=tool,
+        execution_id=execution_id,
+        iteration=_current_iteration(),
+        evidence_kind=EvidenceKind.OBSERVATION,
+        finding_status=FindingStatus.ACTIVE,
+        confidence=0.8,
+        # Artifact event-time for find_temporal_clusters (Run 9 fix). Use $SI
+        # created - the timestamp the attacker manipulated; $FN created is
+        # preserved on disk but reflects file-creation, not the timestomping.
+        timestamp_observed=entry.si_created,
+        description=(
+            f"Possible timestomping detected for MFT entry {entry.entry_number} "
+            f"({file_path_val or 'unknown path'}). "
+            f"$SI Created ({entry.si_created.isoformat()}) precedes "
+            f"$FN Created ({entry.fn_created.isoformat()}), which is physically "
+            "impossible on a normal write — SI timestamps may have been "
+            "retroactively modified to evade timeline analysis."
+        ),
+        supporting_indicators=[
+            f"si_created={entry.si_created.isoformat()}",
+            f"fn_created={entry.fn_created.isoformat()}",
+            f"mft_entry={entry.entry_number}",
+            file_path_val or "",
+        ],
+        mitre_tactic="TA0005",
+        mitre_technique="T1070.006",
+    )
+
+
+def _is_timestomp_candidate(entry: MftEntry) -> bool:
+    return (
+        entry.si_created is not None
+        and entry.fn_created is not None
+        and entry.si_created < entry.fn_created
+    )
+
+
+def _stream_mft_summary(
+    csv_path: str,
+    *,
+    mft_path: str,
+    tool: str,
+    execution_id: str,
+    create_findings: bool,
+) -> dict[str, Any]:
+    """Single streaming pass over an MFTECmd CSV. Memory-bounded replacement for
+    _read_csv + _build_mft_records. Creates per-entry timestomping findings
+    INLINE (preserving every candidate, capped at _MFT_TIMESTOMP_FINDING_CAP
+    with an aggregate-overflow finding) while retaining only a bounded sample +
+    full-scan capped pivots. timestomping_candidates is always the exact count.
+    """
+    raw_rows = 0
+    timestomping_candidates = 0
+    finding_ids: list[str] = []
+    sample: list[MftEntry] = []
+    earliest_si = None
+    overflow_paths: list[str] = []   # a few example paths beyond the cap, for the aggregate
+    pivot_paths: list[str] = []
+    pivot_entries: list[int] = []
+    pivot_timestamps: list[str] = []
+    seen_path: set[str] = set()
+    seen_entry: set[int] = set()
+    seen_ts: set[str] = set()
+    evidence_excerpt: Optional[str] = None
+
+    def _add_capped(ordered: list, seen: set, value: Any, cap: int) -> None:
+        if value is None or value in seen or len(ordered) >= cap:
+            return
+        seen.add(value)
+        ordered.append(value)
+
+    for row in _iter_csv_rows(csv_path):
+        raw_rows += 1
+        entry = _mft_entry_from_row(row)
+        if entry is None:
+            continue
+        _add_capped(pivot_paths, seen_path, entry.file_path, _MFT_PIVOT_CAP)
+        _add_capped(pivot_entries, seen_entry, entry.entry_number, _MFT_PIVOT_CAP)
+        ts_val = _dt_to_iso(entry.fn_created) or _dt_to_iso(entry.si_created)
+        _add_capped(pivot_timestamps, seen_ts, ts_val, _MFT_PIVOT_CAP)
+        if len(sample) < _MFT_SAMPLE_CAP:
+            sample.append(entry)
+            if evidence_excerpt is None and entry.file_path:
+                evidence_excerpt = entry.file_path
+        if _is_timestomp_candidate(entry):
+            timestomping_candidates += 1
+            if earliest_si is None or entry.si_created < earliest_si:
+                earliest_si = entry.si_created
+            if create_findings and _state is not None:
+                if len(finding_ids) < _MFT_TIMESTOMP_FINDING_CAP:
+                    finding_ids.append(
+                        _state.add_finding(
+                            _mft_timestomping_finding(
+                                entry, mft_path=mft_path, tool=tool,
+                                execution_id=execution_id,
+                            ).model_dump(mode="json")
+                        )
+                    )
+                elif len(overflow_paths) < 10:
+                    overflow_paths.append(entry.file_path or f"entry {entry.entry_number}")
+
+    truncated = timestomping_candidates > len(finding_ids) if create_findings else False
+    if create_findings and truncated and _state is not None:
+        # One aggregate finding covers the candidates beyond the individual cap.
+        # Stable group_key (no volatile F-ids in dedup material) so reruns dedup.
+        not_recorded = timestomping_candidates - len(finding_ids)
+        agg = Finding(
+            case_id=_case_id(),
+            finding_type="timestomping",
+            artifact_type="disk",
+            artifact_path=mft_path,
+            tool_name=tool,
+            execution_id=execution_id,
+            iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION,
+            finding_status=FindingStatus.ACTIVE,
+            confidence=0.8,
+            timestamp_observed=earliest_si,
+            description=(
+                f"{timestomping_candidates} MFT entries show $SI Created preceding "
+                f"$FN Created (possible timestomping, T1070.006). The first "
+                f"{len(finding_ids)} are recorded as individual findings; the remaining "
+                f"{not_recorded} are not individually recorded — analyze the full set via "
+                f"run_analysis() over the persisted MFT CSV. Examples beyond the cap: "
+                f"{', '.join(overflow_paths) or 'see CSV'}."
+            ),
+            supporting_indicators=[
+                f"timestomping_candidates={timestomping_candidates}",
+                f"individual_findings={len(finding_ids)}",
+                f"not_individually_recorded={not_recorded}",
+                "group_key=mft_timestomping_overflow",
+            ],
+            mitre_tactic="TA0005",
+            mitre_technique="T1070.006",
+        )
+        finding_ids.append(_state.add_finding(agg.model_dump(mode="json")))
+
+    return {
+        "raw_rows": raw_rows,
+        "timestomping_candidates": timestomping_candidates,
+        "finding_ids": finding_ids,
+        "timestomping_findings_truncated": truncated,
+        "sample": sample,
+        "pivot_paths": pivot_paths,
+        "pivot_entries": pivot_entries,
+        "pivot_timestamps": pivot_timestamps,
+        "evidence_excerpt": evidence_excerpt,
+    }
+
+
+def _mft_contract_inputs(stream: dict[str, Any]):
+    """Build (normalized_observations, pivot_entities) for the MFT contract from
+    a streaming-summary result. Pivots are full-scan capped first-seen sets (not
+    sample-derived), so depth matches the legacy path exactly."""
+    sample = stream["sample"]
+    normalized = [
+        {
+            "entry_number": record.entry_number,
+            "file_path": record.file_path,
+            "si_created": _dt_to_iso(record.si_created),
+            "fn_created": _dt_to_iso(record.fn_created),
+            "is_deleted": record.is_deleted,
+        }
+        for record in sample[:20]
+    ]
+    pivots = {
+        "file_paths": compact_unique(stream["pivot_paths"]),
+        "entry_numbers": compact_unique(stream["pivot_entries"]),
+        "timestamps": compact_unique(stream["pivot_timestamps"]),
+    }
+    return normalized, pivots
+
+
 def _build_mft_records(
     rows: list[dict[str, str]],
     *,
@@ -1399,138 +1721,33 @@ def _build_mft_records(
     execution_id: str,
     create_findings: bool,
 ) -> tuple[list[MftEntry], list[str], int]:
-    """Parse MFTECmd rows into records and optional findings."""
+    """Parse MFTECmd rows into records and optional findings.
+
+    Legacy materializing path, retained for back-compat and equivalence tests.
+    extract_mft_timeline no longer calls this (it streams via _stream_mft_summary);
+    the per-row parse + finding are shared via _mft_entry_from_row /
+    _mft_timestomping_finding so outputs stay byte-identical.
+    """
     records: list[MftEntry] = []
     finding_ids: list[str] = []
     timestomping_candidates = 0
 
     for row in rows:
-        try:
-            entry_num_raw = row.get(
-                "EntryNumber") or row.get("MFTEntry") or "0"
-            try:
-                entry_num = int(entry_num_raw)
-            except (ValueError, TypeError):
-                entry_num = 0
-
-            seq_raw = row.get("SequenceNumber") or row.get("Sequence") or ""
-            try:
-                sequence = int(seq_raw) if seq_raw.strip() else None
-            except (ValueError, TypeError):
-                sequence = None
-
-            file_path_val = (
-                row.get("FileName") or row.get(
-                    "FilePath") or row.get("ParentPath") or ""
-            ).strip()
-
-            si_created = _parse_dt(row.get("Created0x10")
-                                   or row.get("SICreated") or "")
-            si_modified = _parse_dt(
-                row.get("LastModified0x10") or row.get("SIModified") or "")
-            si_accessed = _parse_dt(
-                row.get("LastAccess0x10") or row.get("SIAccessed") or "")
-            si_entry_mod = _parse_dt(
-                row.get("MFTRecordChange0x10") or row.get(
-                    "SIEntryModified") or ""
-            )
-
-            fn_created = _parse_dt(row.get("Created0x30")
-                                   or row.get("FNCreated") or "")
-            fn_modified = _parse_dt(
-                row.get("LastModified0x30") or row.get("FNModified") or "")
-            fn_accessed = _parse_dt(
-                row.get("LastAccess0x30") or row.get("FNAccessed") or "")
-            fn_entry_mod = _parse_dt(
-                row.get("MFTRecordChange0x30") or row.get(
-                    "FNEntryModified") or ""
-            )
-
-            is_deleted = (row.get("InUse") or row.get("IsDeleted") or "").strip().lower() in (
-                "false",
-                "0",
-                "no",
-                "deleted",
-            )
-            is_dir = (row.get("IsDirectory") or row.get("IsDir") or "").strip().lower() in (
-                "true",
-                "1",
-                "yes",
-            )
-
-            size_raw = row.get("FileSize") or row.get("LogicalSize") or ""
-            try:
-                file_size = int(size_raw) if size_raw.strip() else None
-            except (ValueError, TypeError):
-                file_size = None
-
-            parent_raw = row.get("ParentEntryNumber") or row.get(
-                "ParentMFTEntry") or ""
-            try:
-                parent_entry = int(parent_raw) if parent_raw.strip() else None
-            except (ValueError, TypeError):
-                parent_entry = None
-
-            record = MftEntry(
-                entry_number=entry_num,
-                sequence=sequence,
-                file_path=file_path_val or None,
-                si_created=si_created,
-                si_modified=si_modified,
-                si_accessed=si_accessed,
-                si_entry_modified=si_entry_mod,
-                fn_created=fn_created,
-                fn_modified=fn_modified,
-                fn_accessed=fn_accessed,
-                fn_entry_modified=fn_entry_mod,
-                is_deleted=is_deleted,
-                is_directory=is_dir,
-                file_size=file_size,
-                parent_entry=parent_entry,
-            )
-            records.append(record)
-
-            if si_created is not None and fn_created is not None and si_created < fn_created:
-                timestomping_candidates += 1
-                if create_findings and _state is not None:
-                    ts_finding = Finding(
-                        case_id=_case_id(),
-                        finding_type="timestomping",
-                        artifact_type="disk",
-                        artifact_path=mft_path,
-                        artifact_offset=str(entry_num),
-                        tool_name=tool,
-                        execution_id=execution_id,
-                        iteration=_current_iteration(),
-                        evidence_kind=EvidenceKind.OBSERVATION,
-                        finding_status=FindingStatus.ACTIVE,
-                        confidence=0.8,
-                        # Artifact event-time for find_temporal_clusters (Run 9 fix).
-                        # Use $SI created - the timestamp the attacker manipulated;
-                        # $FN created is preserved on disk but reflects file-creation
-                        # not the timestomping action.
-                        timestamp_observed=si_created,
-                        description=(
-                            f"Possible timestomping detected for MFT entry {entry_num} "
-                            f"({file_path_val or 'unknown path'}). "
-                            f"$SI Created ({si_created.isoformat()}) precedes "
-                            f"$FN Created ({fn_created.isoformat()}), which is physically "
-                            "impossible on a normal write — SI timestamps may have been "
-                            "retroactively modified to evade timeline analysis."
-                        ),
-                        supporting_indicators=[
-                            f"si_created={si_created.isoformat()}",
-                            f"fn_created={fn_created.isoformat()}",
-                            f"mft_entry={entry_num}",
-                            file_path_val or "",
-                        ],
-                        mitre_tactic="TA0005",
-                        mitre_technique="T1070.006",
-                    )
-                    finding_ids.append(_state.add_finding(
-                        ts_finding.model_dump(mode="json")))
-        except Exception:
+        entry = _mft_entry_from_row(row)
+        if entry is None:
             continue
+        records.append(entry)
+        if _is_timestomp_candidate(entry):
+            timestomping_candidates += 1
+            if create_findings and _state is not None:
+                finding_ids.append(
+                    _state.add_finding(
+                        _mft_timestomping_finding(
+                            entry, mft_path=mft_path, tool=tool,
+                            execution_id=execution_id,
+                        ).model_dump(mode="json")
+                    )
+                )
 
     return records, finding_ids, timestomping_candidates
 
@@ -1704,7 +1921,8 @@ def _stream_evtx_summary(
     capped), ``sample`` (list[EventRecord], wide fields truncated),
     ``evidence_excerpt``.
     """
-    total = 0
+    total = 0          # channel-MATCHED + parsed rows (what records_count derives from)
+    raw_rows = 0       # EVERY CSV data row read (== legacy len(_read_csv())); == total when channel=None
     channel_counts: dict[str, int] = {}
     pivot_event_ids: list[int] = []
     pivot_channels: list[str] = []
@@ -1727,6 +1945,8 @@ def _stream_evtx_summary(
 
     empty = {
         "total_records": 0,
+        "raw_rows": 0,
+        "matched_records": 0,
         "channel_counts": {},
         "pivot_event_ids": [],
         "pivot_channels": [],
@@ -1755,6 +1975,10 @@ def _stream_evtx_summary(
         with p.open("r", encoding="utf-8-sig", errors="replace", newline="") as fh:
             reader = csv.DictReader(_nul_stripped(fh))
             for row in reader:
+                # raw_rows tracks the FULL CSV the csv_path handle contains
+                # (legacy len(_read_csv())), counted before channel filtering so
+                # total_records never understates the backing store.
+                raw_rows += 1
                 # Full (untruncated) record: transient -- used for aggregates +
                 # path extraction, then discarded unless it joins the sample.
                 rec = _evtx_record_from_row(row, channel, truncate_wide=False)
@@ -1782,7 +2006,11 @@ def _stream_evtx_summary(
         pass
 
     return {
-        "total_records": total,
+        # total_records = raw CSV rows (matches csv_path + legacy len(_read_csv()));
+        # matched_records = channel-matched rows; equal when channel is None.
+        "total_records": raw_rows,
+        "raw_rows": raw_rows,
+        "matched_records": total,
         "channel_counts": channel_counts,
         "pivot_event_ids": pivot_event_ids,
         "pivot_channels": pivot_channels,
@@ -2901,7 +3129,6 @@ def extract_mft_timeline(
                        "timestomping_candidates"),
     )
     if cached is not None:
-        rows = _read_csv(str(cached["csv_path"]))
         cache_meta = record_cache_hit(
             _audit,
             _state,
@@ -2912,17 +3139,32 @@ def extract_mft_timeline(
             cache_source_execution_id=str(
                 cached.get("source_execution_id") or ""),
         )
-        records, _, timestomping_candidates = _build_mft_records(
-            rows,
+        # Memory-bounded: stream the cached CSV (same helper as the fresh path).
+        # create_findings=False -- the cached run already persisted the findings;
+        # reuse cached["findings_created"] rather than re-creating them.
+        stream = _stream_mft_summary(
+            str(cached["csv_path"]),
             mft_path=mft_path,
             tool=tool,
             execution_id=cache_meta["execution_id"],
             create_findings=False,
         )
-        full_records = list(records)
-        detailed_records = list(full_records)
-        if max_entries and max_entries > 0:
-            detailed_records = detailed_records[:max_entries]
+        total_records = stream["raw_rows"]
+        timestomping_candidates = stream["timestomping_candidates"]
+        cached_candidates = cached.get("timestomping_candidates")
+        if cached_candidates is not None and cached_candidates != timestomping_candidates:
+            # Recomputed count drifted from the cached value: surface, don't hide.
+            log_warning = getattr(_audit, "log_warning", None)
+            if callable(log_warning):
+                log_warning(
+                    tool,
+                    f"cache-hit timestomping_candidates recompute ({timestomping_candidates}) "
+                    f"!= cached ({cached_candidates}) for {cached['csv_path']}",
+                )
+        sample = stream["sample"]
+        detailed_records = (
+            sample[:max_entries] if (max_entries and max_entries > 0) else list(sample)
+        )
         response = {
             "tool_name": tool,
             "status": "success",
@@ -2930,14 +3172,21 @@ def extract_mft_timeline(
             "execution_id": cache_meta["execution_id"],
             "raw_command": cache_meta["raw_command"],
             "records_count": len(detailed_records),
-            "total_records": len(rows),
+            "total_records": total_records,
+            "matched_records": total_records,
             "timestomping_candidates": timestomping_candidates,
+            "data_truncated": total_records > len(detailed_records),
+            "data_scope": "head_sample",
+            "sample_cap": _MFT_SAMPLE_CAP,
             "csv_path": str(cached["csv_path"]),
-            "note": f"Returning {len(detailed_records)} of {len(rows)} MFT rows. Full CSV at {cached['csv_path']}.",
+            "note": (
+                f"Returning a bounded sample of {len(detailed_records)} of {total_records} "
+                f"MFT rows. Full CSV at {cached['csv_path']}."
+            ),
             "requires_agent": cached.get("requires_agent", "@mft-analyst"),
             "agent_instruction": cached.get(
                 "agent_instruction",
-                f"Analyze {cached['csv_path']} for timestomping, attacker file drops, staging. {len(rows)} total rows.",
+                f"Analyze {cached['csv_path']} for timestomping, attacker file drops, staging. {total_records} total rows.",
             ),
             "cache_hit": True,
             "cache_source_execution_id": cached.get("source_execution_id"),
@@ -2951,16 +3200,20 @@ def extract_mft_timeline(
         formatted = _apply_response_format(
             response,
             response_format=normalized_format,
-            records=detailed_records if normalized_format == "detailed" else full_records,
-            total_records=len(rows),
+            records=detailed_records,
+            total_records=total_records,
         )
         formatted = _warn_if_empty(formatted, "extract_mft_timeline", mft_path, min_expected=10000)
+        normalized_obs, pivots = _mft_contract_inputs(stream)
         return _mft_contract_payload(
             response=formatted,
-            records=detailed_records if normalized_format == "detailed" else full_records,
+            records=detailed_records,
             image_path=image_path,
             mft_path=mft_path,
             csv_path=str(cached["csv_path"]),
+            normalized=normalized_obs,
+            pivot_entities=pivots,
+            evidence_excerpt=stream["evidence_excerpt"],
         )
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_mftecmd_") as tmp_dir:
@@ -2992,25 +3245,31 @@ def extract_mft_timeline(
                 "stderr": result.stderr,
             }
 
-        rows = _read_csv(csv_path)
+        # Memory-bounded: stream the (possibly large) $MFT CSV instead of
+        # _read_csv + _build_mft_records materializing every entry.
         persistent_csv = _persist_csv(csv_path, "mft")
         durable_csv, artifact_persistence = _finalize_artifact_persistence(
             artifact_label="MFT CSV",
             persisted_path=persistent_csv,
             preflight=preflight,
         )
+        # Stream from the durable CSV if persisted (so findings cite the durable
+        # path), else from the temp CSV while still inside the temp dir.
+        stream = _stream_mft_summary(
+            durable_csv or csv_path,
+            mft_path=resolved_mft_path,
+            tool=tool,
+            execution_id=result.execution_id,
+            create_findings=True,
+        )
 
-    records, finding_ids, timestomping_candidates = _build_mft_records(
-        rows,
-        mft_path=resolved_mft_path,
-        tool=tool,
-        execution_id=result.execution_id,
-        create_findings=True,
+    finding_ids = stream["finding_ids"]
+    timestomping_candidates = stream["timestomping_candidates"]
+    total_records = stream["raw_rows"]
+    sample = stream["sample"]
+    detailed_records = (
+        sample[:max_entries] if (max_entries and max_entries > 0) else list(sample)
     )
-    full_records = list(records)
-    detailed_records = list(full_records)
-    if max_entries and max_entries > 0:
-        detailed_records = detailed_records[:max_entries]
     response = {
         "tool_name": tool,
         "status": "success" if durable_csv else "warning",
@@ -3018,22 +3277,27 @@ def extract_mft_timeline(
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(detailed_records),
-        "total_records": len(rows),
+        "total_records": total_records,
+        "matched_records": total_records,
         "timestomping_candidates": timestomping_candidates,
+        "timestomping_findings_truncated": stream["timestomping_findings_truncated"],
+        "data_truncated": total_records > len(detailed_records),
+        "data_scope": "head_sample",
+        "sample_cap": _MFT_SAMPLE_CAP,
         "csv_path": durable_csv,
         "artifact_persistence": artifact_persistence,
         "note": (
-            f"Returning {len(detailed_records)} of {len(rows)} MFT rows. Full CSV at {durable_csv}."
+            f"Returning a bounded sample of {len(detailed_records)} of {total_records} MFT rows. Full CSV at {durable_csv}."
             if durable_csv
             else (
-                f"Returning {len(detailed_records)} of {len(rows)} MFT rows. "
+                f"Returning a bounded sample of {len(detailed_records)} of {total_records} MFT rows. "
                 "CSV persistence did not produce a durable analyst-facing handle; "
                 "fix OUTPUT_BASE and rerun extract_mft_timeline before using run_analysis()."
             )
         ),
         "requires_agent": "@mft-analyst",
         "agent_instruction": (
-            f"Analyze {durable_csv} for timestomping, attacker file drops, staging. {len(rows)} total rows."
+            f"Analyze {durable_csv} for timestomping, attacker file drops, staging. {total_records} total rows."
             if durable_csv
             else (
                 "Analyze the MFT summary now, then rerun extract_mft_timeline after fixing "
@@ -3046,8 +3310,8 @@ def extract_mft_timeline(
     response = _apply_response_format(
         response,
         response_format=normalized_format,
-        records=detailed_records if normalized_format == "detailed" else full_records,
-        total_records=len(rows),
+        records=detailed_records,
+        total_records=total_records,
     )
     response = _warn_if_empty(
         response, "extract_mft_timeline", mft_path, min_expected=10000)
@@ -3066,15 +3330,19 @@ def extract_mft_timeline(
                 "requires_agent": response.get("requires_agent"),
                 "agent_instruction": response.get("agent_instruction"),
                 "timestomping_candidates": timestomping_candidates,
-                "total_records": len(rows),
+                "total_records": total_records,
             },
         )
+    normalized_obs, pivots = _mft_contract_inputs(stream)
     return _mft_contract_payload(
         response=response,
-        records=detailed_records if normalized_format == "detailed" else full_records,
+        records=detailed_records,
         image_path=image_path,
         mft_path=mft_path,
         csv_path=durable_csv,
+        normalized=normalized_obs,
+        pivot_entities=pivots,
+        evidence_excerpt=stream["evidence_excerpt"],
     )
 
 
@@ -3890,7 +4158,8 @@ def summarize_evtx(
             "evtx_process_creation",
             stream["process_paths"],
         )
-        total_records = stream["total_records"]
+        total_records = stream["total_records"]      # raw CSV rows
+        matched_records = stream["matched_records"]  # channel-matched (== total when channel=None)
         sample = stream["sample"]
         detailed_records = (
             sample[:max_entries] if (max_entries and max_entries > 0) else list(sample)
@@ -3903,13 +4172,21 @@ def summarize_evtx(
             "raw_command": cache_meta["raw_command"],
             "records_count": len(detailed_records),
             "total_records": total_records,
+            "matched_records": matched_records,
+            "data_truncated": matched_records > len(detailed_records),
+            "data_scope": "head_sample",
+            "sample_cap": _EVTX_SAMPLE_CAP,
             "csv_path": str(cached["csv_path"]),
             "requires_agent": cached.get("requires_agent", "@evtx-analyst"),
             "agent_instruction": cached.get(
                 "agent_instruction",
                 f"Analyze {cached['csv_path']} for attacker lifecycle — auth anomalies, lateral movement, persistence. {total_records} total rows.",
             ),
-            "note": f"Returning a bounded sample of {len(detailed_records)} of {total_records} rows. Full CSV at {cached['csv_path']}.",
+            "note": (
+                f"Returning a bounded sample of {len(detailed_records)} inline rows"
+                + (f"; {matched_records} matched channel '{channel}'" if channel else "")
+                + f"; {total_records} rows in the full CSV at {cached['csv_path']}."
+            ),
             "channel_filter": channel,
             "event_id_filter": cached.get(
                 "event_id_filter",
@@ -4015,9 +4292,10 @@ def summarize_evtx(
             preflight=preflight,
         )
 
-    total_records = stream["total_records"]
+    total_records = stream["total_records"]      # raw CSV rows (matches csv_path)
+    matched_records = stream["matched_records"]  # channel-matched rows (== total when channel=None)
     finding_ids = _evtx_summary_finding_ids(
-        total_records,
+        matched_records,   # the count-based finding describes matched (parsed) rows, not raw CSV size
         evtx_dir=evtx_dir,
         channel=channel,
         execution_id=result.execution_id,
@@ -4034,6 +4312,12 @@ def summarize_evtx(
         "raw_command": result.command_line,
         "records_count": len(detailed_records),
         "total_records": total_records,
+        "matched_records": matched_records,
+        # Inline `data` is a bounded head sample, never the full set -- machine-readable
+        # so a consumer cannot mistake len(data) for completeness (review 2026-06-03).
+        "data_truncated": matched_records > len(detailed_records),
+        "data_scope": "head_sample",
+        "sample_cap": _EVTX_SAMPLE_CAP,
         "csv_path": durable_csv,
         "artifact_persistence": artifact_persistence,
         "requires_agent": "@evtx-analyst",
@@ -4043,10 +4327,14 @@ def summarize_evtx(
             else "Analyze the returned EVTX summary and persisted artifacts for attacker lifecycle pivots; the CSV handle could not be persisted cleanly."
         ),
         "note": (
-            f"Returning a bounded sample of {len(detailed_records)} of {total_records} rows. Full CSV at {durable_csv}."
+            f"Returning a bounded sample of {len(detailed_records)} inline rows"
+            + (f"; {matched_records} matched channel '{channel}'" if channel else "")
+            + f"; {total_records} rows in the full CSV at {durable_csv}."
             if durable_csv
             else (
-                f"Returning a bounded sample of {len(detailed_records)} of {total_records} rows. "
+                f"Returning a bounded sample of {len(detailed_records)} inline rows"
+                + (f"; {matched_records} matched channel '{channel}'" if channel else "")
+                + f"; {total_records} rows total. "
                 "CSV persistence did not produce a durable analyst-facing handle; "
                 'rerun summarize_evtx after fixing OUTPUT_BASE permissions before using run_analysis().'
             )

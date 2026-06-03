@@ -120,14 +120,31 @@ class EvtxStreamingEquivalenceTest(unittest.TestCase):
     def test_channel_filter_matches_legacy(self):
         with TemporaryDirectory() as tmp:
             csv_path = str(Path(tmp) / "evtx_timeline.csv")
-            _write_csv(Path(csv_path), _varied_rows())
-            legacy_total, legacy_counts, _, _, legacy_pivots = self._legacy_filtered(csv_path, "Security")
+            rows = _varied_rows()
+            _write_csv(Path(csv_path), rows)
+            legacy_matched, legacy_counts, _, _, legacy_pivots = self._legacy_filtered(csv_path, "Security")
             stream = disk._stream_evtx_summary(csv_path, channel="Security")
             _, pivots = disk._evtx_contract_inputs(stream)
-            self.assertEqual(stream["total_records"], legacy_total)
+            # matched_records == the legacy channel-filtered record count
+            self.assertEqual(stream["matched_records"], legacy_matched)
+            # total_records == raw CSV rows (matches csv_path), NOT the filtered count
+            self.assertEqual(stream["total_records"], len(rows))
+            self.assertEqual(stream["raw_rows"], len(rows))
+            self.assertGreater(stream["total_records"], stream["matched_records"])
             self.assertEqual(stream["channel_counts"], legacy_counts)
             self.assertEqual(pivots, legacy_pivots)
             self.assertEqual(set(stream["channel_counts"]), {"Security"})
+
+    def test_channel_none_raw_equals_matched(self):
+        with TemporaryDirectory() as tmp:
+            csv_path = str(Path(tmp) / "evtx_timeline.csv")
+            rows = _varied_rows()
+            _write_csv(Path(csv_path), rows)
+            stream = disk._stream_evtx_summary(csv_path, channel=None)
+            # With no channel filter raw == matched == total == every CSV row
+            self.assertEqual(stream["total_records"], len(rows))
+            self.assertEqual(stream["raw_rows"], len(rows))
+            self.assertEqual(stream["matched_records"], len(rows))
 
     def _legacy_filtered(self, csv_path: str, channel: str):
         rows = disk._read_csv(csv_path)
@@ -170,6 +187,12 @@ class EvtxStreamingBoundedTest(unittest.TestCase):
 
             # total counts EVERY row (depth preserved)...
             self.assertEqual(stream["total_records"], n)
+            self.assertEqual(stream["raw_rows"], n)
+            self.assertEqual(stream["matched_records"], n)
+            # matched > sample cap => the response's data_truncated will be True
+            # (matched_records > records_count); inline data can never be mistaken
+            # for the full set.
+            self.assertGreater(stream["matched_records"], disk._EVTX_SAMPLE_CAP)
             # ...but the retained sample is hard-capped (memory bounded)
             self.assertEqual(len(stream["sample"]), disk._EVTX_SAMPLE_CAP)
             # wide ScriptBlockText is dropped from every retained sample record
