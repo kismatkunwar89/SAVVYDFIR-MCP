@@ -83,9 +83,15 @@
         "extract_shimcache",
         "extract_registry_run_keys",
         "extract_srum",
+        "extract_shellbags",
+        "extract_lnk_files",
+        "extract_jump_lists",
+        "extract_browser_history",
+        "extract_registry_fileaccess",
         "extract_windows_artifacts"
       ],
-      "note": "Never run two dotnet tools in parallel. USN rolls over \u2014 do not delay. Each extraction injects relevant heuristic slice via Tier-1 (CR13 Option X) \u2014 agent receives forensic context with the data."
+      "note": "Never run two dotnet tools in parallel. USN rolls over \u2014 do not delay. Each extraction injects relevant heuristic slice via Tier-1 (CR13 Option X) \u2014 agent receives forensic context with the data.",
+      "file_access_extractors_note": "The final five (extract_shellbags, extract_lnk_files, extract_jump_lists, extract_browser_history, extract_registry_fileaccess) are FK-only user-activity / file-access extractors. RECOMMENDED when the case involves data collection, file staging, physical access, browser downloads, or user navigation (e.g. investigative_taxonomy.dispute_type intrusion_response / data_exfiltration). OPTIONAL: they never block generate_report and are not in the coverage gate; on a mount-less or non-Windows image they return an EXPLICIT error (e.g. no_windows_volume_at_image_path), not a silent skip. The dotnet parsers (SBECmd/LECmd/JLECmd/RECmd) run SEQUENTIALLY per the no-two-dotnet-in-parallel rule; extract_browser_history is sqlite3 (cheap). DEPTH DIRECTIVE: after extracting EACH, run targeted run_analysis(csv_path, query=...) and submit_finding for evidence-backed navigation / collection / initial-access candidates -- do NOT mark the lane COMPLETE on extraction alone. DEFENSIBLE LANGUAGE: these artifacts INDICATE folder navigation, file reference, and user activity (LNK + ShellBag + RecentDocs corroboration indicates file access; a browser download indicates a possible initial-access vector) -- they do NOT prove file contents were read or exfiltrated."
     },
     "phase_3_detection_anchors": {
       "label": "Detection Anchors (deterministic)",
