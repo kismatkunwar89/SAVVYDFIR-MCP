@@ -1,12 +1,184 @@
 # Forensic-knowledge: Windows Jump Lists (Automatic/CustomDestinations).
 artifact: jump_lists
+aka:
+  - "Jump Lists"
+  - "AutomaticDestinations"
+  - "CustomDestinations"
+  - "*.automaticDestinations-ms"
+  - "*.customDestinations-ms"
+  - "DestList MRU"
+  - "Taskbar Recent/Frequent/Pinned"
+
+what_it_is: >
+  A Windows 7+ taskbar/Start-menu GUI feature that gives users quick access to
+  recent, frequent, and pinned files on a per-application basis. Forensically it
+  is a durable, per-user ledger of file interaction tied to a SPECIFIC
+  application: each Jump List is a collection of embedded LNK shortcut streams,
+  so it records exactly which file was opened WITH which program (stronger
+  application-to-file binding than a standalone LNK or a ShellBag).
+
+locations:
+  - "AutomaticDestinations: %AppData%\\Microsoft\\Windows\\Recent\\AutomaticDestinations\\"
+  - "CustomDestinations:    %AppData%\\Microsoft\\Windows\\Recent\\CustomDestinations\\"
+  - "Full path form: C:\\Users\\<user>\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\AutomaticDestinations\\"
+  - "Per-user artifact - one set of Jump List files per user profile (discover ALL profiles)."
+
+naming_format: >
+  Files are named <AppId>.automaticDestinations-ms or <AppId>.customDestinations-ms.
+  The AppId is a 16-character hexadecimal hash (a CRC64-style hash of the
+  application's executable path) that uniquely identifies WHICH application owns
+  the Jump List (e.g. f01b4d95cf55d32a = explorer.exe/Windows Explorer;
+  fb3b0dbfee58fac8 = winword.exe/Microsoft Word; 9b9cdc69c1c24e2b = Notepad).
+  AutomaticDestinations are OLE/Compound (OLECF) files containing numbered LNK
+  streams (one per target) plus a master DestList MRU stream (tracks order,
+  pin status, last-access time, and interaction/access count). CustomDestinations
+  are simpler: raw LNK streams concatenated sequentially, populated by user
+  PINNING or by app-defined custom tasks, and have NO DestList stream.
+
+proves:
+  - "A specific target file was opened/interacted-with by a SPECIFIC application (AppId), under a specific user account context."
+  - "Stronger application-to-file binding than a standalone Recent LNK (which proves a file was opened but not by which program) and far stronger than a ShellBag (which only proves a folder was rendered)."
+  - "The embedded LNK stream proves the target's full absolute path, volume serial number, volume label, file size, and the target's MAC timestamps as of the time the stream was created/updated."
+  - "AutomaticDestinations DestList records an interaction/access COUNT - quantifies how many times the file was opened with that app (count of 1 = incidental; high count = sustained intentional access)."
+  - "Embedded data can include the originating Machine ID (hostname) and MAC address of the system where the interaction occurred."
+  - "Pin status: distinguishes PINNED (explicit, intentional long-term interest) from RECENT/FREQUENT (OS-observed) entries."
+  - "Win10/11: taskbar search-widget queries are recorded in the Microsoft Edge Jump List (microsoft-edge:?... entries) with the literal search terms in the URL parameters (q=/query=)."
+  - "Captures UNC/network-share paths and removable-media volume serials - immortalizes data accessed on USB or remote shares long after disconnect."
+
 does_not_prove:
-  - "A Jump List entry proves an application referenced a target, NOT that a human interactively clicked it."
+  - "A Jump List entry proves an application referenced a target, NOT that a human interactively clicked it. Background auto-saves, indexing, auto-recovery, AV scanning, or programmatic shell-API calls can update an MRU entry."
   - "AppId maps to an application, not to a specific user action or intent."
-  - "DestList ordering reflects recency/pinning heuristics, not a precise click timeline."
-  - "Custom vs Automatic destinations differ: pinned/custom entries may be curated, not organically used."
+  - "DestList ordering reflects recency/pinning/frequency heuristics, not a precise click timeline."
+  - "Custom vs Automatic destinations differ: pinned/custom entries may be curated, not organically used; CustomDestinations are weaker (no DestList timestamp/count)."
+  - "Does NOT prove the target file still exists on disk - entries persist after the file is moved, deleted, wiped, or the volume disconnected."
+  - "Does NOT prove file contents were read, how long it was open, or that data was exfiltrated."
+  - "Does NOT prove malicious code executed: a .docx under the Word AppId proves Word opened it, NOT that an embedded macro/payload ran (need execution artifacts)."
+  - "Command-line / scripted file access (cmd.exe, PowerShell) usually bypasses the shell APIs and generates NO Jump List entry - absence is not innocence."
+
+timestamp_semantics:
+  jump_list_file_macb: "Filesystem MACB of the .automaticDestinations-ms file: Modification ~= last time the parent application opened ANY file (i.e. last app activity), not per-target."
+  destlist_last_access: "64-bit FILETIME inside the AutomaticDestinations DestList for each entry = last time THIS specific target was opened by the app. Highly reliable for per-target access timelines."
+  destlist_access_count: "Integer interaction/access count per DestList entry - reliable indicator of repeated vs incidental access. CustomDestinations LACK this (no DestList)."
+  embedded_lnk_target_mac: "Each embedded LNK stream snapshots the target file's Creation/Modified/Access (MAC) times as they existed when the stream was created/updated - frozen historical metadata."
+  embedded_lnk_stream_times: "The LNK stream's own internal Creation = first interaction with the target by that app; Modification = last interaction. Win10/11 caveat below."
+  reliability_caveat: "Win10/11 generate a tracking LNK immediately on file CREATION (even before a user opens it), so an embedded LNK 'birth' may reflect download/creation, not the first human open. Standardise all to UTC and align against active logon sessions."
+
+version_differences:
+  windows_7: "Jump Lists introduced. DestList stream format v1."
+  windows_10_11_destlist: "DestList format upgraded (v1 -> v3/v4) with internal string-length tracking and changed binary offsets; breaks older/unpatched parsers. Modern tools handle it automatically."
+  windows_10_11_lnk_aggressiveness: "LNK/Jump List population increased - a tracking LNK is created immediately on file creation, before explicit open. Win10 also records shell save/copy/move operations."
+  windows_10_11_edge_search: "Taskbar/Cortana search queries recorded in the Microsoft Edge Jump List (microsoft-edge:?... / Microsoft.Windows.Cortana refs) with literal search terms in URL params."
+
+parsing_tools:
+  - "JLECmd (Eric Zimmerman) - industry standard. -f <file> single, -d <dir> --csv <out> directory. Parses OLECF + DestList + embedded LNK streams and resolves AppId to app name."
+  - "JLECmd --fd (full details / full dump) - REQUIRED to extract embedded LNK shell-item detail: target timestamps, file size, attributes, absolute path, volume info, extra blocks. Default parse shows DestList but limited LNK info."
+  - "JLECmd --dumpTo <dir> - rip embedded LNK streams out to standalone .lnk files for independent analysis with LECmd."
+  - "JLECmd --appIds <file> - point to a community-maintained AppId mapping file to translate cryptic AppId hashes to human-readable application names."
+  - "Plaso/log2timeline: olecf_automatic_destinations parser (AutomaticDestinations OLECF) and custom_destinations parser (CustomDestinations) for super-timeline integration."
+  - "NirSoft JumpListsView - quick GUI viewing."
+
+limitations:
+  - "MRU capacity cap: AutomaticDestinations roll on FIFO basis (default ~10-15 recent/frequent items depending on Windows version/user settings); oldest entries are silently purged once the cap is hit - absence may mean roll-off, not non-access."
+  - "CustomDestinations implementation is app-dependent: structure varies widely, frequently contains less meaningful or null data, and lacks DestList timestamp/count."
+  - "Third-party / portable apps may not properly use the shell API and generate no Jump List - a missing Jump List for a portable executable does not prove it never ran."
+  - "Command-line/scripted file access bypasses the GUI shell and creates no entry."
+  - "Establish CSV bounds (row count, DestList timestamp min/max) before filtering - a clean filter on the case window may mean roll-off, not absence of activity."
+
+anti_forensics:
+  techniques:
+    - "Deletion: 'Clear Recent Items' (right-click taskbar) or privacy cleaners (CCleaner) wipe the AutomaticDestinations/CustomDestinations folders."
+    - "Timestomping the live target file to forge MAC times."
+    - "Manual editing of the OLECF/DestList streams."
+    - "System clock rollback to backdate entries."
+  detection:
+    - "USN Journal ($UsnJrnl): search for deletion sequences targeting \\Recent\\AutomaticDestinations\\ - the journal immutably logs the deletion event."
+    - "Total absence of Jump Lists on an actively-used system is a major red flag (mass-wipe indicator)."
+    - "Recover deleted Jump Lists from $I30 index slack and the $MFT; carve unallocated space for OLE compound-file headers."
+    - "Timestomp detection: the embedded LNK MAC times inside a pre-existing Jump List are NOT altered when the live file is timestomped - compare live-filesystem MAC vs embedded Jump List MAC to expose the discrepancy."
+    - "Clock-rollback / monotonicity check: cross-reference DestList FILETIME ordering against the sequential $UsnJrnl - newer USN entries bearing earlier timestamps prove clock manipulation."
+    - "Compare Jump List folder creation date against OS install date to spot a fresh-after-wipe folder."
+
 corroborate_with:
-  lnk_files: "Standalone LNKs corroborate the same target-open events."
-  shellbags: "ShellBags corroborate navigation to the target's folder."
-  registry_fileaccess: "UserAssist/RecentDocs corroborate the application launch and document open."
-  prefetch: "Prefetch confirms the associated application actually executed."
+  lnk_files: "Standalone Recent LNKs corroborate the same target-open event with redundant MAC times and volume serial; created near-simultaneously."
+  shellbags: "ShellBags corroborate that the user navigated/rendered the parent folder of the target in Explorer before the open."
+  registry_fileaccess: "UserAssist proves the parent application was launched via the GUI (with focus/run-count); RecentDocs corroborates the file open mapped by extension; OpenSavePidlMRU corroborates dialog-based open/save."
+  prefetch: "Prefetch confirms the application mapped to the Jump List AppId actually executed (run count, last-run, loaded modules)."
+  evtx: "EVTX 4688 (process creation) and Sysmon EID 1 corroborate execution of the parent application at the aligned time."
+  srum: "SRUM adds network/resource context for the parent app (bytes sent/recv) - quantifies possible exfiltration after file access."
+  mft_usnjrnl: "MFT $SI/$FN and $UsnJrnl corroborate the target file's access/existence and provide the authoritative anti-tamper timestamp source."
+  usbstor_mounteddevices: "USBSTOR / MountedDevices / Partition-Diagnostic.evtx map the embedded volume serial to a specific USB/removable device that held the accessed file."
+
+corroboration_escalation:
+  alone: >
+    A Jump List entry ALONE proves application-specific file INTERACTION:
+    a specific target path was parsed/opened by a specific application (AppId)
+    in a user's context, with the target's embedded path/volume serial/MAC times.
+    It does NOT prove a human double-clicked it (auto-load/indexing/programmatic
+    noise is possible), does NOT prove the file still exists, and does NOT prove
+    document contents executed. Treat single-source as POSSIBLE/observation.
+  combinations:
+    - sources: ["jump_list (AutomaticDestinations DestList entry)"]
+      plus_timestamps: "DestList last-access FILETIME"
+      upgrades_to: "POSSIBLE / observation (~0.70)"
+      rationale: "OS registered a file-open to a specific app, but could be programmatic noise, indexing, or auto-recovery."
+    - sources: ["jump_list", "recent_lnk"]
+      plus_timestamps: "DestList last-access == Recent LNK creation/modification"
+      upgrades_to: "PROBABLE (~0.85)"
+      rationale: "Two independent OS mechanisms (taskbar tracking + Explorer Recent tracking) recorded the same file open at the same time."
+    - sources: ["jump_list", "shellbags"]
+      plus_timestamps: "ShellBag folder render immediately precedes DestList open"
+      upgrades_to: "PROBABLE (~0.85)"
+      rationale: "User navigated to the exact folder (ShellBag) and a specific app opened the target there (Jump List) - upgrades from 'file was there' to 'user interacted with the file'."
+    - sources: ["jump_list", "recent_lnk", "registry_fileaccess (RecentDocs)"]
+      plus_timestamps: "all three MRU timestamps aligned to the same minute"
+      upgrades_to: "PROBABLE-to-CONFIRMED (~0.85-0.95)"
+      rationale: "Three GUI-shell MRU mechanisms agree the file was opened via the GUI."
+    - sources: ["jump_list", "shellbags", "prefetch"]
+      plus_timestamps: "ShellBag nav -> Jump List open -> Prefetch app run within seconds"
+      upgrades_to: "CONFIRMED / definitive (~1.0)"
+      rationale: "Navigation (ShellBag) + which-app-opened-what (Jump List DestList) + actual app execution (Prefetch) align temporally = proven interactive human file access; defeats the automation/glitch defense."
+    - sources: ["jump_list (DestList count>1 / pinned)", "recent_lnk", "registry_fileaccess (UserAssist)", "evtx (4688)"]
+      plus_timestamps: "all aligned to the same minute"
+      upgrades_to: "CONFIRMED / definitive (~1.0)"
+      rationale: "GUI app launch (UserAssist) + process creation (4688) + which-app-opened-target (Jump List) + Recent LNK, with a high access count or pin status, confirms intentional, repeated human action and destroys the 'accidental single click' defense."
+    - sources: ["jump_list (embedded volume serial)", "usbstor", "mounteddevices"]
+      plus_timestamps: "device-connect time aligns with DestList open"
+      upgrades_to: "CONFIRMED removable-media file access (~1.0)"
+      rationale: "Embedded LNK volume serial matched to a registered USB/removable device proves the target was opened directly from a specific external drive."
+  tiers: "1 source = possible/observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)"
+
+correlation_patterns:
+  - name: "Interactive human file-access proof"
+    chain: "ShellBag (folder rendered) -> Jump List DestList (target opened by AppId, last-access time + count) -> Recent LNK (redundant open) -> UserAssist/RecentDocs (GUI app launch + extension) -> Prefetch/EVTX 4688 (app executed); all aligned to seconds = definitive interactive access."
+  - name: "Removable-media / USB exfil tracking"
+    chain: "Jump List embedded LNK volume serial -> convert to hex -> match USBSTOR / MountedDevices / Microsoft-Windows-Partition-Diagnostic.evtx -> proves the file was opened from a specific USB/removable device even after disconnect."
+  - name: "Exfiltration staging"
+    chain: "ShellBags (browsed sensitive dir) -> Jump List under archiver AppId (7zFM.exe/WinRAR) creating/opening an archive with rising interaction count -> SRUM (rclone/transfer tool execution + large bytes-sent) = staging + exfil."
+  - name: "Anomalous AppId / LOLBin pivot"
+    chain: "Filter JLECmd CSV by AppId of text editors/LOLBins (Notepad, cmd, PowerShell, RDP client) -> editor opening .ps1/.bat or PowerShell-opened scripts/IPs reveals threat-actor tooling even if the binary was renamed (AppId hash is path-derived, survives rename)."
+  - name: "Timestomp exposure"
+    chain: "Live-filesystem target MAC vs Jump List embedded LNK MAC mismatch -> embedded times unchanged by on-disk timestomp -> proves tampering; confirm direction with $UsnJrnl monotonicity."
+  - name: "Taskbar search-term recovery (Win10/11)"
+    chain: "Parse Microsoft Edge Jump List -> extract q=/query= URL parameters from microsoft-edge: entries -> recover user taskbar/Cortana search terms with timestamps."
+
+heuristics:
+  - "Pivot on the AppId: given a suspicious file, find its AppId in AutomaticDestinations to learn exactly which tool opened it."
+  - "Interaction/access count grading: DestList count of 1 may be incidental; a high count (e.g. 45) or a PINNED item proves sustained, intentional, repeated access - destroys the 'accidental one-time click' defense."
+  - "AppId survives executable rename: renaming powershell.exe to svchost.exe still produces PowerShell's path-derived AppId hash - reconcile AppId reference list against renamed binaries."
+  - "Hunt remote/removable paths: filter embedded target paths for \\\\* (UNC) or non-C: volumes to surface network-share and USB access."
+  - "Distinguish pinned vs recent vs frequent: a pinned item indicates deliberate long-term interest, not transient use."
+  - "Compare DestList last-access against embedded LNK target MAC to spot files altered in the background between viewings."
+  - "CustomDestinations is weaker evidence (no DestList timestamp/count) - weight AutomaticDestinations higher for access timelines."
+  - "Always establish CSV bounds (DestList timestamp min/max) before concluding 'no activity' - a capped/rolled MRU mimics absence."
+
+discipline_reminder: >
+  Jump Lists are an Evidence-of-File-Access artifact, NOT execution proof: an
+  entry proves a specific application referenced/opened a target, not that a
+  human clicked it or that document contents executed. ALONE it is POSSIBLE
+  (~0.70). Use defensible language: write "the <app> Jump List records the
+  target was opened with <app> at <UTC time>" - not "the user opened the file".
+  Upgrade to PROBABLE (2 independent sources, e.g. + Recent LNK or ShellBag) and
+  only to CONFIRMED/definitive (~1.0) with 3+ aligned sources (ShellBag +
+  Jump List + Prefetch/EVTX 4688/UserAssist) sharing temporal proximity.
+  Standardise all timestamps to UTC and align with active logon sessions before
+  attributing human interactive access.

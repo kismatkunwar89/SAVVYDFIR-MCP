@@ -1,14 +1,178 @@
 # Forensic-knowledge: ShimCache / AppCompatCache (SYSTEM hive).
 # Generic Windows forensic discipline - no case specifics.
 artifact: shimcache
+aka:
+  - AppCompatCache
+  - Application Compatibility Cache
+  - Shim Cache
+  - Session Manager AppCompatCache
+
+what_it_is: >
+  A component of the Windows Application Compatibility infrastructure that tracks
+  executables the OS observes, to determine whether each needs a "shim" (a
+  compatibility fix applied so legacy applications run on newer Windows). Windows
+  evaluates and adds executables to this database regardless of whether the
+  application actually requires shimming, so for the DFIR analyst it acts as an
+  unintended but durable diary of executables the OS observed on the endpoint.
+
+locations:
+  - "Live system: HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\AppCompatCache (value: AppCompatCache)"
+  - "Offline image: SYSTEM\\ControlSet001\\Control\\Session Manager\\AppCompatCache (and ControlSet002, etc.)"
+  - "Windows XP/2003: SYSTEM\\CurrentControlSet\\Control\\Session Manager\\AppCompatibility (legacy key name)"
+  - "CurrentControlSet is volatile - on an offline hive, read SYSTEM\\Select\\Current to resolve the active control set (e.g. Current=1 -> ControlSet001) before locating the data."
+  - "An endpoint with multiple control sets exposes a multiple of the per-set entry cap (e.g. 2 x 1,024)."
+  - "Volatile residence: the cache is buffered in kernel memory and only flushed to the on-disk SYSTEM hive at graceful shutdown/reboot."
+
+naming_format: >
+  Stored as a single proprietary, undocumented binary blob inside the registry
+  value named AppCompatCache. The internal structure changes significantly by OS
+  version (Windows 10 introduces a distinct '10ts' magic header), so a
+  version-aware parser is required to decode the blob into path + timestamp + flag
+  records. Each record holds the full executable path, the binary's original
+  $StandardInformation modification time, and (Vista-8.1 only) the InsertFlag.
+
+proves:
+  - "Windows OBSERVED the executable path - the OS inspected the file's metadata at least once."
+  - "Historical PRESENCE of the executable on the system, including paths on mapped network drives (e.g. Z:\\) and removable USB media."
+  - "Presence survives file deletion: a ShimCache entry for a binary no longer on disk proves the file once existed there even if it was securely wiped."
+  - "The binary's original $StandardInformation last-modification time at the moment Windows first evaluated it (a reliable baseline for timestomp detection)."
+  - "Relative recency via entry ORDER - the most recently observed entries sit at the top of the MRU array (position 0 = most recent)."
+
 does_not_prove:
   - "A ShimCache entry proves Windows OBSERVED an executable path, NOT that the binary executed."
-  - "ShimCache does NOT record run count - presence in the cache is not proof of execution on modern Windows."
-  - "ShimCache buffers in kernel memory and flushes to the SYSTEM hive on shutdown; recent entries may be missing from an offline hive."
-  - "Absence of an expected entry can mean the binary was timestomped, deleted, or simply never observed - not that nothing ran."
+  - "Observation can be triggered without execution - merely browsing/rendering the containing folder in Explorer (even resizing a window so the file becomes visible), an AV scan, or right-clicking the file can cache it."
+  - "ShimCache does NOT record a run count - presence in the cache is not proof of execution on modern Windows."
+  - "On Windows 10/11 the entry CANNOT be used to assert execution at all (the InsertFlag/'execution flag' was removed; parsers display NA)."
+  - "The embedded timestamp is NOT an execution time and NOT the time the entry was cached - it is the file's $SI modification time."
+  - "ShimCache buffers in kernel memory and flushes to the SYSTEM hive at shutdown/reboot; recent entries may be missing from an offline hive (memory-only)."
+  - "Absence of an expected entry can mean the binary was timestomped, deleted, the cache was cleared, or it was simply never observed - not that nothing ran."
+  - "Lives in the SYSTEM hive (system-level) - it does NOT attribute the observation to a specific user."
   - "Entries outside System32/Program Files/WinSxS are flagged for review, but are not inherently malicious."
+
+timestamp_semantics:
+  entry_modification_time:
+    meaning: "The executable's original $StandardInformation ($SI) last-modification (M) time, snapshotted when Windows first evaluated the file."
+    reliability: "High as a baseline. It is captured once at observation and is NOT updated by later on-disk timestamp changes, which is what makes it a powerful timestomp detector."
+  insert_flag_vista_to_8_1:
+    meaning: "A boolean ('InsertFlag') the community historically (and incorrectly) labeled 'execution'. Generally correlated with execution on older systems but UNRELIABLE - a binary can have Prefetch proof of execution while its InsertFlag is false."
+    reliability: "Low. Removed entirely in Windows 10+; do not rely on it for execution."
+  xp_last_update_time:
+    meaning: "Windows XP/2003 additionally tracked an explicit last-update/execution time and file size per entry."
+    reliability: "Legacy only - not present on Windows 7+."
+  entry_position_order:
+    meaning: "Modern entries carry no caching timestamp; the integer Cache Entry Position (MRU order, 0 = top/most recent) is the chronological proxy."
+    reliability: "Relative-only. Use for ordering and temporal bracketing, not absolute times."
+
+version_differences:
+  windows_xp_32bit: "Up to 96 entries; uniquely tracked file size and an actual last-execution time. Legacy 'AppCompatibility' key name."
+  windows_server_2003: "Up to ~512 entries."
+  windows_7: "Up to 1,024 entries; file size and explicit execution timestamps removed; relies on entry order + $SI modification time."
+  windows_8_8_1: "Up to 1,024 entries; carries the InsertFlag ('execution flag' myth)."
+  windows_10_11: "Up to 1,024 entries per control set; '10ts' magic header; InsertFlag removed (tools show NA) - cannot prove execution. Windows 10+ also flushes the cache on reboot, not only shutdown."
+
+parsing_tools:
+  - "AppCompatCacheParser.exe (Eric Zimmerman) - industry standard; parses all control sets in a SYSTEM hive to CSV. Offline: -f <SYSTEM_hive> --csv <out>. Live: omit -f (run as Administrator)."
+  - "rla.exe (Registry Log Analyzer / transaction-log replay) - replay .LOG1/.LOG2 dirty transaction logs into the SYSTEM hive BEFORE parsing, or the most recently flushed entries are missed."
+  - "ShimCacheParser.py (Mandiant) - lightweight at-scale extraction; can operate on exported .reg files."
+  - "appcompatprocessor.py - ingests ShimCache + Amcache into SQLite for temporal and enterprise stacking analysis."
+  - "Volatility shimcachemem plugin - extracts the live cache directly from a RAM image (recovers memory-only entries not yet flushed to disk)."
+  - "KAPE - triage collection of the SYSTEM hive and routing through modular parsers."
+
+limitations:
+  - "Memory-buffered, flushed to the on-disk hive only at shutdown/reboot - a hard power-off or live disk image without a RAM capture permanently loses the newest entries."
+  - "A long-uptime server (not rebooted in weeks/months) keeps ALL recent activity solely in volatile memory - pull RAM before/with the SYSTEM hive."
+  - "Offline SYSTEM hives are almost always 'dirty' - failing to replay transaction logs (rla.exe) yields stale, incomplete output."
+  - "No execution proof and no run count on modern OS - presence-only artifact requiring corroboration."
+  - "No user attribution (system-level hive)."
+  - "Capped ring (1,024 modern) - high-churn systems roll older entries out; absence near the cap is not absence of the event."
+  - "Binary structure differs per OS version - a version-mismatched parser silently produces wrong results."
+
+anti_forensics:
+  techniques:
+    - "Timestomping the on-disk file's $SI timestamps to backdate/blend a payload into system directories."
+    - "Deleting the malicious binary (and wiping its Prefetch) to remove on-disk traces."
+    - "Renaming/masquerading a payload (e.g. to svchost.exe) to blend with legitimate processes."
+    - "Clearing or truncating the AppCompatCache registry value to destroy observation history."
+  detection:
+    - "Timestomp: ShimCache snapshots the original $SI M-time at first observation and is NOT updated by later on-disk changes - compare cached time vs current filesystem $SI/$FN M-time; a mismatch (e.g. ShimCache recent, disk claims 2015) proves manipulation, provided the file was cached before the stomp."
+    - "Deletion: a ShimCache entry for a binary absent from disk proves it once existed there - ShimCache typically survives binary + Prefetch deletion."
+    - "Renaming/masquerade: a re-shim on rename produces two entries. If a renamed file and the disguise name share the EXACT same 64-bit nanosecond-precision $SI modification timestamp at different cache positions, you have proven the rename. Pivot to MUI Cache (UsrClass.dat) for the binary's true Version-Info company/friendly name."
+    - "Cache clearing: an unusually low entry count (e.g. ~5 instead of a populated ~1,024) or a suspicious AppCompatCache key LastWrite time indicates tampering."
+    - "Absence anomaly: a binary present in Prefetch/Amcache but missing from an otherwise-full ShimCache suggests selective tampering, timestomp, or deletion."
+
 corroborate_with:
-  amcache: "ShimCache-present but Amcache-absent can indicate selective cache clearing - cross-check both."
-  prefetch: "Prefetch confirms actual execution that ShimCache cannot."
-  event_logs_security: "EID 4688 corroborates execution at a specific time."
-  mft: "$MFT confirms the executable existed at the cached path."
+  prefetch: "Adds definitive proof of EXECUTION, run count, first/last (and previous) run times, and the helper files/DLLs the binary loaded - the execution proof ShimCache lacks."
+  event_logs_security: "EID 4688 process-creation corroborates execution at a specific time and captures full command-line arguments."
+  amcache: "Adds the SHA-1 hash (first ~30 MB), PE compile/Link date, and publisher/signature - identifies the true binary regardless of its cached name. ShimCache-present but Amcache-absent can indicate selective cache clearing - cross-check both."
+  mft: "$MFT confirms the executable existed at the cached path and supplies $SI/$FN MACB times to compare against the cached $SI M-time for timestomp detection."
+  usn_journal: "Authoritative, clock-resistant record of file create/rename/delete sequence to validate the cached observation and defeat timestamp manipulation."
+  userassist: "Adds GUI-based execution attribution per user profile (how/whether a user launched it) - pattern of life."
+  srum: "Quantifies network bytes sent/received per process and whether the binary was in interactive focus - links a cached unknown binary to exfiltration volume."
+  memory_image: "shimcachemem recovers the live, not-yet-flushed cache entries missing from an offline hive."
+  mui_cache: "UsrClass.dat MUI Cache exposes the binary's internal Version-Info (company / friendly app name), unmasking a renamed/masqueraded executable."
+
+corroboration_escalation:
+  alone: >
+    A ShimCache entry ALONE proves Windows OBSERVED an executable path (OBSERVATION
+    tier - presence only), NOT that the binary executed. On Windows 10/11 it cannot
+    assert execution at all (InsertFlag removed). It has no run count and no user
+    attribution; the embedded timestamp is the file's $SI mod time, not an execution
+    or caching time. Folder browsing / AV scans can cache a file. Treat single-source
+    as observation.
+  combinations:
+    - sources: ["shimcache"]
+      plus_timestamps: "entry order (position 0 = most recent) + embedded original $SI mod time"
+      upgrades_to: "OBSERVATION / possible (~0.70)"
+      rationale: "OS observed the path, but observation can be triggered without execution and modern OS records no run flag."
+    - sources: ["shimcache", "amcache"]
+      plus_timestamps: "ShimCache original $SI mod time cross-checked with Amcache PE link date / observation"
+      upgrades_to: "PROBABLE presence + identity / timestomp baseline (~0.85)"
+      rationale: "Two independent observation engines confirm the path existed and supply cross-checkable original timestamps; ShimCache-present/Amcache-absent flags selective clearing."
+    - sources: ["shimcache", "prefetch"]
+      plus_timestamps: "ShimCache observation order vs Prefetch first/last run times"
+      upgrades_to: "PROBABLE execution (~0.85)"
+      rationale: "ShimCache proves the OS observed the path and Prefetch proves the binary at that path actually launched."
+    - sources: ["shimcache", "prefetch", "event_logs_security (EID 4688)", "mft"]
+      plus_timestamps: "ShimCache $SI baseline + Prefetch run + 4688 process creation + MFT existence aligned"
+      upgrades_to: "CONFIRMED / definitive execution (~1.0)"
+      rationale: "Observation (ShimCache) + execution proof (Prefetch) + process-creation event (4688) + on-disk existence (MFT) = court-defensible execution trinity."
+    - sources: ["shimcache (cached $SI baseline)", "mft ($SI/$FN)", "usn_journal"]
+      plus_timestamps: "ShimCache cached $SI mod time vs current MFT $SI/$FN vs $UsnJrnl true order"
+      upgrades_to: "CONFIRMED timestomping (~1.0)"
+      rationale: "ShimCache's tamper-evident baseline contradicting current on-disk times, validated by the unforgeable $UsnJrnl, proves backdating."
+  tiers: "1 source = possible/observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)"
+
+correlation_patterns:
+  - name: "Temporal bracketing (order-based timing)"
+    chain: "Locate the suspect entry in the ShimCache list -> inspect the legitimate Windows binaries immediately above/below it -> resolve those neighbors' execution/creation times (Prefetch, MFT) to bracket the window in which the suspect file was observed."
+  - name: "Dropped-tool identification"
+    chain: "Suspicious binary in an abnormal path (ShimCache) -> Amcache for SHA-1 hash + Link date to identify it (e.g. a known credential dumper) -> Prefetch/EID 4688 to prove it actually executed."
+  - name: "Masquerade unmasking"
+    chain: "Two entries sharing identical nanosecond $SI M-time at different cache positions (ShimCache) prove a rename -> MUI Cache (UsrClass.dat) reveals the true Version-Info company/app name, breaking a svchost.exe-style disguise."
+  - name: "Renamed/moved payload tracking"
+    chain: "A rewritten/renamed/moved executable is re-shimmed, creating additional entries - track sequential ShimCache entries for the same content to map how an attacker relocated payloads across directories."
+  - name: "Enterprise least-frequency stacking"
+    chain: "Aggregate ShimCache across many hosts (appcompatprocessor.py) -> a binary in a strange path on 1 of N systems bubbles up as a high-fidelity outlier."
+  - name: "Never-executed staged tool hunt"
+    chain: "Find files present in ShimCache that lack any Prefetch/Amcache/EVTX execution evidence -> highlights staged malware, dropped-but-unrun lateral-movement tools, or files merely AV-scanned during the attack window."
+  - name: "Path-to-network pivot"
+    chain: "Extract anomalous paths from ShimCache -> cross-reference against SRUM to show not only that the binary was present but how it communicated/exfiltrated over the network."
+
+heuristics:
+  - "Path anomaly: prioritize entries running from outside C:\\Windows\\System32, C:\\Program Files, and C:\\Windows\\WinSxS - e.g. C:\\Users\\Public, \\AppData\\Local\\Temp, C:\\ProgramData, C:\\PerfLogs, $Recycle.Bin are classic staging directories."
+  - "SysWOW64 heuristic: native-looking OS processes invoked from the 32-bit SysWOW64 folder rather than 64-bit System32 suggest a malicious 32-bit parent process interacted with the binary."
+  - "Recency anchoring: with no modern execution timestamp, use entry ORDER (position 0 = most recent) to anchor relative timing of an observed binary."
+  - "Always replay transaction logs (rla.exe) on offline SYSTEM hives before parsing, and capture RAM (shimcachemem) for long-uptime or live systems to recover unflushed entries."
+  - "Treat the cached $SI M-time as a tamper-evident baseline - compare it to current on-disk $SI/$FN times to expose timestomping."
+  - "Resolve the active control set via SYSTEM\\Select\\Current before reading the offline cache; parse all control sets for the fullest history."
+  - "Low/empty entry count or a fresh AppCompatCache key LastWrite time = suspect cache clearing; corroborate against Prefetch/Amcache for the missing binaries."
+
+discipline_reminder: >
+  ShimCache is an OBSERVATION-tier (presence) artifact, NOT an execution-tier
+  artifact: on modern Windows it proves only that the OS observed an executable
+  path - no execution, no run count, no user. Write defensibly: "Windows observed
+  the binary at <path> with original $SI modification time <t>", not "the binary
+  was executed". Promote toward CONFIRMED execution only by stacking independent
+  sources (Prefetch + EID 4688 + MFT/Amcache). Establish dataset bounds (entry
+  count vs cap, control set, log-replay status, memory vs disk) before concluding
+  anything from an absent entry.

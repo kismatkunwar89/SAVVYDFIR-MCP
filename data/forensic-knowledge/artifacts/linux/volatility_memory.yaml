@@ -1,15 +1,251 @@
-# Forensic-knowledge: Volatility 3 memory analysis (process / network / injection).
+# Forensic-knowledge: Windows memory forensics (Volatility 3 / MemProcFS / RAM analysis).
 # Generic memory-forensics discipline - no case specifics. Filed under linux/
 # because the SIFT analysis host is Linux; the analyzed image may be any OS.
 artifact: volatility_memory
+aka:
+  - "RAM analysis"
+  - "memory dump analysis"
+  - "Volatility 3"
+  - "live-response volatile data"
+  - "MemProcFS"
+  - "WinPM / PMEM acquisition"
+  - "Magnet DumpIt"
+
+what_it_is: >
+  Capture and analysis of a point-in-time snapshot of volatile RAM and virtual
+  memory from a live or recently-running Windows system. Everything a user or
+  threat actor does on a system—from viewing a document to executing fileless
+  malware—must traverse RAM. A memory image is the single highest-priority
+  volatile artifact during incident response: it freezes the absolute RUNTIME
+  STATE of the machine at the exact instant of acquisition, exposing rootkits,
+  injected code, and memory-only threats that evade all disk-based logging.
+  Memory forensics scales beyond what traditional EDR captures by allowing
+  deep-dive historical inspection of process genealogy, network connections,
+  loaded modules, open handles, and in-memory credentials. Malware faces an
+  inescapable dilemma—it wants to hide but MUST execute to be effective—so it
+  cannot fully hide in RAM.
+
+locations:
+  - "Live raw dump from acquisition tools: WinPM (Velocidex) / Belkasoft RAM Capturer output as .mem, .raw, physmem.mem, .img, .dd, .bin (no headers; typically 1-2 GB larger than installed physical RAM due to capture artifacts)"
+  - "Live crash dump from Magnet DumpIt (formerly Comae): .dmp with structural headers and metadata (magic bytes visible in hex editor); file size strictly matches installed physical RAM"
+  - "Hibernation file: %SystemDrive%\\hiberfil.sys (full structured copy of RAM written on hibernate; powercfg /h; largely zeroed on live Win10+ but recoverable from powered-off drive via Hibernation Recon or Vol2 imagecopy)"
+  - "Crash / kernel dump: %SystemRoot%\\MEMORY.DMP (C:\\Windows\\memory.dmp) from BSOD or LiveKD conversion"
+  - "Page file: %SystemDrive%\\pagefile.sys (standard 4 KB virtual memory pages swapped from RAM)"
+  - "Swap file (Windows 8+): %SystemDrive%\\swapfile.sys (working sets of suspended Modern/UWP apps)"
+  - "Virtual machine memory: VMware .vmem (snapshot raw memory) + .vmsn (snapshot metadata — MUST be kept together in same directory with matching names for offset calculation); NEVER use .vmss/.vmss saved-state captures (destroys active network connection states)"
+  - "Hyper-V: Standard checkpoint .vmrs (not Production checkpoint — no memory capture); convert via Sysinternals LiveKD (livekd64 -hv <GUID> -p -o memory.dmp) to usable .dmp"
+  - "In-memory cached artifacts extractable via filescan/dumpfiles or MemProcFS: NTUSER.DAT, UsrClass.dat, SYSTEM/SAM hives, *.evtx, browser History SQLite, MPLog"
+
+naming_format: >
+  RAM does not exist as a file while the OS runs—it must be acquired live via a
+  kernel-level driver (no write-blocking is possible for memory). Raw dumps
+  (.raw, .mem, .vmem) are flat physical-memory images without headers; crash
+  dumps (.dmp) include structural headers and metadata. To recover paged-out
+  data, integrate pagefile.sys / swapfile.sys into the analysis layer (Volatility
+  cannot natively load pagefiles; use strings/YARA carving with false-positive
+  awareness); otherwise process/DLL dumps may be incomplete. VMware .vmem files
+  require the companion .vmsn metadata file for Volatility/MemProcFS to
+  calculate memory region offsets.
+
+proves:
+  - "RUNTIME STATE at the exact capture instant—what was actually running, loaded, connected, and held open at that precise second (disk artifacts cannot prove this)."
+  - "Parent-child process execution lineage (EPROCESS), PID/PPID relationships, and create/exit times via pslist/psscan/pstree."
+  - "Exact command-line arguments stored in the Process Environment Block (PEB) via windows.cmdline."
+  - "Loaded DLLs/modules per process (dlllist PEB walk) and injected/unlinked modules (ldrmodules VAD vs PEB cross-check)."
+  - "Active, listening, and recently-closed network sockets with owning PID via netscan (pool-tag carving) or netstat (active-only, faster)."
+  - "Open handles: files, registry keys, threads, events, mutants/mutexes, named pipes a process is actively interacting with (windows.handles)."
+  - "Process security context and group membership (Local Admin, SYSTEM) via windows.getsids."
+  - "Injected / RWX (PAGE_EXECUTE_READWRITE) VAD regions not mapped to disk = process injection, hollowing, or raw shellcode (malfind)."
+  - "Hidden/unlinked processes (DKOM rootkits) by comparing linked walk to pool-tag carving (psscan vs pslist)."
+  - "Registry hive contents, UserAssist execution artifacts, certificates, and Run keys directly from memory (registry.* plugins or MemProcFS M:\\registry\\)."
+  - "Cached files, event logs, browser history, and executables extractable from memory via filescan/dumpfiles or MemProcFS forensic/ folder."
+  - "Decrypted payloads, in-memory keys, and credential structures (Vol2 lsadump; lsass.exe inspection)—and refutes the SODDI/Trojan defense by showing what was truly executing."
+
 does_not_prove:
   - "A process in the process list proves it was RESIDENT in memory at acquisition, NOT that it was malicious or that it executed from disk."
-  - "A network connection in memory proves a socket EXISTED at acquisition, NOT a sustained session or attacker intent - resolve the owning PID and binary first."
-  - "An injection/malfind hit flags anomalous executable memory; it requires DLL/module review and disk corroboration before being called confirmed injection."
-  - "A process present in scan (psscan) but absent from the active list may indicate DKOM hiding OR simply a terminated/exited process - distinguish before concluding."
-  - "Absence of a disk artifact for a memory-resident process points to fileless/injected execution OR post-execution deletion - state which, do not assume."
+  - "A network connection in memory proves a socket EXISTED at acquisition (active or recently closed), NOT a sustained session or attacker intent—resolve the owning PID and binary first."
+  - "An injection/malfind hit flags anomalous executable memory; it requires DLL/module review (ldrmodules) and disk corroboration before being called confirmed injection. malfind frequently false-positives on Windows Defender MsMpEng.exe due to low-level OS interaction."
+  - "A process present in psscan but absent from pslist may indicate DKOM hiding OR a terminated/zombie process OR memory smearing artifact—distinguish before concluding."
+  - "Absence of an artifact in RAM does NOT prove it never existed—the data may have been paged to pagefile.sys/swapfile.sys or overwritten before acquisition ('no guarantees' principle)."
+  - "Absence of a disk artifact for a memory-resident process points to fileless/injected execution OR post-execution deletion—state which, do not assume."
+  - "Memory does NOT prove deep historical activity: a process that ran and cleanly exited hours/days earlier may be fully overwritten and absent from the dump."
+  - "A clean netscan (no active socket) does NOT mean the host never communicated—it means the socket was closed at the capture instant; corroborate with EID 5156 / Sysmon 3."
+  - "Memory does NOT give historical run count or first-run time of a process—only the start time of the currently-running instance (use Prefetch/UserAssist/Amcache for history)."
+  - "Pagefile/swapfile strings hits (e.g. 'Mimikatz', 'Cobalt Strike') do NOT prove infection—AV/anti-malware definition signatures commonly write these strings to the pagefile as false positives."
+  - "A memory image is not a 1:1 reflection of disk—it is a fragmented, paged, and potentially 'smeared' snapshot."
+
+timestamp_semantics:
+  process_create_time: "From the EPROCESS block (64-bit Windows FILETIME)—when the kernel spawned the process. Highly reliable for the current boot session; tampering in live memory often causes instability/BSOD."
+  process_exit_time: "From EPROCESS—when the process terminated. A process with exit time but zero active threads is a 'dead' or 'zombie' process whose EPROCESS block has not been unlinked due to an active reference count. Exited processes found only by psscan may NOT reliably retain ExitTime and may be missing their PEB (so no full path/cmdline)."
+  network_socket_time: "Both active and recently-terminated sockets/TCP connections retain a creation timestamp (when the socket was initialized). netscan captures historical/closed connections; netstat captures active-only."
+  boot_session_scope: "ALL memory timestamps are strictly bounded to the CURRENT boot session—RAM resets on reboot; nothing persists across a power cycle."
+  dkom_caveat: "DKOM can alter in-memory timestamps; treat anomalous EPROCESS times alongside pool-tag carving evidence."
+  system_time: "windows.info reports the system time at capture—use as reference for aligning memory timestamps with disk/event log artifacts."
+
+version_differences:
+  volatility2_vs_3: "Vol2 (deprecated, Python 2) requires manual OS Profile specification (e.g. Win10x64_19041) determined by imageinfo/kdbgscan locating the Kernel Debugger Data Block (KDBG). Wrong profile = failure. Vol3 (Python 3) eliminates 'Profile hell' by dynamically downloading Public Symbol Tables (PDBs) from Microsoft symbol servers via windows.info, adapting to any Windows build seamlessly."
+  vol2_netscan_win10_22h2: "Vol2 netscan plugin completely fails to find network connections in Windows 10 22H2—use Vol3 windows.netscan instead."
+  vol2_procdump_vs_vol3: "Vol2 has procdump plugin for process executable extraction. Vol3 has NO procdump—use windows.pslist --dump or windows.psscan --dump instead (Vol3 pslist --dump may append garbage bytes causing extracted executables to fail; Vol2 procdump may succeed where Vol3 fails)."
+  vol2_hollowfind: "Vol2 hollowfind detects process hollowing by comparing legitimate PEB path against injected code mapped in the VAD. No direct Vol3 equivalent—use ldrmodules + malfind combination."
+  vol2_shimcache: "Vol2 shimcache plugin analyzes AppCompatCache execution artifacts from memory. Largely unsupported in Vol3 registry workflows on modern Win10 builds—use disk-based extract_shimcache instead."
+  vol2_lsadump: "Vol2 lsadump decrypts LSA secrets directly from registry in memory. Vol3 lacks native lsadump—extract hives via registry.hivelist --dump and parse offline, or use MemProcFS."
+  symbol_mismatch_caveat: "If Vol3 cannot download/find the exact ISF/PDB for the specific Windows build (very new patches, obscure server builds), parsing FAILS or returns garbage—pslist shows garbage names, psscan/filescan return nothing. This is a TOOLING gap, not evidence of absence."
+  windows_xp_vs_vista_plus: "Older OS (XP) spawns lsass.exe from winlogon.exe; Vista+ spawns it from wininit.exe."
+  windows10_registry_process: "Win10 build 17063+ introduces a dedicated Registry process parented by System."
+  windows10_11_memory_compression: "Win10+ compresses inactive RAM and the page file; this degrades raw string searches and pool-tag scanning unless the compressed store is decompressed."
+  wow64: "32-bit (WoW64) processes on a 64-bit OS flagged by non-zero WOW64 column in pslist/psscan; map shared libraries from SysWOW64 rather than System32. Do NOT track all loaded DLLs in standard PEB linked lists—use ldrmodules (VAD-based) rather than dlllist."
+  driver_signing: "Windows 10+ requires kernel-mode drivers to be signed via the Windows Hardware Developer Program (EV certificate, Microsoft vetting). Uncertified acquisition drivers may be blocked; attackers occasionally abuse vulnerable/stolen signed drivers."
+  credential_guard: "Win10+ with Credential Guard enabled splits lsass.exe functionality; a protected lsaiso.exe process is spawned. If lsaiso.exe runs on a machine WITHOUT Credential Guard enabled, it is highly suspicious."
+  protected_processes: "Windows Protected Process Light (PPL)—AV/critical components—may return Access Denied even to Administrator acquisition; expect gaps for those processes."
+
+parsing_tools:
+  - "Volatility 3 (python3 vol.py) — industry standard CLI. Core plugins: windows.info (metadata/symbols), windows.pslist/psscan/pstree (process enum), windows.cmdline (PEB args), windows.dlllist/ldrmodules (module enum/injection), windows.malfind (RWX injection), windows.netscan/netstat (network), windows.handles (open resources), windows.getsids (security context), windows.filescan/dumpfiles (cached file extraction), windows.registry.hivelist/hivescan/printkey/userassist/certificates (registry), windows.cobaltstrike (third-party CS config extraction), windows.vadyarascan (custom Yara against VAD). Requires capstone module for handles plugin."
+  - "Volatility 2 (vol2.py) — legacy for specialty plugins not yet ported: procdump, hollowfind, lsadump, shimcache, imagecopy (hiberfil extraction). Requires manual profile."
+  - "MemProcFS — mounts raw image as virtual file system (M:\\) via Dokany. Init: memprocfs.exe -device <image> -forensic 1 -license-accept-elastic-license-2.0. Key paths: M:\\sys\\proc (processes), M:\\sys\\net (connections), M:\\name\\ or M:\\pid\\ (per-process VADs/modules), M:\\registry\\ (live RegEdit-like browsing), M:\\registry\\hive_files\\ (raw hive extraction), M:\\forensic\\csv\\ (timeline_all.csv for Timeline Explorer), M:\\forensic\\find_evil\\ (Yara/heuristic hits), M:\\misc\\web\\web.txt (browser history), M:\\forensic\\files\\root\\ (reconstructed C:\\ drive)."
+  - "WinDbg — Microsoft's kernel/user debugger for .dmp files. Advanced manual EPROCESS/PEB walking via !process 0 0 and dt _EPROCESS."
+  - "Hibernation Recon — extracts active memory from powered-off hiberfil.sys."
+  - "LiveKD (Sysinternals) — pauses Hyper-V VM and converts .vmrs to .dmp (livekd64 -hv <GUID> -p -o memory.dmp)."
+  - "bstrings / strings + YARA — raw string/regex carving of dump or pagefile (BitLocker keys, IOCs; pagefile prone to AV-signature false positives)."
+
+limitations:
+  - "High volatility: a process that exited and was overwritten before acquisition is simply gone ('no guarantees')."
+  - "Smearing: capturing many GB of RAM takes minutes while the system keeps changing—structures become inconsistent, linked lists break, and psscan-only processes may be smearing artifacts rather than DKOM. Prevent via hypervisor lazy snapshotting (VMware) or LiveKD -p pause (Hyper-V)."
+  - "Paging: idle process pages swapped to pagefile.sys/swapfile.sys are absent from the RAM image—process/DLL dumps error or are incomplete unless the page file is integrated or carved separately."
+  - "VM saved state: VMware .vmss/Hyper-V saved state destroys active network connection states—lose critical C2 indicators."
+  - "FTK Imager memory acquisition: least recommended; course testing caused hard crash on Win10 22H2."
+  - "Protected processes (PPL) and access-denied acquisitions leave gaps."
+  - "Exited processes found only via psscan often lack a PEB—no recoverable full path or command line."
+  - "Symbol/profile mismatch (see version_differences) can blind the analyst entirely—a parsing failure must NOT be read as 'no malicious activity'."
+  - "Memory compression on Win10+ reduces carving/string-search fidelity."
+  - "Vol3 pslist --dump may append garbage bytes to extracted executables (Vol2 procdump may succeed where Vol3 fails)."
+  - "malfind false positives on legitimate security software (MsMpEng.exe)."
+  - "Pagefile strings prone to AV-definition-signature false positives."
+  - "Plugins are not flawless—always corroborate plugin output with independent sources."
+
+anti_forensics:
+  techniques:
+    - "DKOM (Direct Kernel Object Manipulation): unlink the malicious EPROCESS from the circular doubly-linked active process list—the process keeps running but is invisible to Task Manager / pslist."
+    - "Process injection / hollowing: launch a legitimate process (e.g. svchost.exe) suspended, unmap its memory, inject malicious code, resume. Vol2 hollowfind compares PEB path vs VAD-injected code."
+    - "Reflective code injection: inject code (shellcode or PE) without Windows API loader—bypasses PEB module lists entirely."
+    - "PEB DLL unlinking / masquerading: unlink an injected DLL from the PEB InLoad/InInit/InMemory lists to hide it from dlllist."
+    - "Header wiping: advanced malware overwrites PE MZ header (4D 5A) to evade scanners—Cobalt Strike changes MZ to MZAR to break standard signatures."
+    - "Fileless / memory-only execution: reflective DLL injection, living-off-the-land PowerShell, WMI—never touches the disk."
+    - "Process masquerading: malware named like a system binary (e.g. scvhost.exe) or a real name run from an off-path location."
+    - "In-memory timestamp tampering of EPROCESS fields (DKOM)."
+    - "Credential theft via lsass.exe injection (Mimikatz-style)—multiple lsass.exe processes (Stuxnet pattern) indicate masquerading."
+  detection:
+    - "pslist (linked EPROCESS walk) vs psscan (pool-tag carving): a process in psscan but NOT pslist = unlinked/hidden DKOM rootkit process OR smearing artifact OR terminated zombie—rule out smearing (hypervisor capture) before concluding DKOM."
+    - "malfind: VAD regions marked PAGE_EXECUTE_READWRITE (RWX) NOT backed by a disk file, especially containing an MZ (4D 5A) PE header or shellcode prologue—check for MZAR header evasion (Cobalt Strike). Use --dump then strings/Yara."
+    - "dlllist (PEB walk) vs ldrmodules (VAD vs PEB InLoad/InInit/InMemory cross-check): mapped executable with False for all three lists and empty MappedPath = reflectively injected DLL. Note: legitimate process binary always shows False under InInit by design."
+    - "windows.cobaltstrike plugin: directly extracts CS beacon config (port, sleep, jitter, pipe, install path)."
+    - "windows.vadyarascan: custom Yara rules against VAD trees for specific malware signatures."
+    - "Fileless detection: a memory process/socket/injected region with NO matching MFT $SI/$FN, Prefetch, or Amcache record = memory-only malware."
+    - "Cross-check anomalous EPROCESS timestamps against pool-tag carving and disk EID 4688 to expose DKOM time tampering."
+    - "Handle mutex tracking: anomalous named mutants/mutexes in windows.handles serve as high-fidelity IOCs (malware marks territory to prevent reinfection)."
+
 corroborate_with:
-  event_logs_security: "EID 4688 / Sysmon EID 1 corroborate process creation that memory shows resident."
-  prefetch: "Prefetch corroborates that a memory-resident binary executed from disk."
-  mft: "$MFT presence/absence confirms whether a memory-only process has a disk binary."
-  srum: "SRUM corroborates the network volume for a process seen holding a socket."
+  event_logs_security: "EID 4688 / Sysmon EID 1 corroborate process creation (parent-child lineage, command line, security token context) that memory shows resident—and provide HISTORY prior to capture. Extract Defender Operational.evtx from memory to prove AV was disabled around infection time."
+  event_logs_network: "EID 5156 (Windows Filtering Platform connection) / Sysmon EID 3 corroborate netscan active/historical sockets with destination IPs and initiating process."
+  prefetch: "Corroborates that a memory-resident binary executed from disk—adds historical run count, first/last run time, and files-referenced even if the process later exited."
+  amcache: "Confirms the binary existed on disk and provides its SHA-1 hash for definitive identity matching against the memory image."
+  mft: "$MFT $SI/$FN presence/absence confirms whether a memory-only process has a disk binary and bounds when the payload was dropped (and exposes timestomping)."
+  usnjrnl: "$UsnJrnl bounds file create/delete activity for the payload (drop, then post-execution cleanup)."
+  srum: "Corroborates the network volume (bytes sent/received) and per-user focus time for a process seen holding a socket—quantifies exfiltration."
+  registry_run_keys: "Identifies the persistence mechanism that would relaunch a memory-resident binary across reboots."
+  registry_userassist: "Extract NTUSER.DAT/UsrClass.dat from memory (registry.hivelist --dump or MemProcFS hive_files); parse UserAssist/MuiCache to prove GUI execution intent."
+  browser_history: "Extract Edge/Chrome History SQLite from memory (MemProcFS M:\\misc\\web\\ or find in forensic\\files\\root\\); proves user visited C2 IP or downloaded initial payload."
+  shimcache_disk: "Disk-based ShimCache (extract_shimcache) corroborates execution history when Vol3 shimcachemem is unavailable on modern Win10."
+
+corroboration_escalation:
+  alone: >
+    A memory artifact (pslist/psscan entry, netscan socket, malfind RWX region)
+    proves the absolute RUNTIME STATE at the exact second of acquisition—the
+    process was running, the socket was open, the region was injected RIGHT THEN.
+    ALONE it does NOT prove how the code arrived, when the original compromise
+    occurred, historical run count, persistence across reboots, or (for a bare
+    psscan/netscan hit) that the activity was malicious vs a benign portable app.
+  combinations:
+    - sources: ["memory netscan (PID->C2 socket)", "memory cmdline (encoded/hidden args)"]
+      plus_timestamps: "shared owning PID + EPROCESS create time"
+      upgrades_to: "PROBABLE malicious backdoor"
+      rationale: "Two independent in-memory structures (network pool tags + PEB) align: anomalous execution paired with active outbound communication."
+    - sources: ["memory malfind (RWX + MZ/MZAR header)", "memory ldrmodules (no MappedPath / unlinked from PEB)"]
+      plus_timestamps: "same PID/VAD region"
+      upgrades_to: "PROBABLE process injection / hollowing"
+      rationale: "Two independent memory views (VAD permissions + PEB cross-check) confirm code executing outside the normal Windows loader path."
+    - sources: ["memory pslist (running binary)", "disk Prefetch OR Amcache/ShimCache (file existed/executed)"]
+      plus_timestamps: "EPROCESS create time aligned to Prefetch run time"
+      upgrades_to: "PROBABLE confirmed disk-origin execution"
+      rationale: "Links the runtime process to a specific disk path and historical execution—connects disk footprint to runtime behavior."
+    - sources: ["memory pslist", "memory netscan", "memory malfind RWX injection", "ABSENCE of Amcache + Prefetch + MFT $SI record"]
+      plus_timestamps: "EPROCESS create time within the incident window"
+      upgrades_to: "CONFIRMED fileless / memory-only execution"
+      rationale: "Active runtime malice in RAM with a deliberate, documented absence of every expected disk artifact = the payload never touched the disk."
+    - sources: ["memory netscan+cmdline (PID->C2, encoded command)", "memory malfind (RWX injection in same PID)", "EVTX 4688/Sysmon 1 (same PID + same command line)", "EVTX 5156/Sysmon 3 (same PID outbound connection)", "Prefetch (execution)", "aligned MFT $SI/$FN + $UsnJrnl (payload drop, $SI==$FN = no timestomp)"]
+      plus_timestamps: "chronological cascade: MFT create -> Prefetch/EVTX 4688 launch -> memory socket connect -> capture instant, all aligned to the second"
+      upgrades_to: "DEFINITIVE / PROVEN complete attack lifecycle"
+      rationale: "Memory proves the runtime reality (live socket + injected RWX payload); disk logs + GUI artifacts provide the historical timeline; perfectly aligned timestamps prove drop -> execution -> injection -> C2 beacon as one chain that withstands legal scrutiny."
+    - sources: ["memory registry.userassist (GUI execution)", "memory browser History SQLite (C2 visit + payload download)", "memory Defender Operational.evtx (AV disabled + payload classification)"]
+      plus_timestamps: "UserAssist timestamp -> browser download -> AV disable -> process creation, chronological"
+      upgrades_to: "PROBABLE initial access vector + security evasion chain"
+      rationale: "Disk artifacts extracted FROM memory prove user intent (visited C2, downloaded payload), execution (UserAssist), and defense evasion (AV disabled)—building the full narrative beyond runtime state alone."
+  tiers: "1 source = possible/observation (~0.70 - runtime presence only); 2 independent sources = probable (~0.85 - execution/injection established); 3+ sources with timestamp alignment (memory + disk + event logs) = confirmed/definitive (~1.0 - proven lifecycle)."
+
+correlation_patterns:
+  - name: "Standard malware hunting workflow (13Cubed iterative chain)"
+    chain: "windows.info (metadata) -> pslist + psscan diff (hidden/zombie processes) -> pstree (parent-child anomalies) -> cmdline (execution path) -> getsids (privilege context) -> netscan (C2 socket + PID) -> ldrmodules (unlinked DLLs) -> malfind --dump (RWX injection extraction) -> strings/Yara/cobaltstrike on dump -> handles (mutex/pipe IOCs)."
+  - name: "Fileless / memory-only malware"
+    chain: "netscan active C2 socket -> resolve owning PID -> pslist shows legitimate binary (e.g. svchost.exe) -> malfind reveals injected RWX region (e.g. Meterpreter/Cobalt Strike with MZAR header) -> search disk MFT/Prefetch/Amcache finds ZERO footprint -> CONFIRMED fileless injection into a legit process."
+  - name: "Network-to-process pivot"
+    chain: "netscan (foreign IP + owning PID) -> cmdline (how that PID launched) -> handles (files/registry keys/mutexes/named pipes the PID is touching) -> pivot to those disk/registry locations to recover staged data."
+  - name: "DKOM hidden process"
+    chain: "psscan enumerates an EPROCESS not in pslist -> rule out smearing (hypervisor capture?) -> CONFIRMED unlinked rootkit process -> pslist --dump or psscan --dump to extract binary for analysis."
+  - name: "WMI / PowerShell remoting lateral movement"
+    chain: "pstree finds wsmprovhost.exe (PS remoting) or wmiprvse.exe (WMI host) spawning cmd.exe/sc.exe -> cmdline shows the remote command -> EVTX 4688/4624 Type 3 corroborate remote execution."
+  - name: "Handle pivoting to malware identity"
+    chain: "rogue PID -> handles -> known-family mutant/mutex (kill-switch) or named pipe (e.g. \\Device\\NamedPipe\\MSSE-####-server = Cobalt Strike SMB beacon) confirms infection without the binary."
+  - name: "Memory-to-disk execution confirmation"
+    chain: "pslist + cmdline (RAM) -> Prefetch + Amcache (disk existence/execution) -> EVTX 4688 (command line) -> aligned MFT $SI/$FN -> PROVEN execution by a specific account with specific args."
+  - name: "Memory-extracted artifact corroboration"
+    chain: "registry.hivelist --dump NTUSER.DAT -> UserAssist proves GUI execution -> browser History SQLite from MemProcFS proves C2 visit + payload download -> Defender Operational.evtx from memory proves AV disabled -> full initial-access-to-evasion timeline."
+  - name: "Credential theft detection"
+    chain: "Multiple lsass.exe processes (Stuxnet pattern) OR malfind RWX in lsass.exe -> getsids confirms privilege context -> extract and analyze injected code -> corroborate with EVTX 4624/4648 credential use events."
+
+heuristics:
+  - "ALWAYS start with windows.info for OS build, kernel base, system time, and symbol confirmation before any analysis."
+  - "ALWAYS run psscan vs pslist and dlllist vs ldrmodules as matched pairs—the diff is the detection."
+  - "Redirect pslist/psscan output to text files for fast grepping of suspicious process names."
+  - "Parent-child anomalies: cmd.exe/powershell.exe spawned by spoolsv.exe (PrintNightmare), winlogon.exe, explorer.exe spawning binaries from Downloads/Temp, or other non-shell parents = high-value exploitation indicator."
+  - "svchost.exe invariants: MUST run from \\Windows\\System32, MUST be parented by services.exe, MUST carry a -k flag, and run as LocalSystem/NetworkService/LocalService SID. Modern Windows has dozens of legitimate svchost instances—any deviation (wrong path, wrong parent, no -k, user SID) = malware."
+  - "lsass.exe rule: there should NEVER be more than one lsass.exe per session. Multiple lsass.exe (Stuxnet pattern) = immediate red flag."
+  - "lsaiso.exe heuristic: if lsaiso.exe runs on a machine WITHOUT Credential Guard enabled, investigate immediately."
+  - "Sacrificial process: rundll32.exe launched with NO target DLL in cmdline is a classic Cobalt Strike injection target."
+  - "malfind MZ/MZAR heuristic: an RWX VAD region starting with 4D 5A (MZ) or 4D 5A 41 52 (MZAR) is near-certain injected PE—Cobalt Strike overwrites standard MZ to evade scanners. Legit RWX is rare outside JIT (.NET)."
+  - "ldrmodules injection heuristic: False for InLoad/InInit/InMemory with empty MappedPath = reflectively injected code (legitimate process binary always False under InInit by design—do not false-positive)."
+  - "Orphan processes: a child whose parent has exited or whose PPID now points to an unrelated/newer process—loaders/Meterpreter inject then let the parent die."
+  - "Process masquerading: subtle name swaps (scvhost.exe) or real names from wrong paths (svchost.exe from Temp)."
+  - "Network heuristic: rundll32.exe or svchost.exe communicating on non-standard ports (3000, 8080) or to external routable IPs on 80/443 = investigate immediately."
+  - "Handle mutex tracking: malware uses mutant/mutex handles to mark territory—anomalous named mutexes in handles are high-fidelity IOCs."
+  - "Acquisition preference: Magnet DumpIt (crash dump, size-accurate) > WinPM/Belkasoft (raw) >> FTK Imager (crashes Win10 22H2). Hypervisor snapshot (never saved state) is ultimate best practice."
+  - "A parsing failure (garbage pslist, empty psscan) means symbol/profile mismatch, NOT a clean system—resolve symbols via windows.info before drawing conclusions."
+  - "Pagefile strings: treat Mimikatz/Cobalt Strike hits as UNCONFIRMED until corroborated—likely AV signature false positives."
+
+discipline_reminder: >
+  Memory proves runtime presence at the capture instant—it is the ONLY artifact
+  that proves what was actually running/connected, but ALONE it is Tier-1
+  observation (~0.70). The 'no guarantees' principle applies: absence in RAM
+  does not prove absence of activity (paged out or overwritten). Distinguish a
+  psscan-only process (DKOM vs benign exit vs smearing) and rule out smearing
+  before alleging hiding—hypervisor lazy snapshotting produces pristine captures.
+  Resolve the owning PID and binary path before calling a socket malicious.
+  A malfind hit needs ldrmodules + disk corroboration before "confirmed
+  injection"—and expect false positives on MsMpEng.exe. Check for MZAR header
+  evasion (Cobalt Strike). Write defensible language: "an RWX VAD region not
+  backed by a disk file is consistent with code injection," not "the attacker
+  injected code"; "netscan shows an established socket to <peer> owned by PID N
+  at the capture instant," not "the host exfiltrated data." Pagefile strings
+  hits are NOT confirmed IOCs without corroboration. Escalate to PROBABLE with
+  a second independent source, and to CONFIRMED/PROVEN only with 3+ sources
+  (memory + disk + event logs) whose timestamps align in a chronological
+  cascade. Absence of a disk artifact for a memory process is fileless/injected
+  OR post-execution deletion—state which; never assume.

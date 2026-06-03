@@ -1,14 +1,186 @@
 # Forensic-knowledge: SRUM (System Resource Utilization Monitor).
 # Generic Windows forensic discipline - no case specifics.
 artifact: srum
+aka:
+  - "System Resource Utilization Monitor"
+  - "System Resource Usage Monitor"
+  - "SRUDB.dat"
+  - "SRUM database"
+  - "App History data source (Task Manager)"
+
+what_it_is: >
+  SRUM is a Windows background telemetry mechanism (introduced Windows 8 / Server 2012)
+  that continuously records per-application resource consumption: network bytes
+  sent/received, CPU cycles, disk I/O, foreground/focus time, energy/battery usage,
+  push notifications, and the network interface/profile used. It exists to feed the
+  Task Manager "App History" tab and Windows Settings "Data usage" / "Battery" views.
+  Its forensic by-product is a rich, user-attributed, ~30-60 day historical record of
+  what ran, who ran it, how much it transferred, and whether a human was interacting -
+  stored as an ESE (Extensible Storage Engine / "JetBlue") database.
+
+locations:
+  - "C:\\Windows\\System32\\sru\\SRUDB.dat (the ESE database; case of 'sru'/'SRU' varies)"
+  - "C:\\Windows\\System32\\sru\\SRU*.log (ESE transaction logs - SRU.log, SRUTMP.log, .log1/.log2 - hold uncommitted 'in-flight' data)"
+  - "C:\\Windows\\System32\\sru\\ (checkpoint files also live here)"
+  - "Registry config (provider->GUID/table mapping): SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\SRUM\\Extensions"
+  - "App ID / SID resolution: SOFTWARE hive (NetworkList keys resolve SSID/profile; ProfileList resolves user SIDs)"
+  - "Historical copies recoverable from Volume Shadow Copies (bypass the 30-60 day purge)"
+
+naming_format: >
+  SRUDB.dat is an ESE/Jet Blue database. Internally split into provider tables, most
+  forensically relevant: the Network Data Usage Monitor table (bytes_sent/bytes_recv
+  per app per user per interface), the Application Resource Usage table (CPU + disk I/O
+  + foreground/focus time), and the Network Connectivity Usage table (interface/SSID
+  the system connected through). App IDs and user SIDs are stored as integer keys that
+  must be resolved against an idmap table and the SOFTWARE hive to become human-readable.
+
+proves:
+  - "Application execution - finding a record proves the named executable (full path) ran on the system during the retained timeline (Tier-1 evidence-of-execution artifact)."
+  - "User attribution - ties each execution/network transfer to the SID/username of the responsible account."
+  - "Network volume per app per user - exact bytes_sent / bytes_recv quantities, usable to QUANTIFY data exfiltration volume for legal/regulatory breach reporting."
+  - "Human interaction vs automation - foreground/focus time proves a user was actively in the app's GUI; zero focus time with high network/CPU indicates background/automated/script/service execution."
+  - "Network pathway - the interface/interface-type (wired/wireless) and (via SOFTWARE NetworkList) the SSID/network profile used, which can place a device at a physical location."
+  - "Resource consumption magnitude - CPU cycles and disk I/O per app (useful to spot miners, mass-encryption/ransomware I/O, archiving/staging)."
+  - "Persistence of historical evidence even after the binary is deleted from disk (see anti_forensics)."
+
 does_not_prove:
-  - "SRUM bytes_sent/bytes_recv per process is an AGGREGATE estimate over a polling window, NOT a precise byte-accurate exfiltration count."
-  - "High bytes_sent indicates volume, NOT intent - backups, sync clients, and updates also move large volumes."
-  - "A SRUM AppId with no matching binary on disk suggests the application was deleted (anti-forensics indicator), but does not by itself prove malice."
-  - "SRUM timestamps are bucketed to ~hourly intervals; do not treat them as exact event times."
-  - "Absence of a process from SRUM does NOT prove it had no network activity - SRUM coverage is sampled and rolls over (~30-60 days)."
+  - "SRUM bytes_sent/bytes_recv per process is an AGGREGATE estimate over a polling window, NOT a precise byte-accurate exfiltration count - treat as a strong quantitative indicator, not an exact ledger."
+  - "High bytes_sent indicates VOLUME, NOT INTENT - backups, OneDrive/sync clients, updates, and cloud tools also move large volumes."
+  - "SRUM does NOT record network DESTINATIONS - no remote IP, domain, or URL; only the interface used and total bytes per app. You must corroborate to learn 'to where'."
+  - "SRUM does NOT record the CONTENT of traffic nor the specific file NAMES transferred/compressed (use Prefetch 'files referenced', ShellBags, LNK for that)."
+  - "A SRUM AppId/path with no matching binary on disk SUGGESTS the application was deleted (anti-forensics indicator) but does not by itself prove malice."
+  - "SRUM timestamps are bucketed to ~hourly flush intervals; they are NOT exact down-to-the-second launch/connection times - do not treat them as discrete event times."
+  - "Absence of a process from SRUM does NOT prove it had no network/execution activity - very short-lived processes can terminate before the next flush, and data ages out after ~30-60 days."
+  - "Energy/battery metrics generally have little direct forensic value re: malicious intent."
+
+timestamp_semantics:
+  flush_interval: "SRUM buffers metrics in memory and writes to SRUDB.dat roughly every ~60 minutes (or on shutdown / when the Diagnostic Policy Service (DPS) stops). Record timestamps generally represent the END of the recording/polling interval, not the precise execution second."
+  logged_timestamp: "Time the activity record was written into the SRUM database."
+  end_time: "Some records carry the time the application quit/was closed."
+  exe_timestamp: "Some parsers surface the executable's internal PE compilation time (binary metadata), distinct from execution time."
+  record_sequence: "ESE record sequence numbers help order events chronologically; gaps can indicate selective record deletion."
+  reliability: "Reliable for placing an app's activity within a given ~1-hour window and for relative ordering; UNRELIABLE for exact start/stop seconds. Always corroborate exact timing with EVTX 4688 / Sysmon 1."
+
+version_differences:
+  windows_8_server_2012: "SRUM introduced; core ESE format and primary tables established."
+  windows_10_extensions_guids: "Provider/extension subkey GUIDs change per build: v1511={97c2ce28-a37b-4920-b1e9-8b76cd341ec5}, v1607={7899D64F-AB81-45E3-BE32-026FA9504937}, v1803+={DA73FB89-2BEA-4DDC-86B8-6E048C6DA477} (Energy Estimation). Parsers must map the correct GUID to the correct table for the host's build."
+  windows_10_v1803_plus: "Added new provider tables: App Timeline Provider, Tagged Energy Provider, Energy Estimation Provider; push-notification tracking present in 10/11."
+  windows_11: "Schema continues to expand (push notifications, long-term battery), but core ESE structure and Network/App-Resource tables remain analyzable the same way."
+  windows_server: "SRUM present and active, but foreground-focus and battery tables are often sparse on Server (few Metro/UWP apps, different power profile) - do not read sparse focus data as 'no activity'."
+
+parsing_tools:
+  - "SrumECmd (Eric Zimmerman, .NET) - parses SRUDB.dat to per-table CSV; SUPPLY the SOFTWARE hive so it resolves App IDs and NetworkList SSIDs/profiles into human-readable values."
+  - "SRUM-Dump (Mark Baggett) - parses + resolves App IDs from registry into analyst-friendly Excel/CSV."
+  - "esedbexport (libesedb) - dumps raw ESE tables to CSV; the low-level extraction path used by this framework."
+  - "rla.exe (transaction-log replay) - replay the dirty SRU*.log/.log1/.log2 into SRUDB.dat BEFORE export so the most recent ~60 min of buffered data is committed; this framework runs rla before esedbexport."
+  - "esentutl /mh SRUDB.dat (check Clean vs Dirty state) and esentutl /p SRUDB.dat (repair) - repair MUST be done on the same OS/build the DB came from."
+  - "EseCarve - carve/recover DELETED SRUM records from unallocated space within the ESE DB or raw disk."
+  - "NetworkUsageView (NirSoft) - quick view of the network-usage component."
+  - "Triage acquisition: FTK Imager / KAPE (live file is locked - acquire DB + ALL SRU*.log together, or pull from VSS / offline image)."
+
+limitations:
+  - "Dirty-database problem: live or unclean-shutdown captures are 'dirty'; must replay logs (rla) or repair (esentutl /p) or the most recent (most incident-relevant) data is missing/corrupt. ALWAYS grab SRU*.log alongside SRUDB.dat."
+  - "Aging/pruning: data is a rolling window - App Resource (CPU/disk I/O) typically ~30 days, Network Usage (bytes_sent/recv) typically ~60 days; older data is permanently purged (immediately on reboot if powered off a long time)."
+  - "Locked on live systems - cannot be natively copied while OS is running; requires VSS/offline/triage tooling."
+  - "Short-lived processes may terminate before the next ~hourly flush and never get recorded."
+  - "No destinations/content - inherent design gap; SRUM alone cannot prove 'to where' or 'what files'."
+  - "Build-specific table GUIDs - wrong GUID->table mapping yields wrong/empty parse on mismatched parser versions."
+
+anti_forensics:
+  techniques:
+    - "Payload deletion - attacker drops, runs, exfiltrates, then deletes the executable; SRUM still immortalizes the path, execution, and byte counts for up to ~60 days."
+    - "Disabling/stopping the Diagnostic Policy Service (DPS) to halt SRUM collection."
+    - "Deleting the sru folder / SRUDB.dat to wipe history (folder gets recreated empty, losing all prior history)."
+    - "Selective record deletion within the ESE DB to hide specific entries."
+    - "Timestomping the SRUDB.dat file metadata (does not alter internal record times)."
+  detection:
+    - "App-on-disk reconciliation: a SRUM AppId/path with high activity but NO matching binary on the live file system (and ideally no Prefetch) = high-fidelity payload-deletion signal."
+    - "DPS tampering: System log Event ID 7040 (service start-type changed) / 7036 (service stopped) for the Diagnostic Policy Service."
+    - "Wipe detection: a sudden total gap in SRUM history, or a freshly-recreated empty sru folder; corroborate with $UsnJrnl deletion events for SRUDB.dat / the sru directory."
+    - "Selective-deletion detection: gaps in ESE sequential record numbers indicate records were removed."
+    - "Recovery: carve deleted records with EseCarve, and pull older SRUDB.dat copies from Volume Shadow Copies to defeat both purging and wiping."
+    - "ESE timestomping is hard - tampering usually corrupts the DB; a corrupt/inconsistent ESE state is itself suspicious."
+
 corroborate_with:
-  event_logs_security: "EID 5156 (firewall) and network connection events corroborate the actual connections."
-  volatility_memory: "Memory scan_network confirms live sockets for a process at acquisition time."
-  mft: "$MFT presence/absence confirms whether a SRUM AppId's binary still exists on disk."
-  browser: "For browser AppIds, browser history/downloads corroborate the nature of the traffic."
+  volatility_memory: "Memory scan_network/netscan supplies the REMOTE IP/destination SRUM lacks - map SRUM bytes_sent for a process to the actual C2/peer socket at acquisition time."
+  event_logs_security: "EID 4688 (process creation, + command line) and 4624 (logon, ties SID to the session/account) pin down EXACT execution time and the responsible account that SRUM only bucketed hourly; 5156 (WFP/firewall allow) corroborates the connection."
+  sysmon: "Sysmon EID 1 (process create + hashes + parent lineage) and EID 3 (network connection + destination IP) give exact timing and destination to attach to SRUM volume."
+  prefetch: "Confirms exact execution + first-run, and 'files referenced' reveals which sensitive files an archiving/exfil tool touched (SRUM cannot)."
+  amcache_shimcache: "AppCompatCache/Amcache corroborate the path existed and (Amcache) hash, supporting execution-of-the-same-binary claims."
+  mft: "$MFT presence/absence confirms whether a SRUM AppId's binary still exists on disk (drives the anti-forensics deletion check)."
+  usn_journal: "$UsnJrnl confirms deletion of the payload and/or tampering with the sru folder / SRUDB.dat."
+  software_hive: "Required for parsing - resolves App IDs and (NetworkList) SSID/network-profile names; also fixes user-SID attribution."
+  volume_shadow_copies: "Older SRUDB.dat copies recover data beyond the 30-60 day purge and pre-date attacker wiping."
+  shellbags_lnk: "Identify the sensitive folders/files navigated and referenced that an exfil tool then transferred (SRUM proves volume, these prove the 'what')."
+  usb_registry: "USBSTOR / MountPoints2 - if SRUM shows an archiver ran but transferred ZERO network bytes, pivot the hypothesis to physical USB exfiltration."
+  browser: "For browser AppIds, browser history/downloads corroborate the nature/destination of the traffic."
+
+corroboration_escalation:
+  alone: >
+    A SRUM record ALONE is a strong execution + behavior indicator (Tier-1 EoE):
+    it proves the named binary RAN, attributes it to a SID, and quantifies
+    bytes_sent/recv, CPU, I/O and focus time. But it is an ~hourly-bucketed
+    AGGREGATE, NOT exact-time, NOT byte-perfect, and records NO destination IP /
+    domain / file names. High volume = volume, not intent. Treat single-source as
+    probable execution/activity.
+  combinations:
+    - sources: ["srum"]
+      plus_timestamps: "logged_timestamp (end of ~hourly polling window)"
+      upgrades_to: "PROBABLE execution + activity (~0.85)"
+      rationale: "A record proves the binary ran and quantifies its resource/network use, but bucketed timing and missing destination keep it single-source."
+    - sources: ["srum", "prefetch"]
+      plus_timestamps: "SRUM hourly bucket aligned with Prefetch embedded run time"
+      upgrades_to: "PROBABLE execution (corroborated, ~0.85)"
+      rationale: "Prefetch supplies exact first-run timing and files-referenced to anchor SRUM's bucketed activity."
+    - sources: ["srum (bytes_sent)", "volatility_memory (netscan)"]
+      plus_timestamps: "SRUM bucket overlaps the live socket capture time"
+      upgrades_to: "PROBABLE exfil with destination (~0.85)"
+      rationale: "Memory netscan supplies the remote IP/destination SRUM lacks, attaching 'to where' to SRUM's volume."
+    - sources: ["srum", "evtx (EID 4688)", "sysmon (EID 3)"]
+      plus_timestamps: "4688 exact launch second + Sysmon 3 connection time within SRUM bucket"
+      upgrades_to: "CONFIRMED / definitive execution + exfil (~1.0)"
+      rationale: "Exact launch (4688) + connection with destination (Sysmon 3) + quantified volume (SRUM) stack to a court-defensible exfiltration finding."
+    - sources: ["srum (AppId, no binary on disk)", "mft (absent)", "usn_journal (delete)", "prefetch (orphaned)"]
+      plus_timestamps: "SRUM activity -> $UsnJrnl delete event sequence"
+      upgrades_to: "CONFIRMED deleted-payload anti-forensics (~1.0)"
+      rationale: "Execution + byte counts (SRUM) for a binary absent from disk (MFT) with a deletion record ($UsnJrnl) prove a run-then-wiped payload."
+  tiers: "1 source = possible/observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)"
+
+correlation_patterns:
+  - name: "Quantify network exfiltration"
+    chain: "SRUM Network Usage bytes_sent for a suspect process (rclone/7z/curl/certutil/powershell/custom) -> compare against staging-directory file sizes (MFT/Prefetch files-referenced) -> map to destination via memory netscan / Sysmon EID 3 -> report concrete exfil volume."
+  - name: "Silent backdoor / beacon profiling"
+    chain: "App Resource table shows high bytes_sent or CPU but ZERO foreground/focus time for an unknown binary (esp. in AppData\\Local\\Temp) -> indicates automated background C2/exfil/miner -> corroborate with detect_injection + netscan + EVTX 4688."
+  - name: "Deleted-payload anti-forensics"
+    chain: "SRUM AppId with execution + bytes_sent but no binary on disk (MFT) and no Prefetch -> $UsnJrnl shows deletion -> pull older SRUDB.dat from VSS / EseCarve to recover fuller history."
+  - name: ">100MB triage tripwire"
+    chain: "Query Network Usage for bytes_sent > ~100MB on non-browser / non-updater / LOLBin processes -> rapidly isolate bulk staging/exfiltration candidates out of normal background noise."
+  - name: "Exact-time enrichment of bucketed SRUM"
+    chain: "SRUM hourly bucket flags an app/window -> pivot to EVTX 4688 / Sysmon 1 for the exact launch second, command line, and parent process."
+  - name: "Physical-location / session timeline"
+    chain: "Network Connectivity Usage SSID/interface + matching SRUM app activity + EVTX 4624 (e.g., Type 10 RDP) -> build where the device was and which account acted during the window."
+  - name: "USB-vs-network exfil disambiguation"
+    chain: "Archiver ran (Prefetch) but SRUM shows ~0 network bytes_sent -> pivot to USBSTOR/MountPoints2/$UsnJrnl to test physical exfiltration instead."
+
+heuristics:
+  - "ALWAYS replay logs (rla) / repair before parsing and verify Clean state (esentutl /mh) - a dirty DB silently drops the most incident-relevant recent data."
+  - "Establish bounds FIRST: get the min/max record timestamps; a clean filter on the incident window means nothing if SRUM aged out (30-day App Resource / 60-day Network) before the window. Absence of data != absence of activity."
+  - "Foreground/focus time is the human-vs-automation discriminator: 0 focus + high net/CPU = automated/background (C2, miner, exfil script); high focus = interactive (incl. via RDP)."
+  - "bytes_sent is the industry-standard exfil quantifier - isolate suspect/LOLBin processes and read bytes_sent to put a number on data loss."
+  - ">100MB bytes_sent on a non-standard / unrecognized / LOLBin process is a high-fidelity exfil/staging flag; native tools (certutil, powershell, curl, cmd) rarely send hundreds of MB outbound."
+  - "Filter known-good Windows core binaries out of the App Resource/Network tables first, then investigate the remaining unknown paths."
+  - "SRUM-without-on-disk-binary is a top anti-forensics tell - reconcile every interesting AppId path against the live MFT."
+  - "SRUM gives volume, not destination - never claim 'to where' from SRUM alone; pair with memory netscan / Sysmon 3 / WFP 5156."
+  - "When live history is purged or wiped, go to Volume Shadow Copies for older SRUDB.dat and EseCarve for deleted records."
+
+discipline_reminder: >
+  SRUM is execution + behavior evidence: a record PROVES the binary ran and quantifies
+  its network/CPU/IO and whether a human was at the keyboard, but it is a ~hourly-bucketed
+  AGGREGATE, not an exact-time, byte-perfect, destination-aware log. Execution tier:
+  SRUM alone is a strong execution + activity indicator (probable); reach CONFIRMED only
+  by stacking 2-3 independent sources (e.g., SRUM + Prefetch + EVTX 4688, or SRUM bytes_sent
+  + memory netscan destination + Sysmon 3). Use defensible language: write "SRUM records
+  bytes_sent attributed to <process> for <SID> within the hourly window" and "memory netscan
+  corroborates the destination", NOT "the user exfiltrated X bytes to <IP>". State exfil
+  volume as an aggregate estimate, and always corroborate destination, exact timing, and
+  file names from other artifacts.

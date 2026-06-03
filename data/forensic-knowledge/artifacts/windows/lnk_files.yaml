@@ -1,12 +1,170 @@
-# Forensic-knowledge: Windows LNK shortcut files.
+# Forensic-knowledge: Windows LNK shortcut files (Recent / automatic).
 artifact: lnk_files
+aka:
+  - "LNK files"
+  - "Windows shortcut files"
+  - "Recent Items shortcuts"
+  - "Automatic shortcuts (Recent folder)"
+  - "[MS-SHLLINK] shell link binary"
+
+what_it_is: >
+  LNK (shortcut) files are tracking artifacts created by Windows to link a user to a
+  specific file, folder, or application. The OS auto-creates them in the per-user
+  Recent folder whenever a file/document is opened (and on modern Windows 10/11, often
+  the moment a file is CREATED). They populate the "Recent Items" / "Quick Access" GUI
+  feature, but for DFIR they are a metadata-rich, durable proof-of-file-interaction
+  artifact governed by the Microsoft [MS-SHLLINK] binary format spec.
+
+locations:
+  - "%AppData%\\Microsoft\\Windows\\Recent (resolves to C:\\Users\\<user>\\AppData\\Roaming\\Microsoft\\Windows\\Recent) - auto-created Recent LNKs"
+  - "%AppData%\\Microsoft\\Windows\\Recent\\AutomaticDestinations - Jump List LNK streams (auto, per-AppID)"
+  - "%AppData%\\Microsoft\\Windows\\Recent\\CustomDestinations - Jump List LNK streams (pinned/custom)"
+  - "User Desktop / Start Menu / Quick Launch - manually-created or installer shortcuts (distinct from Recent)"
+  - "Displayed in Explorer GUI as 'Recent Items'; the .lnk extension is hidden in the shell even when 'show extensions' is enabled"
+
+naming_format: >
+  Named after the target with a hidden .lnk extension appended (e.g.,
+  document.pdf.lnk, hello-demo.ext.lnk). If 'Hide extensions for known file types'
+  is disabled, some Windows 10 builds embed the target's extension in the LNK name
+  (e.g., screenshot.png.lnk). Some Windows 10 builds create numbered variants
+  '(#).lnk' instead of updating the original - valuable for extra timestamps and for
+  tracking same-named files/folders moving between local and removable volumes.
+
+proves:
+  - "A specific file/folder was OPENED or interactively accessed by the user account owning the profile (stronger evidence than ShellBag folder navigation, which only proves the GUI rendered a folder view)."
+  - "The target's FULL absolute path at time of access (local, UNC/network share, or removable-media path)."
+  - "The target's volume serial number (VSN) and volume label of the disk it resided on."
+  - "The target's MAC timestamps AS OF when the LNK was created/last updated (a frozen historical snapshot)."
+  - "The target's file size and file attribute flags at LNK creation/update time."
+  - "Machine ID / NetBIOS hostname and the network-interface MAC address of the system that created the LNK (Tracker Database / Distributed Link Tracking block) - present especially for network-share access."
+  - "Interaction with files on removable media or network shares even when those volumes are no longer connected."
+  - "Historical existence of a target that has since been deleted/wiped (LNK persists after the target is gone)."
+
 does_not_prove:
-  - "A LNK file proves a target was referenced/opened at least once, NOT how many times or by whom interactively."
-  - "Automatically-created LNKs (Recent, install shortcuts) do not require deliberate user action."
-  - "LNK embedded target MAC times reflect the target at LNK creation, not necessarily the current file state."
-  - "A LNK to a removable/network path does not prove the volume is still present or the file still exists."
+  - "A LNK proves a target was referenced/opened at least once, NOT how many times nor by whom interactively (no linear ledger - only first-open and last-open survive)."
+  - "Automatically-created LNKs (Recent, installer shortcuts) do NOT require deliberate user shortcut creation; the OS generates them silently, and modern Windows can create a LNK on file CREATION before the user ever opens it."
+  - "Embedded target MAC times reflect the target as it was at LNK creation/last-update, NOT the current file state; if the target is modified later without being reopened via the shell, the embedded data does not update."
+  - "A LNK to a removable/network path does NOT prove the volume is still present or that the file still exists."
+  - "Does NOT prove the user read/comprehended the content, nor how long the document stayed open, nor that data was successfully exfiltrated."
+  - "For a non-executable target (.docx/.pdf/.jpg) a LNK proves the document was opened, NOT that any executable ran - pivot to Prefetch/SRUM/EID 4688 to prove execution."
+
+timestamp_semantics:
+  lnk_file_creation_B: "Filesystem creation time of the .lnk itself = the FIRST time the target was opened (when the OS generated the shortcut). On modern Windows can equal target-creation time if the LNK was made on file creation."
+  lnk_file_modified_M: "Filesystem modified time of the .lnk = the LAST time the target was opened/interacted with, regardless of whether the target's contents changed."
+  lnk_file_accessed_A: "Filesystem access time of the .lnk - low reliability; A-times are frequently disabled (NtfsDisableLastAccessUpdate) or updated by scans/AV."
+  embedded_target_created_modified_accessed: "Creation/Modified/Access times of the TARGET file stored inside the LNK binary, captured AS OF the last LNK update. Highly reliable historical snapshot - survives even if the live target is later deleted or timestomped."
+  reliability_note: "All NTFS $STANDARD_INFORMATION timestamps are user-writable and stompable; the LNK's two independent timestamp sets (its own MACB plus the embedded target MACB) let you cross-check for tampering. Standardise everything to UTC."
+
+version_differences:
+  windows_7: "LNK created on explicit open/double-click/download. MTP devices: LNKs created for .DOCX and .JPG opened over MTP, but NOT for .PDF/.TXT/.XLS."
+  windows_10: "LNK often generated immediately on file CREATION (e.g., right-click > New Text Document) before the user opens it. Some builds create numbered '(#).lnk' variants rather than updating the original, yielding extra timestamps. May include extension in LNK name when 'hide known extensions' is off. Quick Access supplements Recent."
+  windows_11: "Core Recent mechanism consistent. MTP devices: ONLY folders accessed on MTP devices generate LNKs - individual files are ignored. MTP/PTP paths show device names (e.g., 'My Computer\\<Device>\\Internal shared storage\\DCIM\\Camera') because MTP devices receive no drive letter."
+  feature_updates: "Major OS feature updates can overwrite/lose related shell-item data (ShellBags especially); LNKs usually survive but verify."
+
+parsing_tools:
+  - "LECmd.exe (Eric Zimmerman) - industry standard. Single file: LECmd.exe -f <path.lnk>; directory to CSV: LECmd.exe -d <dir> --csv <outdir>. Parses target path, size, attributes, VSN, volume label, embedded MAC times, Machine ID/MAC, and 'Extra Blocks'."
+  - "JLECmd.exe (Eric Zimmerman) - parses Jump List embedded LNK streams; --fd (full details) / --dumpTo extract internal LNK shell items (a fallback when Recent .lnk aged out/deleted)."
+  - "Plaso / log2timeline.py 'lnk' parser - extracts target size, attribute flags, path, VSN for super-timeline integration."
+  - "ExifTool - on Linux/WSL, extracts embedded target timestamps, file sizes, and Machine IDs from LNK metadata."
+
+limitations:
+  - "Only first-open (LNK creation) and last-open (LNK modification) survive - no historical record of every individual access."
+  - "Recent folder is capped (historically ~149 items); older file-access records age out and are overwritten."
+  - "Path-based tracking by absolute path including drive letter: two different USB drives later assigned the same letter with identical folder/file structures can comingle or overwrite LNK data (same caveat as ShellBags)."
+  - "Embedded volume/VSN/label belongs to the volume the TARGET resided on (e.g., the USB), not the local OS drive - do not misattribute."
+  - "Embedded target timestamps freeze at last LNK update; background modification of the target without a shell reopen leaves stale embedded data (an edge case, not corruption)."
+
+anti_forensics:
+  techniques:
+    - "Clearing the Recent folder via privacy cleaners (BleachBit, CCleaner) or manual deletion to erase file-access history."
+    - "Timestomping the live target on disk to hide true creation/modification times."
+    - "Timestomping the .lnk file's own MACB to mislead a timeline."
+    - "Weaponization: threat actors hand-craft malicious LNKs for living-off-the-land execution / malware download (anomalous arguments, double extensions like invoice.pdf.exe, unusual target dirs)."
+  detection:
+    - "Recover deleted LNKs / prove wiping via $UsnJrnl (retains deletion records), $MFT records, the Recent folder's $I30 index slack, or Volume Shadow Copies."
+    - "Detect target timestomping by comparing the live filesystem MAC times against the LNK's EMBEDDED target MAC times (the embedded snapshot often retains the pre-stomp truth)."
+    - "Detect LNK-file timestomping via $STANDARD_INFORMATION vs $FILE_NAME creation-time mismatch and unnatural all-zero fractional seconds."
+    - "Detect Recent-folder wiping by reviewing the Recent directory's own creation timestamp and by missing LNKs for activity corroborated by other artifacts (RecentDocs, Jump Lists)."
+    - "Cross-check the USN Journal monotonicity (entries must move forward in time) to expose a wound-back system clock used to forge timestamps."
+    - "Inspect 'Extra Blocks' on weaponized LNKs - console properties, serialized property stores, and Tracker data can reveal the attacker's original build environment / machine MAC."
+
 corroborate_with:
-  jump_lists: "Jump Lists corroborate which application opened the target and when."
-  shellbags: "ShellBags corroborate navigation to the target's parent folder."
-  registry_fileaccess: "RecentDocs corroborates the document-open event for the user."
-  prefetch: "Prefetch confirms execution if the LNK target is an executable."
+  shellbags: "Proves the user interactively navigated through the GUI to the target's parent folder (exploration context leading up to the file open). LNK without a matching ShellBag suggests non-GUI/scripted access."
+  registry_fileaccess: "RecentDocs (HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RecentDocs in NTUSER.DAT) is an MRU sorted by extension that corroborates the file-open event and LNK modification time, confirming the file was opened via the Windows shell."
+  jump_lists: "AutomaticDestinations/CustomDestinations LNK streams tie the opened file to the specific application (AppID) that opened it; serve as a backup when the Recent .lnk ages out or is deleted."
+  prefetch: "Confirms execution if the LNK target is an executable (proves it actually ran)."
+  srum: "Confirms application/network resource usage tied to execution; corroborate exfiltration volume."
+  evtx_4688_sysmon1: "Process-creation events corroborate execution of an executable target."
+  usbstor_partition_diagnostic: "USBSTOR registry keys + Microsoft-Windows-Partition/Diagnostic.evtx tie the LNK's embedded VSN (convert hex<->decimal) to a specific physical USB device, proving the file was opened from that profiled drive."
+  mft_usnjrnl: "MFT/$UsnJrnl corroborate the LNK's own creation/deletion and provide authoritative, harder-to-forge filesystem timing."
+  vss_unallocated: "Volume Shadow Copies / unallocated carving recover a deleted target whose existence the LNK proved (use embedded size + timestamps to pivot)."
+
+corroboration_escalation:
+  alone: >
+    A LNK ALONE proves a target was OPENED/referenced via the Windows shell at
+    least once (file ACCESS tier - stronger than ShellBag navigation), with the
+    target's absolute path, volume serial, and embedded MAC snapshot. It does NOT
+    prove WHO opened it interactively, how many times, that the file still exists,
+    that contents were read/exfiltrated, or that any executable ran (auto-created
+    LNKs can appear on file CREATION before any open). Treat single-source as
+    observation/probable file access.
+  combinations:
+    - sources: ["lnk_files"]
+      plus_timestamps: "LNK creation (B) = first open; LNK modification (M) = last open"
+      upgrades_to: "OBSERVATION / probable file access (~0.70)"
+      rationale: "Shell generated a tracking shortcut for the target, but a Win10/11 LNK can be auto-created on file creation, not a human open."
+    - sources: ["lnk_files", "shellbags"]
+      plus_timestamps: "ShellBag folder render bounds-precede the LNK creation/modification"
+      upgrades_to: "PROBABLE file access (~0.85)"
+      rationale: "User navigated to the parent folder (ShellBag) and a specific file inside it was opened (LNK) - upgrades folder render to file interaction."
+    - sources: ["lnk_files", "registry_fileaccess (RecentDocs)"]
+      plus_timestamps: "RecentDocs key LastWrite / per-item FILETIME == LNK modification"
+      upgrades_to: "PROBABLE file access (~0.85)"
+      rationale: "Two independent shell MRU mechanisms recorded the same file-open via the Windows shell at the same time."
+    - sources: ["lnk_files", "shellbags", "registry_fileaccess (RecentDocs)"]
+      plus_timestamps: "all three shell-MRU timestamps aligned to the same minute"
+      upgrades_to: "CONFIRMED file access (~1.0)"
+      rationale: "Three independent shell sources (navigation + open + extension-mapped MRU) agree the file was opened via the GUI = defensible file access."
+    - sources: ["lnk_files", "jump_lists", "prefetch", "evtx_4688_sysmon1"]
+      plus_timestamps: "LNK/Jump List open time aligned with Prefetch run time and EID 4688 process creation"
+      upgrades_to: "CONFIRMED / definitive execution (~1.0)"
+      rationale: "For an executable target, which-app-opened-what (Jump List) + open (LNK) + actual run (Prefetch) + process creation (4688) prove execution, not just access."
+    - sources: ["lnk_files (embedded VSN/label)", "usbstor_partition_diagnostic"]
+      plus_timestamps: "USB connect time aligns with LNK creation"
+      upgrades_to: "CONFIRMED removable-media file access (~1.0)"
+      rationale: "Embedded volume serial matched to a profiled physical USB device proves the file was opened directly from that drive even after disconnect."
+  tiers: "1 source = possible/observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)"
+
+correlation_patterns:
+  - name: "Navigation-to-Access corroboration"
+    chain: "ShellBag (folder rendered in GUI) -> Recent LNK (specific file opened inside that folder) -> RecentDocs + Jump List (which application opened it) = defensible file-access timeline."
+  - name: "Stolen-document lifecycle"
+    chain: "ShellBag shows USB folder navigation -> Recent LNK shows the document opened from the removable path -> Jump List shows which app rendered it -> SRUM/network for exfil = staged data theft."
+  - name: "USB device profiling"
+    chain: "LNK embedded VSN -> convert to hex -> match Microsoft-Windows-Partition/Diagnostic.evtx or USBSTOR -> definitively tie a file open to a specific physical USB device."
+  - name: "Deleted-target pivot"
+    chain: "Recent LNK to a missing sensitive file -> use embedded target path/size/timestamps -> carve unallocated space / mine Volume Shadow Copies to recover the original data."
+  - name: "Anti-timestomp cross-check"
+    chain: "Live target MAC (suspected stomped) vs LNK embedded target MAC -> discrepancy confirms timestamping; corroborate with USN $SI vs $FN."
+  - name: "Negative-space / scripted-access detection"
+    chain: "LNK present for a sensitive file but NO corresponding ShellBag -> indicates non-GUI (command-line/script) access, since LNKs still auto-generate on target interaction."
+
+heuristics:
+  - "Filter parsed LECmd CSV for '(#).lnk' numbered variants to surface files/folders actively copied between local host and removable media."
+  - "Review 'Extra Blocks' (especially for cmd/script shortcuts and weaponized LNKs) - console properties, window/font config, and Tracker data profile the attacker's environment and machine."
+  - "Treat the persistence-after-deletion property as the LNK's highest value: a LNK to a wiped payload/document reconstructs its name, path, size, original MAC times, and host volume."
+  - "Pivot on LNKs pointing to unusual target dirs (\\Temp\\, \\Downloads\\, \\Public\\) or with double extensions (invoice.pdf.exe)."
+  - "Exploit the embedded MAC address / Machine ID for network-share targets to identify the rogue/lateral-movement source machine."
+  - "When a suspect denies inserting a USB drive, extract the LNK's embedded VSN/label and match it to a USB connection event to disprove the claim."
+  - "A LNK without a matching ShellBag is a strong indicator of scripted/non-Explorer file access - hunt for the executing script or command line."
+
+discipline_reminder: >
+  LNK files sit at the ACCESS tier of the validation hierarchy (file was OPENED via the
+  shell) - stronger than ShellBag NAVIGATION but NOT proof of EXECUTION for non-binaries.
+  Single LNK = observation/probable file access; stack with ShellBag + RecentDocs +
+  Jump List (3+ independent sources) for CONFIRMED file access. To claim EXECUTION,
+  corroborate with Prefetch + EVTX 4688 + MFT. Use defensible language: "an
+  auto-created Recent LNK indicates the target was opened through the Windows shell at
+  <UTC time>", NOT "the user read/exfiltrated the file." Distinguish the LNK's own MACB
+  (first/last open) from the embedded target MACB (frozen historical snapshot), and
+  remember presence does not prove the target still exists.

@@ -1,14 +1,230 @@
-# Forensic-knowledge: Windows Security/System event logs (EVTX).
-# Generic Windows forensic discipline - no case specifics.
+# Forensic-knowledge: Windows Security event log (Security.evtx) and key Event IDs.
+# Generic Windows forensic discipline - no case specifics, no IPs/usernames/hostnames.
 artifact: event_logs_security
+aka:
+  - "Security.evtx"
+  - "Windows Security Audit Log"
+  - "Security Event Log"
+  - "SecEvent.evt (legacy XP/2003)"
+
+what_it_is: >
+  The Security event log is the primary auditing ledger of the Windows operating
+  system. It records authentication, privilege use, object/share access, account
+  and group management, service/scheduled-task installation, and process creation
+  - but ONLY for the categories enabled by local or domain Group Policy Advanced
+  Audit Policy. Integrity is enforced by design: only the Local Security Authority
+  Subsystem Service (LSASS) can write to it, so standard users and third-party
+  apps cannot inject forged events.
+
+locations:
+  - "Modern (Vista / 7 / 8 / 10 / 11 / Server 2008+): %SystemRoot%\\System32\\winevt\\Logs\\Security.evtx"
+  - "Legacy (NT / 2000 / XP / Server 2003): %SystemRoot%\\System32\\config\\SecEvent.evt"
+  - "Forwarded events (WEF/WEC collector): ForwardedEvents.evtx in the same winevt\\Logs directory"
+  - "Max-size / retention policy stored under registry: HKLM\\SYSTEM\\CurrentControlSet\\Services\\EventLog\\Security (MaxSize, Retention)"
+
+naming_format: >
+  EVTX is a proprietary binary XML format introduced in Vista, organized into
+  64 KB chunks each holding multiple event records. Each record is a structured
+  XML document (System block + EventData block) with sequential Record Numbers
+  and a 64-bit FILETIME timestamp (100-ns intervals since 1601-01-01, stored in
+  UTC). Human-readable strings/field labels are NOT in the file - they resolve at
+  display time from external provider/message DLLs, so a bare .evtx exported
+  without display info shows only raw data fields. Legacy .evt is a flat binary
+  format with an entirely different event-numbering schema.
+
+proves:
+  - "That the Windows security subsystem (LSASS/kernel) OBSERVED and audited a discrete security transaction at a specific UTC time, attributed to a specific account SID and a unique Logon ID - assuming the relevant audit subcategory was enabled."
+  - "Account context: which SID authenticated, the Logon Type, source network address and workstation name (subject to NTLM-relay caveat), and special privileges granted to the session."
+  - "Process execution (EID 4688): new process name, parent/creator process, and - only if command-line auditing is enabled by GPO - the full command line."
+  - "System modifications: rogue account creation/enablement, group membership changes, service installs, and scheduled-task creation."
+  - "Resource access: network share / named-pipe / sensitive-file access (4663/5140) when object-access auditing is enabled."
+
 does_not_prove:
-  - "An event proves the logging subsystem RECORDED an action, NOT necessarily that a human performed it - service accounts and automation generate the same EIDs."
-  - "A logon event (4624) records a session type and account, NOT that the named user was physically present."
-  - "Absence of an expected event does NOT prove the action never happened - audit policy may have been disabled, or the log cleared (EID 1102)."
-  - "EID 1102 (audit log cleared) is itself evidence of anti-forensics; the cleared content is gone unless recoverable from a Volume Shadow Copy."
-  - "Event timestamps depend on the host clock; normalize to UTC and account for possible clock tampering before sequencing."
+  - "An event proves the logging subsystem RECORDED an action, NOT necessarily that a human performed it - service accounts, scheduled tasks, scripts, and reconnecting mapped drives generate the same EIDs (especially Logon Types 3/4/5)."
+  - "A successful logon (4624) records a session type and account, NOT physical human presence. Only Type 2 (console) / Type 7 (unlock) / Type 10 (RDP) imply interactive control, and even those can be automated."
+  - "Logon Type 3 (Network) proves a network authentication (file share, PowerShell remoting, PsExec), NOT interactive desktop access."
+  - "EID 4688 proves a process was created, NOT that its payload succeeded (it may have crashed, been blocked, or been stopped before completing its objective)."
+  - "Absence of an expected event does NOT prove the action never happened - the audit subcategory may have been disabled/unconfigured (e.g. 4688 command-line auditing is OFF by default), or the log may have wrapped/rolled over, or been cleared (EID 1102), or the EventLog service silently tampered in memory."
+  - "The 'Workstation Name' in 4624 is NOT always the true source: during NTLM relay it reflects the relayed victim's host while the Source Network Address reveals the attacker."
+  - "Event timestamps depend on the host clock; a high-privilege attacker can change the system clock. Normalize to UTC and validate against an independent time source before sequencing."
+  - "EID 1102 (audit log cleared) is itself evidence of anti-forensics; the cleared content is gone unless recoverable from a Volume Shadow Copy or carved from unallocated space."
+
+timestamp_semantics:
+  TimeCreated_SystemTime: "The UTC FILETIME when the event was triggered and written by the EventLog service. Highly reliable (system/LSASS generated) for sequencing, but vulnerable to host-clock manipulation by a privileged attacker."
+  EventViewer_display: "The native Event Viewer GUI translates the stored UTC into the LOCAL time zone of the analyzing system - a frequent normalization error. The raw .evtx is always UTC; always work from UTC."
+  RecordNumber: "Sequential per-log record id. Not a clock, but a tamper-detection signal: gaps in the otherwise-monotonic sequence indicate selective record deletion."
+  logon_session_window: "The interval between a 4624 (logon) and the matching 4634/4647 (logoff) sharing the same Logon ID bounds all activity attributable to that session - a logical, not literal, presence window."
+
+version_differences:
+  xp_2003: "Used .evt (SecEvent.evt) with a different numbering schema - successful logon was EID 528/540, logoff 682/683 - not directly comparable to modern 4624/4634."
+  vista_plus: "Introduced .evtx binary-XML; collapsed XP's many logon EIDs into 4624/4625 and the modern 4xxx range."
+  win10_server2016: "EID 4688 gained the Creator/Parent Process Name field, greatly improving process-tree hunting. Advanced (subcategory) audit policy enables finer control."
+  command_line_auditing: "Capturing the full command line in 4688 is supported on modern Windows but DISABLED by default - requires GPO 'Include command line in process creation events'."
+  restricted_admin_rdp: "Server 2012 R2 logged Restricted Admin Mode RDP as Logon Type 3; Windows 10+ correctly logs Type 10 with a RestrictedAdminMode=Yes field."
+  per_user_services_win10: "Windows 10 per-user services generate noisy 4697 service-install events with a LUID suffix appended to the service name - benign noise to filter out."
+
+parsing_tools:
+  - "EvtxECmd (Eric Zimmerman) - industry standard; parses .evtx to normalized CSV/JSON using crowd-sourced XPath maps, standardizes timestamps to UTC, dedups across VSS, and supports a --vss flag to crawl all shadow copies for rolled-over/deleted logs."
+  - "Windows Event Viewer - native GUI; displays in local time (normalize to UTC)."
+  - "PowerShell Get-WinEvent -FilterHashtable - native, scriptable, object-based filtering across local/remote hosts at scale; avoids black-box parsers dropping data."
+  - "Event Log Explorer - GUI with 'Direct Mode' raw parsing that handles corrupted logs and multi-log search."
+  - "Plaso / log2timeline.py - extracts .evtx into a super-timeline (SQLite) merged with filesystem MACB."
+  - "SOF-ELK - SIEM ingestion/visualization for aggregated multi-host event analysis."
+  - "bulk_extractor-rec / vss_carver.py / Arsenal Image Mounter - carve deleted EVTX chunks from unallocated space or recover from shadow copies after a clear."
+  - "Chainsaw / Hayabusa - apply Sigma rules over .evtx for deterministic ATT&CK-mapped detection."
+
+limitations:
+  - "Circular buffer / log wrapping: at the configured MaxSize (often ~20 MB default) the oldest events are silently overwritten with no warning. On a busy host/DC, Security.evtx can roll over in hours - critical historical evidence destroyed unless forwarded to a SIEM."
+  - "Audit-policy dependency: if the subcategory is not enabled, the event simply does not exist (4688, object access, detailed file share, and command-line capture are commonly off by default)."
+  - "Signal-to-noise: legitimate SYSTEM/DWM/NETWORK SERVICE accounts and per-user services flood the log with Type 5/2/3 events that mask human activity."
+  - "SYSTEM-context attacker activity may not be audited identically to interactive sessions; some remote-exploit/backdoor access bypasses Windows auth APIs and leaves no logon event at all."
+  - "Display strings depend on provider DLLs; a bare exported .evtx may render only raw EventData without labels."
+
+anti_forensics:
+  techniques:
+    - "Full log clear via 'Clear Log' in Event Viewer or `wevtutil cl Security` - all-or-nothing; wipes the entire Security log."
+    - "Selective record deletion / header patching with tools like DanderSpritz eventlogedit to skip/remove individual target records without clearing the whole log."
+    - "In-memory EventLog-service tampering: Invoke-Phant0m / Mimikatz event::drop kill the specific threads in svchost.exe (EventLog service) so events are never written - avoids generating EID 1102 entirely."
+    - "Disabling/altering audit policy beforehand so the actions are never audited (produces evidence-of-absence, not 1102)."
+    - "System-clock manipulation to skew event TimeCreated values and defeat naive timeline ordering."
+  detection:
+    - "EID 1102 (audit log cleared) is the definitive, hard-to-suppress signal of a full clear - treat as CRITICAL anti-forensics and immediately pivot to VSS recovery."
+    - "Sequential Record Number GAPS prove selective record deletion even when no 1102 exists."
+    - "Inexplicable cessation of ALL logging mid-timeline (then resuming after reboot or service restart) indicates in-memory EventLog-service tampering (Phant0m-style). Corroborate by finding the tampering tool's execution via Amcache/Prefetch/4688."
+    - "Chronological-continuity gaps inconsistent with system uptime."
+    - "VSS recovery: when 1102 (or a gap) is found, mount Volume Shadow Copies created BEFORE the clear and extract the intact pre-clearing Security.evtx (EvtxECmd --vss, vssadmin, Arsenal Image Mounter, vss_carver.py); or carve deleted EVTX chunks from unallocated space with bulk_extractor-rec."
+    - "Compare host TimeCreated against an independent time source (DC logs, network captures, peer hosts) to detect clock tampering."
+
+key_event_ids:
+  "4624":
+    meaning: "Successful logon. Anchor of user activity; carries the unique Logon ID, account SID, Source Network Address, Workstation Name, and the critical Logon Type."
+    logon_types:
+      "2": "Interactive - physical console keyboard/screen."
+      "3": "Network - SMB/file-share access, PowerShell remoting, WMI, PsExec; NOT interactive desktop."
+      "4": "Batch - scheduled-task execution."
+      "5": "Service - service account startup."
+      "7": "Unlock - workstation screen unlocked (also session reconnect)."
+      "8": "NetworkCleartext - IIS/Basic auth; password sent in cleartext."
+      "9": "NewCredentials - RunAs /netonly; impersonation with alternate creds."
+      "10": "RemoteInteractive - RDP / Terminal Services."
+      "11": "CachedInteractive - logged on with cached domain credentials without contacting a Domain Controller."
+  "4625":
+    meaning: "Failed logon. Key for brute-force/password-spray detection; carries a Sub-Status code explaining WHY it failed."
+    sub_status_codes:
+      "0xC0000064": "User/account does not exist (username enumeration)."
+      "0xC000006A": "Correct username, wrong password."
+      "0xC0000234": "Account locked out."
+      "0xC0000072": "Account disabled."
+      "0xC0000071": "Password expired."
+  "4634": "Logoff - logon session terminated (often automatically); pairs with the originating Logon ID."
+  "4647": "User-initiated logoff (the user actively clicked Log Off)."
+  "4648": "Logon using EXPLICIT credentials (RunAs, outbound RDP, mapping a drive with alternate creds). Logs on the ORIGINATING host - a 'super-power' for tracing lateral movement BACKWARD to where the attacker moved FROM/TO."
+  "4672": "Special privileges assigned to a new logon (SeDebug, SeTakeOwnership, etc.) - effectively an administrator/superuser logon; fires immediately after the matching 4624."
+  "4688": "Process creation. New Process Name, Creator/Parent Process, and (if GPO command-line auditing enabled) the full command line. Foundation for process-tree reconstruction."
+  "4720": "User account created (rogue-account persistence)."
+  "4722": "User account enabled."
+  "4724": "Attempt to reset an account's password (admin-initiated)."
+  "4732": "Member added to a security-enabled LOCAL group (e.g., backdoor account added to local Administrators)."
+  "4698": "Scheduled task created - primary persistence mechanism; captures the task XML (what runs and when)."
+  "4697": "A service was installed (logged in SECURITY log)."
+  "7045": "A service was installed (logged in SYSTEM log) - redundant/reliable corroboration of 4697; captures service name and binary path (e.g., PSEXESVC)."
+  "5140": "Network share object accessed (e.g., IPC$, ADMIN$, C$) - object-access auditing required."
+  "4663": "An attempt was made to access an object (file) - carries the Logon ID for session correlation."
+  "1102": "The audit log was CLEARED - critical anti-forensics signal; immediately trigger VSS recovery."
+
 corroborate_with:
-  volume_shadow_copies: "Shadow copies pre-dating a 1102 clear event may retain the intact Security.evtx."
-  prefetch: "Prefetch corroborates execution that 4688 records."
-  mft: "$MFT corroborates file creation/staging referenced by events."
-  hayabusa_alerts: "Sigma/Hayabusa rule hits provide deterministic ATT&CK mapping over the same events."
+  volume_shadow_copies: "Shadow copies pre-dating a 1102 clear (or a Record-Number gap) may retain the intact pre-clearing Security.evtx - the single most important pivot after detecting a clear."
+  system_evtx: "EID 7045 in System.evtx corroborates 4697 (service install) with redundant, reliable tracking and the binary path."
+  taskscheduler_operational_evtx: "EIDs 106/200/201 corroborate 4698 by recording exactly when the scheduled task ran and completed (registration vs. execution)."
+  rdpclient_operational_evtx: "TerminalServices-RDPClient%4Operational corroborates outbound lateral movement - destination IP/hostname on the ORIGINATING host, pairing with 4648/Type-10 logons on the target."
+  sysmon_operational: "Sysmon EID 1/3 adds deep parent-child lineage, exact command lines, and network connections tied to a process - fills 4688 gaps where command-line auditing was off."
+  prefetch: "Proves an executable named in 4688 actually RAN, with first/last-run times and referenced files (helps prove what a process touched)."
+  amcache: "SHA-1 hash + first-seen of the binary in 4688/4697/7045; also corroborates execution of an anti-forensics/tampering tool."
+  shimcache: "Confirms a binary path existed/was observed by the OS; cross-reference with 4688 to confirm execution vs. mere presence."
+  mft: "$MFT MACB corroborates file creation/staging referenced by events; M-time predating B-time indicates an SMB file copy (lateral movement)."
+  srum: "Quantifies bytes_sent/recv and per-app focus time - corroborates network logons with actual data transmission (exfiltration volume)."
+  shellbags: "Proves a human GUI rendered a folder during a session window (escalates a Type 10/2 logon toward interactive intent)."
+  lnk_jumplists: "LNK/Jump Lists prove a human opened specific files/RDP connection files - human GUI navigation tied to the session."
+  registry_user_mru: "UserAssist / RecentDocs / TypedPaths escalate a system logon to interactive human activity within the session window."
+  hayabusa_alerts: "Sigma/Hayabusa/Chainsaw rule hits provide deterministic ATT&CK mapping over the same events for consensus validation."
+
+corroboration_escalation:
+  alone: >
+    A Security-log event ALONE proves only that the OS audit subsystem RECORDED a
+    transaction under an account SID/Logon ID at a UTC time. It does NOT prove
+    human presence, intent, payload success, or - in the case of absence - that
+    the action did not occur. A lone 4624 Type 3 could be a vulnerability scanner,
+    IT script, or a reconnecting mapped drive; a lone 4688 could be an automated
+    task. Treat a single EVTX event as an observation requiring corroboration.
+  combinations:
+    - sources: ["EVTX 4688 process creation", "Prefetch execution"]
+      plus_timestamps: "Prefetch last-run within seconds of the 4688 TimeCreated"
+      upgrades_to: "probable execution"
+      rationale: "Two independent mechanisms (audit + filesystem execution artifact) confirm the named binary actually ran, not merely that the OS logged a spawn."
+    - sources: ["EVTX 4624 Type 3 network logon", "EVTX 4688 process creation", "Prefetch/Amcache"]
+      plus_timestamps: "4688/Prefetch immediately follow the 4624 within the same session/Logon-ID window"
+      upgrades_to: "probable remote payload execution"
+      rationale: "A remote actor authenticated and a binary executed under that session in tight temporal sequence; the LogonId binds them together."
+    - sources: ["EVTX 4624 Type 3", "EVTX 4672", "EVTX 5140 (IPC$/ADMIN$)", "EVTX 7045/4697 service install"]
+      plus_timestamps: "All four within a few seconds, same source address, same session"
+      upgrades_to: "confirmed PsExec-style lateral movement"
+      rationale: "The canonical PsExec chain - network logon + admin privileges + admin-share access + service drop - aligned in time is a definitive lateral-movement signature."
+    - sources: ["EVTX 4624 Type 10 (RDP)", "EVTX 4688/Prefetch", "ShellBags/LNK/JumpLists", "SRUM bytes_sent + focus time"]
+      plus_timestamps: "GUI-navigation timestamps and SRUM transmission align inside the Logon-ID session window (logon -> navigate -> archive -> exfil)"
+      upgrades_to: "confirmed interactive human exfiltration"
+      rationale: "OS auth (EVTX) + human GUI navigation (Registry/LNK) + execution (Prefetch) + quantified network egress (SRUM) stack across OS, filesystem, and registry to prove a human operator's specific actions and intent."
+    - sources: ["EVTX 1102 (log cleared)", "VSS pre-clear Security.evtx", "Amcache/Prefetch of the clearing tool"]
+      plus_timestamps: "Clearing-tool execution time precedes the 1102 TimeCreated; recovered VSS log pre-dates the clear"
+      upgrades_to: "confirmed anti-forensic log destruction with recovered evidence"
+      rationale: "The clear event plus the recovered pre-clear log plus execution proof of the wiping tool together prove deliberate evidence destruction AND restore the destroyed content."
+  tiers: >
+    1 source = possible / observation (~0.70); 2 independent sources = probable
+    (~0.85); 3+ independent sources across distinct artifact families (OS audit +
+    filesystem + registry/memory) WITH aligned timestamps inside the Logon-ID
+    session window = confirmed / definitive (~1.0). The Logon ID is the binding
+    key that makes timestamp alignment defensible.
+
+correlation_patterns:
+  - name: "Logon-session correlation (LogonId boxing)"
+    chain: "4624 (capture the unique hex Logon ID) -> filter the whole log for that ID across 4672/4663/4688/5140 -> matching 4634/4647 logoff with the same ID. Isolates one session's entire activity from background noise."
+  - name: "PsExec lateral-movement chain"
+    chain: "4624 Type 3 (network logon from source) -> 4672 (admin privileges assigned) -> 5140 (IPC$ then ADMIN$/C$ share access) -> 7045 (System) / 4697 (Security) service install (e.g., PSEXESVC)."
+  - name: "Password spray / brute force"
+    chain: "Many rapid 4625 across MULTIPLE usernames from one source IP with sub-status 0xC000006A (bad password) or 0xC0000064 (unknown user) -> followed by a single successful 4624 Type 3 from the same source = successful brute force."
+  - name: "Rogue-account persistence"
+    chain: "4720 (account created) -> 4722 (enabled) -> 4724 (password set) -> 4732 (added to local Administrators)."
+  - name: "Suspicious parent/child execution (4688)"
+    chain: "Parent winword.exe/excel.exe -> child cmd.exe/powershell.exe (macro shell); or parent w3wp.exe -> child cmd.exe/powershell.exe (IIS web-shell compromise)."
+  - name: "SMB file-copy lateral movement (cross-artifact)"
+    chain: "4624 Type 3 + 5140 (C$/ADMIN$) + $MFT entry for the dropped binary with M-time predating B-time + subsequent 4688/Prefetch execution."
+  - name: "Log-clear -> VSS recovery"
+    chain: "1102 detected -> mount Volume Shadow Copies created before the 1102 -> extract pre-clear Security.evtx (EvtxECmd --vss) -> recover wiped events."
+  - name: "Outbound lateral movement (originating-host pivot)"
+    chain: "4648 (explicit creds) on the originating host + TerminalServices-RDPClient%4Operational destination -> 4624 Type 10 + 4672 on the destination host."
+
+heuristics:
+  - "Always normalize EVTX timestamps to UTC; Event Viewer shows local time and silently misleads cross-host timelines."
+  - "Never analyze an isolated event - grab the Logon ID and box the entire session (4624 -> activity -> 4634)."
+  - "Logon Type is the single most important 4624 field: Type 10 (RDP) on standard workstations and Type 3 to unexpected hosts are high-value lateral-movement leads."
+  - "Filter out SYSTEM/DWM/NETWORK SERVICE accounts and per-user-service (LUID-suffixed) 4697 noise when hunting human actors."
+  - "Group 4625 by source IP and by sub-status code: spray = many usernames; brute force = one username many attempts; both ending in a 4624 = success."
+  - "4648 logs on the ORIGINATING host - use it to scope which hosts an attacker pivoted from/to."
+  - "Hunt 4688 by anomalous parent/child (Office or IIS spawning a shell) and by command-line content when auditing is enabled."
+  - "Watch service installs (7045/4697) for bizarre service names and binary paths outside System32/Program Files - classic persistence."
+  - "Absence is evidence: if expected 4688/object-access events are missing, ask whether the audit subcategory was disabled, the log wrapped, was cleared (1102), or the EventLog service was tampered in memory - check Record-Number gaps and logging-cessation continuity."
+  - "On 1102, immediately pivot to VSS before doing anything else - shadow copies are the only path back to the destroyed content."
+  - "Cross-check the 4624 Workstation Name against the Source Network Address; a mismatch can indicate NTLM relay."
+
+discipline_reminder: >
+  Execution/access-validation tier: a single EVTX event is OBSERVATION-tier only -
+  it proves the OS audited a transaction, not that a human acted, that intent
+  existed, or that a payload succeeded. Promote to PROBABLE with a second
+  independent artifact (e.g., 4688 + Prefetch) and to CONFIRMED only with 3+
+  independent artifact families plus timestamp alignment inside the Logon-ID
+  session window. Use defensible language: write "4624 Type 10 records a remote
+  interactive authentication for account SID X" not "the user logged in via RDP";
+  write "Prefetch and 4688 corroborate execution at HH:MM:SS UTC" not "the
+  attacker ran the binary"; write "EID 1102 indicates the Security log was
+  cleared" not "the attacker destroyed the logs" until the clearing tool's
+  execution is independently proven. Treat absence as a question (policy disabled?
+  log wrapped? cleared? service tampered?), never as proof of innocence.

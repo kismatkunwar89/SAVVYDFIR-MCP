@@ -1,13 +1,160 @@
-# Forensic-knowledge: Amcache.hve (program presence + SHA-1).
+# Forensic-knowledge: Amcache.hve (program presence + SHA-1 identity).
 # Generic Windows forensic discipline - no case specifics.
 artifact: amcache
+aka:
+  - "Amcache.hve"
+  - "Application Experience / Application Compatibility hive"
+  - "Microsoft Compatibility Appraiser database"
+  - "successor to RecentFileCache.bcf (Windows 7)"
+
+what_it_is: >
+  Amcache.hve is a standalone Windows registry hive maintained by the Application
+  Compatibility framework (populated largely by the Microsoft Compatibility
+  Appraiser scheduled task) to inventory installed applications, loose/portable
+  executables, and loaded drivers so the OS can decide whether compatibility
+  shims are needed. For DFIR it is a resilient historical inventory that captures
+  rich per-file metadata (full path, size, PE compilation date, publisher) and a
+  SHA-1 hash, surviving even after the file itself is deleted or wiped.
+
+locations:
+  - "C:\\Windows\\AppCompat\\Programs\\Amcache.hve"
+  - "Transaction logs in same dir: Amcache.hve.LOG1, Amcache.hve.LOG2 (uncommitted in-flight writes)"
+  - "Modern key of interest: Root\\InventoryApplicationFile (loose/standalone executables)"
+  - "Root\\InventoryApplication (formally installed software, MSI/Add-Remove-Programs, keyed by ProgramId)"
+  - "Root\\InventoryDriverBinary (loaded driver .sys metadata + SHA-1)"
+  - "Legacy Win8/early-Win10 keys: Root\\File (by Volume GUID), Root\\Programs"
+
+naming_format: >
+  Standard Windows registry hive (.hve) binary structure. Because it is an active
+  hive it is locked on a live system and cannot be plain-copied; extract via VSS
+  snapshot, offline boot, or a triage tool (KAPE Amcache.tkape target, FTK Imager)
+  - and always grab the .LOG1/.LOG2 logs alongside the hive.
+
+proves:
+  - "Historical PRESENCE/identity of a binary, driver, or installed app on the system - even after deletion or secure-wipe of the file."
+  - "Absolute file path, file size, and publisher/version metadata for the file."
+  - "SHA-1 hash of the file (stored in the File ID / FileId field) - a rare cryptographic identity artifact enabling threat-intel pivots."
+  - "PE compilation Link Date pulled directly from the binary's PE header - reliable for identifying malware build/age independent of filesystem timestamps."
+  - "History of loaded third-party drivers, including hardware no longer connected (unique vs user-centric artifacts like Prefetch/UserAssist)."
+
 does_not_prove:
-  - "An Amcache entry proves a binary was PRESENT and observed by Windows compatibility tracking, NOT that it executed."
-  - "Amcache SHA-1 identifies the file even after deletion, but the timestamp reflects when Amcache recorded it, not necessarily first execution."
-  - "Absence from Amcache does NOT prove a binary never ran - Amcache coverage varies by Windows version and can be cleared."
-  - "An Amcache path outside System32/Program Files/WinSxS is suspicious for review, but legitimate software also installs to user paths."
+  - "An Amcache entry proves a binary was PRESENT and observed/registered by Windows compatibility tracking, NOT that it executed (especially Win10/11)."
+  - "Amcache is heavily populated by the background Microsoft Compatibility Appraiser scheduled task scanning directories (Program Files, Desktop, etc.) - an entry can exist with the file never having run, or merely copied as part of another app's install."
+  - "FileKeyLastWriteTimestamp reflects when the appraiser/inventory recorded or updated the entry, NOT necessarily first execution or the time the file was dropped."
+  - "Absence from Amcache does NOT prove a binary never ran - coverage varies by Windows patch level, the appraiser runs on a schedule, and old entries can age out/cap."
+  - "A clean date-filter returning no rows in the incident window can mean 'no coverage' (hive capped/aged before the window) NOT 'no activity' - establish min/max FileKeyLastWriteTimestamp bounds first."
+  - "An Amcache path outside System32/Program Files/WinSxS is suspicious for review, but legitimate portable software also runs from user paths."
+  - "The SHA-1 may not match the full-file hash (only first ~30MB is hashed) - a clean VirusTotal lookup is not exoneration."
+
+timestamp_semantics:
+  FileKeyLastWriteTimestamp: "Registry key last-write time = when the inventory/appraiser added or updated this entry. Generally commensurate with a background appraiser scan, NOT execution time and NOT necessarily file-drop time. Reliable as a 'system observed it by' bound, not a precise event time."
+  Compilation_Link_Date: "PE header build timestamp (when the author compiled the code). Highly reliable for malware-variant correlation and timestomp detection, but attacker-controllable via PE header timestomping prior to drop."
+  hive_aging_cap_caveat: "The hive purges/caps older entries and is driven by scheduled appraiser runs; relevant historical entries may age out before an old incident window. Always determine the min/max of FileKeyLastWriteTimestamp before concluding 'no activity'."
+
+version_differences:
+  windows_7: "Originally used RecentFileCache.bcf; Amcache was backported to fully-patched Win7 late in its lifecycle."
+  windows_8: "Amcache.hve introduced as the replacement for RecentFileCache.bcf."
+  windows_8_early_10: "Data primarily under Root\\File (keyed by Volume GUID) and Root\\Programs."
+  windows_10_1607_plus_and_11: "Schema restructured around Inventory* keys; InventoryApplicationFile (loose exe), InventoryApplication (installed, by ProgramId), InventoryDriverBinary (drivers) are the focal points."
+  format_driver: "The on-disk format is driven by the appraiser DLL patch level (changed by Microsoft at least four times), NOT the base OS version - structure depends on the system's exact patch level."
+
+parsing_tools:
+  - "rla.exe (Eric Zimmerman, Registry Log replay) - MUST run first to replay dirty .LOG1/.LOG2 into a clean hive before parsing, or the most recent incident-window writes are missing/corrupt."
+  - "AmcacheParser.exe (Eric Zimmerman) - industry standard; outputs multiple CSVs, auto-truncates the SHA-1 leading zeros, supports SHA-1 allow/block lists for enterprise filtering. Usage: AmcacheParser.exe -f <clean_amcache.hve> --csv <out>"
+  - "Registry Explorer (Eric Zimmerman) - hierarchical view of live/offline hive; can recover deleted keys from unallocated space."
+  - "KAPE - triage collection of the hive + transaction logs (Amcache.tkape target)."
+
+limitations:
+  - "SHA-1 is calculated over only the first 31,457,280 bytes (~30MB) of a file - padded/large binaries will have an Amcache SHA-1 that does NOT match the full-file hash; to match, hash only the first 30MB of your sample. Attackers pad past 30MB to break TI lookups."
+  - "Incomplete coverage - not every dropped exe enters Amcache; depends on the appraiser scheduled task running or specific Explorer interactions."
+  - "Presence != execution (modern Windows) - the artifact's primary forensic limitation."
+  - "Hive can cap/age out historical entries before the incident window begins."
+  - "Format varies by appraiser DLL patch level - parser must handle multiple schema versions."
+
+anti_forensics:
+  techniques:
+    - "Deletion/wiping of Amcache.hve or the C:\\Windows\\AppCompat\\Programs\\ directory (Windows silently recreates the hive)."
+    - "Filesystem MAC timestomping of the dropped payload to make it appear old/legitimate."
+    - "PE header Link Date timestomping (e.g. setting compile date to 1992 or a future date) prior to drop."
+    - "Padding a malicious binary past 30MB so the stored SHA-1 will not match TI/VirusTotal."
+    - "Direct hive key tampering (rare - requires SYSTEM; registry locking makes it hard)."
+  detection:
+    - "Timestomp: compare filesystem $STANDARD_INFORMATION creation time vs the Amcache PE Link Date - if disk-creation predates the internal compile time (or wildly disagrees), the file was timestomped; Amcache exposes the real build/observation time."
+    - "Timestomp cross-check: a file claiming an old disk-creation date but a recent FileKeyLastWriteTimestamp (first-discovery) is a red flag."
+    - "Deletion: $UsnJrnl ($Extend\\$UsnJrnl:$J) retains the deletion event of the hive/payload; monotonicity check on the journal (newer sequence numbers with earlier wall-clock) exposes clock rollback used to forge timestamps."
+    - "Hive recreation: compare Amcache.hve file-creation timestamp against the OS install date - a recently created hive on an old OS suggests deletion+recreation."
+    - "Deleted-entry recovery: deleted registry keys/values are marked unallocated, not erased - Registry Explorer can recover them; .LOG1/.LOG2 may hold pre-tamper records."
+    - "Link Date anomalies: filter for absurdly old (e.g. 1992) or future PE compile dates as tampering flags."
+
 corroborate_with:
-  prefetch: "Prefetch confirms actual execution and run count; Amcache alone is presence-only."
-  event_logs_security: "EID 4688 ties the hash/path to a concrete execution event."
-  shimcache: "ShimCache corroborates that Windows observed the executable path."
-  mft: "$MFT confirms the file existed on the volume at the recorded path."
+  prefetch: "Proves actual EXECUTION + first/last run times + run count + helper files/DLLs loaded in first ~10s + volume serial; Amcache alone is presence-only."
+  shimcache: "AppCompatCache corroborates Windows observed the executable path and preserves the file's last-modified time prior to attacker timestomping; survives file wipe."
+  event_logs_security: "EID 4688 ties hash/path to a concrete execution event with command-line, parent process, and user context (if process-creation auditing enabled)."
+  mft: "$MFT confirms the file existed at the recorded path on the volume and supplies $SI/$FN times for timestomp comparison."
+  usn_journal: "$UsnJrnl gives immutable, chronological file create/modify/delete events to corroborate drop time and detect hive/payload deletion + clock rollback."
+  srum: "srudb.dat ties the Amcache executable path to network bytes sent/received and focus time per user - quantifies exfiltration for a possibly-deleted binary."
+  userassist: "Adds GUI-user attribution - proves an interactive user launched the binary (vs background appraiser inventorying it)."
+  shellbags: "Proves a user interactively explored the folder where the Amcache payload was dropped."
+
+corroboration_escalation:
+  alone: >
+    An Amcache entry ALONE proves PRESENCE/identity only: the binary, driver, or
+    app was inventoried/observed by the compatibility-tracking engine (SHA-1, path,
+    PE link date), NOT that it executed and NOT that a human ran it. Background
+    appraiser scans populate Amcache for files that never ran. FileKeyLastWriteTimestamp
+    is an 'observed by' bound, not execution or drop time. Treat single-source as
+    OBSERVATION.
+  combinations:
+    - sources: ["amcache"]
+      plus_timestamps: "FileKeyLastWriteTimestamp (appraiser observation bound)"
+      upgrades_to: "OBSERVATION / possible (~0.70)"
+      rationale: "Compatibility engine observed the file's presence/identity, but presence is not execution on modern Windows."
+    - sources: ["amcache", "prefetch"]
+      plus_timestamps: "Amcache PE link date / FileKeyLastWriteTimestamp aligned with Prefetch first/last run times"
+      upgrades_to: "PROBABLE execution (~0.85)"
+      rationale: "Amcache identifies WHAT (SHA-1/path) and Prefetch proves THAT it actually launched from that path."
+    - sources: ["amcache", "shimcache"]
+      plus_timestamps: "Amcache PE link date vs ShimCache original $SI mod time"
+      upgrades_to: "PROBABLE presence + timestomp baseline (~0.85)"
+      rationale: "Two independent OS observation engines confirm the path existed and supply cross-checkable original timestamps for tamper detection."
+    - sources: ["amcache", "prefetch", "event_logs_security (EID 4688)"]
+      plus_timestamps: "Amcache identity + Prefetch embedded run time + 4688 process-creation time aligned"
+      upgrades_to: "CONFIRMED / definitive execution (~1.0)"
+      rationale: "Identity (Amcache SHA-1) + execution proof (Prefetch) + process-creation event with command line/user (4688) stack to a court-defensible execution trinity."
+    - sources: ["amcache (SHA-1, no binary on disk)", "prefetch (orphaned)", "usn_journal (delete event)"]
+      plus_timestamps: "Amcache observation -> Prefetch run -> $UsnJrnl delete event in sequence"
+      upgrades_to: "CONFIRMED deleted-dropper execution (~1.0)"
+      rationale: "Identity + execution proof + the authoritative deletion record reconstruct a run-then-wiped payload despite the binary being gone."
+  tiers: "1 source = possible/observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)"
+
+correlation_patterns:
+  - name: "Deleted-dropper hash pivot"
+    chain: "Amcache InventoryApplicationFile (or Amcache_UnassociatedFileEntries.csv) yields SHA-1 of a wiped binary -> pivot SHA-1 to VirusTotal/EDR to ID malware family -> match Amcache path to surviving Prefetch to prove execution -> SRUM for bytes exfiltrated."
+  - name: "Timestomp exposure"
+    chain: "Compare filesystem $SI/$FN creation time vs Amcache PE Link Date and FileKeyLastWriteTimestamp -> disagreement (disk older than compile, or recent first-discovery on 'old' file) confirms timestomping."
+  - name: "Drop-to-execution timeline"
+    chain: "$MFT/$UsnJrnl file-create -> Amcache inventory (FileKeyLastWriteTimestamp) -> Prefetch first-run -> EVTX 4688 -> network connection: full vector File dropped -> telemetry logged -> executed -> C2."
+  - name: "Unassociated loose-binary hunt"
+    chain: "Entry in InventoryApplicationFile with no matching ProgramId in InventoryApplication -> parsed to Amcache_UnassociatedFileEntries.csv -> correlate with Temp/Public/AppData/PerfLogs paths to isolate dropped malware."
+  - name: "Rogue/BYOVD driver hunt"
+    chain: "InventoryDriverBinary (Amcache_DriveBinaries.csv) -> filter drivers with missing PE metadata/publisher or outside System32\\drivers -> pivot SHA-1 against known-vulnerable-driver lists to detect BYOVD EDR evasion."
+  - name: "USB/driver provenance stack"
+    chain: "Amcache third-party driver history -> USBSTOR (device friendly name) -> MountPoints2 (device-to-user SID) -> prove which rogue device/driver and which user mounted it."
+
+heuristics:
+  - "Always run rla.exe to replay .LOG1/.LOG2 into a clean hive BEFORE parsing - skipping it silently drops the most recent (incident-window) writes."
+  - "Bounds before filters: get row count, schema, and min/max FileKeyLastWriteTimestamp first; a capped/aged hive makes a clean date-filter mean 'no coverage' not 'no activity'."
+  - "Hunt InventoryApplicationFile (loose exe) and Amcache_UnassociatedFileEntries.csv first - attackers drop portable binaries, they don't build MSI installers."
+  - "Suspicious-path filter: executables inventoried from C:\\Users\\Public, \\AppData\\Local\\Temp, \\ProgramData, \\PerfLogs are high-priority review targets."
+  - "Hash-bounce the SHA-1 (after truncating leading zeros, which AmcacheParser does automatically) - catches renamed malware (e.g. a 'svchost.exe' whose SHA-1 is mimikatz)."
+  - "Remember the ~30MB hash cap: a non-matching/clean VirusTotal result on a large binary is not exoneration - rehash only the first 30MB to compare."
+  - "Link Date anomalies (absurdly old/future PE compile dates) flag intentionally tampered headers."
+  - "Hunt InventoryDriverBinary for unsigned/missing-publisher/off-path .sys files - BYOVD and rootkit indicators."
+
+discipline_reminder: >
+  Amcache is an OBSERVATION-tier artifact: presence/registration only, NOT
+  execution. Write 'binary was present/inventoried by the compatibility engine at
+  <FileKeyLastWriteTimestamp>', never 'the binary executed' or 'the user ran it'.
+  To assert execution, corroborate with Prefetch + EVTX 4688 (and ideally $MFT) -
+  reach CONFIRMED only with 3+ independent sources. Always replay transaction logs
+  with rla.exe and establish timestamp bounds before interpreting absence.

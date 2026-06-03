@@ -1,13 +1,167 @@
-# Forensic-knowledge: Windows Recycle Bin ($Recycle.Bin / $I + $R).
+# Forensic-knowledge: Windows Recycle Bin ($Recycle.Bin / $I + $R / legacy INFO2).
 # Generic Windows forensic discipline - no case specifics.
 artifact: recycle_bin
+aka:
+  - "$Recycle.Bin"
+  - "Recycle Bin"
+  - "$I/$R files"
+  - "INFO2 (legacy XP/2000)"
+  - "RECYCLER (legacy XP/2000)"
+
+what_it_is: >
+  A Windows Explorer SHELL feature (not a core filesystem mechanism) that acts as
+  a per-user safety net for GUI-initiated deletions. When a file is deleted via
+  Explorer (right-click Delete or the Delete key), the OS does not destroy the
+  data - it MOVES and renames the file into a hidden per-SID directory and writes
+  a small metadata index, allowing restoration to the original path until the bin
+  is emptied or the FIFO size quota purges it. For DFIR it is an authoritative
+  per-user ledger of intentional GUI deletions, recording original path, original
+  size, and exact deletion time.
+
+locations:
+  - "C:\\$Recycle.Bin\\{SID}\\  - Vista through Windows 11 per-user folder, named for the deleting account's Security Identifier (one $Recycle.Bin per volume root)."
+  - "C:\\$Recycle.Bin\\{SID}\\$I{6char}.ext  - metadata/index file (original full path, original size, deletion FILETIME)."
+  - "C:\\$Recycle.Bin\\{SID}\\$R{6char}.ext  - recovery/content file (actual raw deleted file data)."
+  - "C:\\$Recycle.Bin\\{SID}\\desktop.ini  - tells Explorer how to render the folder name per OS language; not evidentiary."
+  - "C:\\RECYCLER\\{SID}\\  - LEGACY Windows XP/2000 path."
+  - "C:\\RECYCLER\\{SID}\\INFO2  - LEGACY single centralized metadata database tracking all deleted items; renamed data files use D{drive}{index}.ext (e.g. Dc1.txt)."
+  - "External USB hard drives often create their own $Recycle.Bin folder at the volume root; USB flash/thumb drives and mapped network drives generally do NOT."
+
+naming_format: >
+  Vista+: each deleted item splits into a linked pair sharing a random 6-character
+  alphanumeric string and the original extension - $I{xxxxxx}.ext (metadata) pairs
+  with $R{xxxxxx}.ext (content), e.g. $I1A2B3C.docx <-> $R1A2B3C.docx. The $I file
+  holds the original absolute path, original file size, and 64-bit FILETIME
+  deletion timestamp. Legacy XP/2000 instead used one INFO2 database plus
+  D{drive}{index}.ext renamed data files.
+
+proves:
+  - "A specific file was sent to the Recycle Bin under a specific user SID (per-SID folder ties the deletion to that account)."
+  - "Deletion was initiated through the Windows Explorer SHELL/GUI (right-click Delete or Delete key) - the only path that populates $Recycle.Bin."
+  - "The file's ORIGINAL absolute path on the volume before deletion ($I metadata)."
+  - "The file's ORIGINAL size ($I metadata)."
+  - "The exact deletion time (64-bit FILETIME inside $I)."
+  - "Historical existence of the file at that path prior to the deletion timestamp."
+  - "The original CONTENT of the deleted file (recoverable from the paired $R file)."
+
 does_not_prove:
-  - "A Recycle Bin entry proves a file was SENT to the bin under a user SID, NOT that the same human deleted it - any process running as that SID can delete."
-  - "The $I deletion timestamp records when the file entered the bin, NOT when it was created, opened, or last used."
-  - "Absence from the Recycle Bin does NOT prove a file was never deleted - shift-delete, command-line del, and secure-wipe bypass the bin entirely."
-  - "The recovered $R content is the file at deletion time; it does not establish prior versions or edit history."
+  - "A Recycle Bin entry proves a file was SENT to the bin under a user SID via the Explorer shell, NOT that the specific human deleted it - any process or session running as that SID can issue a shell delete."
+  - "The $I deletion timestamp records when the file ENTERED the bin, NOT when it was created, opened, executed, or last used."
+  - "It does NOT prove the file was ever opened, read, viewed, or executed before deletion - presence in the bin is a disposal event only."
+  - "Absence from the Recycle Bin does NOT prove a file was never deleted - shift+delete, command-line del/rmdir, PowerShell Remove-Item, programmatic/malware deletion, secure-wipe (e.g. sdelete), files exceeding the quota, removable thumb drives, and mapped network drives ALL bypass the bin entirely (no $I/$R created)."
+  - "The recovered $R content is the file as of deletion time; it does not establish prior versions or edit history."
+  - "An empty $Recycle.Bin does NOT prove no deletions occurred - the bin may have been emptied or the data purged by FIFO quota."
+
+timestamp_semantics:
+  i_file_deletion_time: "64-bit Windows FILETIME (100-ns intervals since 1601-01-01 UTC) embedded in the $I file = exact moment the item was moved into the Recycle Bin. System-generated, highly reliable anchor for timeline analysis."
+  r_file_M_A_B: "The $R (data) file RETAINS the original file's Modified / Accessed / Birth(Created) NTFS timestamps from before deletion - useful to reconstruct the file's pre-deletion lifecycle."
+  r_file_C_entry_modified: "The only NTFS timestamp that changes on $R is the MFT Entry-Modified (C) time, which updates to when the file was moved into $Recycle.Bin - should align with the $I deletion time."
+  reliability_note: "Always standardize to UTC. The $I FILETIME is OS-generated at move time and reliable, but an attacker could timestomp the $I/$R filesystem MAC times; the embedded FILETIME and the USN Journal are the cross-checks (see anti_forensics/corroboration_escalation)."
+
+version_differences:
+  windows_xp_2000_legacy: "Path C:\\RECYCLER\\{SID}\\; single centralized INFO2 database tracks original path + deletion time for all items; data files renamed D{drive}{index}.ext (e.g. Dc1.txt). No $I/$R pairs."
+  windows_vista_7_8: "Path C:\\$Recycle.Bin\\{SID}\\; introduced split $I/$R distributed pairs. $I file is a fixed 544 bytes (Version 1 format)."
+  windows_10_11: "Same $I/$R structure but $I format updated (Version 2) to variable length to hold longer original paths; the filename-string length is stored as a discrete field in the header (no longer a fixed 544 bytes)."
+
+parsing_tools:
+  - "RBCmd (Eric Zimmerman) - industry-standard CLI; recursively parses all $I files AND legacy INFO2 databases across SIDs, decoding original path, deletion time, original size into a consolidated timeline CSV. Usage e.g.: RBCmd.exe -d \"<mount>\\$Recycle.Bin\" --csv <out_dir>"
+  - "Plaso / log2timeline.py - has a dedicated recycle_bin parser to extract $I metadata directly into a Super Timeline."
+  - "OneDriveExplorer - point at $Recycle.Bin to identify items deleted from known cloud-synchronized folders."
+  - "Manual carving - $I records have a predictable structure and carve well from the $MFT or unallocated space when the bin was emptied."
+
+limitations:
+  - "FIFO quota: the bin has a max allocated size (configurable, historically ~percent of volume). When full, the oldest $I/$R pairs are permanently purged automatically - older deletions may be gone."
+  - "Files larger than the configured quota are permanently deleted (Windows prompts) and never enter the bin."
+  - "Removable thumb/USB flash drives and mapped network drives bypass the bin - deletions there leave no $I/$R."
+  - "Viewing raw $Recycle.Bin contents requires administrative permissions / offline image access."
+  - "Orphaned pairs: an $I without a matching $R (or vice versa) commonly indicates the bin was emptied with one half surviving in MFT/unallocated, or an interrupted wipe/AV quarantine."
+
+anti_forensics:
+  techniques:
+    - "Emptying the Recycle Bin to destroy $I/$R evidence of staged-then-deleted files."
+    - "Bypassing the bin entirely via shift+delete, del/rmdir, PowerShell Remove-Item, scripts/malware, or secure-wipe tools (sdelete) so no artifact is created."
+    - "Timestomping the filesystem MAC times of $I/$R files to misrepresent when deletion occurred."
+    - "Staging/hiding malicious payloads INSIDE $Recycle.Bin (users rarely browse it; some legacy AV skipped scanning it) and executing from that path."
+  detection:
+    - "Carve unallocated space and parse the $MFT for deleted/orphaned $I records - the predictable $I structure carves well and recovers original path + deletion time even after emptying (the tiny $I often survives when $R is overwritten)."
+    - "Cross-check the $UsnJrnl ($J): it logs USN_REASON_RENAME_OLD_NAME -> USN_REASON_RENAME_NEW_NAME for the move into $Recycle.Bin and FileDelete entries when emptied - an immutable, OS-level record that defeats $I timestomping and empties. Filter USN by parent directory matching C:\\$Recycle.Bin\\{SID}."
+    - "Detect execution FROM the bin: legitimate Windows binaries never run from $Recycle.Bin. Hunt Amcache/Prefetch/EVTX 4688 for any executable (especially svchost.exe lookalikes, one-letter binaries like p.exe) launched from C:\\$Recycle.Bin."
+    - "Timestomp check: compare the $I embedded FILETIME and the $R MFT Entry-Modified time against $UsnJrnl rename time and $MFT $SI/$FN - misalignment > tolerance flags manipulation."
+    - "Wipe detection: check Prefetch/Amcache for sdelete.exe and the $UsnJrnl for rapid rename/zero sequences typical of wiping utilities."
+
 corroborate_with:
-  mft: "$MFT confirms the original path and timestamps of the deleted file."
-  usn_journal: "$UsnJrnl records the delete operation and any preceding rename/copy."
-  event_logs_security: "Object-access events (if audited) corroborate who accessed the file before deletion."
-  lnk_files: "LNK/Recent may reference the file's pre-deletion path."
+  mft: "$MFT confirms the original MACB timestamps of the $R file and the parent-directory-reference change from the original folder to the {SID} $Recycle.Bin folder; can recover $I metadata when the bin was emptied."
+  usn_journal: "$UsnJrnl is the authoritative cross-check - logs the RENAME_OLD_NAME -> RENAME_NEW_NAME (and later FileDelete on empty) kernel transactions that moved the file into the bin, providing an unforgeable deletion timeline that defeats timestomping/empties."
+  i30_index: "The original parent folder's $I30 index slack may retain the deleted entry's name and original MAC times, proving the file resided in that specific directory before being moved/wiped."
+  shellbags: "Show the user's Explorer shell rendered/navigated the folder containing the file before deletion - supports interactive GUI deletion."
+  lnk_files: "LNK/Recent shortcuts may reference the file's pre-deletion original path and prove the user opened/interacted with the file before deleting it."
+  jump_lists: "AppId-to-file references corroborate the user opened the file before deletion."
+  recentdocs: "RecentDocs registry MRU referencing the same original path corroborates prior user interaction with the file."
+  event_logs_security: "EID 4624/4647 logon-session events bound the deletion time to an active interactive session (Logon Type 2 console / 10 RDP) - attributes the action to a present user; object-access auditing (if enabled) can corroborate access before deletion."
+  registry_profilelist: "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList resolves the {SID} folder name to the human user account, attributing WHO deleted."
+  prefetch: "Recover the $R payload, take its original path from $I, and pivot to Prefetch to prove a deleted malware sample actually executed before cleanup."
+  srum: "SRUM bytes_sent spikes immediately preceding a cluster of $I deletions evidence post-exfiltration cleanup."
+
+corroboration_escalation:
+  alone: >
+    By itself a $Recycle.Bin entry ($I file) proves only that a file with a given
+    original path/size was sent to the bin under a specific user SID via the
+    Explorer shell at the embedded FILETIME. It does NOT alone prove a specific
+    human performed it, that the file was opened/executed, or that the $I/$R
+    filesystem MAC times were not timestomped. Treat a lone $I as an OBSERVATION
+    of a disposal event, not proof of user intent or file access.
+  combinations:
+    - sources: ["recycle_bin $I", "$MFT parent-directory-reference change / $I30 index slack"]
+      plus_timestamps: "$I deletion FILETIME aligns with $R MFT Entry-Modified (C) time and the parent folder $I30 update"
+      upgrades_to: "PROBABLE - filesystem physics confirm the file was moved from its original directory into the bin at that time; gross timestomping of the move is largely ruled out."
+      rationale: "Two independent filesystem components corroborate the mechanical move; still does not prove human intent or prior access."
+    - sources: ["recycle_bin $I", "RecentDocs or LNK or Jump List pointing to the same original path"]
+      plus_timestamps: "user-interaction timestamp precedes the $I deletion time"
+      upgrades_to: "PROBABLE - the user opened/interacted with the file before sending it to the bin."
+      rationale: "Adds an access/interaction dimension independent of the disposal event."
+    - sources: ["recycle_bin $I", "$UsnJrnl RENAME_OLD_NAME/RENAME_NEW_NAME into $Recycle.Bin"]
+      plus_timestamps: "$I FILETIME == USN rename transaction time"
+      upgrades_to: "PROBABLE-to-CONFIRMED on the deletion MECHANICS - the unforgeable kernel journal independently dates and confirms the move, defeating $I timestomping/empty claims."
+      rationale: "USN is OS-level and tamper-resistant; aligning it with $I confirms the deletion event itself."
+    - sources: ["recycle_bin $I", "$UsnJrnl rename", "ShellBags/LNK (folder navigation + file open)", "EVTX EID 4624 active interactive session (Type 2/10)"]
+      plus_timestamps: "ShellBag/LNK navigation slightly precedes; $I FILETIME == USN rename; both fall inside the 4624->4647 session window for that SID"
+      upgrades_to: "CONFIRMED / DEFINITIVE - the human operator for that SID was interactively logged in, navigated to the folder, (optionally opened the file), and intentionally GUI-deleted it; attribution and intent established beyond reasonable doubt."
+      rationale: "3+ independent sources (tamper-resistant USN + shell navigation + session attribution) with aligned timestamps form the full interactive deletion lifecycle and defeat anti-forensics."
+  tiers: "1 source = possible/observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment (esp. including the unforgeable $UsnJrnl + session attribution) = confirmed/definitive (~1.0)."
+
+correlation_patterns:
+  - name: "Post-exfiltration cleanup"
+    chain: "SRUM bytes_sent spike (or browser/cloud upload) -> $I deletion timestamp of the staging archive (.rar/.zip/.7z/.pst) immediately after -> $UsnJrnl rename into $Recycle.Bin confirms the move time."
+  - name: "Staged-then-deleted malware (recover + prove execution)"
+    chain: "Carve $R payload from $Recycle.Bin -> read original path from $I -> pivot to Prefetch/Amcache/EVTX 4688 on that path to prove it executed before cleanup."
+  - name: "Interactive deletion lifecycle"
+    chain: "ShellBags (folder rendered) -> LNK/Jump List/RecentDocs (file opened) -> $I (deletion) -> $UsnJrnl rename -> $MFT parent-ref update, all timestamps aligned within minutes inside a 4624 session."
+  - name: "SID-to-user attribution pivot"
+    chain: "Suspicious $I in C:\\$Recycle.Bin\\{SID}\\ -> resolve SID via ProfileList registry key or EVTX 4624 -> attribute the deletion/staging to a named account."
+  - name: "Empty-bin recovery"
+    chain: "Empty $Recycle.Bin -> carve $MFT/unallocated for orphaned $I records -> recover original path + deletion time even though $R data is gone -> corroborate with $UsnJrnl FileDelete entries."
+  - name: "Execution-from-bin red flag"
+    chain: "Amcache/Prefetch/EVTX 4688 shows a binary executing from C:\\$Recycle.Bin -> treat as malware staging (legitimate processes never run from the bin)."
+
+heuristics:
+  - "Filter RBCmd output by high-value extensions (.zip/.rar/.7z/.pst/.kdbx) - archives and credential/data stores in the bin strongly imply staging and cleanup."
+  - "Sort the RBCmd timeline by deletion time and look for 'panic deletion' clusters: many $I deletions within a few minutes before shutdown, an AV alert, or seizure = intent to destroy evidence."
+  - "SID-mismatch: malware/sensitive files deleted under an Admin SID during a standard-user compromise implies privilege escalation + cleanup under the elevated account."
+  - "Orphaned $I (no matching $R) = bin likely emptied / $R overwritten; recover metadata from the surviving $I and pivot to USN."
+  - "Re-pair orphaned $I and $R manually via the shared 6-character random string when AV/crash interrupted a wipe."
+  - "Hunt executables running from C:\\$Recycle.Bin via Amcache/Prefetch - always anomalous."
+  - "Always resolve the {SID} folder to a named account (ProfileList / 4624) before stating who deleted; do not assume the human."
+
+discipline_reminder: >
+  Disposal != access != execution. A $Recycle.Bin entry proves a file was sent to
+  the bin under a SID via the Explorer shell - an OBSERVATION (~0.70) of intent to
+  discard, NOT proof a specific human deleted it, opened it, or ran it. Write
+  defensibly: "an $I record indicates {file} was moved to the Recycle Bin under
+  SID {x} at {t} UTC via the Explorer shell," not "the user deleted the file."
+  Upgrade to PROBABLE (~0.85) with a second independent source (USN rename / MFT
+  parent-ref / $I30 / LNK-RecentDocs) and to CONFIRMED (~1.0) only with 3+ aligned
+  sources - ideally the tamper-resistant $UsnJrnl plus session attribution (4624)
+  - which together establish the full interactive deletion lifecycle and defeat
+  timestomping/empty anti-forensics. Negative space matters: absence from the bin
+  proves nothing on its own (shift+delete, CLI, scripts, wipes, and removable/
+  network media all bypass it) - ask why an expected entry is missing.

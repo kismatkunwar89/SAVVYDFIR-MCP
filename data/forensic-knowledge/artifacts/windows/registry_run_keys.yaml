@@ -1,13 +1,187 @@
-# Forensic-knowledge: Registry ASEP / Run-key persistence.
+# Forensic-knowledge: Registry ASEP / Run-key persistence (autostart keys).
 # Generic Windows forensic discipline - no case specifics.
 artifact: registry_run_keys
+aka:
+  - "ASEPs (Auto-Start Extensibility Points / Auto-Start Extension Points)"
+  - "Run keys"
+  - "Registry persistence"
+  - "Autostart registry keys"
+  - "Registry autorun locations"
+
+what_it_is: >
+  Auto-Start Extensibility Points (ASEPs) are built-in Windows configuration locations
+  where a program, script, or DLL can be registered to execute automatically on a trigger
+  (system boot, user logon, application launch, or LSASS/Session-Manager init). They exist
+  so legitimate software (AV, updaters, hardware drivers, cloud-sync) starts without manual
+  intervention. Threat actors abuse the same mechanisms to make malware survive reboots
+  (persistence), making ASEPs one of the highest-fidelity hunting grounds for defenders.
+
+locations:
+  # Run / RunOnce - the most common persistence locations (item runs at logon)
+  - "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run  (SOFTWARE hive; runs for ANY user logon)"
+  - "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce  (runs once, then OS deletes the value)"
+  - "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run  (NTUSER.DAT; runs for THAT user's logon only)"
+  - "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce"
+  - "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\policies\\Explorer\\Run"
+  # Winlogon - logon-sequence hooks
+  - "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\Shell  (default explorer.exe)"
+  - "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\Userinit  (default userinit.exe; attacker appends path after comma)"
+  - "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon\\Notify  (legacy; deprecated/non-functional after XP/2003 but old malware still writes it)"
+  # Services - boot/system/auto-start drivers and services
+  - "HKLM\\SYSTEM\\CurrentControlSet\\Services\\<ServiceName>  (Start value 0=Boot, 1=System, 2=Automatic dictates autostart)"
+  # Image File Execution Options - debugger-hijack
+  - "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\<exe>\\Debugger  (silently launches payload when the named binary is invoked; classic sethc.exe / utilman.exe accessibility hijack)"
+  # AppInit_DLLs - injects a DLL into every process loading user32.dll
+  - "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Windows\\AppInit_DLLs"
+  # Scheduled-task registry representation
+  - "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Schedule\\TaskCache\\Tree  (per-task subkeys)"
+  - "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Schedule\\TaskCache\\Tasks  (GUID-keyed task definitions)"
+  # BootExecute - native apps run before the Win32 subsystem loads
+  - "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\BootExecute  (default 'autocheck autochk *')"
+  # LSA packages - DLLs loaded into LSASS during boot (credential theft / SYSTEM persistence)
+  - "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Lsa  (Authentication Packages, Security Packages, Notification Packages)"
+  # Windows 8+ enable/disable tracking
+  - "HKCU/HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved  (Win8+; tracks which startup items the user disabled via Task Manager)"
+
+naming_format: >
+  ASEPs reside inside the physical hive files: SOFTWARE and SYSTEM (machine-wide,
+  under %SystemRoot%\\System32\\config) and NTUSER.DAT (per-user profile). Run/RunOnce
+  store one REG_SZ/REG_EXPAND_SZ value per autostart item (value name = arbitrary label,
+  value data = command line / binary path). Winlogon Shell/Userinit are single-line
+  comma-delimited REG_SZ values. Services are subkeys with Start/Type/ImagePath values.
+  IFEO uses a per-binary subkey carrying a Debugger string value. Fileless variants store
+  Base64/encoded payload blobs directly in value data instead of pointing to an on-disk EXE.
+
+proves:
+  - "A PERSISTENCE ATTEMPT / autostart REGISTRATION: an entity (user, installer, script, or process) intentionally configured Windows to auto-launch a specific payload at a future trigger (boot/logon/app-launch)."
+  - "That the actor had sufficient privilege to write the key (HKLM = admin/SYSTEM; HKCU = standard user) - the hive/key location itself bounds the privilege required."
+  - "For Services: the configured start type (boot/system/automatic) and the ImagePath the OS would launch."
+  - "The Key LastWrite time bounds WHEN the key was most recently modified (a value added/changed/deleted)."
+
 does_not_prove:
   - "An ASEP/Run-key entry proves a persistence MECHANISM was configured, NOT that the referenced binary ever executed."
   - "Key LastWriteTimestamp records when the KEY changed, NOT when a specific value was written or when the payload ran."
-  - "A Run key pointing to a now-missing binary suggests install-then-cleanup, but could also be stale/orphaned configuration."
-  - "Absence of Run-key persistence does NOT prove no persistence - scheduled tasks, services, WMI, and COM hijacks leave no Run-key trace."
+  - "A Run key pointing to a now-missing binary suggests install-then-cleanup, but could also be stale/orphaned configuration (uninstallers routinely fail to remove Run values - 'phantom entries')."
+  - "Absence of Run-key persistence does NOT prove no persistence - scheduled tasks, services, WMI Event Consumers, COM hijacks, or simply replacing a legitimate on-disk binary leave no Run-key trace (and binary-replacement leaves the key LastWrite UNCHANGED)."
+  - "An ASEP does NOT prove which value triggered the Key LastWrite when the key holds multiple values."
+  - "Configured-but-not-fired is common: payload may have been AV-quarantined before reboot, the trigger (reboot / specific user logon) may never have occurred, the path syntax may be botched, or Safe Mode / per-user-service scoping prevented firing."
+
+timestamp_semantics:
+  key_lastwrite: "Registry tracks a LastWrite timestamp at the KEY (folder) level ONLY - individual VALUES carry NO timestamp. The Run/Winlogon/Services key's LastWrite = the moment ANY value in that key was last created/modified/deleted. Reliable for single-use or newly created keys (a brand-new Service subkey); HIGHLY VOLATILE for heavily-used buckets (the Run key) because a later benign value edit overwrites the attacker's registration time."
+  reliability: "Proves RECENT modification of the key, not the original creation time of a specific persistence value. Cannot strictly attribute the timestamp to the malicious value if the key holds other values. Standardise to UTC across all artifacts before correlation."
+  privilege_inference: "Key location implies the writing privilege: HKLM keys require admin/SYSTEM; HKCU keys require only the standard user whose NTUSER.DAT it is."
+
+version_differences:
+  winlogon_notify: "Winlogon\\Notify deprecated and non-functional after Windows XP/2003; legacy malware may still write it (an anomaly worth flagging, not a working mechanism)."
+  startupapproved: "Windows 8/10/11 added StartupApproved keys (under Explorer) that record which Run-key startup items the user disabled via Task Manager."
+  appinit_ifeo_lockdown: "On Win10/11 with Secure Boot, AppInit_DLLs requires a signed DLL (severely limits unprivileged abuse). Microsoft Defender now heavily monitors IFEO Debugger keys and standard Run keys, pushing modern actors toward obscurer ASEPs (COM hijack, WMI subscriptions)."
+  per_user_services: "Windows 10 introduced Per-User Services (e.g. OneSyncSvc_<LUID>) that append a unique LUID per logon - they flood the service list and complicate newly-installed-service baselining."
+  currentcontrolset_virtual: "CurrentControlSet is a VIRTUAL runtime link, not a real on-disk key. Offline analysis must navigate the physical ControlSet00x (typically ControlSet001) path instead."
+  wmi_objectsdata: "Modern fileless persistence increasingly lives in the WMI repository (OBJECTS.DATA / WMI Event Consumers), bypassing registry ASEPs entirely."
+
+parsing_tools:
+  - "RECmd (Eric Zimmerman) - command-line Registry Explorer; batch files (e.g. Kroll_ASEP.reb / Registry_ASEPs KAPE target) rip all known ASEPs across SOFTWARE/SYSTEM/NTUSER.DAT offline hives into scalable CSV with precise Key LastWrite times."
+  - "Registry Explorer (Eric Zimmerman) - GUI; recovers DELETED keys/values from hive unallocated/slack space and has built-in Base64 search for fileless payloads."
+  - "rla.exe (Eric Zimmerman) - replays transaction logs (.LOG1/.LOG2) to commit uncommitted writes and recover deleted/true values before analysis."
+  - "Sysinternals Autoruns / autorunsc.exe - gold-standard live or offline-image ASEP triage; maps hundreds of obscure keys to target binaries, verifies digital signatures, can hide signed-Microsoft entries (-m), and query VirusTotal (-v). Save .arn baselines for diffing."
+  - "Persistent Sniper - PowerShell scanner against up-to-date persistence-technique lists."
+  - "Kansa - PowerShell IR framework (Get-Autorunsc.ps1) to push Autoruns at enterprise scale and stack results."
+  - "Plaso / log2timeline.py - offline registry parsers (windows_run, windows_boot_execute, windows_services, windows_winlogon) feed persistence creation into the Super Timeline."
+
+limitations:
+  - "Over 50-100+ known ASEP locations exist; the top ~6 cover ~98% of persistence, but advanced actors hide in the esoteric 2% (WMI Event Consumers, COM hijacking) that registry-only auditing can miss."
+  - "Restricted hives: the SECURITY hive (and parts of SAM) are blocked even from Administrator live; reading requires SYSTEM privilege - persistence placed there can be invisible to a standard live triage."
+  - "Binary-replacement persistence (swapping a legitimate service/driver binary on disk) leaves NO registry change - the key LastWrite stays unchanged; only disk artifacts reveal it."
+  - "HKCU\\...\\Run only fires when that profile loads; persistence in a service account that never interactively logs on will never trigger."
+  - "Registry writes are buffered in memory and may not flush to the hive on sudden power loss - check transaction logs for the most recent state."
+  - "Safe Mode bypasses execution of many standard ASEPs."
+
+anti_forensics:
+  techniques:
+    - "Self-deletion: create the ASEP, let it fire into memory on reboot/logon, then delete the key/value to evade live-response scanners."
+    - "Timestomping the Key LastWrite via kernel-level APIs (e.g. ZwSetInformationKey) - exceptionally difficult and rare vs. filesystem timestomping (requires kernel access / direct hive manipulation)."
+    - "Burying the malicious value in a heavily-used key (Run) so a later benign value edit overwrites the registration LastWrite time."
+    - "SDDL abuse: altering a legitimate service's Security Descriptor so a standard user can reconfigure it - persistence without an obvious new binary."
+    - "Fileless: store an encoded/Base64 payload in registry value data and launch via powershell/mshta/rundll32, leaving no dropped EXE."
+  detection:
+    - "Recover deleted keys/values from hive unallocated/slack with Registry Explorer; replay .LOG1/.LOG2 with rla.exe to retrieve uncommitted/true values and timestamps."
+    - "Defeat registry-API timestomping with the NTFS $UsnJrnl / $LogFile - they record the underlying writes to the hive FILES (NTUSER.DAT/SOFTWARE/SYSTEM) and cannot be forged at the registry API level. A Key LastWrite that disagrees with the $UsnJrnl hive-write time by >1h indicates tampering."
+    - "Baseline diffing: save a clean Autoruns .arn and compare to the infected state - modifications stand out in seconds."
+    - "Suspicious-timing heuristic: a Run-key LastWrite seconds before a shutdown event is a red flag for a cleanup script deleting persistence."
+    - "Hunt altered SDDL strings on trusted services (e.g. spooler suddenly granting a standard user Service_Change_Config / DC rights)."
+
 corroborate_with:
-  prefetch: "Prefetch confirms the persisted binary actually executed."
-  event_logs_security: "EID 4688 / service-install events corroborate auto-start execution."
-  mft: "$MFT confirms whether the referenced payload still exists on disk."
-  amcache: "Amcache SHA-1 identifies the payload even if it was renamed or deleted."
+  prefetch: "Prefetch (.pf) confirms the persisted binary ACTUALLY executed and gives first/last run times + run count + referenced files - the execution proof the ASEP alone lacks."
+  event_logs_security: "EID 4688 (process creation) proves execution with exact command line AND the parent-child relationship (e.g. userinit.exe / services.exe / explorer.exe spawning the payload), directly tying execution to the autostart trigger. EID 4657 (registry value modified, if auditing enabled) names the exact account that wrote the persistence key."
+  event_logs_system: "System log boot/shutdown (EID 6005/6006) and service-state (EID 7036/7045) events supply the TRIGGER timeline to align against the ASEP LastWrite and the execution artifact; bootstat.dat provides historical boot times for the same alignment."
+  mft: "$MFT confirms whether the referenced payload exists on disk and its create/modify times - the staging timestamp that should PRE-DATE the key LastWrite."
+  usn_journal: "$UsnJrnl is the authoritative record of when the payload was dropped/copied AND of the hive-file writes - defeats registry timestomping and pins true chronology."
+  amcache: "Amcache SHA-1 identifies the payload even if renamed/deleted, plus compile time - proves the file existed (not that it ran)."
+  shimcache: "ShimCache (AppCompatCache) proves the OS observed/evaluated the binary path on disk (existence, not execution)."
+  sysmon: "Sysmon EID 1 (process create) / EID 13 (registry value set) corroborate both the registration event and the spawned-process lineage."
+
+corroboration_escalation:
+  alone: >
+    A registry ASEP ALONE proves only a PERSISTENCE ATTEMPT / autostart registration -
+    the system was configured to auto-launch a payload and the actor had the privilege to
+    write that key. It does NOT prove the payload existed on disk, NOT that the trigger ever
+    fired, and NOT that the code executed. Treat single-source as OBSERVATION (~0.70).
+  combinations:
+    - sources: ["registry_run_keys"]
+      plus_timestamps: "Key LastWrite only (bounds modification time, may be overwritten by later benign edits)"
+      upgrades_to: "POSSIBLE / observation (~0.70) - persistence ATTEMPTED"
+      rationale: "Configuration registered; payload may not exist on disk and may never have run."
+    - sources: ["registry_run_keys", "mft"]
+      plus_timestamps: "MFT $SI/$FN create time of the payload PRE-DATES the key LastWrite (staging -> registration order)"
+      upgrades_to: "PROBABLE (~0.85) - registered AND payload staged on disk"
+      rationale: "Two independent sources: the mechanism was configured and the matching binary was physically dropped. Execution still unproven."
+    - sources: ["registry_run_keys", "amcache"]
+      plus_timestamps: "Amcache compile/first-seen time consistent with the staging window"
+      upgrades_to: "PROBABLE (~0.85) - registered AND payload existed (identified by SHA-1)"
+      rationale: "Amcache proves the file existed and identifies it even if later renamed/deleted; still proves existence, not execution."
+    - sources: ["registry_run_keys", "shimcache"]
+      plus_timestamps: "ShimCache path-observed entry for the payload"
+      upgrades_to: "PROBABLE (~0.85) - registered AND OS evaluated the binary on disk"
+      rationale: "ShimCache proves the OS saw the path; existence, not execution."
+    - sources: ["registry_run_keys", "prefetch", "event_logs_security"]
+      plus_timestamps: "MFT create PRE-DATES key LastWrite; Prefetch first-run (minus ~10s monitoring delta) / EID 4688 process-create time ALIGNS with the trigger event (EID 6005 boot or EID 4624 logon) that occurred AFTER the key modification"
+      upgrades_to: "CONFIRMED / DEFINITIVE (~1.0) - persistence SUCCESSFULLY EXECUTED"
+      rationale: "3+ independent sources with timestamp alignment: staging -> registration -> trigger -> execution forms a closed, time-ordered chain. Prefetch/EID 4688 prove the code ran; alignment to the autostart trigger proves it ran VIA the persistence mechanism."
+  tiers: "1 source = possible/observation (~0.70, persistence ATTEMPTED); 2 independent = probable (~0.85, registered + payload staged/existed); 3+ with timestamp alignment to the autostart trigger = confirmed/definitive (~1.0, persistence successfully executed)."
+
+correlation_patterns:
+  - name: "Boot/Logon execution alignment"
+    chain: "ASEP Key LastWrite -> next trigger (System EID 6005/6006 boot or Security EID 4624 logon occurring AFTER the LastWrite) -> Prefetch first-run / EID 4688 for the payload at that exact trigger window = autostart fired and executed."
+  - name: "Stage -> register -> fire"
+    chain: "$MFT/$UsnJrnl payload drop (T0) -> ASEP key LastWrite (T0+seconds) -> reboot/logon (T1) -> Prefetch/EID 4688 execution (T1+seconds) = full, time-ordered persistence lifecycle."
+  - name: "Remote persistence via lateral movement"
+    chain: "Security EID 4624 Type 3 (network logon from attacker host) + EID 5140 IPC$ share access -> System EID 7036 Remote Registry service running -> HKLM Run key LastWrite aligned to the connection writing an attacker-binary value = remotely-planted persistence."
+  - name: "IFEO accessibility hijack"
+    chain: "IFEO subkey for sethc.exe / utilman.exe with a Debugger value (cmd.exe or payload) -> grants SYSTEM shell at the lock screen pre-logon; corroborate with EID 4688 showing the accessibility binary spawning cmd/payload."
+  - name: "Fileless ASEP -> LOLBin -> network"
+    chain: "Run/Winlogon value invoking powershell -enc / mshta / rundll32 -> EID 4688 with the encoded command line -> network connection / Sysmon EID 3 = fileless persistence executing C2 stager."
+
+heuristics:
+  - "Abnormal path: any ASEP pointing into C:\\Users\\Public, \\AppData\\Local\\Temp, \\Downloads, C:\\ProgramData, C:\\PerfLogs, or $Recycle.Bin is a high-fidelity triage flag - legitimate persistence rarely runs from user-writable/temp dirs."
+  - "LOLBin abuse: Run keys launching powershell.exe -w hidden -enc..., mshta.exe, rundll32.exe (without valid DLL args), or regsvr32.exe."
+  - "Misspelled/homoglyph binaries: scvhost.exe, svchosl.exe, taskhost.exe on Win11 (should be taskhostw.exe)."
+  - "Randomized service names: 7-10 char random-alpha service names are a Metasploit/Impacket persistence signature."
+  - "Unsigned code: Autoruns-filter out verified Microsoft entries; an unsigned binary/DLL in Winlogon, Services, BootExecute, or AppInit_DLLs is a severe anomaly."
+  - "The 'lazy actor' bias: despite 100+ obscure ASEPs, HKCU\\...\\Run remains heavily used because it works and requires no admin - check it first."
+  - "Fileless: a Run/Winlogon value carrying a Base64 blob instead of a file path - decode it (Registry Explorer Base64 search)."
+  - "Phantom entries: a value pointing to a non-existent binary may be benign uninstaller leftover, not necessarily attacker cleanup - corroborate before concluding."
+  - "SDDL hunt: look for altered service security descriptors rather than only new binaries."
+
+discipline_reminder: >
+  Execution-validation tier: a registry ASEP is an OBSERVATION of a persistence ATTEMPT
+  (~0.70), NOT proof of execution. Write defensibly: 'a Run-key value registered the binary
+  for autostart at logon' or 'the Winlogon Userinit value was modified to append the path',
+  NOT 'the malware ran' or 'the attacker executed the payload'. The Key LastWrite is when the
+  KEY changed (any value), not when a specific value was written and not when the payload ran,
+  and it can be overwritten by later benign edits. Upgrade to PROBABLE only with a second
+  independent source (MFT/Amcache/ShimCache proving the payload existed), and to
+  CONFIRMED/DEFINITIVE only with 3+ sources plus timestamp alignment: payload-drop PRE-DATES
+  the key LastWrite, and Prefetch/EID 4688 execution ALIGNS with the autostart trigger
+  (boot EID 6005 / logon EID 4624) that occurred after registration. Absence of a Run key is
+  not absence of persistence - check services, scheduled tasks, WMI, COM, and binary
+  replacement. Standardise all timestamps to UTC before correlating.

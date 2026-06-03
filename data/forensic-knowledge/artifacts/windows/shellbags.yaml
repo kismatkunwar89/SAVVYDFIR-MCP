@@ -1,13 +1,193 @@
 # Forensic-knowledge: ShellBags (UsrClass.dat / NTUSER.DAT BagMRU).
 # Generic Windows forensic discipline - no case specifics.
 artifact: shellbags
+aka:
+  - "ShellBags"
+  - "BagMRU"
+  - "Bags"
+  - "Shell view-state cache"
+  - "Explorer folder-navigation history"
+
+what_it_is: >
+  A set of per-user registry keys Windows Explorer uses to remember a folder's
+  GUI view-state (window size/position, view mode, icon size, sort order, column
+  layout). The forensic by-product is a durable, historical database of every
+  folder the Windows shell was asked to RENDER for that user account - in effect
+  a "GPS for the file system" that survives long after the folders themselves are
+  gone. The structure splits into BagMRU (a hierarchical tree of numbered subkeys
+  that maps the navigated directory paths) and Bags (the actual stored view
+  preferences keyed back to the BagMRU nodes).
+
+locations:
+  # Windows 7 / 8 / 10 / 11 (per-user hives):
+  - "UsrClass.dat: Local Settings\\Software\\Microsoft\\Windows\\Shell\\BagMRU   (primary - local + removable paths)"
+  - "UsrClass.dat: Local Settings\\Software\\Microsoft\\Windows\\Shell\\Bags"
+  - "NTUSER.DAT: Software\\Microsoft\\Windows\\Shell\\BagMRU   (desktop + remote/network/removable, e.g. \\\\host\\c$)"
+  - "NTUSER.DAT: Software\\Microsoft\\Windows\\Shell\\Bags"
+  - "NTUSER.DAT: Software\\Microsoft\\Windows\\ShellNoRoam\\{BagMRU,Bags}   (legacy/local non-roaming)"
+  # Hive file paths on disk:
+  - "UsrClass.dat on disk: C:\\Users\\<user>\\AppData\\Local\\Microsoft\\Windows\\UsrClass.dat"
+  - "NTUSER.DAT on disk: C:\\Users\\<user>\\NTUSER.DAT"
+  # Windows XP (legacy):
+  - "Windows XP: NTUSER.DAT\\Software\\Microsoft\\Windows\\Shell\\{BagMRU,Bags}"
+  - "Windows XP: NTUSER.DAT\\Software\\Microsoft\\Windows\\ShellNoRoam\\{BagMRU,Bags}"
+  - "Windows XP: NTUSER.DAT\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StreamMRU"
+
+naming_format: >
+  Per-user, binary-encoded registry data. BagMRU is a tree of numbered subkeys
+  (0, 1, 2, ...) each holding a binary shell-item (PIDL) value that encodes the
+  folder name and (when first created) the target folder's embedded MAC
+  timestamps and MFT entry/sequence reference. Each BagMRU level holds an
+  MRUListEx value recording the most-recently-used ordering of its child slots.
+  A NodeSlot value links a BagMRU node to its corresponding Bags\<#> view-state
+  entry. Because the data is complex binary PIDLs, manual analysis is impractical
+  - always use a dedicated parser.
+
+proves:
+  - "Windows Explorer GUI (or a standard shell Open/Save-As dialog) interactively RENDERED a specific folder for that user account."
+  - "The folder existed at the recorded point in time, and the absolute path (including drive letter) the shell rendered."
+  - "Navigation to folders on removable media (USB), mapped network shares, or volumes/folders that have since been disconnected or deleted - ShellBags persist independent of the live filesystem."
+  - "Folder TYPE even after secure deletion: the Bags\\<#>\\Shell view-type GUID reveals whether a now-gone folder held documents, pictures, music, etc."
+
 does_not_prove:
-  - "A ShellBag proves Explorer RENDERED the folder, NOT that files inside it were opened or read."
-  - "ShellBag timestamps record shell interaction with the folder, not file access or execution."
-  - "Absence of a ShellBag does NOT prove the folder was never visited - command-line/script navigation leaves no ShellBags."
-  - "ShellBags can reference removable, network, or now-deleted volumes that are no longer present."
+  - "A ShellBag proves Explorer RENDERED the folder, NOT that files inside it were opened, read, copied, or executed."
+  - "ShellBag timestamps record shell interaction with the folder, not file access or execution; never infer malware execution from a ShellBag for a folder that contained malware."
+  - "Absence of a ShellBag does NOT prove the folder was never visited - CLI/PowerShell/script/third-party-file-manager navigation bypasses the Explorer shell and leaves no ShellBags (the 'negative space fallacy')."
+  - "ShellBags can reference removable, network, or now-deleted volumes that are no longer present - presence does not mean the volume is still attached."
+  - "Does not prove user INTENT: a folder may be rendered by an application forcing a default Save path, a misclick, or an automated dialog."
+  - "Per-account, not per-human: on shared/compromised accounts multiple humans (or an attacker on stolen credentials) generate entries under one profile - align to interactive logon sessions before attributing."
+
+timestamp_semantics:
+  bagmru_key_lastwrite: >
+    The LastWrite timestamp of a BagMRU subkey updates when that level's MRUListEx
+    ordering changes - i.e. when a child folder is navigated/rendered, promoting it
+    to MRU slot 0. Registry VALUES carry no timestamps, only KEYS do, so tools
+    derive interaction times from key creation + MRUListEx ordering. Treat the
+    MRU-slot LastWrite as BOUNDING information: the most-recent child of that
+    parent was rendered at-or-before this time, not a precise mouse-click record.
+  first_interacted: "Parser-extrapolated from registry key creation time - approximates when the folder was first rendered/created in the BagMRU tree."
+  last_interacted: "Parser-extrapolated from the key LastWrite / MRU update - approximates the most recent render within that parent context. Bounding, not exact."
+  embedded_target_mac_times: >
+    PIDL shell-items can embed the target folder's MAC timestamps and MFT
+    entry/sequence number, but ONLY at the moment the BagMRU key is first created.
+    They do NOT update on later interaction and are unreliable on key reuse.
+  reliability_note: >
+    Treat all ShellBag timestamps as bounding information aligned to independent
+    sources (logon sessions, USN, MFT), never as discrete event-log entries.
+    Win10/11 feature updates can clobber/reset LastWrite times.
+
+version_differences:
+  windows_xp: "Stored exclusively in NTUSER.DAT (Shell, ShellNoRoam, and Explorer\\StreamMRU). No UsrClass.dat ShellBags."
+  windows_7_through_11: >
+    Primary local + removable navigation moved to UsrClass.dat. NTUSER.DAT now
+    holds desktop and remote/network folder ShellBags. Both hives must be parsed.
+  windows_10_11_feature_updates: >
+    Major twice-yearly feature updates (effectively a new OS layer) have been
+    observed to wipe or reset ShellBag data and clobber LastWrite timestamps -
+    correlate apparent timeline gaps/resets against the last feature-update install
+    date before alleging timestomping or deletion.
+
+parsing_tools:
+  - "ShellBags Explorer (SBE) - Eric Zimmerman GUI: rebuilds the BagMRU numeric hierarchy into an Explorer-like tree; shows First/Last Interacted, MRU position, view-type GUID, raw-data verification."
+  - "SBECmd - Eric Zimmerman CLI: parses offline UsrClass.dat / NTUSER.DAT, replays .LOG1/.LOG2 transaction logs to clean dirty hives before parsing, dedups, exports CSV for timeline aggregation. Industry standard for triage/automation."
+  - "Plaso / log2timeline.py - dedicated 'bagmru' parser feeds ShellBags into a super-timeline."
+  - "Registry Explorer (Eric Zimmerman) - parses unallocated hive space to recover DELETED BagMRU keys/values/timestamps."
+  - "ShellBag Viewer (NirSoft) - free closed-source live/offline viewer."
+
+limitations:
+  - "Key reuse: deleting a folder leaves its ShellBag; creating a NEW folder at the EXACT same path+name reuses the old BagMRU/Bags keys - First/Last Interacted update but embedded target MAC/MFT info does NOT, yielding false filesystem metadata for the new folder."
+  - "Shared drive letters: multiple removable devices mounted to the same letter with identical folder structures (e.g. E:\\DCIM) share and overwrite the same ShellBag keys."
+  - "ZIP archives are the ONLY non-folder type tracked - Explorer renders .zip as a folder, generating a ShellBag; other file types never create one."
+  - "Roaming profiles / synced containers: a ShellBag may have originated on a DIFFERENT endpoint - confirm the hive is strictly local before attributing to this host."
+  - "Binary PIDL data - not human-readable; requires a dedicated parser, manual analysis is impractical."
+  - "GUI-only artifact: any non-Explorer access path (CLI, scripts, programmatic enumeration) produces no entry."
+
+anti_forensics:
+  techniques:
+    - "Deletion of BagMRU keys via privacy cleaners (CCleaner, BleachBit) or manual registry edits to wipe navigation history."
+    - "Deletion of the entire UsrClass.dat file (Windows recreates it on next logon)."
+    - "Timestomping / clock manipulation to skew First/Last Interacted ordering."
+    - "Note: deleting or even securely wiping the folder itself does NOT remove its ShellBag - poor anti-forensics."
+  detection:
+    - "Recover deleted BagMRU keys from unallocated hive space with Registry Explorer - recovered keys often expose the exact folders an attacker tried to hide."
+    - "Replay NTUSER.DAT / UsrClass.dat transaction logs (.LOG1/.LOG2) via rla.exe / SBECmd to surface uncommitted changes."
+    - "Compare UsrClass.dat file creation date against OS install date / user-profile creation date - a much-later creation date indicates the hive was wiped and recreated."
+    - "Cross-reference USN Journal ($UsnJrnl): an immutable, chronological FS log; perform a monotonicity check for out-of-order entries and look for modification events on the hive files plus execution of a scrubber utility."
+    - "Stacking mismatch: extensive LNK / Jump List GUI activity but empty/sparse ShellBags strongly indicates ShellBag tampering."
+    - "Timestamp-anomaly check: extreme mismatch between embedded target creation time and First/Last Interacted suggests key reuse or tampering - but first rule out a Win10/11 feature update that legitimately reset times."
+
 corroborate_with:
-  lnk_files: "LNK shortcuts confirm a specific file was opened from the navigated folder."
-  jump_lists: "Jump Lists tie a target file to the application that opened it (AppId)."
-  registry_fileaccess: "RecentDocs / OpenSavePidlMRU corroborate file open/save activity for the user."
-  mft: "$MFT confirms the folder/file existed on the volume at the relevant time."
+  lnk_files: "LNK shortcuts confirm a specific file inside the navigated folder was opened/targeted - escalates folder render -> file access."
+  jump_lists: "Jump Lists (AutomaticDestinations) tie a target file to the application/AppId that opened it via taskbar/Start - corroborates file access."
+  registry_fileaccess: "RecentDocs / OpenSavePidlMRU / TypedPaths corroborate file open/save activity for the user within the navigated folder."
+  prefetch: "Prefetch escalates navigation -> EXECUTION: proves a binary in the staging folder actually ran."
+  amcache: "Amcache corroborates that an executable in the navigated path existed/was present (execution-adjacent)."
+  mft: "$MFT confirms the folder/file existed on the volume at the relevant time and provides authoritative timestamps."
+  usn_journal: "$UsnJrnl provides an immutable change log to validate ShellBag timing and detect tampering/timestomping (monotonicity check)."
+  usbstor_mounteddevices: "SYSTEM\\Enum\\USBSTOR + MountedDevices + MountPoints2 identify the exact physical USB device mounted as a removable drive letter referenced in a ShellBag."
+  logon_sessions: "Security EVTX 4624/4634 interactive sessions bound ShellBag bounding times to a specific human session and confirm WHICH account was active."
+
+corroboration_escalation:
+  alone: >
+    A ShellBag ALONE sits at the NAVIGATION boundary (OBSERVATION tier): it proves
+    the Explorer shell RENDERED a folder for that user account, NOT that files
+    inside were opened, read, copied, or executed, and NOT user intent. Absence is
+    not proof of non-visit (CLI/script bypasses the shell). Timestamps are bounding,
+    not click-precise. Treat single-source as observation.
+  combinations:
+    - sources: ["shellbags"]
+      plus_timestamps: "BagMRU key LastWrite (bounding First/Last Interacted)"
+      upgrades_to: "OBSERVATION / possible (~0.70)"
+      rationale: "Shell rendered the folder, but rendering is not file access and the timestamp only bounds the most-recent child render."
+    - sources: ["shellbags", "lnk_files"]
+      plus_timestamps: "ShellBag folder render bounds-precede the Recent LNK creation/modification"
+      upgrades_to: "PROBABLE file access (~0.85)"
+      rationale: "User navigated to the folder (ShellBag) and a specific file inside it was opened (LNK) - upgrades folder render to file interaction."
+    - sources: ["shellbags", "lnk_files", "registry_fileaccess (RecentDocs)"]
+      plus_timestamps: "folder render + LNK open + RecentDocs/Jump List timestamps aligned"
+      upgrades_to: "CONFIRMED file access (~1.0)"
+      rationale: "Navigation (ShellBag) + file open (LNK) + extension-mapped MRU (RecentDocs) - 3 independent sources stack to defensible file access."
+    - sources: ["shellbags", "prefetch", "amcache"]
+      plus_timestamps: "ShellBag staging-dir render -> Prefetch run time for an exe in that path"
+      upgrades_to: "CONFIRMED execution-from-navigated-path (~1.0)"
+      rationale: "Folder render (ShellBag) + execution proof (Prefetch) + identity (Amcache) escalate browse to evidence the binary in that path actually ran."
+    - sources: ["shellbags (removable E:\\ path)", "usbstor_mounteddevices", "lnk_files", "prefetch"]
+      plus_timestamps: "USB mount time + ShellBag render + LNK open + archiver Prefetch aligned"
+      upgrades_to: "CONFIRMED removable-media staging/exfil (~1.0)"
+      rationale: "Physical device id + folder render + file opens + archiver execution prove a staging-to-exfil narrative on a specific device."
+  tiers: "1 source = possible/observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)"
+
+correlation_patterns:
+  - name: "Navigation -> file access escalation"
+    chain: "ShellBag (folder rendered) -> LNK + Jump List + RecentDocs for a specific file inside that folder -> defensible claim the user opened that file (3+ sources = CONFIRMED)."
+  - name: "Navigation -> execution escalation"
+    chain: "ShellBag for a staging dir (e.g. C:\\Users\\Public\\Staging) -> Prefetch + Amcache for an .exe launched from that path -> escalates folder browse to evidence of execution."
+  - name: "Removable-media data theft"
+    chain: "ShellBag references E:\\<sensitive> -> USBSTOR + MountedDevices + MountPoints2 identify the physical device -> LNK/RecentDocs prove file opens -> Prefetch of 7z.exe/rar.exe -> SRUM Bytes-Sent spike on a cloud/backup process = staging + exfil narrative."
+  - name: "Download -> open -> execute"
+    chain: "Browser history download to \\Downloads -> ShellBag for \\Downloads (Explorer rendered) -> LNK / RecentDocs DestList for the file (seconds later) -> Prefetch proves the payload was double-clicked."
+  - name: "MTP device gap substitution"
+    chain: "MTP devices (Android phones, cameras) on Win11 often do NOT create file-level LNKs; rely on ShellBags showing navigation of the device's internal storage (e.g. 'This PC\\Phone\\Internal shared storage\\DCIM') to evidence browsing where LNK evidence is absent."
+  - name: "Ghost-folder hunting"
+    chain: "Search parsed CSV for ShellBags referencing suspicious folder names that no longer exist on disk -> use the view-type GUID to infer what file types the wiped folder held."
+
+heuristics:
+  - "First query the SBECmd CSV for row count, schema, and the min/max of First/Last Interacted to establish bounds before filtering - a clean filter may mean 'no Explorer navigation' OR 'data was reset by a feature update.'"
+  - "Filter for drive letters not currently mounted (E:\\, F:\\, etc.) to map browsing of now-disconnected USB/removable devices."
+  - "Map the Bags\\<#>\\Shell view-type GUID to infer folder content type even after secure deletion: {5C4F28B5-F869-4E84-8E60-F11DB97C5CC7}=Generic, {7D49D726-...}=Documents, {B3690E58-...}=Pictures, etc."
+  - "Treat empty/sparse ShellBags as a pivot, not a conclusion: check PowerShell logs, RunMRU, Prefetch for CLI tools - the user may have navigated via command line."
+  - "Always verify the ACCOUNT context: malicious exploration under an IT-admin profile reframes the narrative as stolen elevated credentials vs. a malicious standard user."
+  - "Hunt for ShellBags referencing staging dirs (C:\\Temp, C:\\Users\\Public), remote network shares (lateral-movement recon), or known sensitive-IP folders to time-line data staging before exfil."
+  - "On key-reuse suspicion, distrust the embedded target MAC/MFT metadata and lean on First/Last Interacted + independent USN/MFT timestamps."
+
+discipline_reminder: >
+  ShellBags sit on the NAVIGATION boundary - execution-validation tier OBSERVATION
+  (0.70) when standing alone; they prove the shell rendered a folder, never that a
+  file was opened or executed. Use defensible language: write "the user account's
+  shell state indicates the directory was rendered through Explorer or a standard
+  shell dialog," NOT "the user accessed/opened the folder." Document negative space
+  explicitly: "No ShellBag entries for this path were present; this reduces support
+  for the hypothesis of Explorer navigation but does not exclude access via command
+  line or scripts." Escalate to file access only with 2+ corroborating sources
+  (LNK + Jump List + RecentDocs) and to execution only with Prefetch/EVTX 4688.
+  Align all bounding timestamps to interactive logon sessions and standardise to UTC.

@@ -1,14 +1,172 @@
-# Forensic-knowledge: NTFS $MFT / $UsnJrnl timeline.
+# Forensic-knowledge: NTFS $MFT (Master File Table).
 # Generic Windows forensic discipline - no case specifics.
 artifact: mft
+aka:
+  - "$MFT"
+  - "Master File Table"
+  - "NTFS metadata catalog"
+  - "MFT timeline / file system timeline"
+
+what_it_is: >
+  The $MFT is the core relational database (metadata catalog) of the NTFS file system - a
+  central index that tracks every file and directory on a volume, holding each object's name,
+  size, permissions, MACB timestamps, and pointers (data runs) to the physical clusters where
+  its data lives. The Volume Boot Record (VBR) holds the only fixed-sector pointer in NTFS - to
+  the first cluster of $MFT; everything else on the volume is located through the $MFT itself.
+
+locations:
+  - "Volume root, hidden system file literally named $MFT (e.g. C:\\$MFT) - MFT record 0."
+  - "MFT record 0 = $MFT itself (self-referential; describes where the rest of the MFT lives)."
+  - "Cannot be copied while the system is live; extract via raw disk imaging, VSS, or triage (KAPE)."
+  - "Companion NTFS metadata files: $LogFile (record 2), $UsnJrnl at \\$Extend\\$UsnJrnl:$J, $Bitmap (record 6), $BadClus (record 8), $Secure ($SECURE, security descriptors), $ATTRDEF (record 4), $I30 directory indexes."
+
+naming_format: >
+  An array of fixed-size records, typically 1024 bytes (1 KB) each regardless of the volume's
+  cluster size (default 4 KB). Each valid record begins with the ASCII signature 'FILE'
+  (0x46494C45); a corrupt record shows 'BAAD'. Metadata is organized into attributes, most
+  notably 0x10 $STANDARD_INFORMATION ($SI), 0x30 $FILE_NAME ($FN), and 0x80 $DATA. NTFS v3.1
+  (Windows XP+) added the MFT record number into the record header at offset 0x2C to aid
+  fragment recovery; the sequence number lives at header offset 0x10. Filenames are limited to
+  255 chars per $FN; long-named files carry two $FN attributes (Win32 long name + DOS 8.3 short
+  name such as THISIS~1.TXT).
+
+proves:
+  - "Existence (current or historical) of a file/directory on the volume - its name, exact size, and physical/logical location via cluster runs."
+  - "The file's MACB metadata timeline as the file system recorded it (both $SI and $FN sets)."
+  - "Whether a file is resident (data stored inside the 1 KB record) or non-resident (data runs point to disk clusters)."
+  - "That a file PREVIOUSLY existed even after deletion - the record persists (marked unallocated) until reused."
+  - "Combined with $Bitmap: whether the clusters backing a non-resident file are still allocated or freed for reuse."
+  - "Mark-of-the-Web origin when a Zone.Identifier ADS ($DATA stream) is present, including the HostUrl."
+
 does_not_prove:
-  - "An $MFT entry proves a file EXISTED on the volume, NOT that it was executed or that a human opened it."
-  - "$SI (StandardInformation) timestamps are trivially forged by timestomping; $FN (FileName) timestamps are harder to forge - prefer $FN and the USN journal."
-  - "A $SI vs $FN mismatch >1 hour is a timestomping indicator, but cross-volume copies also inherit original timestamps and look identical to timestomping."
-  - "Local moves/renames change NO timestamps at all and are invisible to timestamp-only analysis."
-  - "Absence of an $MFT record does NOT prove a file never existed - it may have been deleted and its record reused."
+  - "An $MFT entry proves a file EXISTED on the volume, NOT that it was executed or that a human opened it - pivot to Prefetch / UserAssist / EID 4688 for execution, LNK / ShellBags / RecentDocs for user interaction."
+  - "$SI timestamps are trivially forged by timestomping (user-level API writable); $FN timestamps are kernel-managed and far harder to forge - prefer $FN and the USN journal for chronology."
+  - "A $SI vs $FN mismatch >1 hour is a timestomping indicator, but cross-volume/SMB copies legitimately inherit original timestamps and can look similar - corroborate before concluding malice."
+  - "Local moves/renames change NO file content timestamps and may be invisible to timestamp-only analysis (though $UsnJrnl logs the rename)."
+  - "Absence of an $MFT record does NOT prove a file never existed - it may have been deleted and its record reused (check $UsnJrnl, $LogFile, $I30 slack)."
+  - "The Accessed (A) time does NOT prove human viewing - AV scans, indexing, backups, and background processes update it; it is also disabled by default on many modern Windows builds."
+  - "MFT timestamps alone do not prove WHEN an action truly happened - they are writable; only $UsnJrnl/$LogFile provide an unforgeable chronology."
+
+timestamp_semantics:
+  model: "MACB. Stored as 64-bit FILETIME (100-nanosecond intervals since 1601-01-01 00:00:00 UTC), so they are timezone-independent."
+  M_modified: "Time the file's DATA/contents were last altered."
+  A_accessed: "Approximate time the file data was last read. Unreliable - background processes update it and it is frequently disabled by default on modern Windows."
+  C_changed: "MFT-record / metadata change time - updates on rename, size change, permission/ownership change. NOT the creation time (common confusion)."
+  B_born: "File creation (birth) time on this volume."
+  SI_attribute: "$STANDARD_INFORMATION (0x10) holds the MACB set Windows Explorer displays. User-level writable -> the timestomping target."
+  FN_attribute: "$FILE_NAME (0x30) holds its OWN MACB set, updated only by the NTFS kernel on create/rename. Inaccessible to standard user APIs -> the integrity check against $SI."
+  lateral_movement_signal: "M time < B time (Modified older than Born) indicates the file was copied onto this system (e.g. over SMB): the destination gets a NEW Born time while the original Modified time is preserved. Strong lateral-movement / staging signal, distinct from an internet download."
+
+version_differences:
+  windows_xp: "NTFS v3.1; Last Access (A) updated actively in real time. Record number added to header offset 0x2C."
+  vista_win7: "Last Access ($SI) real-time updates disabled by default for performance/SSD wear -> A time unreliable."
+  windows_8: "Introduced swapfile.sys and Modern apps; core $MFT structure unchanged. Access-time updates remain off by default."
+  windows_10_1803_plus_and_11: "Last Access timestamp updates re-enabled under certain conditions -> A-time interpretation differs across OS generations; verify the build before relying on A time."
+  refs: "Resilient File System (ReFS) on modern Server and Windows 11 Pro for Workstations/Enterprise uses a B+ tree architecture instead of an MFT - traditional MFT parsers do NOT work on ReFS volumes."
+
+parsing_tools:
+  - "MFTECmd (Eric Zimmerman) - premier parser; outputs CSV or bodyfile, separates $SI vs $FN timestamps, aggregates Zone.Identifier ADS into a column, and auto-flags anomalies 'SI<FN' and 'uSecZeros'. Also parses $J (USN Journal), $LogFile, and $Boot."
+  - "fls (The Sleuth Kit) - extracts filesystem timeline in bodyfile format across a whole disk image."
+  - "istat (The Sleuth Kit) - granular stats for a single MFT entry (inode)."
+  - "AnalyzeMFT (Python), FTK Imager (GUI), Autopsy - extraction/review of the raw $MFT."
+  - "KAPE - automated triage collection of $MFT and companion NTFS metadata files."
+
+limitations:
+  - "Resident files: data <= ~600-900 bytes (commonly cited ~700) is stored inside the 1 KB record in $DATA; deleting frees the record but the data stays trapped in the MFT until the record is overwritten (bypasses unallocated-space carving)."
+  - "Non-resident files: $DATA holds data runs (cluster pointers); content lives on disk and survives MFT record reuse if $Bitmap shows clusters not yet reallocated."
+  - "Record reuse: deletion flips the 'in use' bit (0x01 -> 0x00) and marks the record unallocated; metadata stays intact until the OS reuses the record for a new file, fully obliterating the prior entry."
+  - "Sequence number (header offset 0x10) increments by 1 each time a record is deallocated/reused - lets analysts detect and track reuse of a given entry number."
+  - "Accessed time is unreliable / often disabled - never treat A time as proof of human access."
+  - "$MFT shows file-system facts only - no execution, no user attribution by itself."
+
+anti_forensics:
+  techniques:
+    - "Timestomping - backdating $SI M/B times so malware blends into legitimate dirs (e.g. C:\\Windows\\System32). Tools: Metasploit timestomp, SetMACE, etc."
+    - "Secure deletion / wiping - SDelete, BCWipe, Eraser overwrite content; often perform rapid repeated $FN renames (AAA.AAA, BBB.BBB) before deallocating the record."
+    - "Record reuse to obliterate prior metadata."
+    - "Mapping malicious data virtually to $BadClus (record 8) - rarely used legitimately since controllers remap bad sectors in hardware."
+  detection:
+    - "$SI vs $FN mismatch - timestomping tools usually alter only $SI; if $FN Born is newer than $SI Born by >1 hour (or $SI Created predates $FN Created), suspect timestomping. MFTECmd flags this as 'SI<FN'."
+    - "Sub-second zeroing - native Windows writes 100 ns precision; lazy tools leave fractional seconds .0000000. Zeroed $SI sub-seconds (especially mismatching $FN) is a major red flag. MFTECmd flags 'uSecZeros'."
+    - "MFT entry-number vs claimed age - sort by MFT entry number: a file backdated years into the past but holding a wildly out-of-sequence (recent) entry number is exposed instantly, because NTFS allocates the next available record."
+    - "PE compile time vs MFT times - extract internal PE compile timestamp (sigcheck, exiftool); a file cannot legitimately be created/modified before its code was compiled."
+    - "ShimCache/Amcache cross-check - ShimCache records the $SI modification time at first execution; if the current MFT $SI mod time is older than the ShimCache value, the file was backdated post-execution."
+    - "$UsnJrnl monotonicity check - the journal appends sequentially with the real system clock; a backdated file still leaves newer USN entries proving the true (later) creation/change order. The journal cannot be forged the way $SI can."
+    - "Wiping pattern - watch for a record undergoing rapid repeated $FN rename operations then deallocation (SDelete/BCWipe signature)."
+    - "$BadClus inspection - data attributed to $BadClus warrants deep inspection."
+
 corroborate_with:
-  usn_journal: "$UsnJrnl:$J is an append-only authoritative change log - it cannot be backdated the way $SI can."
-  prefetch: "Prefetch confirms a binary actually executed, not merely that it existed on disk."
+  usn_journal: "$UsnJrnl:$J is an append-only, kernel-level authoritative change log recording the exact REASON for each change (USN_REASON_FILE_CREATE, _DATA_EXTEND, _RENAME_*, _FILE_DELETE). It cannot be backdated the way $SI can and gives the true chronological order / time a file was dropped or wiped."
+  logfile: "$LogFile (NTFS transactional journal, record 2) holds granular short-lived undo/redo records of the actual metadata payloads written to the MFT - can expose original filenames/records of recently deleted or wiped files seconds after the fact."
+  i30_index: "$I30 directory index (parent-folder B-tree) slack retains ghost entries - deleted file names and pre-timestomp timestamps - proving a file previously existed in a specific folder even after record reuse."
+  bitmap: "$Bitmap reports cluster allocation status - confirms whether a deleted non-resident file's data has been overwritten yet (carving viability)."
+  volume_shadow_copies: "VSC store historical $MFT snapshots - compare current MFT against older versions to recover pre-deletion / pre-timestomp state. Win10/11 ScopeSnapshots may limit user-data completeness but MFT metadata is usually retained."
+  prefetch: "Prefetch confirms a binary actually EXECUTED, not merely that it existed on disk; its embedded run timestamps can be matched back to MFT records by fractional timestamp."
   event_logs_security: "EID 4688 process creation corroborates execution at a specific time."
-  amcache: "Amcache/ShimCache corroborate that the executable was present and observed by Windows."
+  amcache_shimcache: "Amcache/ShimCache corroborate that the executable was present and observed by Windows, and supply an independent original modification time for timestomping detection."
+  zone_identifier_ads: "Zone.Identifier ADS (Mark of the Web) on an MFT entry proves an internet download and records the original HostUrl - distinguishes downloaded payloads from SMB-copied ones; survives some wiping tools."
+
+corroboration_escalation:
+  alone: >
+    An $MFT record ALONE proves file-system EXISTENCE/metadata only (name, size,
+    cluster runs, MACB) - it sits at the OBSERVATION tier for execution. It does
+    NOT prove the file executed or that a human opened it, and $SI timestamps are
+    user-writable (timestomp target). Absence of a record is not proof of
+    non-existence (record reuse). Treat single-source as observation/unconfirmed.
+  combinations:
+    - sources: ["mft ($SI/$FN)"]
+      plus_timestamps: "MACB ($SI and $FN sets)"
+      upgrades_to: "OBSERVATION / unconfirmed (~0.70)"
+      rationale: "File-system facts only - existence and metadata, no execution and no user attribution."
+    - sources: ["mft", "usn_journal"]
+      plus_timestamps: "$SI/$FN MACB cross-checked against $UsnJrnl authoritative create/rename/delete reason+time"
+      upgrades_to: "PROBABLE / authoritative chronology (~0.85)"
+      rationale: "$UsnJrnl supplies the unforgeable true creation/change order to validate or expose forged $SI times."
+    - sources: ["mft", "prefetch"]
+      plus_timestamps: "MFT MACB matched to Prefetch embedded run times by fractional timestamp"
+      upgrades_to: "PROBABLE execution (~0.85)"
+      rationale: "MFT confirms the binary existed at the path; Prefetch proves it actually launched."
+    - sources: ["mft", "prefetch", "event_logs_security (EID 4688)"]
+      plus_timestamps: "aligned $SI/$FN + Prefetch last-run + 4688 process-creation time"
+      upgrades_to: "CONFIRMED / definitive execution (~1.0)"
+      rationale: "Existence (MFT) + execution proof (Prefetch) + process-creation event with command line/user (4688) = court-defensible execution trinity."
+    - sources: ["mft ($SI<FN flag / zeroed sub-seconds)", "usn_journal", "amcache_shimcache"]
+      plus_timestamps: "$SI vs $FN mismatch + $UsnJrnl true create time + ShimCache/Amcache original mod time + PE compile time"
+      upgrades_to: "CONFIRMED timestomping (~1.0)"
+      rationale: "Multiple independent timestamp sources contradicting the on-disk $SI prove backdating that no single source could establish alone."
+  tiers: "1 source = possible/observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)"
+
+correlation_patterns:
+  - name: "Timestomp confirmation"
+    chain: "MFT $SI<FN flag or zeroed $SI sub-seconds -> confirm against $UsnJrnl true creation time + ShimCache/Amcache original mod time + PE compile time -> backdating proven."
+  - name: "Lateral movement / SMB copy detection"
+    chain: "MFT M time < B time on an executable -> absence of Zone.Identifier ADS (not an internet download) -> corroborate with EID 4624 Type 3 + 5140 share access / $UsnJrnl create -> network file copy."
+  - name: "Dropped-payload triage"
+    chain: "MFTECmd -> timeline -> filter .exe/.dll/.ps1 created in the alert window, especially in AppData\\Local\\Temp or user profiles -> pivot to $UsnJrnl for true create time -> Prefetch/4688 for execution."
+  - name: "MFT sequence clustering"
+    chain: "Malware dropping many helper files in quick succession yields contiguous/sequential MFT entry numbers -> sorting by entry number exposes the full toolset at once."
+  - name: "Deleted-malware recovery"
+    chain: "Orphaned Prefetch (or carved indicator) gives MACB timestamps -> query parsed $MFT CSV for matching fractional timestamps -> recover true path/size even after delete+rename -> $Bitmap to confirm clusters intact -> carve unallocated (PhotoRec) for content."
+  - name: "Mark-of-the-Web masquerade"
+    chain: "Scan MFT for Zone.Identifier ADS on files in System32/Windows dirs -> downloaded payload masquerading as a system file."
+  - name: "i30 slack ghost-hunt"
+    chain: "Record reused / name lost in MFT -> parse parent $I30 slack -> recover deleted file name + timestamps proving prior existence in that folder."
+
+heuristics:
+  - "Always read both $SI and $FN MACB sets; $FN is the integrity anchor against $SI tampering."
+  - "M < B = file copied onto the system (SMB/lateral), not created locally or downloaded - one of the highest-value MFT signals."
+  - "Sort by MFT entry number, not just timestamp - backdated files betray themselves with out-of-sequence entry numbers."
+  - "Zeroed $SI sub-seconds (.0000000) that mismatch $FN = near-certain timestomping."
+  - "Treat the $UsnJrnl as ground truth when MFT timestamps look suspicious - it is the unforgeable chronological cross-check."
+  - "Negative space matters: a reused record, missing entry, or wiped name is not 'innocent' - pivot to $UsnJrnl, $LogFile, $I30 slack, and VSC."
+  - "Compare PE compile time to MFT times - a disk timestamp earlier than the code's compile time is impossible and proves backdating."
+  - "Filter MFT timeline to executable extensions in the +/- 24 h window around an alert to isolate dropped payloads fast."
+
+discipline_reminder: >
+  The $MFT proves FILE-SYSTEM existence and metadata only - it sits at the Observation tier for
+  execution. It does NOT prove execution or human interaction by itself: corroborate with
+  Prefetch + EID 4688 (execution) or LNK/ShellBags/RecentDocs (user activity). $SI timestamps
+  are forgeable; prefer $FN and treat $UsnJrnl as authoritative. Use defensible language: write
+  "the $MFT record indicates the file existed on the volume" and "the $SI/$FN mismatch is
+  consistent with timestomping, corroborated by $UsnJrnl" - NOT "the user created the file" or
+  "the attacker ran the binary". 1 source = unconfirmed; 2+ independent sources = confirmed.

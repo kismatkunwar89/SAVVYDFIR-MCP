@@ -1,14 +1,194 @@
-# Forensic-knowledge: user file-access registry keys (UserAssist, OpenSavePidlMRU,
-# TypedPaths, RecentDocs) - distinct from persistence/Run keys.
+# Forensic-knowledge: user file-access / execution registry MRUs
+# (UserAssist, RecentDocs, OpenSavePidlMRU, LastVisitedPidlMRU, TypedPaths, MUICache)
+# Distinct from persistence/Run keys. Per-user "vapor trail" of GUI activity.
 artifact: registry_fileaccess
+aka:
+  - "Registry MRUs (Most Recently Used)"
+  - "UserAssist"
+  - "RecentDocs"
+  - "ComDlg32 OpenSavePidlMRU / LastVisitedPidlMRU"
+  - "TypedPaths"
+  - "MUICache / MuiCache"
+  - "per-user shell activity keys"
+
+what_it_is: >
+  A family of per-user Most-Recently-Used (MRU) and execution-tracking registry
+  keys that Windows Explorer populates to improve UX (autocomplete, recent-file
+  lists, Open/Save dialog memory, frequent-programs lists, fast icon/display-name
+  rendering). For DFIR they form a per-user historical ledger of GUI program
+  execution and file/folder referencing, scoped to the account whose hive holds
+  them. They establish a user's "pattern of life."
+
+locations:
+  # All anchored in NTUSER.DAT (HKCU) except MUICache on modern Windows.
+  - "UserAssist: NTUSER.DAT\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist\\{GUID}\\Count"
+  - "RecentDocs: NTUSER.DAT\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\RecentDocs (master list + per-extension subkeys)"
+  - "OpenSavePidlMRU: NTUSER.DAT\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\OpenSavePidlMRU (per-extension subkeys)"
+  - "LastVisitedPidlMRU: NTUSER.DAT\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\LastVisitedPidlMRU"
+  - "TypedPaths: NTUSER.DAT\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\TypedPaths"
+  - "MUICache (Win8+/10/11): UsrClass.dat\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache (i.e. Software\\Classes\\Local Settings\\...\\Shell\\MuiCache)"
+  - "MUICache (Win7 and older): NTUSER.DAT\\Software\\Microsoft\\Windows\\ShellNoRoam\\MUICache"
+  - "On disk: NTUSER.DAT and UsrClass.dat in C:\\Users\\<profile>\\ (UsrClass.dat under AppData\\Local\\Microsoft\\Windows\\). Hives are locked while the user is logged on - acquire via disk image, VSS snapshot, or offline boot."
+
+naming_format: >
+  UserAssist value names are ROT13-encoded full paths (e.g. P:\\Jvaqbjf\\flfgrz32
+  decodes to C:\\Windows\\system32; pza.rkr -> cmd.exe). Subkey GUIDs encode HOW
+  an item launched: {CEBFF5CD-...} = application/executable execution, and
+  {F4E57C4B-2036-45F0-A9AB-443BCFE33D9F} = launch via LNK shortcut (desktop/Start/
+  taskbar) - the GUID lets you distinguish launch vector. The Count value blob is
+  a binary structure (~72 bytes on Win7+) holding run count, focus count, focus
+  time (ms in foreground), and a 64-bit FILETIME last-execution timestamp.
+  RecentDocs / ComDlg32 entries are binary shell-item PIDLs (UTF-16 with null
+  bytes) ordered by an MRUListEx value (4-byte little-endian indices; position 0
+  = most recent). TypedPaths is plain text with sequentially named values url1,
+  url2, ... where url1 is most recent (no MRUListEx). MUICache is plain-text
+  string values mapping an executable's absolute path to its ApplicationCompany /
+  FriendlyAppName pulled from the PE VersionInfo resource.
+
+proves:
+  - "UserAssist: a GUI program was launched in the context of that specific user profile; run count, focus count, and focus time quantify foreground human engagement; the GUID encodes the launch vector (direct exe vs LNK/shortcut)."
+  - "UserAssist focus time > 0: an interactive operator actively had the application window in the foreground - refutes a 'ran silently in the background' explanation."
+  - "RecentDocs: a file with a specific name/extension was opened/referenced under that user; per-extension subkeys show which document types were handled; the blob also records the generated LNK filename."
+  - "OpenSavePidlMRU: a file (by extension) was selected/referenced through a standard Windows Open/Save (ComDlg32) common dialog - the user saw that directory's contents."
+  - "LastVisitedPidlMRU: which application executable was used to open/save, and the folder that application last defaulted to in its dialog."
+  - "TypedPaths: a folder path, UNC share, or URI was manually typed or pasted into the Explorer address bar - deliberate user knowledge of that path."
+  - "MUICache: an executable (by absolute path) was launched at least once such that the OS extracted its PE display-name metadata; the name comes from PE VersionInfo, NOT the on-disk filename."
+
 does_not_prove:
-  - "UserAssist records that a GUI program was launched in the user's session, NOT command-line or service execution."
-  - "A key's LastWriteTime is when the KEY changed, NOT when a specific value within it was written."
-  - "OpenSavePidlMRU / RecentDocs prove a file-open/save dialog referenced a path, NOT that the file was read or modified."
-  - "TypedPaths records strings typed into the Explorer address bar, NOT that the location was successfully reached."
-  - "Cleared or reset MRU keys can mean anti-forensic tampering, not absence of activity - treat gaps as evidence."
+  - "UserAssist records that a GUI program was launched in the user's session, NOT command-line, service, or remote-shell execution; background tasks, services, and startup items can also populate it - it is NOT proof of a human click without focus time / corroboration."
+  - "UserAssist entry with run count 0, focus time 0, or a bogus last-exec date (e.g. 1601-01-01) indicates a silent/OS-driven launch, not interactive human execution."
+  - "A key's LastWriteTime is when the KEY changed (i.e. when its MRU position-0 item was added/updated), NOT when a specific older value within it was written."
+  - "RecentDocs / OpenSavePidlMRU prove a file path was opened/referenced via Explorer or a common dialog, NOT that the file was read, modified, or executed; programmatic API opens can also populate RecentDocs."
+  - "OpenSavePidlMRU does NOT prove a file was actually saved or successfully opened - only that it was selected/navigated within the dialog. Files opened by double-click in Explorer or via the command line bypass ComDlg32 entirely."
+  - "TypedPaths records strings typed into the Explorer address bar, NOT that the location existed or was successfully reached - users can type invalid paths."
+  - "MUICache proves an executable's metadata was read (which can be triggered by execution, or merely by viewing properties/icons of the binary), NOT necessarily a full user-driven run; it contains NO execution timestamp and NO run count - it cannot tell you WHEN or HOW MANY times it ran, only that it ran/was inspected at least once."
+  - "Presence in any MRU is not evidence of malicious intent - an application may have defaulted the user to a path."
+  - "Cleared or sparse MRU keys can mean anti-forensic tampering / privacy-cleaner use, not absence of activity - treat unexplained gaps as evidence (negative space)."
+
+timestamp_semantics:
+  registry_last_write_time: "Per-key/subkey only (individual values have NO timestamp). Reflects the last time any value in that key was added/modified - i.e. when the MRU position-0 (most recent) item was written. Stored as 64-bit FILETIME, UTC."
+  mru_position_0_rule: "The item at MRUListEx position 0 (or TypedPaths url1) mathematically aligns with the parent subkey's LastWriteTime. You can assert that the position-0 item was interacted with at the key's LastWriteTime. Positions 1,2,3... only establish relative order (occurred earlier) - no exact time."
+  userassist_filetime: "UserAssist Count blob embeds a discrete 64-bit FILETIME for the LAST execution of that specific entry - per-entry, far more precise than the key LastWriteTime."
+  userassist_focus_metrics: "Focus count = number of times the app window was brought to foreground; focus time = total ms the window was the active/foreground window. Highly reliable indicator of sustained human interaction."
+  recentdocs_filetime: "Modern RecentDocs blobs can carry embedded per-item FILETIME values in addition to the key LastWriteTime."
+  filetime_format: "All FILETIME = 64-bit count of 100-nanosecond intervals since 1601-01-01, UTC. Convert and normalize to UTC; apply system TZ offset only when explicitly correlating to local-time witness statements."
+
+version_differences:
+  userassist_structure: "Changed drastically across XP (v3, basic run counts only) -> Vista -> Win7+ (v5, ~72-byte blob adding focus count + focus time). Win10/11 changed background tracking, producing anomalies: run count 0 / focus time 0 / 1601 dates for things that did launch (e.g. Windows Sandbox, background scripts)."
+  userassist_guid_usage: "Win10/11 heavily use {F4E57C4B-...} for shortcut/taskbar/LNK launches alongside the {CEBFF5CD-...} executable GUID."
+  muicache_location: "Win7 and older: NTUSER.DAT\\Software\\Microsoft\\Windows\\ShellNoRoam\\MUICache. Win8+ migrated to UsrClass.dat (Software\\Classes\\Local Settings\\...\\Shell\\MuiCache) - check the right hive for the OS."
+  mrulist_vs_mrulistex: "Older Windows used MRUList (single ASCII chars); modern Windows uses MRUListEx (4-byte integer indices)."
+  recentdocs_typedpaths_win10: "Win10/11 integrate RecentDocs/TypedPaths with Quick Access (and historically Cortana), changing update behavior."
+
+parsing_tools:
+  - "RECmd (Eric Zimmerman, Registry Explorer CLI) - industry standard for bulk MRU parsing. Example: recmd.exe -b <batch>\\Kroll_Batch.reb (or crawl_batch.reb) -f <path>\\NTUSER.DAT --csv <out_dir>. Auto-decodes ROT13, parses binary PIDL/MRUListEx lists, extracts PE metadata, groups into CSV. Scales across thousands of hives for stacking."
+  - "Registry Explorer (Eric Zimmerman GUI) - built-in plugins auto-decode ROT13 UserAssist (showing run count, focus count, focus time, raw hex side-by-side), parse MRU binary into tables, and surface deleted/unallocated records."
+  - "rla.exe (ZimmermanTools) - replay NTUSER.DAT.LOG1/.LOG2 transaction logs to clean dirty hives BEFORE parsing (note per-user staged logs: hive.name + '.LOG1', do not hardcode generic NTUSER.DAT.LOG1)."
+  - "KAPE - extract NTUSER.DAT / UsrClass.dat and pipe through RECmd into EvidenceOfExecution categories."
+  - "Plaso / log2timeline.py - parsers: userassist, mrulist_* shell-item, microsoft_office_mru - for super-timeline integration."
+  - "RegRipper plugins (userassist, recentdocs, comdlg32, typedpaths, muicache)."
+
+limitations:
+  - "Per-user scope: activity under SYSTEM/service accounts or remote SYSTEM shells leaves NO trace in a standard user's MRUs."
+  - "GUI-only: UserAssist and MUICache track GUI-launched programs; cmd/PowerShell/script-driven execution bypasses them entirely (a major blind spot)."
+  - "FIFO rollover: MRU lists cap (e.g. RecentDocs ~150 entries) - once full, oldest entries are silently overwritten/lost."
+  - "Timestamp decay: only the position-0 item gets a precise time from the key LastWriteTime; older list items lose individual timing (order only)."
+  - "In-memory buffering: hive writes are buffered; abrupt power loss/crash may leave the most recent interactions unflushed to the on-disk hive."
+  - "Hive locked while user logged on - requires offline image / VSS / boot to acquire cleanly; dirty hives need transaction-log replay (rla.exe)."
+  - "Raw Regedit views are error-prone for binary PIDLs and ROT13 - always use a dedicated parser."
+
+anti_forensics:
+  techniques:
+    - "Privacy cleaners (CCleaner, BleachBit) targeting UserAssist, RecentDocs, ComDlg32, TypedPaths."
+    - "Scripted deletion of MRU keys / hive subtrees to erase interactive history."
+    - "Manual tampering via regedit on OpenSavePidlMRU / TypedPaths to remove or alter entries."
+    - "Timestomping the on-disk file referenced by an MRU (filesystem MACB) while the registry record retains the real time."
+    - "Built-in Windows 'clear recent items' / privacy settings to wipe history."
+  detection:
+    - "Recover deleted keys from hive slack/unallocated space - deleted keys are merely marked unallocated; Registry Explorer / RECmd surface them readily."
+    - "Replay transaction logs (NTUSER.DAT.LOG1/.LOG2) with rla.exe to recover recently-deleted entries from the dirty hive."
+    - "Negative space: heavy interactive logon time but empty/sparse UserAssist/RecentDocs/TypedPaths = strong wiping indicator."
+    - "Timestamp cross-check: registry-key LastWriteTime or UserAssist embedded FILETIME disagreeing with file $MFT MAC / USN times = tampering. USN Journal is the authoritative, immutable timestamp source."
+    - "USN Journal monotonicity check: sequential journal entries with chronologically-earlier dates than later sequence numbers reveal clock manipulation/forged times; the journal also retains a permanent record of key/file deletion."
+    - "Internal-vs-external mismatch: UserAssist embedded FILETIME is hard to forge - if a binary is timestomped on disk but UserAssist's internal time is intact, the discrepancy proves tampering."
+    - "Tool-presence tells: evidence of regedit / sdelete / file-wipers in UserAssist or MUICache shifts the hunt toward destroyed data."
+
 corroborate_with:
-  prefetch: "Prefetch corroborates actual execution of a UserAssist-listed program."
-  shellbags: "ShellBags corroborate folder navigation referenced by TypedPaths/OpenSavePidlMRU."
-  lnk_files: "LNK/RecentDocs corroborate the specific document open events."
-  mft: "$MFT confirms referenced files/paths existed; compare against MRU timestamps."
+  prefetch: "Proves actual execution + exact first/last run times + run count + files/DLLs referenced in first ~10s - corroborates a UserAssist/MUICache program launch."
+  amcache: "Provides SHA-1 hash and historical path of the referenced executable - identity + integrity of the payload."
+  shimcache: "AppCompatCache validates historical execution paths the OS observed."
+  shellbags: "Proves the folder containing the referenced file was actually rendered/browsed via Explorer - corroborates TypedPaths and OpenSavePidlMRU navigation."
+  lnk_files: "Recent-folder LNK shortcuts corroborate RecentDocs; supply the target's MACB timestamps, absolute path, file size, and volume serial number / machine identifiers."
+  jump_lists: "Tie specific documents to specific application AppIds - corroborate RecentDocs with which program opened which file."
+  mft: "$MFT confirms referenced files/paths existed; compare $SI/$FN MAC times against MRU/UserAssist timestamps to detect timestomping."
+  usn_journal: "Authoritative immutable timestamp source; detects backdating, deletion, and clock manipulation that registry timestamps cannot."
+  srum: "Links an executed program path to network byte volume - proves the launched payload communicated externally / quantifies exfil."
+  zone_identifier: "ADS proving a referenced/saved file was downloaded from the internet - anchors the start of a download->save->open->execute chain."
+  evtx: "EID 4688 / Sysmon EID 1 process creation corroborates execution; 4624 interactive logon bounds the session the MRU activity belongs to."
+
+corroboration_escalation:
+  alone: >
+    These MRUs ALONE sit at the OBSERVATION tier: navigation/referencing != access
+    != execution. UserAssist/MUICache prove a GUI program launched (or its metadata
+    was read), NOT a human click (background tasks populate it) and NOT command-line
+    execution. RecentDocs/OpenSavePidlMRU/TypedPaths prove a path was referenced via
+    Explorer/common-dialog, NOT that the file was read, written, or executed. Key
+    LastWriteTime aligns ONLY to MRU position 0. Treat single-source as possible.
+  combinations:
+    - sources: ["registry_fileaccess (UserAssist)"]
+      plus_timestamps: "UserAssist embedded last-exec FILETIME + focus time"
+      upgrades_to: "OBSERVATION / possible (~0.70)"
+      rationale: "Records a GUI launch in the user session, but run count 0 / focus 0 / 1601 date can mean a silent OS-driven launch, not a human click."
+    - sources: ["registry_fileaccess (UserAssist, focus time > 0)", "prefetch"]
+      plus_timestamps: "UserAssist last-exec FILETIME aligned with Prefetch first/last run"
+      upgrades_to: "PROBABLE interactive execution (~0.85)"
+      rationale: "Foreground focus time proves a human was at the GUI and Prefetch proves the binary actually ran from that path."
+    - sources: ["registry_fileaccess (RecentDocs)", "lnk_files"]
+      plus_timestamps: "RecentDocs key LastWrite / per-item FILETIME == Recent LNK creation/modification"
+      upgrades_to: "PROBABLE file access (~0.85)"
+      rationale: "Two independent shell MRUs recorded the same file-open via the Windows shell at the same time."
+    - sources: ["registry_fileaccess (RecentDocs)", "lnk_files", "shellbags"]
+      plus_timestamps: "all three shell-MRU/render timestamps aligned to the same minute"
+      upgrades_to: "CONFIRMED file access (~1.0)"
+      rationale: "RecentDocs (open) + LNK (open) + ShellBag (folder render) - three independent shell sources stack to defensible file access."
+    - sources: ["registry_fileaccess (UserAssist)", "prefetch", "evtx (EID 4688)", "mft"]
+      plus_timestamps: "UserAssist last-exec + Prefetch run + 4688 process creation + MFT existence aligned"
+      upgrades_to: "CONFIRMED / definitive execution (~1.0)"
+      rationale: "GUI-launch attribution (UserAssist) + execution proof (Prefetch) + process-creation event (4688) + on-disk existence (MFT) = court-defensible execution trinity."
+  tiers: "1 source = possible/observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)"
+
+correlation_patterns:
+  - name: "Interactive launch of a malicious document"
+    chain: "MUICache (OS reads icon/name) -> RecentDocs entry -> Recent-folder LNK created -> UserAssist execution of parent app (e.g. WINWORD.EXE) with focus time -> Prefetch for the app -> EID 4688."
+  - name: "Interactive data theft / staging"
+    chain: "TypedPaths (user types sensitive/staging folder) -> ShellBags (folder rendered in Explorer) -> RecentDocs + LNK (specific files double-clicked) -> UserAssist of a GUI archiver (e.g. 7zFM.exe) with high focus time -> OpenSavePidlMRU 'Save As' of the archive (e.g. to a removable drive)."
+  - name: "Download-to-execution file-access chain"
+    chain: "Zone.Identifier (download) -> OpenSavePidlMRU (where the user saved it) -> RecentDocs (user opened it) -> LNK + ShellBags (folder interaction + target MAC times) -> Prefetch (execution) -> SRUM (external comms)."
+  - name: "Lateral-movement / admin-path profiling"
+    chain: "TypedPaths showing hidden shares or admin UNC paths (\\\\<host>\\C$, staging dirs like C:\\ProgramData\\) attributed to a user's keyboard -> ShellBags/EVTX to confirm reach + session."
+  - name: "Renamed-tool unmasking via MUICache"
+    chain: "Disguised binary (e.g. mimikatz.exe renamed to svchost.exe) -> MUICache logs the true FriendlyAppName/ApplicationCompany from PE VersionInfo, betraying real identity despite the filename -> corroborate with Amcache hash + Prefetch."
+
+heuristics:
+  - "Always run bounds-first: row count + schema + min/max of every timestamp column (key LastWriteTime AND UserAssist embedded FILETIME) before filtering to the incident window - a clean filter may mean the MRU rolled over, not that nothing happened."
+  - "UserAssist focus-time tripwire: a supposed background/updater binary with focus time > 0 means a human was actively staring at its GUI; focus time 0 / run count 0 / 1601 date = silent OS-driven launch."
+  - "Use the UserAssist GUID to determine launch vector ({CEBFF5CD} direct exe vs {F4E57C4B} via LNK/shortcut) - differentiates actor habits on a shared host."
+  - "ROT13-decode UserAssist and hunt anomalous tools (psexec, procdump, mimikatz, sdelete) launched from non-standard dirs (Temp, Downloads, Public, ProgramData, $Recycle.Bin)."
+  - "Filter OpenSavePidlMRU / RecentDocs for .ps1/.bat/.exe/.vbs/.rar/.zip to reveal directories the actor browsed when saving/opening payloads or staging exfil."
+  - "Profile TypedPaths for hidden shares and admin/staging paths typed by hand - rapid lateral-movement / staging indicator directly attributed to the keyboard."
+  - "MUICache unmasking: trust the PE-derived FriendlyAppName/ApplicationCompany over the on-disk filename to expose renamed tools."
+  - "Negative-space check: empty UserAssist/RecentDocs/TypedPaths on a heavily-used interactive account = probable privacy-cleaner / anti-forensic wiping."
+  - "Anchor every MRU timestamp to an active logon session (EID 4624/4634) before asserting a human performed the action; align all artifacts to UTC."
+
+discipline_reminder: >
+  Navigation/referencing != access != execution. These keys sit at the OBSERVATION
+  tier (single source = POSSIBLE/0.70). UserAssist/MUICache prove a GUI program
+  launched (or its metadata was read), NOT a human click and NOT command-line
+  execution. RecentDocs/OpenSavePidlMRU/TypedPaths prove a path was referenced via
+  Explorer/common-dialog, NOT that the file was read, written, or executed.
+  Promote to execution only by stacking Prefetch + EID 4688 + $MFT (definitive
+  trinity); promote to file access only by stacking LNK + ShellBag + RecentDocs.
+  Cite the key LastWriteTime aligns ONLY to MRU position 0; remember individual
+  values carry no timestamp. Write defensibly: "UserAssist focus time indicates
+  interactive foreground use" and "shell/common-dialog state references the path,"
+  NOT "the user accessed/ran the file" without corroboration.

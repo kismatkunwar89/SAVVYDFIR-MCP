@@ -1,14 +1,183 @@
-# Forensic-knowledge: Browser history / downloads (Chromium + Firefox).
+# Forensic-knowledge: Web browser history / downloads (Chromium Chrome/Edge + Firefox).
 artifact: browser
+aka:
+  - "Browser history"
+  - "Web history"
+  - "Chrome History DB"
+  - "Edge History DB"
+  - "places.sqlite (Firefox)"
+  - "Download provenance"
+  - "webhist (Plaso parser family)"
+what_it_is: >
+  Per-profile SQLite databases that browsers maintain to power user-convenience
+  features (omnibox auto-complete, link recoloring, session/tab restore, paused/
+  resumed downloads, predictive loading). Forensically they are a granular,
+  timestamped ledger of URLs requested, searches run, and files acquired - the
+  primary artifact for establishing initial access (drive-by, phishing,
+  watering-hole), web-based exfiltration, and download provenance.
+
+locations:
+  # Chromium (Chrome / Chromium-Edge share an identical schema)
+  - "Chrome: %LocalAppData%\\Google\\Chrome\\User Data\\Default\\History"
+  - "Edge (Chromium): %LocalAppData%\\Microsoft\\Edge\\User Data\\Default\\History"
+  - "Non-default Chromium profiles live under ...\\User Data\\Profile N\\History"
+  - "Chrome 96+: Cookies and several DBs relocated to a 'Network' subfolder (sandboxing); WebStorage / Storage Buckets fragment IndexedDB+cache in newer builds"
+  - "Chromium sync/config: ...\\User Data\\Default\\Preferences (JSON) - holds last_synced_time, account_info, site_engagement, media_engagement"
+  - "Chromium SQLite sidecars: History-wal (Write-Ahead Log), History-shm (shared memory)"
+  - "Chromium local cache (proves local fetch): ...\\Default\\Cache\\Cache_Data"
+  # Firefox
+  - "Firefox: %AppData%\\Mozilla\\Firefox\\Profiles\\<random>.default-release\\places.sqlite"
+  - "Firefox SQLite sidecars: places.sqlite-wal, places.sqlite-shm"
+  - "Firefox local cache (proves local fetch): ...\\<profile>\\cache2\\"
+  - "Legacy Firefox (v3-25): downloads tracked in a separate downloads.sqlite; modern FF merges downloads into places.sqlite via moz_annos"
+
+naming_format: >
+  All modern browsers use the SQLite 3 on-disk format (relational tables joined
+  by integer foreign keys). Chromium History tables - urls, visits, downloads,
+  downloads_url_chains. Firefox places.sqlite tables - moz_places,
+  moz_historyvisits, moz_annos. Records are assigned sequential integer primary
+  keys (rowid / id), which is itself a forensic signal (see anti_forensics).
+
+proves:
+  - "A specific URL was requested/rendered by the browser engine under a specific user profile context."
+  - "For a download: the provenance chain - the originating tab_url, the HTTP referrer, the redirect hops, and the local target_path the file was saved to, plus start/end state."
+  - "HOW a page was reached: Chromium transition_type (LINK / TYPED / AUTO_BOOKMARK / RELOAD / AUTO_SUBFRAME / redirect masks) and Firefox visit_type distinguish intentional navigation from automated loads."
+  - "A high typed_count (Chromium urls) or Firefox typed flag indicates the URL was manually entered in the address bar - strong indicator of human knowledge of the URL."
+  - "Frequency of visits via visit_count (Chromium) / per-visit rows in moz_historyvisits (Firefox)."
+
 does_not_prove:
-  - "A history/download record proves the browser process recorded the event, NOT that a specific human initiated it."
-  - "A download row proves a file was written to a target path, NOT that it was opened, executed, or exfiltrated."
-  - "Synced history can originate on another device under the same account, not the local machine."
-  - "Absence of history does NOT prove no browsing - history can be cleared, or a portable/incognito session used."
-  - "Visit/download timestamps are local-clock dependent; normalize to UTC and corroborate before sequencing."
+  - "A history/download record proves the browser process recorded the event, NOT that a specific human initiated or even saw it."
+  - "A URL row does NOT prove human interaction or awareness - background tab reloads, hidden iframes, pop-unders, ad networks, JavaScript/server redirects all populate the DB silently."
+  - "A download row proves a file was written to a target path, NOT that it was opened, executed, or exfiltrated. It may not even prove the file survived AV or fully wrote to disk."
+  - "Synced history can originate on another device under the same account (mobile/secondary laptop), not the local machine."
+  - "Absence of history does NOT prove no browsing - history can be selectively cleared, vacuumed, or a private/incognito session used."
+  - "Visit/download timestamps are clock-dependent and can carry cross-device skew when synced; normalize to UTC and corroborate before sequencing."
+
+timestamp_semantics:
+  chromium_webkit_time: >
+    Chrome/Edge store visit_time, download start_time/end_time as WebKit time =
+    microseconds since 1601-01-01 00:00:00 UTC. Convert: epoch_unix =
+    (webkit/1000000) - 11644473600. Reliable for system-generated events; subject
+    to cross-device timezone/clock skew when the row was synced from elsewhere.
+  firefox_prtime: >
+    Firefox stores visit_date (moz_historyvisits) and place last_visit_date in
+    PRTime (Netscape Portable Runtime) = microseconds since 1970-01-01 UTC
+    (Unix epoch in microseconds). Convert: epoch_unix = prtime/1000000.
+  reliability: >
+    High-precision and reliable for locally-generated rows. The browser clock is
+    the source, so a synced-in row carries the timestamp from the originating
+    device. Cross-validate the download end_time against the unforgeable $UsnJrnl /
+    $MFT creation time of the target file before sequencing.
+
+version_differences:
+  chromium_unification: "Modern Microsoft Edge abandoned the proprietary ESE 'Spartan' format and moved to the Chromium engine - Edge and Chrome now share a virtually identical SQLite schema and analysis workflow."
+  chrome_96_network_subfolder: "Chrome 96+ relocated Cookies and several databases to a 'Network' subfolder for sandboxing; tools with hardcoded legacy paths can break."
+  chrome_newer_storage: "Newer Chrome introduced WebStorage and Storage Buckets, further fragmenting IndexedDB and cache data."
+  firefox_downloads_migration: "Firefox v3-25 used a separate downloads.sqlite; modern Firefox (Quantum/Gecko) records download metadata inside places.sqlite via the moz_annos annotations table and integrates bookmarks+history into places.sqlite."
+  sync_ecosystem: "Sync behavior differs by vendor (Google Sync vs Microsoft Account sync), changing how cloud history merges into the local DB."
+
+parsing_tools:
+  - "Native sqlite3 CLI or DB Browser for SQLite - run raw SQL joins; the framework default. Chromium: SELECT u.url,u.visit_count,u.typed_count,v.visit_time,v.transition FROM urls u JOIN visits v ON u.id=v.url. Firefox: join moz_places to moz_historyvisits on place_id, use from_visit for the referrer chain."
+  - "Hindsight - open-source, purpose-built Chromium parser (history, downloads, encrypted cookies, LevelDB); joins relational tables and decodes epochs."
+  - "Plaso / log2timeline.py webhist parsers (chrome_history, firefox_history, opera_*) - fold visits+downloads into a Super Timeline with UTC normalization."
+  - "NirSoft BrowsingHistoryView / ChromeCacheView / MZCacheView / ImageCacheViewer - GUI cross-reference of history with cached visual assets."
+  - "KAPE modules, Browser History Examiner, Magnet AXIOM, Arsenal Recon - automated commercial/IR parsing."
+
+limitations:
+  - "Cloud sync can inject rows that never occurred on the local endpoint (mobile/secondary device). Check Preferences last_synced_time + account_info; correlate against local Cache/cookies - a history row with NO matching local cache likely came from a remote device. Inspect visit_source / sync tables / device_id flags where present."
+  - "Private/Incognito/InPrivate browsing operates largely in memory and intentionally does not persist history or cache to the on-disk DB."
+  - "Automated tools occasionally miss edge-case columns (download chains) - verify with native SQL."
+  - "Older DPAPI/password-extraction tooling frequently breaks on newer browser builds; storage mechanics evolve."
+  - "A row in urls/moz_places can have the Firefox hidden flag = 1 (background/framed load) - filter on hidden=0 to isolate user-facing navigation."
+
+anti_forensics:
+  techniques:
+    - "Selective deletion - wiping specific incriminating URLs/rows via the browser GUI rather than clearing everything (less suspicious)."
+    - "Full history clearing / database VACUUM to compact and overwrite freeblocks."
+    - "Private/Incognito browsing to suppress on-disk history and strip the download source/referrer (Mark-of-the-Web) data."
+    - "Timestamp/database manipulation to forge or backdate web activity."
+  detection:
+    - "Sequential-ID gaps: SQLite assigns rowid/id sequentially. Unnatural numerical gaps in urls/visits (Chromium) or moz_places/moz_historyvisits (Firefox) id columns indicate selective deletion."
+    - "Orphaned rows: a visit row whose corresponding urls/moz_places parent is gone signals deletion of the parent."
+    - "WAL / freeblock recovery: deleted rows often survive in History-wal / places.sqlite-wal (and -shm) and in SQLite unallocated freeblocks until a checkpoint/VACUUM - carve/strings them out before checkpoint."
+    - "Timeline gaps: a daily-used system whose browser DB holds only a day or two of history implies wiping (obvious in a Plaso Super Timeline)."
+    - "USN-Journal monotonicity check: compare SQLite-recorded times against the immutable $UsnJrnl/$MFT clock - a non-monotonic or contradicting sequence exposes a backdated/forged DB."
+    - "Private-browsing tell: a downloaded executable on disk whose Zone.Identifier ADS source/referrer is missing/stripped (or has no matching DB download row) is a strong private-browsing indicator; residual DNS-cache or memory traces may still place the activity."
+
 corroborate_with:
+  zone_identifier: "Zone.Identifier ADS (Mark of the Web) on the downloaded file embeds HostUrl + ReferrerUrl, inextricably tying the on-disk file to the browser download row even if history is later wiped - matching it to the downloads table proves exactly when/how the file arrived."
+  mft: "$MFT confirms the downloaded file existed at the recorded target_path and supplies the file's creation time to align with the download end_time."
+  usn_journal: "$UsnJrnl provides the unforgeable, sequential system-clock record of when the file was created/written - the authority for detecting browser-DB timestamp forgery."
+  local_cache: "Browser local cache (Cache_Data / cache2) proves THIS endpoint actually fetched and rendered the page content (cache does not sync) - the key LOCAL-vs-SYNCED discriminator."
+  preferences_engagement: "Chromium Preferences site_engagement / media_engagement (e.g. unmuted audio, granted camera) proves active, intentional human interaction with a site."
+  prefetch: "Prefetch confirms execution (and run count) if a downloaded binary was subsequently run."
+  amcache: "Amcache corroborates that the downloaded binary existed/was present for execution timing alignment."
+  evtx_sysmon: "Security EID 4688 / Sysmon EID 1 prove process creation/execution of the downloaded payload; Sysmon EID 11 (file create) corroborates the drop."
+  srum: "SRUM per-app network bytes (chrome.exe / msedge.exe) corroborate transfer volume - matching the payload byte size, or quantifying upload/exfiltration."
+  shellbags: "ShellBags show the user interactively rendered the Downloads folder in Explorer (navigation, not file access)."
+  lnk_files: "LNK/Recent shortcuts corroborate the user opened the downloaded file."
   registry_fileaccess: "OpenSavePidlMRU / RecentDocs corroborate that a downloaded file was subsequently opened."
-  prefetch: "Prefetch confirms execution if a downloaded binary was run."
-  srum: "SRUM per-app network bytes corroborate upload/exfiltration volume for the browser process."
-  mft: "$MFT confirms the downloaded file existed at the recorded target path."
-  lnk_files: "LNK/Recent corroborate opening of a downloaded document."
+  dns_cache: "DNS cache / PCAP validates network resolution to the target domain and may surface private-browsing activity absent from the DB."
+
+corroboration_escalation:
+  alone: >
+    A browser history/download row proves ONLY that the browser process recorded
+    a URL request or a download initiation under a profile context. It does NOT
+    prove a human visited/saw the page, that the visit happened on THIS local
+    machine (could be synced), that the file landed on disk, or that any payload
+    was executed. Treat a lone row as an observation, not proof of intent.
+  combinations:
+    - sources: ["browser History urls/visits row"]
+      plus_timestamps: "n/a"
+      upgrades_to: "POSSIBLE (~0.70)"
+      rationale: "URL recorded, but may be a sync from another device, a hidden iframe / AUTO_SUBFRAME load, a pop-under, or a server redirect - no proof of local presence or human awareness."
+    - sources: ["browser History row", "matching local Cache (Cache_Data/cache2)", "transition_type/visit_type indicating manual navigation (TYPED/LINK, hidden=0)"]
+      plus_timestamps: "visit_time aligned with cache entry time"
+      upgrades_to: "PROBABLE (~0.85)"
+      rationale: "Local cache does not sync, so its presence proves THIS endpoint physically requested and rendered the content; the transition type suggests a human clicked/typed it. Still short of proof of intent/execution."
+    - sources: ["browser downloads row (target_path, tab_url, referrer chain)", "$MFT/$UsnJrnl file-creation at that path", "Zone.Identifier ADS HostUrl matching the download URL"]
+      plus_timestamps: "download end_time == $UsnJrnl/$MFT creation time, ADS stamped at the same moment"
+      upgrades_to: "PROBABLE-to-STRONG (~0.85)"
+      rationale: "Aligned filesystem creation + Mark-of-the-Web prove the payload arrived on THIS local disk from that exact URL. Execution and interactive awareness still unproven."
+    - sources: ["browser downloads row", "Zone.Identifier ADS match", "LNK/RecentDocs (file opened)", "ShellBags (Downloads folder rendered)", "Prefetch/Amcache + EVTX 4688 / Sysmon 1 (execution)"]
+      plus_timestamps: "strict cascade: download end_time <= file create <= ADS stamp < folder-render/open < execution (Prefetch/4688), all aligned to seconds"
+      upgrades_to: "CONFIRMED / DEFINITIVE (~1.0)"
+      rationale: "A timestamp-aligned chain across SQLite, NTFS ($MFT/$UsnJrnl), ADS, registry (ShellBags/RecentDocs), and execution caches (Prefetch/Amcache/EVTX) eliminates sync and automation defenses - it proves the local user navigated, downloaded, and executed the payload."
+    - sources: ["browser downloads row", "SRUM network bytes for chrome.exe/msedge.exe matching payload size", "Zone.Identifier", "Prefetch execution aligned to download time"]
+      plus_timestamps: "SRUM interval covers download window; Prefetch run time aligned to/after download completion"
+      upgrades_to: "CONFIRMED (~1.0)"
+      rationale: "SRUM volume corroboration plus MoTW plus aligned execution independently confirms both the transfer and the run."
+  tiers: "1 source = possible/observation (~0.70); 2 independent sources = probable (~0.85); 3+ sources with timestamp alignment = confirmed/definitive (~1.0)."
+
+correlation_patterns:
+  - name: "Download provenance chain"
+    chain: "Join Chromium downloads -> downloads_url_chains (by id/chain_index) to walk every redirect hop: tab_url (page the user was on) -> referrer -> opener -> final download URL -> target_path on disk. Firefox: moz_historyvisits.from_visit reconstructs the click path into moz_places. Maps a dropped payload back to the originating phishing link / staging server."
+  - name: "Phishing/drive-by infection chain"
+    chain: "History visit (transition LINK/TYPED) -> downloads row to Downloads\\payload.exe -> $MFT/$UsnJrnl file create at that path -> Zone.Identifier ADS HostUrl match -> ShellBags (Downloads rendered) -> LNK/RecentDocs (opened) -> Prefetch + EVTX 4688/Sysmon 1 (executed), timestamps cascading."
+  - name: "Targeted vs watering-hole discrimination"
+    chain: "Walk referrer/tab_url backward from the download to see whether the sequence originated from a targeted phishing link or a compromised legitimate site (watering hole)."
+  - name: "LOCAL vs SYNCED disambiguation"
+    chain: "History row present BUT no matching local Cache/cookies + Preferences shows sync enabled (last_synced_time/account_info) => row likely synced from a remote device, not local activity. Presence of local cache => local fetch."
+  - name: "Selective-deletion exposure"
+    chain: "Enumerate id/rowid sequences in urls/visits (or moz_places/moz_historyvisits) -> numerical gaps + orphaned visit rows => selective deletion -> recover deleted rows from -wal / SQLite freeblocks before checkpoint/VACUUM."
+
+heuristics:
+  - "Sort Chromium urls by typed_count (or filter Firefox moz_places typed flag) to surface intentionally typed URLs and filter background noise."
+  - "Use transition_type masks/qualifiers (CHAIN_START, CLIENT_REDIRECT, SERVER_REDIRECT, IS_REDIRECT_MASK) to strip ad/redirect noise and isolate user-requested URLs; AUTO_SUBFRAME = low-intent embedded frame."
+  - "Filter Firefox to hidden=0 and use visit_type to isolate user-facing navigation; use from_visit to recreate the exact click path."
+  - "Check sequential id gaps as a first pass for selective deletion; pull the -wal sidecar before it checkpoints."
+  - "When sync may be in play, cross-check every suspicious history row against local Cache - no cache = suspect-it-was-synced."
+  - "For a download finding, immediately pivot to the file's Zone.Identifier ADS and $MFT/$UsnJrnl creation to confirm local arrival, then to Prefetch/EVTX for execution."
+  - "Site/media engagement data in Preferences can rebut an 'accidental pop-up' claim (e.g. unmuted audio, granted camera = deliberate interaction)."
+
+discipline_reminder: >
+  Browser history is recording-only evidence. A row proves the browser logged a
+  URL or download - NOT human intent, NOT local presence (sync defeats that), and
+  NOT execution. Apply the execution/access-validation tiers: history alone =
+  observation (~0.70); + local cache or aligned $MFT/Zone.Identifier = probable
+  (~0.85); + LNK/ShellBags/RecentDocs + Prefetch/EVTX 4688 with a strict aligned
+  timestamp cascade = confirmed (~1.0). Use defensible language: write "the
+  browser profile recorded a download to <target_path> at <UTC>; $UsnJrnl and the
+  Zone.Identifier ADS corroborate local creation from <HostUrl>" - NOT "the user
+  downloaded and ran the malware." Always normalize all timestamps to UTC and
+  distinguish LOCAL from SYNCED before sequencing.

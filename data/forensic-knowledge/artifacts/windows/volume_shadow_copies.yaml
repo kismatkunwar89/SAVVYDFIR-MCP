@@ -1,12 +1,172 @@
 # Forensic-knowledge: Volume Shadow Copies (VSS).
 # Generic Windows forensic discipline - no case specifics.
 artifact: volume_shadow_copies
+aka:
+  - VSS
+  - VSC
+  - Volume Shadow Copy Service
+  - Shadow Copies
+  - Previous Versions
+  - System Restore points
+
+what_it_is: >
+  A built-in NTFS/Windows infrastructure that creates persistent, POINT-IN-TIME
+  copies (snapshots) of nearly an entire volume using a copy-on-write (COW)
+  mechanism: before a 16 KB data block is overwritten, the original block is
+  preserved into a shadow store. It exists to support System Restore, Previous
+  Versions, Windows Update, and backup applications - and it captures files even
+  while the OS holds them locked. For DFIR it is a forensic time machine that
+  extends the investigation "event horizon" by resurrecting historical,
+  pre-attack states of files, registry hives, and event logs.
+
+locations:
+  - "C:\\System Volume Information\\  (hidden, system-protected, ACL-restricted directory at the root of each NTFS volume)"
+  - "Catalog file: a GUID-named file (e.g. {3808876b-c176-4e48-b7ae-04046e6cc752}) tracking metadata for each active snapshot"
+  - "Store files: named {Store_GUID}{Catalog_GUID} - hold the preserved (copy-on-write) data blocks"
+  - "OS/device access path: \\Device\\HarddiskVolumeShadowCopy[X]  and \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy[X] (X = sequential snapshot ID)"
+  - "Config / exclusions: HKLM\\SYSTEM\\CurrentControlSet\\Control\\BackupRestore (subkeys FilesNotToBackup, FilesNotToSnapshot, KeysNotToRestore)"
+  - "ScopeSnapshots toggle: HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\SystemRestore"
+
+naming_format: >
+  Proprietary block-level differential stores. A central catalog file (GUID name)
+  references one or more store files named {Store_GUID}{Catalog_GUID}. Snapshots
+  are exposed to the running OS as sequential device paths
+  HarddiskVolumeShadowCopy[X]. hiberfil.sys and pagefile.sys are excluded by the
+  VSS driver and will not appear inside a snapshot.
+
+proves:
+  - "The exact, pristine historical state, existence, content, and metadata of a file, directory, registry hive, or event log at the precise creation timestamp of the snapshot."
+  - "A pre-incident baseline of the filesystem - what it looked like BEFORE an attacker encrypted, wiped, timestomped, or deleted on the live disk."
+  - "That a file existed on disk at snapshot time even if its data was later corrupted, deleted, or aged out of the live volume."
+  - "Contents of files the live OS locks (registry hives, NTDS.dit, srudb.dat, .evtx) via access to a frozen state."
+  - "Historical execution/behavior artifacts (older Prefetch, registry hives, SRUM) that have since been overwritten or rolled over on the live system."
+
 does_not_prove:
-  - "A shadow copy proves the volume state at the snapshot CREATION time, NOT continuous coverage - gaps between snapshots are blind spots."
-  - "Presence of a shadow store does NOT guarantee a specific artifact inside it is intact or uncorrupted - verify per-file."
-  - "Absence of shadow copies does NOT prove anti-forensics - VSS may simply be disabled, or snapshots aged out by retention policy."
-  - "A shadow snapshot dated after an incident is of limited value for recovering pre-incident state."
+  - "A shadow copy proves volume state at the snapshot CREATION time only, NOT continuous coverage - the gaps BETWEEN snapshots are blind spots (download+execute+delete entirely between snapshots leaves zero VSS trace)."
+  - "Presence of a malicious file inside a snapshot proves it RESTED on disk, NOT that it executed, was used, or that a user knew of it."
+  - "Presence of a shadow store does NOT guarantee a specific artifact inside it is intact/uncorrupted - on modern client OS, ScopeSnapshots can corrupt or omit user-data contents; verify per-file."
+  - "Absence of shadow copies does NOT by itself prove anti-forensics - VSS may be disabled, never scheduled, or aged out by retention/storage churn."
+  - "A snapshot dated AFTER the incident is of limited value for recovering pre-incident state."
+  - "Absence of a file in a snapshot does NOT prove the file was never on the system - it may have lived entirely between snapshots."
+
+timestamp_semantics:
+  store_creation_timestamp: >
+    Recorded in the catalog file; the exact second the snapshot was committed.
+    Highly reliable and the primary temporal anchor - cross-reference it against
+    the incident timeline to select pre-attack vs post-attack snapshots.
+  embedded_MACB_timestamps: >
+    Files/folders INSIDE a snapshot retain their original NTFS MACB (Modified,
+    Accessed, Changed, Born) timestamps frozen as they existed at or before the
+    snapshot creation time. A historical $MFT/$SI from a snapshot can recover MAC
+    times of files the attacker later deleted or timestomped on the live volume.
+  reliability_note: >
+    The store creation timestamp is OS-generated metadata and not user-writable
+    through normal means, making it a trustworthy anchor; embedded file
+    timestamps inherit the same forgeability caveats as live NTFS ($SI editable).
+
+version_differences:
+  windows_7_and_vista_server2008: "Near full-volume snapshots; file/user-data recovery highly successful."
+  windows_8_8.1_10_11_clients: >
+    ScopeSnapshots introduced (Win8) and ENABLED BY DEFAULT on client OS - VSS
+    monitors only files 'relevant for system restore', drastically degrading
+    user-data recovery; recovered user files are often incomplete or corrupted.
+    Disable by creating DWORD ScopeSnapshots=0 under
+    HKLM\\Software\\Microsoft\\Windows NT\\CurrentVersion\\SystemRestore.
+  windows_server: "Does NOT use ScopeSnapshots by default - retains full-volume shadow service, so near-complete historical volume backups are typically available."
+  native_creation: "vssadmin.exe create natively only on Server; on Win10/11 workstations creation requires WMI (Win32_ShadowCopy / PowerShell). Default store allocation ~3-5% (older guidance up to ~10%) of the volume; oldest snapshots auto-purged when full."
+
+parsing_tools:
+  - "libvshadow (Joachim Metz) - DFIR standard for deadbox images: vshadowinfo enumerates snapshots + creation timestamps; vshadowmount exposes each shadow as a raw mountable disk image for analysis/timelining."
+  - "vssadmin list shadows - live-system enumeration from an admin prompt."
+  - "ShadowExplorer - GUI (run as Administrator) to browse snapshots and extract files via an Explorer-like interface."
+  - "Arsenal Image Mounter - mounts a forensic image as a physical SCSI disk, natively re-exposing VSS to Windows tools."
+  - "EZ Tools with --vss flag: RECmd.exe (registry) and PECmd.exe (Prefetch) auto-crawl all snapshots and merge historical artifact versions to extend the event horizon."
+  - "vss_carver.py + vss_catalog_manipulator - carve and reorder DELETED shadow stores from unallocated space on raw images."
+  - "mklink /d to a HarddiskVolumeShadowCopy device path - browse a snapshot live via Explorer/CLI."
+
+limitations:
+  - "Discrete snapshots: no visibility into activity occurring between snapshot creation events."
+  - "Storage churn: high disk I/O grows differential stores and rapidly ages out older snapshots; limited to a small % of the volume."
+  - "ScopeSnapshots on client OS strips most user-data content; metadata (name/size/timestamps) may survive even when contents do not."
+  - "FilesNotToSnapshot / FilesNotToBackup / KeysNotToRestore exclusions mean certain files/keys are never captured."
+  - "hiberfil.sys and pagefile.sys are driver-excluded and absent from snapshots."
+  - "Heavily ACL-restricted location; requires offline image access or elevated/forensic mounting."
+
+anti_forensics:
+  techniques:
+    - "vssadmin delete shadows /all  (/quiet) - mass destruction of recovery points; near-universal ransomware precursor."
+    - "wmic shadowcopy delete  and  Win32_ShadowCopy WMI / PowerShell (Get-WmiObject Win32_ShadowCopy | ForEach { $_.Delete() }) - same effect, LOLBin-style."
+    - "Manipulating ScopeSnapshots or FilesNotToSnapshot/FilesNotToBackup keys to exclude attacker directories/hives from FUTURE snapshots."
+    - "Resizing shadow storage downward (vssadmin resize) to force purge of historical snapshots."
+  detection:
+    - "EVTX EID 4688 / Sysmon EID 1 process-creation for vssadmin.exe, wmic.exe, powershell.exe with the deletion command line."
+    - "Prefetch / Amcache showing vssadmin.exe (or wmic.exe) execution; RunMRU / PowerShell-CMD history for the typed command."
+    - "Massive block-deletion / removal events against System Volume Information in the $UsnJrnl (USN Journal)."
+    - "Inexplicable complete absence of snapshots on a long-running system (corroborate, do not assume)."
+    - "Even after catalog references are removed, the underlying 16 KB store blocks often persist in unallocated space - carve with vss_carver.py to recover deleted snapshots."
+
 corroborate_with:
-  event_logs_security: "Compare snapshot creation dates against the incident timeline to find pre-attack snapshots for log recovery (e.g. after EID 1102)."
-  mft: "Compare $MFT inside a shadow copy with the live volume to detect post-snapshot tampering or deletion."
-  registry_run_keys: "Registry hives inside a pre-incident shadow copy may retain persistence later removed."
+  event_logs_security: "A snapshot pre-dating EID 1102 (audit log cleared) holds the INTACT Security.evtx - recover authentication/lateral-movement events the attacker wiped from the live log."
+  registry_run_keys: "Registry hives inside a pre-incident snapshot retain persistence (ASEPs) later removed; RECmd --vss overlays live vs historical Run keys to time the ASEP addition."
+  mft: "Compare historical $MFT (inside snapshot) with the live volume to detect post-snapshot tampering, deletion, record reuse, or timestomping; recovers MAC times of since-deleted files."
+  usn_journal: "Granular kernel-level rolling log fills the temporal gaps between snapshots - proves exactly when/why a file was created, renamed, or deleted; corroborates the VSS deletion event itself."
+  prefetch: "Historical .pf recovered from a snapshot (or via PECmd --vss) proves a recovered payload actually executed and supplies last-run times to align with the timeline."
+  amcache: "Background inventory corroborates presence/first-seen of a recovered binary and may catch execution of vssadmin.exe itself."
+  srum: "bytes_sent per process quantifies exfiltration; aligns a recovered payload's activity with network egress volume."
+
+corroboration_escalation:
+  alone: >
+    A recovered file/hive/log from a Volume Shadow Copy independently proves only
+    that the data and its metadata EXISTED on the volume in that exact state at
+    the snapshot's creation timestamp (presence at a point in time). It does NOT
+    prove execution, user knowledge, attribution, or network transmission.
+  combinations:
+    - sources: ["VSS payload presence", "Prefetch (.pf) OR AppCompatCache/ShimCache OR UserAssist for the same path"]
+      plus_timestamps: "snapshot creation time brackets the execution last-run time"
+      upgrades_to: "probable execution"
+      rationale: "Independent databases show the file was both physically present (VSS) and observed/launched by the OS, but lacks who/what and full alignment."
+    - sources: ["VSS payload presence", "$UsnJrnl file-creation entry for the same path"]
+      plus_timestamps: "USN creation time falls at/before the snapshot creation time"
+      upgrades_to: "probable - intentional drop"
+      rationale: "USN pins the exact moment the attacker wrote the file to disk, proving deliberate placement (not a pre-existing benign file)."
+    - sources: ["VSS-recovered intact file/hash", "Prefetch last-run", "$UsnJrnl creation", "EVTX EID 4688/4624 or intact VSS Security.evtx"]
+      plus_timestamps: "USN write -> Prefetch run -> EVTX logon/process-create all align within a tight causality window, bracketed by the snapshot timestamp"
+      upgrades_to: "confirmed / definitive execution + attribution"
+      rationale: "Point-in-time recovery (VSS) + immutable file-system journaling (USN) + execution history (Prefetch) + authentication/process context (EVTX) form a chronologically flawless intrusion chain, often surviving live-system log clearing."
+    - sources: ["VSS-recovered intact Security.evtx (pre-EID-1102 snapshot)", "live EVTX showing EID 1102", "$UsnJrnl / vssadmin execution evidence"]
+      plus_timestamps: "snapshot creation predates the EID 1102 clear time"
+      upgrades_to: "confirmed log-clearing recovery"
+      rationale: "The key recovery play - the pre-attack snapshot restores wiped authentication/lateral-movement events the attacker destroyed on the live host."
+  tiers: "1 source = possible/observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)"
+
+correlation_patterns:
+  - name: "EID 1102 log-recovery play"
+    chain: "Live EVTX EID 1102 (audit log cleared) -> vshadowinfo to find a snapshot whose creation timestamp predates the clear -> vshadowmount that snapshot -> extract INTACT Security.evtx / registry hives -> re-run authentication and lateral-movement analysis on the recovered log."
+  - name: "Snapshot diffing"
+    chain: "Mount a pre-incident snapshot and the live (or a later) volume side-by-side -> recursive file-system / hash diff -> instantly surface every file added, modified, staged, or deleted in the window, exposing staging directories and modified configs."
+  - name: "Locked-file extraction"
+    chain: "Live OS locks registry hives / NTDS.dit / srudb.dat / .evtx -> read the frozen copy from a shadow store -> parse offline (e.g. dump AD hashes from NTDS.dit + SYSTEM hive, or parse SRUM srudb.dat)."
+  - name: "Anti-forensics / ransomware precursor"
+    chain: "EID 4688 / Sysmon 1 for 'vssadmin delete shadows /all' (or WMI equivalent) -> corroborate with Prefetch/Amcache execution of vssadmin -> $UsnJrnl block-deletion against System Volume Information -> carve deleted stores with vss_carver.py."
+  - name: "Historical execution recovery"
+    chain: "PECmd -d <dir> --vss and RECmd -b <batch> --vss -> compare live vs snapshot Prefetch/registry -> recover execution and ASEP-creation evidence that has aged out or been wiped on the live system."
+
+heuristics:
+  - "The store CREATION timestamp is the anchor: pick snapshots that PREDATE the incident; a post-incident snapshot rarely helps recover pre-incident state."
+  - "After any EID 1102, immediately enumerate shadows - a pre-clear snapshot is the highest-value recovery of wiped Security.evtx."
+  - "Do not abandon VSS on Win10/11 just because ScopeSnapshots corrupts file CONTENTS - the historical metadata (names, sizes, MACB) is still invaluable."
+  - "Inexplicable total absence of snapshots on a long-running host = investigate deletion (corroborate with vssadmin/WMI execution evidence), do not assume innocence."
+  - "Deleted snapshots are recoverable: catalog removal does not wipe the 16 KB store blocks - carve unallocated space with vss_carver.py before concluding loss."
+  - "VSS extends the event horizon - use --vss-aware EZ Tools to pull historical Prefetch/registry that rolled over on the live volume."
+  - "Always standardise the snapshot creation time and all embedded MACB times to UTC before aligning with other artifacts."
+
+discipline_reminder: >
+  VSS is an OBSERVATION-tier artifact: a recovered file proves point-in-time
+  PRESENCE only (~0.70), never execution, access, or attribution by itself. To
+  reach PROBABLE add one independent execution/journal source (Prefetch, ShimCache,
+  or $UsnJrnl); to reach CONFIRMED/DEFINITIVE stack 3+ sources (VSS + $UsnJrnl +
+  Prefetch + EVTX) with ALIGNED, UTC-normalised timestamps bracketed by the
+  snapshot creation time. Write defensibly: 'a snapshot created at <UTC> contained
+  <file> in <state>' and 'Prefetch + EVTX 4688 corroborate execution at <UTC>',
+  NOT 'the attacker ran the file'. Absence of snapshots is evidence of absence,
+  not innocence - corroborate deletion with vssadmin/WMI execution evidence.

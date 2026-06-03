@@ -1,14 +1,222 @@
 # Forensic-knowledge: Windows Prefetch (.pf execution evidence).
 # Generic Windows forensic discipline - no case specifics.
 artifact: prefetch
+aka:
+  - ".pf files"
+  - "Prefetch trace files"
+  - "Evidence of Execution (EoE)"
+  - "Windows Cache Manager prefetch"
+  - "SysMain / SuperFetch (the service that produces them)"
+
+what_it_is: >
+  A Windows memory-management / performance feature: the Cache Manager monitors
+  the first ~10 seconds of an application's runtime (often only 1-4 s for simple
+  binaries like cmd.exe), recording the files, directories, and DLLs it
+  references so subsequent launches load faster. As a forensic by-product it is a
+  durable, premier Evidence-of-Execution artifact recording exactly which
+  programs ran on the host, from where, how often, and (modern versions) when.
+
+locations:
+  - "C:\\Windows\\Prefetch\\  (i.e. %SystemRoot%\\Prefetch) - one .pf per executable+path; reading it requires administrative elevation."
+  - "C:\\Windows\\Prefetch\\Ag*.db  - SuperFetch/SysMain databases (AgAppLaunch.db, AgRobust.db) holding duplicative execution data; useful fallback when .pf files have aged out."
+  - "Volume Shadow Copies of C:\\Windows\\Prefetch  - older/aged-out/deleted .pf files frequently survive in VSS and can be recovered (PECmd --vss)."
+
+naming_format: >
+  {EXECUTABLE_NAME}-{8-hex-hash}.pf  (e.g. CMD.EXE-0A75B462.pf). The 8-character
+  hexadecimal hash is computed from the executable's full launch path (volume +
+  absolute directory path), so the SAME binary name run from two different
+  locations produces TWO distinct .pf files - the hash is path-bound, not
+  content-bound. For a small set of Windows "hosting" / generic binaries -
+  svchost.exe, rundll32.exe, dllhost.exe, mmc.exe, taskhost.exe,
+  backgroundtaskhost.exe, runtimebroker.exe - the hash additionally incorporates
+  the command-line arguments, so each distinct parameter string yields its own
+  .pf file (many such files is normal for these binaries, not by itself
+  suspicious).
+
+capacity: >
+  Windows XP-7: max 128 .pf files. Windows 8/10/11: max 1,024 .pf files. When the
+  cap is exceeded the OLDEST .pf is automatically aged out and deleted (a ring
+  buffer), so Prefetch is NOT an exhaustive lifetime log - old executions silently
+  purge. Live-response/forensic tools run on the target generate their own .pf
+  files and can push out the oldest evidentiary entries, so Prefetch must be
+  collected FIRST during live acquisition.
+
+proves:
+  - "An executable was actually LAUNCHED on this host (Prefetch files do not pre-exist; the OS creates one only on first launch of a binary from a given path)."
+  - "The EXACT path the binary ran from (because the hash is path-derived) - distinguishes C:\\Windows\\System32\\cmd.exe from C:\\Temp\\cmd.exe."
+  - "Total lifetime run_count for that path's binary (an internal counter, incremented each launch since the .pf was created)."
+  - "The volume name, drive/volume serial number, and volume creation date of the disk the executable ran from - can tie execution to a specific removable/USB volume."
+  - "Which files, directories, and DLLs the application referenced during its first ~10 s monitoring window (the 'Files Referenced' list) - e.g. the .msi msiexec launched, the .txt notepad opened, the files an archiver compressed, the .pf files a wiper destroyed."
+
 does_not_prove:
-  - "Prefetch proves a binary EXECUTED, but the embedded path is the path Windows recorded - it does not prove WHO launched it."
-  - "last_run_times records up to 8 runs (v26+); a single .pf cannot reconstruct the full execution history beyond that window."
-  - "Absence of a .pf does NOT prove non-execution: Prefetch is often disabled on Server OS, on SSDs, or wiped as anti-forensics."
-  - ".pf file create/modify times are filesystem metadata, NOT the exact execution timestamps - use last_run_times for run history."
-  - "Two binaries with the same name but different paths produce distinct .pf files; do not collapse them into one execution claim."
+  - "WHO launched it - Prefetch is a system-wide artifact with no user context; it cannot distinguish a human double-click from a scheduled task, service, or script. (Use UserAssist/EID 4688 for attribution.)"
+  - "That the program SUCCEEDED or ran to completion - crashing, broken, or incompatible programs that merely attempt to start still generate a .pf."
+  - "How long the program ran - it records execution start activity, not duration or focus time (use SRUM for active/focus time)."
+  - "Every file the program touched - the Files-Referenced list covers ONLY the ~10 s startup monitoring window, not the whole runtime."
+  - "The full execution history - last_run_times caps at 8 (Win8+) or 1 (Win7-); the timestamp of, e.g., the 56th of 100 runs is unrecoverable."
+  - "That a binary did NOT run, when a .pf is absent - Prefetch may be disabled (Server OS, EnablePrefetcher=0, SysMain stopped), the .pf may have aged out of the cap, or been wiped. Absence is not proof of non-execution."
+  - "File presence by itself - unlike ShimCache/Amcache (which background scans or folder browsing can populate), Prefetch requires the OS to actually launch the binary; but the filesystem create/modify times on the .pf are metadata, not the precise execution times - use the embedded last_run_times."
+
+timestamp_semantics:
+  created_time: >
+    Filesystem Creation (B) time of the .pf = FIRST execution of that binary from
+    that path on this host (assuming the folder was not cleared). Because the
+    Cache Manager writes the file AFTER the ~10 s monitoring window, subtract the
+    monitoring delta (up to ~10 s; ~1-4 s for simple binaries) to approximate the
+    true first-launch instant.
+  last_run_time: >
+    The precise most-recent execution time is stored INTERNALLY inside the .pf
+    structure (UTC) - parsing tools extract it directly with no manual delta math.
+    The filesystem Modification (M) time of the .pf also tracks the last execution
+    but is offset by the monitoring delta (+~10 s), so prefer the embedded value.
+  last_run_times: >
+    Windows 8 and later embed up to the LAST 8 execution timestamps (the most
+    recent plus the 7 prior) inside the .pf, in UTC. Windows 7 and earlier embed
+    only a SINGLE (last) execution time.
+  run_count: >
+    Internal integer counting total launches of that path's binary since the .pf
+    was created. CAVEAT: deleting the .pf and re-running resets run_count to 1 and
+    makes the filesystem Creation time falsely appear as 'first execution' - a low
+    run_count can therefore mean either a genuinely single-use tool OR a reset
+    after .pf deletion.
+  caveat: >
+    All embedded times are UTC; standardise everything to UTC before correlating.
+    Filesystem MAC times of the .pf are bounded by the ~10 s monitoring delta and
+    are forgeable by timestomping, whereas embedded run times survive filesystem
+    timestomping - a mismatch between filesystem M-time and embedded last-run is a
+    strong timestomping flag. run_count of 1-2 is anomalous for normal user apps
+    (usually run dozens of times) and often signals an attacker tool or staging
+    payload.
+
+version_differences:
+  win_xp_7: >
+    Max 128 .pf files. Internal structure stores only ONE (last) execution time.
+    Files NOT compressed. (Some early Win7-on-SSD configs disabled Prefetch
+    entirely.)
+  win_8_plus: >
+    Max 1,024 .pf files. Stores up to the LAST 8 embedded execution timestamps.
+    Windows 8+ .pf files are natively compressed; Windows 10/11 use MAM
+    compression and MUST be decompressed before raw-hex parsing - parsers must run
+    on Win8+ (or implement the decompressor) to use the native API.
+  server: >
+    Prefetch (app-launch prefetching) is DISABLED BY DEFAULT on Windows Server
+    editions - servers are not interactive desktops. Finding .pf files on a server
+    usually means an admin manually enabled it (EnablePrefetcher / SysMain), and
+    its absence on a server is expected, not evidence of wiping.
+
+parsing_tools:
+  - "PECmd.exe (Eric Zimmerman) - industry standard; decompresses MAM/Win10+ .pf, parses single files or whole dirs to CSV/timeline. `pecmd.exe -f <file.pf>` (single, to screen); `pecmd.exe -d <dir> --csv <out>` (directory to CSV); `pecmd.exe -d <dir> --vss` to also crawl Volume Shadow Copies for aged-out/deleted .pf files. Should run on Win8+ to leverage the native decompression API."
+  - "WinPrefetchView (NirSoft) - GUI; auto-parses the directory, decompresses Win10 files, shows process path, run count, run times, and referenced files."
+  - "KAPE (Kroll Artifact Parser and Extractor) - triage collector; targets the Prefetch dir (+ Amcache, UserAssist, ShimCache) into a unified EvidenceOfExecution category, then runs modules (e.g. PECmd) to CSV."
+  - "Plaso / log2timeline.py - dedicated `prefetch` parser extracting execution timestamps, run counts, and referenced paths directly into a super-timeline."
+
+limitations:
+  - "Ring-buffer cap (128 pre-Win8 / 1,024 Win8+): oldest .pf silently age out; a missing .pf may simply have been purged, not 'never ran'."
+  - "Disabled by default on Windows Server - and configurable off anywhere."
+  - "Controlled by EnablePrefetcher under SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters: 0=Disabled, 1=App-launch, 2=Boot, 3=Both. Also depends on the SysMain (formerly SuperFetch) service running (Start value 0-2); if SysMain is stopped/disabled, no .pf are generated."
+  - "SSD edge case: some early Windows 7 builds auto-disabled Prefetch on SSDs to limit write wear; modern Windows generally keeps it enabled on SSDs. TRIM/unallocated-recovery is affected by SSDs but normal .pf creation is not."
+  - "Live-response self-pollution: collection tools generate their own .pf and, under the cap, can overwrite the oldest evidence - collect Prefetch first."
+  - "Files-Referenced list covers only the ~10 s startup window, not the whole runtime."
+  - "Run count and create-time reset to 1 / now if the .pf is deleted and the binary re-run, masking earlier history."
+  - "Orphaned .pf: deleting/wiping the executable does NOT delete its .pf - the .pf persists until it ages out, so a .pf can outlive the binary (useful) but its binary may be gone."
+
+anti_forensics:
+  techniques:
+    - "Deleting individual .pf files or wiping the entire C:\\Windows\\Prefetch directory to hide execution; Windows silently recreates the folder/files on the next launch."
+    - "Disabling Prefetch via EnablePrefetcher=0 or stopping/disabling the SysMain service before activity."
+    - "Timestomping the .pf filesystem MAC times to misplace activity on the timeline."
+    - "Secure deletion of .pf with wiping tools (e.g. sdelete, cipher) to defeat unallocated recovery."
+  detection:
+    - "USN Journal ($UsnJrnl) deletion record: filter $UsnJrnl for the C:\\Windows\\Prefetch parent directory to find FileDelete events for .pf files - the journal retains a permanent record of the deletion even after the .pf is gone."
+    - "USN monotonicity check vs timestomping: $UsnJrnl entries carry sequential, immutable USN-stamped times; if the clock was wound back to forge timestamps, newer sequential journal entries will bear an earlier date - exposing the manipulation."
+    - "Internal-vs-filesystem mismatch: if a .pf's filesystem MAC times were backdated, the EMBEDDED last_run_times remain intact - a discrepancy between filesystem M-time and embedded last-run is a strong timestomping indicator."
+    - "$SI vs $FN comparison on the .pf (or the dropped binary): $STANDARD_INFORMATION creation predating $FILE_NAME creation, all-zero fractional seconds, or $SI M-time disagreeing with ShimCache, all flag timestomping."
+    - "Prefetch directory creation timestamp: if C:\\Windows\\Prefetch's folder create time is far newer than the OS install date, the directory was wiped and recreated."
+    - "Wiper self-incrimination: secure-delete tools generate their OWN .pf (e.g. SDELETE.EXE-{hash}.pf), and because Prefetch logs files referenced in the first ~10 s, parsing that .pf's Files-Referenced list reveals the exact .pf files / paths the tool destroyed - handing the analyst the wiped history."
+    - "Registry audit: check EnablePrefetcher for a 0 value and SysMain Start for disabled to detect intentional disabling."
+    - "SuperFetch fallback: when .pf are missing, parse Ag*.db (AgAppLaunch.db) for duplicative execution records that may survive."
+
 corroborate_with:
-  event_logs_security: "EID 4688 process creation pins execution to a specific time, user, and parent process."
-  mft: "$MFT confirms the binary existed at the recorded path at the relevant time."
-  amcache: "Amcache SHA-1 identifies the binary even if it was later renamed or deleted."
-  registry_run_keys: "ASEP persistence keys explain WHY a binary ran (auto-start) versus interactive launch."
+  amcache: "Amcache.hve adds the binary's cryptographic identity - SHA-1 hash (first ~30 MB), original link/compile date, and publisher metadata - proving WHAT ran even after rename/deletion; Prefetch only proves THAT it ran from a path."
+  shimcache: "AppCompatCache (ShimCache) proves historical file existence and the binary's original $SI Modification time and full path; often survives in registry/memory when both malware and its .pf are deleted, and the M-time mismatch helps prove pre-execution timestomping."
+  srum: "SRUM (srudb.dat) adds runtime context Prefetch lacks - how long the app was the in-focus/active window and exactly how many bytes it sent/received over the network - turning 'it executed' into 'it executed AND exfiltrated N bytes'."
+  shellbags: "ShellBags prove GUI folder navigation through Explorer; if Prefetch shows execution from a sensitive path, ShellBags can show the user interactively explored that path (navigation, not file access)."
+  evtx: "Security EID 4688 (process creation) pins execution to an exact time, the FULL command line, parent PID, and the user/security-token context - supplying the user attribution and parent process Prefetch cannot. (Also LNK/Jump Lists/RecentDocs for interactive-user execution; Zone.Identifier ADS for download origin.)"
+  mft: "$MFT confirms the binary existed at the recorded path with MACB times; $UsnJrnl provides the rolling create/rename/delete audit trail to reconstruct staging and detect .pf deletion."
+
+corroboration_escalation:
+  alone: >
+    A Prefetch .pf ALONE proves a binary was LAUNCHED from a specific path
+    (premier evidence-of-execution) with run count and embedded run times, but
+    it has NO user context (cannot say WHO ran it - human vs scheduled task /
+    service / script), does NOT prove the program succeeded or how long it ran,
+    and absence is not proof of non-execution (disabled/aged-out/wiped). Treat
+    single-source as PROBABLE execution.
+  combinations:
+    - sources: ["prefetch"]
+      plus_timestamps: "embedded last_run_times (UTC) + .pf creation (first run)"
+      upgrades_to: "PROBABLE execution (~0.85)"
+      rationale: "OS created the .pf only on actual launch from that path - strong single-source execution, but no user attribution."
+    - sources: ["prefetch", "mft"]
+      plus_timestamps: "Prefetch embedded run time matched to MFT MACB by fractional timestamp"
+      upgrades_to: "PROBABLE execution + path confirmation (~0.85)"
+      rationale: "MFT confirms the binary existed at the exact path Prefetch records execution from."
+    - sources: ["prefetch", "amcache"]
+      plus_timestamps: "Prefetch run time aligned with Amcache observation / PE link date"
+      upgrades_to: "PROBABLE execution + identity (~0.85)"
+      rationale: "Amcache supplies the SHA-1/identity of WHAT ran to attach to Prefetch's proof THAT it ran."
+    - sources: ["prefetch", "evtx (EID 4688)", "mft"]
+      plus_timestamps: "Prefetch embedded last-run + 4688 process-creation time + MFT existence aligned"
+      upgrades_to: "CONFIRMED / definitive execution trinity (~1.0)"
+      rationale: "Execution proof (Prefetch) + process-creation event with command line/user/parent (4688) + on-disk existence (MFT) supply user attribution and timing Prefetch alone lacks."
+    - sources: ["prefetch", "evtx (4688)", "userassist", "memory_process"]
+      plus_timestamps: "all aligned to the same minute, UserAssist focus time > 0"
+      upgrades_to: "CONFIRMED interactive human execution (~1.0)"
+      rationale: "UserAssist focus time + 4688 + Prefetch + live process supply the user context Prefetch cannot, proving an interactive operator launched it."
+  tiers: "1 source = possible/observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)"
+
+correlation_patterns:
+  - name: "Non-standard path / renamed-tool detection"
+    chain: "Multiple .pf for one binary name OR a system binary (cmd.exe, powershell.exe) with a hash that does not match its System32 path => executed from a drop directory (C:\\Temp, AppData\\Local\\Temp, \\Downloads, C:\\Users\\Public) or under a misspelled name (scvhost.exe) => corroborate path with MFT + command line with EID 4688."
+  - name: "Deleted-malware proof"
+    chain: "Amcache Inventory(ApplicationFile) yields a malicious SHA-1 for a file no longer on disk -> match its path to a surviving orphaned .pf -> prove it executed, extract volume serial + first/last run times -> confirm identity even though the binary is gone."
+  - name: "Archiver / data-theft (staging)"
+    chain: "ShellBags show navigation to a sensitive folder -> Prefetch for an archiver (7z.exe, rar.exe) Files-Referenced list names the exact documents compressed -> SRUM shows a corresponding spike in bytes_sent (or a cloud/browser process transmitting) => collection + exfiltration."
+  - name: "PsExec lateral movement origin"
+    chain: "PSEXESVC.EXE .pf on the target -> its Files-Referenced list contains a temporary PSEXEC-{SOURCEHOST}-{hash}.KEY -> the embedded source hostname identifies the machine the attacker launched PsExec FROM."
+  - name: "SMB file-copy then execution"
+    chain: "MFT shows a dropped payload whose $SI Modification time PREDATES its Creation time (copied over SMB inherits source M, gets new B on target) -> immediately followed by a Prefetch execution record => when the laterally-moved payload was dropped and run."
+  - name: "Wiper target reconstruction"
+    chain: "SDELETE.EXE / wiper .pf Files-Referenced list -> enumerates the exact .pf/paths the tool destroyed in its first ~10 s -> recovers a list of the wiped execution history despite the deletion."
+  - name: "Download-to-execution timeline"
+    chain: "Zone.Identifier ADS proves internet download -> Amcache SHA-1 fingerprints the file -> Prefetch embedded last_run_times pin the exact minute the payload first executed."
+  - name: "LOLBin weaponization census"
+    chain: "Count of distinct .pf for svchost/rundll32/dllhost/mmc (parameter-hashed) -> an abnormal volume reveals how many unique command lines the attacker fed these living-off-the-land binaries."
+  - name: "Silent (non-interactive) launch inference"
+    chain: "Prefetch shows a binary ran at T, but NO matching UserAssist/LNK/RecentDocs update near T => launched non-interactively (script, scheduled task, service, or command line), not a human double-click."
+  - name: "Aged-out / disabled fallback"
+    chain: "Expected .pf missing -> audit PrefetchParameters EnablePrefetcher + SysMain Start (was it disabled?) -> if enabled but aged out, parse Ag*.db SuperFetch and PECmd --vss against Volume Shadow Copies to recover the execution record."
+
+heuristics:
+  - "Sort the parsed Prefetch CSV by path: any execution from AppData\\Local\\Temp, C:\\Windows\\Temp, \\Downloads, or C:\\Users\\Public is high-suspicion (dropped malware / attacker tooling)."
+  - "run_count of 1-2 is an anomaly for normal user apps and frequently marks a single-use attacker tool or staging payload (but remember .pf deletion+rerun also resets it to 1)."
+  - "Two .pf with the SAME binary name but DIFFERENT hashes => the binary ran from two different folders - investigate the non-System32 one."
+  - "Multiple svchost/rundll32/dllhost/mmc .pf are normal (parameter-hashed); instead hunt for misspellings (scvhost.exe) and for binaries hosting from non-standard paths."
+  - "32-bit-from-SysWOW64 heuristic: a native binary (e.g. cmd.exe) executing from C:\\Windows\\SysWOW64 on a 64-bit host is a strong anomaly - most malware is 32-bit, and a 32-bit process cannot invoke the 64-bit System32 copy, so it reaches into SysWOW64."
+  - "Mine the Files-Referenced (first ~10 s) list of any rogue process to expose loaded malicious DLLs, config files, secondary dropped tools, and the specific documents/payloads it targeted."
+  - "Collect the Prefetch directory FIRST in live response - under the 1,024 cap, your own tools will overwrite the oldest evidence you came to acquire."
+  - "When subtracting the monitoring delta, use ~10 s as an upper bound but expect ~1-4 s for simple binaries; trust the embedded run times over filesystem MAC times."
+  - "Treat a brand-new Prefetch-folder creation timestamp (far newer than OS install) as proof of directory wiping; pivot to $UsnJrnl for the deletion events."
+
+discipline_reminder: >
+  Prefetch is an execution artifact, NOT an attribution or success artifact.
+  Execution-validation tier: Prefetch ALONE = PROBABLE execution (single source,
+  ~0.85); promote to DEFINITIVE only by stacking with EID 4688 + MFT (and ideally
+  a live memory process) for the trinity. Use defensible language: write "Prefetch
+  records execution of {binary} from {path}; embedded last-run time {UTC} and
+  EID 4688 corroborate launch at {UTC}" - NOT "the user ran the binary" (Prefetch
+  has no user context) and NOT "the program ran successfully" (a .pf is created
+  even on crash). Absence of a .pf is NOT proof of non-execution: rule out
+  disabled-by-config (Server / EnablePrefetcher=0 / SysMain off), cap-driven
+  age-out, and anti-forensic wiping before concluding. All embedded times are UTC -
+  standardise before correlating.

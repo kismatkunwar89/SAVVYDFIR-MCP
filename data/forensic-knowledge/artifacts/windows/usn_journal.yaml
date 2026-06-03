@@ -1,0 +1,189 @@
+artifact: usn_journal
+aka:
+  - "USN Change Journal"
+  - "Update Sequence Number Journal"
+  - "NTFS Change Journal"
+  - "$UsnJrnl"
+  - "$UsnJrnl:$J"
+  - "$Extend\\$UsnJrnl"
+
+what_it_is: >
+  A kernel-level, sequential transaction log maintained by the NTFS driver that
+  records high-level summary information about every change made to files and
+  directories on a volume - what changed and why (the reason flags). It exists as
+  an efficiency mechanism so backup software, antivirus, File Replication
+  Service, File History, and the Windows Search Indexer can learn what changed
+  since their last check by reading a linear log instead of rescanning the entire
+  $MFT. For DFIR it is the authoritative, chronological ledger of filesystem
+  activity, often retaining the full lifecycle of files that no longer exist on
+  disk.
+
+locations:
+  - "\\$Extend\\$UsnJrnl  (hidden system file at the root of every NTFS volume)"
+  - "\\$Extend\\$UsnJrnl:$J  (the primary alternate data stream holding the sequential change records; large sparse file)"
+  - "\\$Extend\\$UsnJrnl:$Max  (tiny ~32-byte ADS holding journal config: maximum size and allocation delta)"
+  - "Also recoverable from Volume Shadow Copies (VSS) for historical journal state"
+  - "Deallocated $J clusters persist in unallocated space and can be carved (see limitations)"
+
+naming_format: >
+  Binary record stream. Each record carries an Update Sequence Number (USN, a
+  monotonically increasing offset/ID), a 64-bit FILETIME UTC timestamp, the
+  source FileReferenceNumber (FRN) and ParentFileReferenceNumber, the file/dir
+  name (NOT the full path), and a Reason bitmask of one or more USN reason flags.
+  Record format versions: USN_RECORD_V2 (64-bit FRNs, Win2000-Win8),
+  USN_RECORD_V3 (128-bit FRNs, Win8.1/Server2012+ for ReFS), USN_RECORD_V4 (later
+  Win10/Server2016, additional ReFS/range tracking).
+
+proves:
+  - "That a specific filesystem TRANSACTION occurred on a file or directory (create, data extend/overwrite/truncate, rename, delete, attribute change, ACL change) at an exact UTC time"
+  - "The exact LIFECYCLE of a file - creation -> modification -> rename -> deletion - tracked via a stable FileReferenceNumber even across renames/moves"
+  - "Original names and parent directories of files even AFTER they were renamed, moved, or wiped from disk"
+  - "An authoritative, sequential, effectively-immutable chronological timeline (kernel-written, monotonic USN ordering)"
+  - "The existence and timing of 'ghost' files that have no remaining $MFT record (MFT record reused or securely wiped) - the journal often retains FILE_CREATE -> DATA_EXTEND -> FILE_DELETE for them"
+  - "The file's name and Parent File ID for each transaction"
+
+does_not_prove:
+  - "WHO made the change - USN records do NOT store a user account / SID"
+  - "WHICH process or PID caused the change - no process attribution is recorded natively"
+  - "File CONTENTS - it records that a DATA_OVERWRITE/DATA_EXTEND occurred, never the bytes written"
+  - "EXECUTION - a FILE_CREATE proves a binary was written to disk, NOT that it ran (pivot to Prefetch/Amcache/EVTX 4688)"
+  - "USER INTENT or GUI navigation - filesystem operations may be driven by background services, not a human"
+  - "The full human-readable PATH directly - only the file name + Parent File ID are stored; the parent must be resolved against the $MFT"
+
+timestamp_semantics:
+  record_timestamp:
+    meaning: "64-bit Windows FILETIME (UTC) stamped by the NTFS driver at the moment the filesystem operation is logged / the handle closed"
+    reliability: "HIGH - kernel-written at transaction time and bound to a monotonically increasing USN, so it is inherently difficult to forge and far more reliable than MFT $SI for ordering"
+  usn_value:
+    meaning: "Monotonically increasing Update Sequence Number / byte offset assigned to each record in append order"
+    reliability: "AUTHORITATIVE for ORDERING - USN always increases; a record with a higher USN but an earlier timestamp than its neighbors is direct proof of clock manipulation"
+  note: >
+    Because records are appended sequentially, timestamps MUST flow
+    chronologically alongside increasing USNs. A break in that monotonic
+    timestamp-vs-USN relationship is the core anti-forensics tell.
+
+version_differences:
+  "Windows 2000 - Windows 8 (USN v2)": "Standard USN_RECORD_V2 format, 64-bit FileReferenceNumbers; journal present since NTFS 3.0"
+  "Windows 8.1 / Server 2012 (USN v3)": "USN_RECORD_V3 adds 128-bit FileReferenceNumbers for ReFS compatibility"
+  "Windows 10 / Server 2016+ (USN v4)": "USN_RECORD_V4 adds tracking for additional ReFS / ranged-change scenarios; NTFS volumes still largely use 64-bit FRNs"
+  default_size: "Workstations typically cap $J near 32 MB; some servers (e.g. DFS hosts) default ~512 MB. Modern Win10/11 generate more background churn, so rollover is faster"
+
+parsing_tools:
+  - "MFTECmd.exe (Eric Zimmerman) - industry standard offline parser. Provide the $MFT to resolve parent FRNs into full paths: 'MFTECmd.exe -f <vol>\\$Extend\\$UsnJrnl:$J -m <vol>\\$MFT --csv <out>'. Supports parsing journals from VSS via the --vss flag and translates reason-flag bitmasks to readable text"
+  - "fsutil usn readjournal <vol> [csv] - native live-response command to read records from a running system; fsutil usn queryjournal shows journal config/state"
+  - "bulk_extractor (ntfsusn scanner) - carves USN records from raw disk images and unallocated space, recovering rolled-over history"
+  - "Custom analyst scripts - e.g. USN monotonicity checkers (timestomp hunting) and deleted-file identification helpers"
+
+limitations:
+  - "ROLLOVER / circular buffer: $J is size-capped (default ~32 MB on workstations). When full, NTFS frees clusters at the start of the sparse file and overwrites the oldest records - on a busy system this may leave only hours to a few days of history. COLLECT EARLY in IR before the initial attack vector ages out"
+  - "No user/process attribution - must correlate with EVTX/Sysmon to answer who/what"
+  - "Stores only file NAME + Parent File ID, not full path - parent FRN must be resolved against the $MFT (resolution fails if the parent record was reused)"
+  - "Actively locked by the OS - must be collected via raw disk imaging, triage tooling, or from VSS, not a simple file copy"
+  - "Can be disabled or absent on a volume if journaling was never enabled or was deleted"
+  - "Carving recovers fragmentary records from unallocated space, but recovered records may be partial/unordered"
+
+anti_forensics:
+  techniques:
+    - "Journal deletion via 'fsutil usn deletejournal /D <vol>' to wipe the change history (requires elevation)"
+    - "Timestomping file $SI MACB times (user-mode APIs) to backdate malware - but the resulting BASIC_INFO_CHANGE is still logged in $J at the real time"
+    - "Winding the system clock backward before file operations to forge timestamps across artifacts"
+    - "Rename-to-random then delete to obscure $MFT/$FN traces of a tool"
+    - "Secure-wipe tools (e.g. SDelete, BCWipe) overwriting + renaming + deleting payloads"
+  detection:
+    - "MONOTONICITY CHECK: walk records in USN order; any record whose timestamp is EARLIER than a preceding (lower-USN) record exposes a wound-back clock - newer/higher USNs paired with earlier dates break the sequence and instantly flag tampering"
+    - "Cross-check the USN FILE_CREATE / BASIC_INFO_CHANGE timestamp against the MFT $SI timestamp for the same FileReferenceNumber - a contradiction (e.g. $SI says 2015 but the USN entry is sandwiched among today's events) confirms timestomping"
+    - "BASIC_INFO_CHANGE events that appear chronologically out of order are a strong timestomping red flag"
+    - "Detect journal wipe: an anomalous gap in journal history, OR a $UsnJrnl file whose $SI creation time is much newer than the OS install date / aligns with the incident window (wiped and recreated)"
+    - "Recover purged history by carving deallocated $J clusters from unallocated space, or by parsing $J from a pre-incident VSS snapshot"
+    - "Use $J to expose 'ghost' files wiped from the $MFT - the journal retains their FILE_CREATE -> ... -> FILE_DELETE lifecycle"
+
+corroborate_with:
+  $MFT: "Resolve the USN FileReferenceNumber / Parent FRN to a full path and recover $SI/$FN MACB times; comparison against USN entry time is the core timestomp check"
+  $LogFile: "Lower-level NTFS transaction log with sub-second / micro-transaction detail (e.g. $i30 index entries modified); fallback source when the USN journal has already rolled over"
+  $i30_index: "Parent directory B-tree index - corroborates FILE_DELETE events, and deleted entries in $i30 slack expose a deleted file's pre-deletion metadata and MACB times"
+  prefetch: "Proves the dropped binary actually EXECUTED and supplies first/last run times - upgrades a USN FILE_CREATE from 'file dropped' to 'file ran'"
+  amcache: "Registers the binary's presence/SHA-1 hash and compatibility metadata - confirms the exact file that hit disk"
+  evtx_4688: "Security/Sysmon process-creation event provides the PID, command line, and USER ACCOUNT that caused the filesystem change - answers the 'who/what' the journal cannot"
+  evtx_4624: "Logon events place an authenticated session (and source host/IP) around the file activity window"
+  srum: "Quantifies bytes_sent/received per process - corroborates DATA_EXTEND on staging archives as data exfiltration"
+
+corroboration_escalation:
+  alone: >
+    BY ITSELF the USN Journal proves only that a filesystem OPERATION occurred on
+    a named file/dir at a precise time (an OBSERVATION of file I/O). It does NOT
+    prove execution, user intent, or attribution - no SID, no PID, no file
+    contents. A FILE_CREATE means a file was written to disk, nothing more.
+  combinations:
+    - sources: ["usn_journal", "mft"]
+      plus_timestamps: "USN FILE_CREATE time matches MFT $SI creation time for the same FileReferenceNumber"
+      upgrades_to: "probable payload drop (file existence + path + MACB confirmed)"
+      rationale: "FRN-resolved path and aligned $SI confirm the specific binary that hit disk and where; still no execution/attribution"
+    - sources: ["usn_journal", "amcache"]
+      plus_timestamps: "USN FILE_CREATE time aligns with Amcache registration of the same file"
+      upgrades_to: "probable malicious drop (identity + hash confirmed)"
+      rationale: "Amcache supplies the SHA-1 / presence record identifying the exact binary; proves it was dropped but not that it ran"
+    - sources: ["usn_journal", "mft", "i30_index"]
+      plus_timestamps: "USN FILE_DELETE aligns with $i30 slack entry for the same FRN"
+      upgrades_to: "probable drop-and-wipe (file existed and was removed, recovered from $MFT/$i30)"
+      rationale: "Two independent filesystem structures corroborate the create+delete lifecycle even after wiping"
+    - sources: ["usn_journal", "prefetch", "evtx_4688"]
+      plus_timestamps: "USN FILE_CREATE -> Prefetch first-run -> EVTX 4688 process creation all within a tight (seconds) window, with EVTX naming the user/PID"
+      upgrades_to: "confirmed/definitive execution with attribution"
+      rationale: "Three independent sources across filesystem, execution, and OS-event boundaries with aligned timestamps - the journal proves the drop, Prefetch proves execution, 4688 proves who/what; near-impossible to forge simultaneously"
+    - sources: ["usn_journal", "prefetch", "evtx_4688", "srum"]
+      plus_timestamps: "Above chain plus SRUM bytes_sent for the same process in the same window (e.g. DATA_EXTEND on a staging archive -> SRUM outbound bytes)"
+      upgrades_to: "definitive intrusion + exfiltration narrative"
+      rationale: "Adds quantified network exfiltration to a confirmed drop+execute chain, closing the full attacker storyline"
+    - sources: ["usn_journal", "mft_si"]
+      plus_timestamps: "USN entry timestamp (or USN ordering) CONTRADICTS the MFT $SI timestamp for the same FRN"
+      upgrades_to: "confirmed timestomping / anti-forensics finding"
+      rationale: "The kernel-written, monotonic USN sequence is the authoritative reference; a divergent $SI proves deliberate timestamp manipulation"
+  tiers: >
+    1 source (USN alone) = possible / observation (~0.70): filesystem I/O
+    occurred, no context. 2 independent sources (e.g. USN + $MFT/Amcache) =
+    probable (~0.85): the specific file and its path/identity are confirmed. 3+
+    sources with timestamp alignment (e.g. USN + Prefetch + EVTX 4688, optionally
+    + SRUM) = confirmed / definitive (~1.0): drop, execution, and attribution
+    chronologically aligned across artifact boundaries.
+
+correlation_patterns:
+  - name: "Normal file-drop lifecycle"
+    chain: "FILE_CREATE -> DATA_EXTEND (data written) -> CLOSE -> BASIC_INFO_CHANGE (timestamps applied)"
+  - name: "Track the file by FRN, not name"
+    chain: "Pick the FileReferenceNumber from any USN record -> filter all records by that FRN -> reconstruct full lifecycle even across renames/moves (searching by name loses the trail)"
+  - name: "Rename-to-delete staging"
+    chain: "RENAME_OLD_NAME (e.g. evil.exe) -> RENAME_NEW_NAME (e.g. 1234.tmp) -> FILE_DELETE (1234.tmp), all sharing one FRN - reveals the true identity of a deliberately obscured deleted tool"
+  - name: "Secure-wipe tool signature (SDelete/BCWipe)"
+    chain: "Rapid DATA_OVERWRITE (data zeroed) -> repeated RENAME_OLD_NAME/RENAME_NEW_NAME cycles randomizing the name (often 26 alphabetic passes e.g. ZZZZ.ZZZ -> AAAA.AAA to destroy $FN traces) -> FILE_DELETE"
+  - name: "Ransomware encryption burst"
+    chain: "System-wide flood of DATA_OVERWRITE / DATA_TRUNCATION (thousands per minute as files are encrypted) immediately followed by RENAME_OLD_NAME -> RENAME_NEW_NAME pairs appending the ransom extension (.locked/.encrypted)"
+  - name: "Timestomp exposure"
+    chain: "Suspicious file's MFT $SI shows old creation date -> locate same FRN in $J -> USN FILE_CREATE/BASIC_INFO_CHANGE timestamp + monotonic position prove the real (recent) creation time"
+  - name: "Ghost-file recovery"
+    chain: "EDR/alert references a binary missing from the $MFT -> filter $J by that name/FRN -> recover FILE_CREATE -> DATA_EXTEND -> FILE_DELETE proving it existed, its size, and when it was destroyed"
+  - name: "Exfiltration staging"
+    chain: "Large/repeated DATA_EXTEND on an archive (.zip/.7z) staging file -> resolve owning process via EVTX 4688 -> SRUM bytes_sent quantifies the outbound transfer"
+
+heuristics:
+  - "ALWAYS pivot on the FileReferenceNumber (FRN), not the file name - malware renames itself and hops temp directories; the FRN tracks the true object through its whole lifecycle"
+  - "Filter by reason flag to cut noise: FILE_CREATE = payload hit disk; DATA_EXTEND = file grew (staging); DATA_OVERWRITE/DATA_TRUNCATION bursts = wiping or ransomware; BASIC_INFO_CHANGE out of order = timestomping; SECURITY_CHANGE = ACL tampering; RENAME pairs = obscuring/encrypting"
+  - "Establish journal time BOUNDS first - get min/max USN timestamps before filtering for the incident window, or you may misread rollover (data aged out) as 'no attacker activity'"
+  - "Collect $J EARLY - it rolls over fast; on a busy host the initial access vector may age out within hours"
+  - "Run a monotonicity sweep as a standing timestomp/clock-tamper check - any timestamp regression against increasing USN is a finding"
+  - "When the journal has rolled over, pivot to $LogFile (micro-transactions), $i30 slack, VSS copies, and carved unallocated records to recover lost history"
+  - "RENAME pairs always come together - a lone RENAME flag means the other half rolled over or was carved partially"
+  - "A $UsnJrnl whose $SI creation time is far newer than the OS install date is a high-confidence anti-forensics (journal-wipe) signal"
+
+discipline_reminder: >
+  The USN Journal is an OBSERVATION-tier execution artifact: alone it proves
+  filesystem I/O (a file was created/modified/renamed/deleted), NOT execution,
+  NOT user intent, and NOT attribution - it records no SID, no PID, and no file
+  contents. Use defensible language: write "the change journal records a
+  FILE_CREATE for X at HH:MM:SS UTC" or "USN ordering contradicts the $SI
+  timestamp, indicating timestomping," NOT "the user created the file" or "the
+  attacker ran the binary." Upgrade to PROBABLE only with a second independent
+  source ($MFT/Amcache) and to CONFIRMED/DEFINITIVE only with 3+ timestamp-aligned
+  sources (e.g. USN + Prefetch + EVTX 4688) that supply the execution and
+  who/what the journal cannot. Its one near-absolute strength is the monotonic,
+  kernel-written USN ordering - that IS authoritative for chronology and for
+  exposing clock/timestamp manipulation.
