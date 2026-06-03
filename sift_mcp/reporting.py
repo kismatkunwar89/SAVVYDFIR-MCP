@@ -24,6 +24,12 @@ from sift_mcp.analysis_debt import (
     FILE_ACCESS_TOOL_SUFFIXES,
     compute_analysis_debt,
 )
+# FK-wiring ITEM C: advisory corroboration pivots (pure engine; no server._FK).
+from sift_mcp.corroboration import (
+    artifact_name_for_finding,
+    corroboration_state,
+    load_fk_slice,
+)
 
 
 def _parse_iso8601(value: Any) -> datetime | None:
@@ -2664,6 +2670,125 @@ def render_activity_thread_html(activity_thread: dict[str, Any]) -> str:
 """
 
 
+# ---------------------------------------------------------------------------
+# FK-wiring ITEM C: advisory corroboration pivots (additive, fail-open).
+# ---------------------------------------------------------------------------
+_FK_TIER_DISPLAY = {
+    "observation": "observation",
+    "probable": "probable",
+    "confirmed": "strongly-corroborated",  # NEVER render 'confirmed' (status conflation)
+}
+
+
+def _collect_pivots_for_finding(
+    finding: dict[str, Any], analysis_lanes: list[dict[str, Any]] | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Scope-preserving join of lane next_pivots to a finding.
+
+    finding-scoped pivot -> agent_pivots; unscoped pivot on a lane that owns the
+    finding -> lane_pivots (+lane_id). NEVER promotes unscoped lane pivots to
+    agent_pivots.
+    """
+    fid = str(finding.get("finding_id") or "")
+    agent_pivots: list[dict[str, Any]] = []
+    lane_pivots: list[dict[str, Any]] = []
+    for lane in analysis_lanes or []:
+        if not isinstance(lane, dict):
+            continue
+        lane_id = lane.get("lane_id")
+        owns = bool(fid) and fid in {str(x) for x in (lane.get("finding_ids") or [])}
+        for piv in lane.get("next_pivots") or []:
+            if not isinstance(piv, dict):
+                continue
+            scope_ids = {str(piv["finding_id"])} if piv.get("finding_id") else set()
+            scope_ids |= {str(x) for x in (piv.get("finding_ids") or [])}
+            if scope_ids:
+                if fid and fid in scope_ids:
+                    agent_pivots.append({**piv, "pivot_scope": "finding", "lane_id": lane_id})
+            elif owns:
+                lane_pivots.append({**piv, "pivot_scope": "lane", "lane_id": lane_id})
+    return agent_pivots, lane_pivots
+
+
+def build_finding_corroboration_pivots(
+    findings: list[dict[str, Any]],
+    analysis_lanes: list[dict[str, Any]] | None,
+    *,
+    cap: int = 50,
+) -> list[dict[str, Any]]:
+    """Per-finding advisory corroboration rows (engine + scoped lane pivots).
+
+    Full non-REJECTED corpus, deterministically sorted, capped. Per-finding
+    fail-open: one bad finding never collapses the list.
+    """
+    try:
+        corpus = [
+            f for f in (findings or [])
+            if str(f.get("finding_status") or "").upper() != "REJECTED"
+        ]
+        corpus = sorted(corpus, key=lambda f: str(f.get("finding_id") or ""))[:cap]
+    except Exception:
+        return []
+    pivots: list[dict[str, Any]] = []
+    for f in corpus:
+        try:
+            art = artifact_name_for_finding(f)
+            fk = load_fk_slice(art) if art else {}
+            row = corroboration_state(f, findings, fk).to_dict()
+            if not art and not row.get("advisory_error"):
+                row["advisory_error"] = "unmapped artifact"
+            row["agent_pivots"], row["lane_pivots"] = _collect_pivots_for_finding(f, analysis_lanes)
+            pivots.append(row)
+        except Exception as exc:  # never let one finding zero the list
+            pivots.append({
+                "finding_id": f.get("finding_id"),
+                "advisory_corroboration_tier": "observation",
+                "advisory_error": str(exc),
+            })
+    return pivots
+
+
+def _render_corroboration_pivots(rows: list[dict[str, Any]] | None) -> str:
+    rows = [r for r in (rows or []) if isinstance(r, dict)]
+    if not rows:
+        return ""  # omit the section entirely when empty
+
+    def esc(x: Any) -> str:
+        return html.escape(str(x))
+
+    def esc_list(xs: Any) -> str:
+        return ", ".join(html.escape(str(x)) for x in (xs or [])) or "-"
+
+    body: list[str] = []
+    for r in rows:
+        tier = _FK_TIER_DISPLAY.get(
+            str(r.get("advisory_corroboration_tier") or "observation"), "observation"
+        )
+        body.append(
+            "<tr>"
+            f"<td>{esc(r.get('finding_id') or '-')}</td>"
+            f"<td>{esc(r.get('artifact') or '-')}</td>"
+            f"<td><span class='muted'>{esc(tier)}</span></td>"
+            f"<td>{esc(r.get('timestamp_aligned') or 'unknown')}</td>"
+            f"<td>{esc_list(r.get('gap_sources'))}</td>"
+            f"<td>{esc_list(r.get('suggested_tools'))}</td>"
+            f"<td>{esc(r.get('rationale') or '')}</td>"
+            "</tr>"
+        )
+    intro = (
+        "<p class='muted'>Advisory only - does not change finding_status or confidence. "
+        "Distinct from ATT&amp;CK <em>Suggested Next Tools</em> (tactic blind-spots) and "
+        "<em>Active Leads</em> (detector pivots): this is forensic-knowledge corroboration "
+        "- what would raise each finding to the next evidentiary tier.</p>"
+    )
+    return (
+        intro
+        + "<table><thead><tr><th>Finding</th><th>Artifact</th><th>Advisory Tier</th>"
+        "<th>TS Aligned</th><th>Gap</th><th>Suggested Tools</th><th>Rationale</th></tr></thead>"
+        "<tbody>" + "".join(body) + "</tbody></table>"
+    )
+
+
 def render_report_html(payload: dict[str, Any]) -> str:
     summary = payload["summary"]
     sigma = payload["sigma_scan"]
@@ -2704,6 +2829,17 @@ def render_report_html(payload: dict[str, Any]) -> str:
         f for f in top_findings
         if _status_label(f.get("finding_status")) in ("HYPOTHESIS", "ACTIVE", "OBSERVATION")
     ]
+
+    # FK-wiring ITEM C: advisory corroboration section (omitted when empty;
+    # render-only, reads the payload field built in generate_report_payload).
+    _corro_html = _render_corroboration_pivots(payload.get("finding_corroboration_pivots", []))
+    corroboration_section_html = (
+        f"""<section>
+    <h2>Corroboration &amp; Suggested Next Steps (advisory)</h2>
+    {_corro_html}
+  </section>"""
+        if _corro_html else ""
+    )
 
     no_confirmed_banner = ""
     if confirmed_count == 0:
@@ -2879,6 +3015,8 @@ def render_report_html(payload: dict[str, Any]) -> str:
     <h3 style="margin-top: 1rem;">Active Finding Leads</h3>
     {_render_finding_cards(active_findings, show_corroboration=False)}
   </section>
+
+  {corroboration_section_html}
 
   <section>
     <h2>Indicators of Compromise</h2>
@@ -3408,6 +3546,11 @@ def generate_report_payload(
             "warning": analysis_debt_warning,
             "blocking_non_defensible": analysis_debt_blocking if allow_partial else [],
         },
+        # FK-wiring ITEM C: advisory per-finding corroboration pivots (additive,
+        # render-only, fail-open). Does NOT affect coverage/suggested_next_tools.
+        "finding_corroboration_pivots": build_finding_corroboration_pivots(
+            findings, analysis_lanes
+        ),
         "top_findings": _rank_findings(findings),
         "status_breakdown": status_breakdown,
         "evidence_kind_breakdown": evidence_kind_breakdown,

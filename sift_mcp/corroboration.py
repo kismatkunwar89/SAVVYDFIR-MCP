@@ -202,6 +202,66 @@ def source_class_from_finding(finding: dict[str, Any]) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# source_class -> FK YAML filename stem (the YAML name is NOT the class name;
+# e.g. userassist -> registry_fileaccess). Single table; no parallel tool map.
+# ---------------------------------------------------------------------------
+SOURCE_CLASS_TO_FK_YAML: dict[str, str] = {
+    "prefetch": "prefetch",
+    "amcache": "amcache",
+    "shimcache": "shimcache",
+    "mft": "mft",
+    "mft_timestomp": "mft",
+    "evtx_process_creation": "event_logs_security",
+    "evtx_network": "event_logs_security",
+    "evtx_system": "event_logs_security",
+    "logon_session": "event_logs_security",
+    "sysmon": "event_logs_security",
+    "registry_run": "registry_run_keys",
+    "userassist": "registry_fileaccess",
+    "recentdocs": "registry_fileaccess",
+    "muicache": "registry_fileaccess",
+    "shellbag": "shellbags",
+    "lnk": "lnk_files",
+    "jump_list": "jump_lists",
+    "browser": "browser",
+    "browser_cache": "browser",
+    "srum": "srum",
+    "usn_journal": "usn_journal",
+    "memory_process": "volatility_memory",
+    "memory_network": "volatility_memory",
+    "injected_code": "volatility_memory",
+    "sigma_corroborated": "hayabusa_alerts",
+    "hayabusa": "hayabusa_alerts",
+    "vss": "volume_shadow_copies",
+    "recycle_bin": "recycle_bin",
+}
+
+# Real YAML stems on disk (for artifact_subtype direct-hit + completeness tests).
+FK_YAML_STEMS = frozenset(SOURCE_CLASS_TO_FK_YAML.values())
+
+
+def artifact_name_for_finding(finding: dict[str, Any]) -> Optional[str]:
+    """Resolve a finding to its FK YAML stem (e.g. 'registry_fileaccess').
+
+    Precedence (consensus): artifact_subtype that names a YAML stem directly ->
+    SOURCE_CLASS_TO_FK_YAML[source_class] -> tool/artifact alias via ARTIFACT_VOCAB.
+    Returns None when unmappable (caller emits an advisory_error row).
+    """
+    subtype = _norm_alias(finding.get("artifact_subtype"))
+    if subtype in FK_YAML_STEMS:
+        return subtype
+    sc = source_class_from_finding(finding)
+    if sc and sc in SOURCE_CLASS_TO_FK_YAML:
+        return SOURCE_CLASS_TO_FK_YAML[sc]
+    # last resort: resolve tool/artifact alias -> source_class -> yaml
+    for hint in (finding.get("tool_name"), finding.get("artifact_type")):
+        entry = resolve_source(hint)
+        if entry and entry.source_class in SOURCE_CLASS_TO_FK_YAML:
+            return SOURCE_CLASS_TO_FK_YAML[entry.source_class]
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Entity matching (STRUCTURED fields only - never description/corroborated_by)
 # ---------------------------------------------------------------------------
 _INDICATOR_PREFIXES = ("executable:", "hash:", "sha1:", "sha256:", "md5:",
