@@ -364,6 +364,25 @@ timeline reconstruction, and writing the forensic narrative.
 4. Write Python/Pandas code, pass it to `run_analysis` to execute locally, and read ONLY the filtered anomalies back into your context.
 5. After every finding, write one follow-up `run_analysis` query targeting that finding's artifact before moving to the next phase.
 
+**ANALYSIS-DEBT GATE (PART B - enforced by code, review 2026-06-03):**
+Extraction is NOT analysis. Every extraction that writes a durable CSV/JSON handle
+(MFT, EVTX, Prefetch, Amcache, SRUM, ShellBags, LNK, JumpLists, browser history,
+registry file-access, sigma) accrues **analysis debt** until you mine it. Debt is
+cleared ONLY by an **analyst `submit_finding`** citing that artifact's
+`execution_id`, OR by a documented-absence result. A `run_analysis` query ALONE
+does NOT clear debt - it is a queried-but-unconcluded signal, not a finding.
+- `read_state` surfaces `analysis_debt` (blocking / warning + next_required_actions)
+  every read - check it to see which CSVs you extracted but never concluded on.
+- `record_analysis_lane(status="COMPLETE")` is **rejected** while the lane owns an
+  unmined handle (returns `status_downgrade_required` + `unmined_handles`). Either
+  mine each handle (`run_analysis` then `submit_finding` citing its execution_id) or
+  resubmit `status="COMPLETE_WITH_GAPS"` with the handles in `data_gaps`.
+- `generate_report` **blocks** on taxonomy-required file-access handles that were
+  extracted but never mined (classification `analysis_debt_file_access`); all other
+  unmined handles are WARN-only (surfaced in `report.json.analysis_debt` + data_gaps).
+- The auto-emitted observation finding the extractor drops at extraction time does
+  NOT clear debt - you must submit your own analyst finding.
+
 **MANDATORY TOOL SEQUENCING:**
 - Run Volatility memory tools together (fast): `list_processes` + `scan_processes` + `scan_network`
 - Run heavy dotnet disk tools ONE AT A TIME (slow): `summarize_evtx`, then `extract_mft_timeline`, then `extract_registry_run_keys`

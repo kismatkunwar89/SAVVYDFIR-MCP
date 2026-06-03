@@ -15,6 +15,16 @@ from typing import Any, Callable, Optional
 # alternative-hypothesis completeness check shared with semantics.py.
 from sift_mcp.semantics import _alternative_hypothesis_complete
 
+# PART B (review 2026-06-03): the single extraction catalog lives in
+# analysis_debt.py (pure, no reporting/server dependency). FILE_ACCESS_TOOL_SUFFIXES
+# is a DERIVED view from it (one source of truth; additive migration). The legacy
+# _COVERAGE_SUFFIX_LANES coverage map below is left untouched and a unit test
+# guards it against catalog drift.
+from sift_mcp.analysis_debt import (
+    FILE_ACCESS_TOOL_SUFFIXES,
+    compute_analysis_debt,
+)
+
 
 def _parse_iso8601(value: Any) -> datetime | None:
     text = str(value or "").strip()
@@ -1289,13 +1299,7 @@ MANDATORY_MEMORY_TOOL_SUFFIXES = frozenset({
 # scenario anywhere. Documented-absence (escape A) keeps non-Windows/mount-less
 # cases from bricking.
 # ---------------------------------------------------------------------------
-FILE_ACCESS_TOOL_SUFFIXES = (
-    "extract_shellbags",
-    "extract_lnk_files",
-    "extract_jump_lists",
-    "extract_browser_history",
-    "extract_registry_fileaccess",
-)
+# FILE_ACCESS_TOOL_SUFFIXES is now imported (derived) from analysis_debt.py above.
 _FILE_ACCESS_DISPUTE_TYPES = frozenset({
     "intrusion_response",
     "data_exfiltration",
@@ -1633,6 +1637,7 @@ def evaluate_ir_coverage_gate(
     sigma_result: dict[str, Any],
     analysis_lanes: list[dict[str, Any]] | None = None,
     selector: dict[str, Any] | None = None,
+    analysis_roots: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Return missing Windows IR tool coverage required before a final report.
 
@@ -1817,18 +1822,45 @@ def evaluate_ir_coverage_gate(
                 "Anti-forensics or log-manipulation signals require VSS, ShimCache, and SRUM follow-up.",
             )
 
+    # Analysis-debt detection (PART B, review 2026-06-03). A handle was
+    # extracted but never mined by an analyst finding -- the exact ROCBA miss
+    # (extraction without analysis). BLOCK only the taxonomy-required file-access
+    # handles; everything else is WARN (returned for report.json/HTML, never
+    # blocking). run_analysis ALONE does not clear -- only an analyst finding or a
+    # documented-absence does.
+    debt = compute_analysis_debt(
+        executions, findings, selector, analysis_roots=analysis_roots
+    )
+    analysis_debt_warning = debt.get("warning", [])
+    for d in debt.get("blocking", []):
+        missing.append({
+            "tool": "analysis.run_analysis",
+            "classification": "analysis_debt_file_access",
+            "reason": (
+                f"{d['tool_suffix']} extracted {d['handle_path']} but no analyst finding "
+                f"mined it (a run_analysis query alone does NOT clear this). Run run_analysis "
+                f"on the CSV, then submit_finding citing execution {d['execution_id']} -- or "
+                f"record a documented-absence result."
+            ),
+            "handle_path": d["handle_path"],
+            "execution_id": d["execution_id"],
+            "lane_id": d["lane_id"],
+        })
+
     if not missing:
         return {
             "ok": True,
             "missing": [],
             "next_required_tool": None,
             "accepted_by_lane": accepted_by_lane,
+            "analysis_debt_warning": analysis_debt_warning,
         }
     return {
         "ok": False,
         "missing": missing,
         "next_required_tool": missing[0]["tool"],
         "accepted_by_lane": accepted_by_lane,
+        "analysis_debt_warning": analysis_debt_warning,
     }
 
 
@@ -3134,6 +3166,23 @@ def generate_report_payload(
             "report_json_path": str(report_json_path),
         }
 
+    # PART B (review 2026-06-03): analysis-debt roots + WARN list, computed
+    # ONCE and surfaced into report.json/HTML regardless of allow_partial (WARN
+    # never blocks; it documents extracted-but-unmined artifacts for defensibility).
+    analysis_roots = tuple(
+        r for r in (
+            str(Path(os.environ.get("OUTPUT_BASE", "/cases")).resolve()),
+            "/cases",
+            str(Path(os.environ.get("SAVVYDFIR_ANALYSIS_DIR", "./analysis")).resolve()),
+        ) if r
+    )
+    _debt = compute_analysis_debt(
+        executions, findings, state_manager.get_file_access_selector(),
+        analysis_roots=analysis_roots,
+    )
+    analysis_debt_warning = _debt.get("warning", [])
+    analysis_debt_blocking = _debt.get("blocking", [])
+
     if not allow_partial:
         coverage_check = evaluate_ir_coverage_gate(
             findings=findings,
@@ -3141,6 +3190,7 @@ def generate_report_payload(
             sigma_result=sigma_result,
             analysis_lanes=state_manager.get_analysis_lanes(),
             selector=state_manager.get_file_access_selector(),
+            analysis_roots=analysis_roots,
         )
         if not coverage_check["ok"]:
             # Tier-B2: surface allow_partial=True
@@ -3245,6 +3295,27 @@ def generate_report_payload(
     data_gaps = validation["data_gaps"]
     status_flags = validation["status_flags"]
     triage_status = validation["triage_status"]
+
+    # PART B: surface WARN-tier analysis debt (extracted-but-unmined, non
+    # taxonomy-required) into data_gaps so report.json + HTML carry the
+    # defensibility context. BLOCK-tier debt either blocked above (non-partial)
+    # or is partitioned below as a labeled non-defensible section (partial mode).
+    for _d in analysis_debt_warning:
+        data_gaps.append({
+            "artifact_family": _d.get("tool_suffix"),
+            "classification": "analysis_debt_warning",
+            "reason": (
+                f"{_d.get('tool_suffix')} extracted {_d.get('handle_path')} but no analyst "
+                f"finding mined it (run_analysis alone does not clear). "
+                f"{'A run_analysis query was recorded; ' if _d.get('run_analysis_seen') else ''}"
+                f"submit_finding citing execution {_d.get('execution_id')} or record a "
+                f"documented-absence result."
+            ),
+            "lane_id": _d.get("lane_id"),
+            "execution_id": _d.get("execution_id"),
+            "handle_path": _d.get("handle_path"),
+            "next_required_tool": "run_analysis",
+        })
     analysis_lanes = validation["analysis_lanes"]
     orchestration_warnings = validation["orchestration_warnings"]
     unresolved_discrepancies = [
@@ -3329,6 +3400,14 @@ def generate_report_payload(
         "sigma_scan": sigma_for_display,
         "coverage": coverage_result,
         "artifact_coverage": coverage_result,
+        # PART B: extracted-but-unmined artifact handles. warning = non-blocking
+        # (surfaced for defensibility); blocking = taxonomy-required file-access
+        # handles. In allow_partial mode these blocking entries ship as a labeled
+        # non-defensible section instead of blocking report generation.
+        "analysis_debt": {
+            "warning": analysis_debt_warning,
+            "blocking_non_defensible": analysis_debt_blocking if allow_partial else [],
+        },
         "top_findings": _rank_findings(findings),
         "status_breakdown": status_breakdown,
         "evidence_kind_breakdown": evidence_kind_breakdown,

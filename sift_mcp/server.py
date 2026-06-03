@@ -75,6 +75,11 @@ from sift_mcp.tools.evidence import get_provenance as _get_provenance
 from sift_mcp.tools.evidence import verify_integrity as _verify_integrity
 from sift_mcp.state import CaseStateManager
 from sift_mcp.audit import AuditLogger
+from sift_mcp.analysis_debt import (
+    compute_analysis_debt as _compute_analysis_debt,
+    data_gaps_fingerprint as _data_gaps_fingerprint,
+    lane_debt as _lane_debt,
+)
 
 import ipaddress
 import hashlib
@@ -905,6 +910,27 @@ def _sync_finding_provenance(finding_ids: list[str], raw_evidence_refs: list[dic
         )
         merged = _merge_ref_dicts(base_refs, raw_evidence_refs)
         _state_manager.update_finding(finding_id, raw_evidence_refs=merged)
+
+
+def _analysis_debt_roots() -> tuple[str, ...]:
+    """Durable artifact roots used to qualify analyzable handles (PART B)."""
+    return tuple(
+        r for r in (
+            str(Path(os.environ.get("OUTPUT_BASE", "/cases")).resolve()),
+            "/cases",
+            str(_ANALYSIS_DIR),
+        ) if r
+    )
+
+
+def _compute_analysis_debt_for_state() -> dict[str, Any]:
+    """Compute analysis debt from the currently-loaded case state (PART B)."""
+    return _compute_analysis_debt(
+        _state_manager.get_executions(),
+        _state_manager.get_findings(),
+        _state_manager.get_file_access_selector(),
+        analysis_roots=_analysis_debt_roots(),
+    )
 
 
 def _record_execution_parity(
@@ -7976,6 +8002,41 @@ def record_analysis_lane(
                 "required_tool_name": "disk.summarize_evtx",
             }
 
+        # PART B (review 2026-06-03): a lane cannot be marked COMPLETE
+        # while it owns an extracted-but-unmined handle. Reject (no silent
+        # coerce) so the caller resubmits COMPLETE_WITH_GAPS + data_gaps, or
+        # mines each handle (run_analysis + submit_finding) / records a
+        # documented-absence. COMPLETE_WITH_GAPS is allowed -- the lane stays
+        # non-TRIAGE_COMPLETE and the report gate still blocks taxonomy-required
+        # file-access handles.
+        if normalized_status == "COMPLETE":
+            try:
+                _adbt = _compute_analysis_debt_for_state()
+                _owned = _lane_debt(_adbt.get("by_lane", {}), normalized_lane)
+            except Exception:
+                _owned = []
+            if _owned:
+                return {
+                    "status": "error",
+                    "tool": "record_analysis_lane",
+                    "error": (
+                        f"status_downgrade_required: lane '{normalized_lane}' owns "
+                        f"{len(_owned)} extracted-but-unmined handle(s). A run_analysis "
+                        f"query alone does NOT clear them -- submit_finding citing each "
+                        f"execution, or record a documented-absence. To proceed now, "
+                        f"resubmit status=COMPLETE_WITH_GAPS with these in data_gaps."
+                    ),
+                    "status_downgrade_required": True,
+                    "unmined_handles": [
+                        {
+                            "handle_path": d.get("handle_path"),
+                            "execution_id": d.get("execution_id"),
+                            "tool_suffix": d.get("tool_suffix"),
+                        }
+                        for d in _owned
+                    ],
+                }
+
         # Tier-B2: detect duplicate
         # COMPLETE→COMPLETE upserts and short-circuit to a noop result.
         # Without this, an agent retrying generate_report after a delegate
@@ -7997,6 +8058,11 @@ def record_analysis_lane(
             and (existing_lane.get("assigned_agent") or "") == (normalized_agent or "")
             and set(existing_lane.get("execution_ids") or []) == set(normalized_execution_ids)
             and set(existing_lane.get("finding_ids") or []) == set(normalized_finding_ids)
+            # PART B (peer reviewer ship-blocker #2): also compare a data_gaps
+            # fingerprint so a COMPLETE_WITH_GAPS -> COMPLETE_WITH_GAPS resubmit
+            # that ADDS gaps (after a debt reject) is a real write, not a noop.
+            and _data_gaps_fingerprint(existing_lane.get("data_gaps"))
+                == _data_gaps_fingerprint(list(data_gaps or []))
         ):
             return {
                 "status": "duplicate_lane_noop",
@@ -10291,6 +10357,66 @@ def _analysis_missing_path_hint(path_text: str) -> str:
 
 
 @mcp.tool()
+def _instrument_run_analysis(
+    resolved_path: str,
+    query: str,
+    output_format: str,
+    result: Any,
+) -> None:
+    """Step 0 (PART B): write an audit + state.executions row for a run_analysis call.
+
+    The analysis-debt detector joins ``parameters.data_path`` of these rows back
+    to extraction handles to decide which CSV/JSON outputs were actually mined.
+    Best-effort: any failure (no case loaded, audit error) is swallowed so the
+    analysis result is never lost.
+    """
+    try:
+        row_count = result.get("row_count") if isinstance(result, dict) else None
+        columns = result.get("columns") if isinstance(result, dict) else None
+        col_n = len(columns) if isinstance(columns, list) else 0
+        params = {
+            "data_path": resolved_path,
+            "query": str(query),
+            "output_format": str(output_format),
+        }
+        command_repr = f"run_analysis(data_path={resolved_path!r}, query={query!r})"
+        outputs_summary = (
+            f"run_analysis rows={row_count} cols={col_n} on {resolved_path}"
+        )
+        eid = _audit_logger.next_execution_id()
+        started = _audit_logger.log_execution(
+            execution_id=eid,
+            tool_name="analysis.run_analysis",
+            parameters=params,
+            command_line=command_repr,
+        )
+        completed = _audit_logger.log_result(
+            execution_id=eid,
+            exit_code=0,
+            duration=0.0,
+            outputs_summary=outputs_summary,
+            finding_ids=[],
+            tool_name="analysis.run_analysis",
+            command_line=command_repr,
+            parameters=params,
+        )
+        _record_execution_parity(
+            execution_id=eid,
+            tool_name="analysis.run_analysis",
+            command_line=command_repr,
+            parameters=params,
+            duration_seconds=0.0,
+            exit_code=0,
+            outputs_summary=outputs_summary,
+            started_entry=started,
+            completed_entry=completed,
+        )
+        if isinstance(result, dict):
+            result.setdefault("execution_id", eid)
+    except Exception:
+        pass
+
+
 def run_analysis(
     data_path: str,
     query: str,
@@ -10342,7 +10468,13 @@ def run_analysis(
                 error=f"File not found: {data_path}.{hint}",
             ).model_dump()
 
-        return run_safe_analysis(str(path), query, output_format)
+        result = run_safe_analysis(str(path), query, output_format)
+        # Step 0 (PART B, review 2026-06-03): instrument run_analysis into
+        # the ledger so analysis-debt detection can join data_path -> execution.
+        # Best-effort: a logging failure (e.g. no case loaded) must never break
+        # the analysis result itself.
+        _instrument_run_analysis(str(path), query, output_format, result)
+        return result
     except SafeAnalysisError as exc:
         return ToolResult(
             status="error", tool="run_analysis", error=str(exc)

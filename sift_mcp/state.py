@@ -797,6 +797,37 @@ class CaseStateManager:
                 and (f.get("finding_status") or "").upper() != "REJECTED"
             )
 
+            # PART B (review 2026-06-03): surface analysis debt on the hot
+            # read path so the agent SEES extracted-but-unmined handles every
+            # read_state (D tier; visibility only -- B/C provide the teeth).
+            # Pure, best-effort: never break the summary.
+            analysis_debt_summary: dict[str, Any] = {
+                "blocking": [], "warning": [], "next_required_actions": []
+            }
+            try:
+                import os as _os
+                from sift_mcp.analysis_debt import compute_analysis_debt as _cad
+                _roots = tuple(
+                    r for r in (
+                        str(Path(_os.environ.get("OUTPUT_BASE", "/cases")).resolve()),
+                        "/cases",
+                        str(Path(_os.environ.get("SAVVYDFIR_ANALYSIS_DIR", "./analysis")).resolve()),
+                    ) if r
+                )
+                _debt = _cad(
+                    list(self._state.get("executions", [])),
+                    list(findings),
+                    self._state.get("file_access_selector"),
+                    analysis_roots=_roots,
+                )
+                analysis_debt_summary = {
+                    "blocking": _debt.get("blocking", []),
+                    "warning": _debt.get("warning", []),
+                    "next_required_actions": _debt.get("next_required_actions", []),
+                }
+            except Exception:
+                pass
+
             # MCP segfault fix 2026-05-23: every nested container is
             # deepcopied so the JSON serializer never walks live state.
             # to_summary() is the hottest read path (hooks + ratchets),
@@ -834,6 +865,7 @@ class CaseStateManager:
                 "unresolved_discrepancies": unresolved,
                 "open_questions": list(self._state.get("open_questions", [])),
                 "latest_findings": copy.deepcopy(findings[-10:]),
+                "analysis_debt": analysis_debt_summary,
                 "created_at": self._state.get("created_at"),
                 "updated_at": self._state.get("updated_at"),
             }
