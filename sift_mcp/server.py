@@ -80,6 +80,7 @@ from sift_mcp.analysis_debt import (
     data_gaps_fingerprint as _data_gaps_fingerprint,
     lane_debt as _lane_debt,
 )
+from sift_mcp.corroboration import build_advisory_reference as _build_advisory_reference
 
 import ipaddress
 import hashlib
@@ -329,6 +330,12 @@ _FK_MAP = {
     "memory.detect_injection":        "volatility_memory",
     "memory.list_dlls":               "volatility_memory",
     "detection.sigma_hunt":           "hayabusa_alerts",
+    # FK-wiring consensus map-fixes: these call _forensic_envelope() but were
+    # unmapped, so their enriched YAMLs never loaded. (recycle_bin stays mapped
+    # but disk.extract_recycle_bin does NOT call the envelope - documented orphan.)
+    "disk.extract_usn_journal":       "usn_journal",
+    "detection.hayabusa_hunt":        "hayabusa_alerts",
+    "detection.query_sigma_results":  "hayabusa_alerts",
 }
 
 
@@ -386,6 +393,13 @@ _init_fk()  # runs at import time
 
 # Per-session call counter - resets when Claude session restarts (correct behaviour)
 _tool_call_counters: dict[str, int] = {}
+
+# ITEM A (FK-wiring consensus): session-level char budget for the additive
+# advisory_* envelope reference, ON TOP of the per-tool first-3-calls decay.
+# Per-tool decay alone can't protect a 15-tool triage pass (4 memory tools in
+# one batch each open their own first-3 window against volatility_memory).
+_FK_ADVISORY_BUDGET_CHARS = 6000
+_fk_advisory_chars_spent = 0
 
 
 def _forensic_envelope(tool_name: str) -> dict:
@@ -450,6 +464,24 @@ def _forensic_envelope(tool_name: str) -> dict:
                 "lsass.exe count>1, explorer.exe account=System. "
                 f"Full baseline at /opt/SAVVYDFIR-MCP/data/hunt-evil-baseline.json"
             )
+
+    # ITEM A (FK-wiring consensus): additive STATIC advisory reference on the
+    # first 3 calls per tool, honoring a session-level char budget. Keys are
+    # advisory_* / sanitized (no computed tier/gap, no promotion numerics).
+    # Failure here must never break the tool response.
+    if count < 3:
+        global _fk_advisory_chars_spent
+        remaining = _FK_ADVISORY_BUDGET_CHARS - _fk_advisory_chars_spent
+        if remaining > 0:
+            try:
+                advisory = _build_advisory_reference(fk, char_budget=remaining)
+                if advisory:
+                    spent = sum(len(str(v)) for v in advisory.values())
+                    _fk_advisory_chars_spent += spent
+                    for k, v in advisory.items():
+                        envelope.setdefault(k, v)
+            except Exception:
+                pass  # advisory enrichment is best-effort, never blocks
 
     # Strip None values - don't pollute responses when FK data is absent
     return {k: v for k, v in envelope.items() if v is not None}

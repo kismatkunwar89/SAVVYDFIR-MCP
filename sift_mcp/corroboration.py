@@ -460,6 +460,86 @@ def _build_rationale(
 
 
 # ---------------------------------------------------------------------------
+# ITEM A: static advisory reference for the tool-response envelope (pure).
+# Emits sanitized, capped advisory_* keys from an FK slice. NO computed tier/gap
+# (that's the engine/report). Disclaimer-prefixed; promotion numerics stripped.
+# ---------------------------------------------------------------------------
+ENVELOPE_DISCLAIMER = "Reference only; does not promote or confirm findings. "
+_FIELD_CAP = 180
+_PROMO_NUM_RE = re.compile(r"\s*\(?~?\s*0?\.\d+\s*\)?")  # ~0.85, (~1.0)
+_PROMO_WORD_RE = re.compile(r"\b(confirmed|definitive|proven)\b", re.IGNORECASE)
+
+
+def _sanitize_advisory(text: Any, cap: int = _FIELD_CAP) -> str:
+    """Strip promotion numerics/phrasing and cap length (no gate thresholds leak)."""
+    s = str(text or "").strip()
+    s = _PROMO_NUM_RE.sub("", s)
+    s = _PROMO_WORD_RE.sub("strongly-corroborated", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if len(s) > cap:
+        s = s[: cap - 1].rstrip() + "…"
+    return s
+
+
+def build_advisory_reference(fk: Optional[dict[str, Any]], *, char_budget: int = 1500) -> dict[str, Any]:
+    """Build the additive STATIC advisory_* envelope keys from an FK slice.
+
+    Caps: each field <=180 chars; top-2 heuristics; top-2 anti_forensics.detection;
+    timestamp only if a concise caveat exists. Honors char_budget (stops adding
+    keys once exceeded). Returns {} when FK is empty (partial-FK omits cleanly).
+    """
+    fk = fk or {}
+    out: dict[str, Any] = {}
+    used = 0
+
+    def _fits(addition: str) -> bool:
+        nonlocal used
+        if used + len(addition) > char_budget:
+            return False
+        used += len(addition)
+        return True
+
+    esc = fk.get("corroboration_escalation") or {}
+    alone = _sanitize_advisory(esc.get("alone"))
+    tiers = _sanitize_advisory(esc.get("tiers"))
+    bits = []
+    if alone and _fits(alone):
+        bits.append("ALONE: " + alone)
+    if tiers and _fits(tiers):
+        bits.append("STACKING: " + tiers)
+    if bits:
+        out["advisory_corroboration"] = ENVELOPE_DISCLAIMER + " ".join(bits)
+
+    heur = fk.get("heuristics")
+    if isinstance(heur, list) and heur:
+        picks = []
+        for h in heur[:2]:
+            hs = _sanitize_advisory(h)
+            if hs and _fits(hs):
+                picks.append(hs)
+        if picks:
+            out["key_heuristics"] = picks
+
+    af = (fk.get("anti_forensics") or {}).get("detection")
+    if isinstance(af, list) and af:
+        picks = []
+        for a in af[:2]:
+            as_ = _sanitize_advisory(a)
+            if as_ and _fits(as_):
+                picks.append(as_)
+        if picks:
+            out["anti_forensics_detection"] = picks
+
+    ts = fk.get("timestamp_semantics")
+    if isinstance(ts, dict) and ts.get("caveat"):
+        caveat = _sanitize_advisory(ts.get("caveat"))
+        if caveat and _fits(caveat):
+            out["timestamp_caveat"] = caveat
+
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Pure FK loader (mirrors server precedence; NO server import) - for ITEM C
 # ---------------------------------------------------------------------------
 def _fk_bases() -> list[Path]:

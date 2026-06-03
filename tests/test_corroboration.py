@@ -175,6 +175,39 @@ def test_fail_soft_on_bad_input():
     assert st.advisory_corroboration_tier in {"observation", "probable", "confirmed"}
 
 
+def test_advisory_reference_sanitizes_and_caps():
+    from sift_mcp.corroboration import build_advisory_reference, ENVELOPE_DISCLAIMER
+    fk = load_fk_slice("prefetch")
+    out = build_advisory_reference(fk)
+    assert "advisory_corroboration" in out
+    blob = out["advisory_corroboration"]
+    assert blob.startswith(ENVELOPE_DISCLAIMER)
+    # promotion numerics + words stripped (no gate thresholds leak)
+    assert "0.85" not in blob and "1.0" not in blob and "~0." not in blob
+    assert "CONFIRMED" not in blob and "definitive" not in blob.lower()
+    # caps: heuristics/detection at most 2; each field bounded
+    assert len(out.get("key_heuristics", [])) <= 2
+    assert len(out.get("anti_forensics_detection", [])) <= 2
+    for h in out.get("key_heuristics", []):
+        assert len(h) <= 181
+
+
+def test_advisory_reference_partial_fk_omits_cleanly():
+    from sift_mcp.corroboration import build_advisory_reference
+    # hayabusa_alerts.yaml has no escalation/heuristics/anti_forensics
+    out = build_advisory_reference(load_fk_slice("hayabusa_alerts"))
+    assert "key_heuristics" not in out
+    assert build_advisory_reference({}) == {}
+    assert build_advisory_reference(None) == {}
+
+
+def test_advisory_reference_honors_char_budget():
+    from sift_mcp.corroboration import build_advisory_reference
+    tiny = build_advisory_reference(load_fk_slice("prefetch"), char_budget=50)
+    total = sum(len(str(v)) for v in tiny.values())
+    assert total <= 220  # one field max under a tiny budget
+
+
 def test_unresolvable_combo_source_is_graceful():
     # a prose-y source that doesn't resolve must not crash and stays as a label
     fk = {"artifact": "x", "corroboration_escalation": {"combinations": [
