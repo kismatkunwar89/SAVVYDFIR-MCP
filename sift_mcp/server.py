@@ -102,6 +102,8 @@ from sift_mcp.models.sigma import (
 )
 from sift_mcp.reporting import (
     EXPECTED_LANE_AGENTS,
+    FILE_ACCESS_TOOL_SUFFIXES,
+    build_file_access_selector_snapshot,
     classify_missing_artifact_record,
     generate_report_payload,
     refresh_report_graph_flags,
@@ -6714,6 +6716,14 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
         _state_manager.set_status("IN_PROGRESS")
         _state_manager.update_triage_state(triage_status="IN_PROGRESS")
         _state_manager.set_enabled_detectors(enabled_detectors)
+        # SEAM 0 (review 2026-06-03): persist investigative_taxonomy + a frozen
+        # file-access selector snapshot so the report-time coverage gate and Phase-4
+        # hypothesis context key on a stable decision (taxonomy was {} in state before).
+        _manifest_taxonomy = manifest.get("investigative_taxonomy")
+        if not isinstance(_manifest_taxonomy, dict):
+            _manifest_taxonomy = None
+        _file_access_selector = build_file_access_selector_snapshot(_manifest_taxonomy)
+        _state_manager.set_investigation_taxonomy(_manifest_taxonomy, _file_access_selector)
         _state_manager.upsert_analysis_lane(
             "evidence_access",
             title="Evidence Access",
@@ -6859,6 +6869,35 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
         # Only include IOCs in seeded mode
         if mode == "seeded" and known_iocs:
             result["known_iocs"] = known_iocs
+
+        # SEAM 1 (review 2026-06-03): when the taxonomy selector requires the
+        # file-access bundle, name the 5 extractors in the two fields the agent obeys
+        # at runtime - next_required_tools (recommended, per disk image) AND
+        # mandatory_tools_for_report_gate (the report-block teeth). This is the trigger
+        # that re-asserts in the loop, replacing the inert manifest tools_ordered array.
+        if _file_access_selector.get("file_access_bundle_required"):
+            _disk_imgs = manifest.get("disk_images", []) or []
+            _img0 = (
+                _disk_imgs[0].get("path")
+                if _disk_imgs and isinstance(_disk_imgs[0], dict)
+                else None
+            )
+            for _suffix in FILE_ACCESS_TOOL_SUFFIXES:
+                result["next_required_tools"].append({
+                    "tool": _suffix,
+                    "arguments": {"image_path": _img0} if _img0 else {},
+                    "reason": (
+                        f"dispute_type='{_file_access_selector.get('dispute_type')}' on a Windows "
+                        "image: file-access/navigation coverage is REQUIRED. After extracting, "
+                        "run_analysis + submit_finding (stack LNK + ShellBag + RecentDocs for file "
+                        "access; browser downloads for an initial-access vector). On a "
+                        "mount-less/non-Windows image the tool records documented-absence."
+                    ),
+                })
+            result["workflow_contract"]["mandatory_tools_for_report_gate"].extend(
+                FILE_ACCESS_TOOL_SUFFIXES
+            )
+            result["file_access_bundle_required"] = True
 
         return result
 

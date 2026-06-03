@@ -823,6 +823,9 @@ class CaseStateManager:
                     self._state.get("migration_warnings", [])
                 ),
                 "enabled_detectors": self._state.get("enabled_detectors"),
+                "file_access_selector": copy.deepcopy(
+                    self._state.get("file_access_selector")
+                ),
                 "findings_count": len(findings),
                 "executions_count": len(self._state.get("executions", [])),
                 "confirmed_count": status_counts.get("CONFIRMED", 0),
@@ -1229,6 +1232,39 @@ class CaseStateManager:
             self._assert_loaded()
             value = self._state.get("enabled_detectors")
             return list(value) if isinstance(value, list) else None
+
+    def set_investigation_taxonomy(
+        self, taxonomy: Optional[dict[str, Any]], selector: Optional[dict[str, Any]] = None
+    ) -> None:
+        """SEAM 0 (review 2026-06-03): persist the manifest
+        ``investigative_taxonomy`` blob + a frozen file-access selector snapshot at
+        investigation start. The snapshot is the immutable decision the report-time
+        coverage gate keys on (so editing the manifest mid-run can't change it), and
+        it also un-blinds prepare_hypothesis_context (taxonomy was always {} before)."""
+        with self._lock:
+            self._assert_loaded()
+            self._state["investigative_taxonomy"] = (
+                dict(taxonomy) if isinstance(taxonomy, dict) else None
+            )
+            self._state["file_access_selector"] = (
+                dict(selector) if isinstance(selector, dict) else None
+            )
+            self._save_locked()
+
+    def get_investigation_taxonomy(self) -> Optional[dict[str, Any]]:
+        """Return the persisted investigative_taxonomy blob (None if absent)."""
+        with self._lock:
+            self._assert_loaded()
+            value = self._state.get("investigative_taxonomy")
+            return dict(value) if isinstance(value, dict) else None
+
+    def get_file_access_selector(self) -> Optional[dict[str, Any]]:
+        """Return the frozen file-access selector snapshot. None on legacy state
+        (no snapshot) -> gate overlay stays OFF, so old cases never brick."""
+        with self._lock:
+            self._assert_loaded()
+            value = self._state.get("file_access_selector")
+            return dict(value) if isinstance(value, dict) else None
 
     def add_open_question(self, question: str) -> None:
         """Append an open question / limitation to the state and persist.

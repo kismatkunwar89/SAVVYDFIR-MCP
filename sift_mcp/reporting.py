@@ -1277,6 +1277,80 @@ MANDATORY_MEMORY_TOOL_SUFFIXES = frozenset({
     "scan_processes",
     "scan_network",
 })
+
+# ---------------------------------------------------------------------------
+# Taxonomy-conditional file-access bundle (review 2026-06-03, signed).
+#
+# The 5 file-access / navigation extractors are NOT unconditional baseline (they
+# stay OUT of MANDATORY_DISK_TOOL_SUFFIXES). They become REQUIRED as a CONDITIONAL
+# OVERLAY when the case taxonomy says "which files/folders did the subject access"
+# is a core question -- keyed on investigative_taxonomy.dispute_type (+ Windows in
+# scope), a structured field present for every case. Case-agnostic: no host/IOC/
+# scenario anywhere. Documented-absence (escape A) keeps non-Windows/mount-less
+# cases from bricking.
+# ---------------------------------------------------------------------------
+FILE_ACCESS_TOOL_SUFFIXES = (
+    "extract_shellbags",
+    "extract_lnk_files",
+    "extract_jump_lists",
+    "extract_browser_history",
+    "extract_registry_fileaccess",
+)
+_FILE_ACCESS_DISPUTE_TYPES = frozenset({
+    "intrusion_response",
+    "data_exfiltration",
+    "insider_threat",
+    "financial_fraud",
+    "policy_violation",
+    "ransomware",
+})
+# Documented-absence tokens that SATISFY the gate (tool ran, evidence legitimately
+# absent). collection_failed / partial_collection are NOT here -- they are real
+# gaps that must block/retry.
+_FILE_ACCESS_ABSENCE_TOKENS = (
+    "no_windows_volume_at_image_path",
+    "artifact_absent",
+    "no_data",
+)
+_FILE_ACCESS_SELECTOR_VERSION = 1
+
+
+def windows_in_scope(os_in_scope: Any) -> bool:
+    """Normalized, type-guarded 'is Windows in scope' predicate.
+
+    Accepts a list/str/None. Returns True iff any entry contains 'windows'
+    (case-insensitive) -- handles 'Windows 10/11', 'Windows Server 2019/2022'.
+    Missing/malformed -> False (fail-closed on the OS axis; do NOT infer Windows
+    from mount paths here).
+    """
+    if isinstance(os_in_scope, str):
+        return "windows" in os_in_scope.lower()
+    if isinstance(os_in_scope, (list, tuple)):
+        return any(isinstance(o, str) and "windows" in o.lower() for o in os_in_scope)
+    return False
+
+
+def file_access_required(taxonomy: Optional[dict[str, Any]]) -> bool:
+    """True iff the file-access bundle is REQUIRED for this case's taxonomy.
+
+    dispute_type in the file-centric set AND Windows in scope. Missing/unknown
+    dispute_type -> False (no bundle; fail-open on the dispute axis).
+    """
+    t = taxonomy or {}
+    dispute = str(t.get("dispute_type", "") or "").strip().lower()
+    return dispute in _FILE_ACCESS_DISPUTE_TYPES and windows_in_scope(t.get("os_in_scope"))
+
+
+def build_file_access_selector_snapshot(taxonomy: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Frozen selector snapshot persisted at start_investigation so the report-time
+    gate keys on a stable decision, not a possibly-edited live manifest."""
+    t = taxonomy or {}
+    return {
+        "dispute_type": str(t.get("dispute_type", "") or ""),
+        "windows_in_scope": windows_in_scope(t.get("os_in_scope")),
+        "file_access_bundle_required": file_access_required(t),
+        "selector_version": _FILE_ACCESS_SELECTOR_VERSION,
+    }
 _COVERAGE_SUFFIX_LANES: dict[str, str] = {
     "list_processes": "memory",
     "scan_processes": "memory",
@@ -1558,11 +1632,65 @@ def evaluate_ir_coverage_gate(
     executions: list[dict[str, Any]],
     sigma_result: dict[str, Any],
     analysis_lanes: list[dict[str, Any]] | None = None,
+    selector: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return missing Windows IR tool coverage required before a final report."""
+    """Return missing Windows IR tool coverage required before a final report.
+
+    *selector* is the frozen file-access selector snapshot persisted at
+    start_investigation (``build_file_access_selector_snapshot``). When it sets
+    ``file_access_bundle_required``, the 5 file-access extractors are enforced as
+    a CONDITIONAL OVERLAY (escape A: satisfied by successful run OR documented
+    absence). When absent/false (legacy state, non-Windows, unknown dispute_type)
+    the overlay is off, so old cases never brick.
+    """
     suffixes = _collect_execution_suffixes(executions)
     missing: list[dict[str, Any]] = []
     accepted_by_lane: list[dict[str, Any]] = []
+
+    def _file_access_documented_absence(ex: dict[str, Any]) -> bool:
+        """Escape A: tool ran and recorded a legitimate-absence outcome. Anchored
+        to status=/reason= keys (prefix allowlist), NOT loose substring, so a token
+        inside unrelated error prose can't false-satisfy. collection_failed /
+        partial_collection are deliberately NOT tokens here (real gaps)."""
+        summ = str(ex.get("outputs_summary") or "").lower()
+        return any(
+            f"status={tok}" in summ or f"reason={tok}" in summ
+            for tok in _FILE_ACCESS_ABSENCE_TOKENS
+        )
+
+    def _add_file_access(tool: str, suffix: str) -> None:
+        if suffix not in suffixes:
+            missing.append({
+                "tool": tool,
+                "classification": "taxonomy_file_access",
+                "reason": (
+                    "Case taxonomy (dispute_type + Windows in scope) requires file-access / "
+                    "navigation coverage; this extractor has no recorded execution. Run it, then "
+                    "run_analysis + submit_finding -- or it will record a documented-absence result."
+                ),
+            })
+            return
+        candidates = [
+            ex for ex in executions
+            if (str(ex.get("tool_name") or "") == tool
+                or str(ex.get("tool_name") or "").endswith(f".{suffix}"))
+        ]
+        if not candidates:
+            return  # name-match without prefix path - keep presence behavior (legacy fixtures)
+        if any(
+            _execution_was_successful(ex) or _file_access_documented_absence(ex)
+            for ex in candidates
+        ):
+            return  # satisfied: successful collection OR documented absence
+        missing.append({
+            "tool": tool,
+            "classification": "taxonomy_file_access",
+            "reason": (
+                f"{tool} ran but neither succeeded nor recorded a documented-absence outcome "
+                "(collection_failed / partial_collection are real gaps, not 'no evidence'); "
+                "resolve the collection failure or retry."
+            ),
+        })
 
     def _add(tool: str, suffix: str, classification: str, reason: str) -> None:
         """round-2 #M2: presence is not enough; require a successful run.
@@ -1635,6 +1763,13 @@ def evaluate_ir_coverage_gate(
             "mandatory_disk_baseline",
             "Universal Windows IR disk triage requires MFT, EVTX, registry, Amcache, and Prefetch.",
         )
+
+    # Taxonomy-conditional file-access overlay (review 2026-06-03). Only
+    # when the frozen selector snapshot says required (Windows + file-centric
+    # dispute_type); never for legacy state / non-Windows / unknown dispute_type.
+    if (selector or {}).get("file_access_bundle_required"):
+        for suff in FILE_ACCESS_TOOL_SUFFIXES:
+            _add_file_access(f"disk.{suff}", suff)
 
     if _needs_sigma_hunt_run(executions):
         missing.append(
@@ -3005,6 +3140,7 @@ def generate_report_payload(
             executions=executions,
             sigma_result=sigma_result,
             analysis_lanes=state_manager.get_analysis_lanes(),
+            selector=state_manager.get_file_access_selector(),
         )
         if not coverage_check["ok"]:
             # Tier-B2: surface allow_partial=True

@@ -53,11 +53,17 @@ extract_windows_artifacts(case_id) ← fallback if direct mount failed
 **Note - new file-access / browser artifacts are FK-only.** The five
 user-activity extractors above (`extract_shellbags`, `extract_lnk_files`,
 `extract_jump_lists`, `extract_browser_history`, `extract_registry_fileaccess`)
-are OPTIONAL (never block `generate_report`) and carry forensic guidance ONLY
-via the injected `forensic_caveat` / `corroborate_with` envelope - they do NOT
-return an `applicable_heuristics` slice and have no `*-analyst.md` knowledge
-base. Read the caveat: these artifacts prove navigation / referencing, NOT file
-access or execution. Each tool auto-discovers EVERY user profile under both
+are **taxonomy-conditionally REQUIRED**: when `investigative_taxonomy.dispute_type`
+is file-centric (intrusion_response / data_exfiltration / insider_threat /
+financial_fraud / policy_violation / ransomware) AND Windows is in scope, the
+coverage gate enforces them and `start_investigation` names them in
+`next_required_tools` + `mandatory_tools_for_report_gate`. On non-Windows /
+mount-less images they record a documented-absence result that satisfies the gate
+(so they never block those cases). They carry forensic guidance via the injected
+`forensic_caveat` / `corroborate_with` envelope - they do NOT return an
+`applicable_heuristics` slice and have no `*-analyst.md` knowledge base. Read the
+caveat: these artifacts prove navigation / referencing, NOT file access or
+execution - corroborate (LNK + ShellBag + RecentDocs) before claiming access. Each tool auto-discovers EVERY user profile under both
 `Users/*` and `Documents and Settings/*`; the manifest incident_date may
 annotate but never filters rows.
 

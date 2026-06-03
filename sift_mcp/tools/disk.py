@@ -5248,6 +5248,46 @@ def _discover_user_dirs(
     return discovered
 
 
+def _mirror_useractivity_execution_to_state(
+    *,
+    exec_id: str,
+    tool: str,
+    raw_command: str,
+    parameters: Optional[dict[str, Any]],
+    exit_code: int,
+    duration: float,
+    outputs_summary: str,
+    completed_entry: Optional[dict[str, Any]],
+) -> None:
+    """Execution parity (review 2026-06-03, ship-blocker).
+
+    The 5 file-access extractors call ``_audit.log_result`` directly (not via
+    SafeRunner, which mirrors audit -> state at base.py:542). Without this they
+    never land in ``state.executions`` for the coverage gate to read, so the
+    taxonomy-conditional file-access gate (escape A) could never see "ran +
+    documented absence" and would block non-Windows / mount-less cases forever.
+    Mirror the runner's add_execution shape for EVERY terminal outcome, including
+    ``status=error``/``no_windows_volume`` whose response early-returns elsewhere.
+    """
+    if _state is None:
+        return
+    try:
+        _state.add_execution({
+            "execution_id": exec_id,
+            "tool_name": tool,
+            "command_line": raw_command,
+            "parameters": parameters or {},
+            "agent_turn": getattr(_audit, "current_iteration", 1),
+            "duration_seconds": round(float(duration or 0.0), 4),
+            "exit_code": exit_code,
+            "outputs_summary": outputs_summary,
+            "iteration": getattr(_audit, "current_iteration", 1),
+            "audit_completed_entry_hash": (completed_entry or {}).get("entry_hash"),
+        })
+    except Exception:
+        pass
+
+
 def _useractivity_no_volume_error(
     *,
     tool: str,
@@ -5274,15 +5314,23 @@ def _useractivity_no_volume_error(
         "refusing ambient /mnt/disk fallback to avoid cross-case contamination."
     )
     if _audit is not None:
-        _audit.log_result(
+        _nv_duration = time.monotonic() - started_at
+        _nv_completed = _audit.log_result(
             execution_id=exec_id,
             exit_code=1,
-            duration=time.monotonic() - started_at,
+            duration=_nv_duration,
             outputs_summary=summary,
             finding_ids=[],
             tool_name=tool,
             command_line=raw_command,
             parameters={"image_path": image_path},
+        )
+        # Parity: this status=error path must still land in state.executions so
+        # the gate reads "ran + documented absence (no_windows_volume)", not "never run".
+        _mirror_useractivity_execution_to_state(
+            exec_id=exec_id, tool=tool, raw_command=raw_command,
+            parameters={"image_path": image_path}, exit_code=1,
+            duration=_nv_duration, outputs_summary=summary, completed_entry=_nv_completed,
         )
     return {
         "tool_name": tool,
@@ -5361,15 +5409,23 @@ def _useractivity_zero_row_response(
         )
 
     if _audit is not None:
-        _audit.log_result(
+        _zr_duration = time.monotonic() - started_at
+        _zr_completed = _audit.log_result(
             execution_id=exec_id,
             exit_code=exit_code,
-            duration=time.monotonic() - started_at,
+            duration=_zr_duration,
             outputs_summary=summary,
             finding_ids=[],
             tool_name=tool,
             command_line=raw_command,
             parameters={"profiles_checked": profiles_checked},
+        )
+        # Parity: zero-row outcomes (artifact_absent / no_data / collection_failed)
+        # must land in state.executions so the gate can read the status token.
+        _mirror_useractivity_execution_to_state(
+            exec_id=exec_id, tool=tool, raw_command=raw_command,
+            parameters={"profiles_checked": profiles_checked}, exit_code=exit_code,
+            duration=_zr_duration, outputs_summary=summary, completed_entry=_zr_completed,
         )
     return {
         "tool_name": tool,
@@ -5514,20 +5570,28 @@ def _finalize_useractivity_response(
         )
 
     if _audit is not None:
-        _audit.log_result(
+        _fz_duration = time.monotonic() - started_at
+        _fz_summary = (
+            f"status={status} merged {total_rows} rows from "
+            f"{len(profiles_with_data)} profile(s); "
+            f"{len(parser_failures)} parser failure(s)"
+            + (f" [{', '.join(failed_sources)}]" if parser_failures else "")
+        )
+        _fz_completed = _audit.log_result(
             execution_id=exec_id,
             exit_code=audit_exit,
-            duration=time.monotonic() - started_at,
-            outputs_summary=(
-                f"status={status} merged {total_rows} rows from "
-                f"{len(profiles_with_data)} profile(s); "
-                f"{len(parser_failures)} parser failure(s)"
-                + (f" [{', '.join(failed_sources)}]" if parser_failures else "")
-            ),
+            duration=_fz_duration,
+            outputs_summary=_fz_summary,
             finding_ids=finding_ids,
             tool_name=tool,
             command_line=raw_command,
             parameters={"profiles_checked": profiles_checked},
+        )
+        # Parity: success / partial_collection outcomes also land in state.executions.
+        _mirror_useractivity_execution_to_state(
+            exec_id=exec_id, tool=tool, raw_command=raw_command,
+            parameters={"profiles_checked": profiles_checked}, exit_code=audit_exit,
+            duration=_fz_duration, outputs_summary=_fz_summary, completed_entry=_fz_completed,
         )
     return response
 
