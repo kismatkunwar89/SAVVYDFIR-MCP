@@ -1190,24 +1190,42 @@ def _evtx_contract_payload(
     image_path: str,
     evtx_dir: str,
     csv_path: Optional[str],
+    channel_counts: Optional[dict[str, int]] = None,
+    pivot_entities: Optional[dict[str, Any]] = None,
+    normalized: Optional[list[dict[str, Any]]] = None,
+    evidence_excerpt: Optional[str] = None,
 ) -> dict[str, Any]:
-    channel_counts: dict[str, int] = {}
-    for record in records:
-        channel_counts[record.channel] = channel_counts.get(record.channel, 0) + 1
-    normalized = [
-        {
-            "event_id": record.event_id,
-            "channel": record.channel,
-            "timestamp": _dt_to_iso(record.timestamp),
-            "computer": record.computer,
-            "provider": record.provider,
+    # Streaming callers pass FULL-scan aggregates (computed over every row) so
+    # the histogram/pivots reflect the whole CSV, not just the retained sample.
+    # When omitted (legacy / direct unit tests) we derive them from `records`.
+    if channel_counts is None:
+        channel_counts = {}
+        for record in records:
+            channel_counts[record.channel] = channel_counts.get(record.channel, 0) + 1
+    if normalized is None:
+        normalized = [
+            {
+                "event_id": record.event_id,
+                "channel": record.channel,
+                "timestamp": _dt_to_iso(record.timestamp),
+                "computer": record.computer,
+                "provider": record.provider,
+            }
+            for record in records[:20]
+        ]
+    if evidence_excerpt is None:
+        evidence_excerpt = next(
+            (record.message_summary for record in records if record.message_summary),
+            None,
+        )
+    if pivot_entities is None:
+        pivot_entities = {
+            "event_ids": compact_unique(record.event_id for record in records),
+            "channels": compact_unique(record.channel for record in records),
+            "computers": compact_unique(record.computer for record in records),
+            "user_sids": compact_unique(record.user_sid for record in records),
+            "process_paths": compact_unique(_extract_evtx_process_paths(records)),
         }
-        for record in records[:20]
-    ]
-    evidence_excerpt = next(
-        (record.message_summary for record in records if record.message_summary),
-        None,
-    )
     return build_contract_response(
         response,
         case_id=_case_id(),
@@ -1230,13 +1248,7 @@ def _evtx_contract_payload(
             cache_source_execution_id=response.get("cache_source_execution_id"),
             artifact_paths=[evtx_dir],
         ),
-        pivot_entities={
-            "event_ids": compact_unique(record.event_id for record in records),
-            "channels": compact_unique(record.channel for record in records),
-            "computers": compact_unique(record.computer for record in records),
-            "user_sids": compact_unique(record.user_sid for record in records),
-            "process_paths": compact_unique(_extract_evtx_process_paths(records)),
-        },
+        pivot_entities=pivot_entities,
         follow_up_options=[
             build_follow_up_option(
                 "extract_prefetch",
@@ -1523,6 +1535,330 @@ def _build_mft_records(
     return records, finding_ids, timestomping_candidates
 
 
+# ---------------------------------------------------------------------------
+# EVTX streaming-summary bounds (memory-safety; review 2026-06-02).
+#
+# summarize_evtx must stay memory-bounded on the SANS SIFT Workstation (the
+# fixed target, ~8-16 GB RAM) REGARDLESS of how broad an --inc EID set the
+# investigating agent requests. PowerShell ScriptBlock logging (4104/4103)
+# embeds full script text and is extremely high-volume: a busy host can emit a
+# multi-GB / multi-million-row EvtxECmd CSV. Materializing that CSV into a
+# Python list[dict] + a parallel list[EventRecord] (the legacy path) balloons
+# RSS to >15 GB and triggers the OOM killer.
+#
+# Every analytical output summarize_evtx produces is bounded: a total count, a
+# per-channel histogram, capped first-seen pivot sets (compact_unique only
+# emits 10), a head sample for the contract, and one count-based finding. The
+# real analyst depth lives in the PERSISTED CSV (csv_path), mined on demand via
+# run_analysis -- it is untouched by these bounds. So we compute the full-scan
+# aggregates in a SINGLE streaming pass and retain only a bounded sample.
+# ---------------------------------------------------------------------------
+_EVTX_SAMPLE_CAP = 500            # hard cap on retained EventRecord sample (inline + memory)
+_EVTX_PIVOT_CAP = 64              # first-seen dedup cap per pivot dim (>> compact_unique limit 10)
+_EVTX_PROCESS_PATH_CAP = 5000     # dedup cap for 4688/Sysmon process paths (promotion + pivot)
+_EVTX_WIDE_FIELD_MAX_CHARS = 1024  # truncate retained extra_field values (kills 4104 heap blow-up)
+# csv field-size limit must exceed a single 4104 ScriptBlockText payload, or
+# csv.reader raises "field larger than field limit" and silently drops the row.
+_EVTX_CSV_FIELD_LIMIT = 64 * 1024 * 1024  # 64 MiB per field
+# extra_fields columns dropped from the RETAINED sample only (full values stay
+# in the CSV). Normalized (lowercase, no spaces/underscores) for matching.
+_EVTX_WIDE_FIELD_DROP = frozenset({
+    "scriptblocktext",
+    "payloaddata2", "payloaddata3", "payloaddata4",
+    "payloaddata5", "payloaddata6",
+})
+_EVTX_SKIP_COLS = frozenset({
+    "EventId", "EventID", "Id", "Channel", "EventChannel",
+    "TimeCreated", "Timestamp", "Date/Time - UTC",
+    "PayloadData1", "MapDescription", "UserData", "Message",
+    "Computer", "UserSID", "UserId", "Level",
+    "Provider", "ProviderName", "SourceName",
+})
+_EVTX_PROCESS_KEYS = (
+    "newprocessname", "processname", "imagename", "image",
+    "application", "commandline", "processpath",
+)
+_EVTX_PATH_RE = re.compile(
+    r"[A-Za-z]:\\[^\"'\r\n]+\.(?:exe|dll|cmd|bat|ps1|vbs)", re.IGNORECASE
+)
+
+
+def _evtx_record_from_row(
+    row: dict[str, str],
+    channel: Optional[str],
+    *,
+    truncate_wide: bool = False,
+) -> Optional[EventRecord]:
+    """Build one EventRecord from an EvtxECmd CSV row.
+
+    Shared by the streaming summary (``_stream_evtx_summary``) and the legacy
+    ``_build_evtx_records`` so a retained sample record is byte-identical to the
+    legacy record EXCEPT for optional wide-field truncation. Returns ``None``
+    when the row is filtered out by *channel* or cannot be parsed.
+
+    When *truncate_wide* is True, known-wide payload columns
+    (``ScriptBlockText``, ``PayloadData2..N``) are dropped and any remaining
+    field longer than ``_EVTX_WIDE_FIELD_MAX_CHARS`` is truncated, so retaining
+    a bounded sample of PowerShell-heavy 4104 rows cannot blow up RSS. The full
+    untruncated values remain in the persisted CSV.
+    """
+    try:
+        ch = (row.get("Channel") or row.get("EventChannel") or "").strip()
+        if channel and ch.lower() != channel.lower():
+            return None
+
+        event_id_raw = row.get("EventId") or row.get("EventID") or row.get("Id") or "0"
+        try:
+            event_id = int(event_id_raw)
+        except (ValueError, TypeError):
+            event_id = 0
+
+        ts = _parse_dt(
+            row.get("TimeCreated") or row.get("Timestamp") or row.get("Date/Time - UTC") or ""
+        )
+        if ts is None:
+            ts = datetime.now(tz=timezone.utc)
+
+        message = (
+            row.get("PayloadData1")
+            or row.get("MapDescription")
+            or row.get("UserData")
+            or row.get("Message")
+            or f"Event ID {event_id}"
+        ).strip()[:500]
+
+        extra: dict[str, Any] = {}
+        for k, v in row.items():
+            if k in _EVTX_SKIP_COLS or not v or not v.strip():
+                continue
+            if truncate_wide:
+                kn = k.lower().replace(" ", "").replace("_", "")
+                if kn in _EVTX_WIDE_FIELD_DROP:
+                    continue
+                if len(v) > _EVTX_WIDE_FIELD_MAX_CHARS:
+                    v = v[:_EVTX_WIDE_FIELD_MAX_CHARS] + "...[truncated]"
+            extra[k] = v
+
+        return EventRecord(
+            event_id=event_id,
+            channel=ch or "Unknown",
+            provider=(
+                row.get("Provider") or row.get("ProviderName") or row.get("SourceName") or None
+            ),
+            timestamp=ts,
+            level=row.get("Level") or row.get("LevelDisplayName") or None,
+            computer=row.get("Computer") or None,
+            user_sid=(row.get("UserSID") or row.get("UserId") or None),
+            message_summary=message or f"Event {event_id}",
+            raw_xml_ref=None,
+            extra_fields=extra,
+        )
+    except Exception:
+        return None
+
+
+def _evtx_paths_from_record(record: EventRecord) -> list[str]:
+    """Extract candidate process paths from one 4688 / Sysmon-1 EventRecord."""
+    if record.event_id not in {1, 4688}:
+        return []
+    candidates: list[str] = []
+    for key, value in record.extra_fields.items():
+        key_norm = key.lower().replace(" ", "").replace("_", "")
+        text = str(value or "").strip()
+        if not text:
+            continue
+        if any(name in key_norm for name in _EVTX_PROCESS_KEYS):
+            match = _EVTX_PATH_RE.search(text)
+            candidates.append(match.group(0) if match else text)
+    if not record.extra_fields:
+        candidates.extend(_EVTX_PATH_RE.findall(record.message_summary))
+    return [candidate for candidate in candidates if candidate]
+
+
+def _nul_stripped(fh: "io.TextIOBase"):
+    """Yield lines with embedded NULs removed (EvtxECmd CSVs can carry them).
+
+    Wrapping the file object preserves csv.reader's ability to read across
+    physical lines for quoted multi-line fields (e.g. 4104 ScriptBlockText).
+    """
+    for line in fh:
+        yield line.replace("\x00", "")
+
+
+def _stream_evtx_summary(
+    csv_path: str,
+    *,
+    channel: Optional[str] = None,
+) -> dict[str, Any]:
+    """Single streaming pass over an EvtxECmd CSV producing bounded aggregates.
+
+    Replaces ``_read_csv`` + ``_build_evtx_records`` for summarize_evtx so RSS
+    stays flat regardless of CSV size. Computes the FULL-scan aggregates the
+    contract needs (total count, per-channel histogram, first-seen pivot sets,
+    deduped process paths) plus a bounded head sample. The full per-row data is
+    never materialized.
+
+    Returns a dict with: ``total_records``, ``channel_counts`` (full histogram),
+    ``pivot_event_ids`` / ``pivot_channels`` / ``pivot_computers`` /
+    ``pivot_user_sids`` (first-seen, capped), ``process_paths`` (deduped,
+    capped), ``sample`` (list[EventRecord], wide fields truncated),
+    ``evidence_excerpt``.
+    """
+    total = 0
+    channel_counts: dict[str, int] = {}
+    pivot_event_ids: list[int] = []
+    pivot_channels: list[str] = []
+    pivot_computers: list[str] = []
+    pivot_user_sids: list[str] = []
+    process_paths: list[str] = []
+    seen_eid: set[int] = set()
+    seen_ch: set[str] = set()
+    seen_comp: set[str] = set()
+    seen_sid: set[str] = set()
+    seen_path: set[str] = set()
+    sample: list[EventRecord] = []
+    evidence_excerpt: Optional[str] = None
+
+    def _add_capped(ordered: list, seen: set, value: Any, cap: int) -> None:
+        if value is None or value in seen or len(ordered) >= cap:
+            return
+        seen.add(value)
+        ordered.append(value)
+
+    empty = {
+        "total_records": 0,
+        "channel_counts": {},
+        "pivot_event_ids": [],
+        "pivot_channels": [],
+        "pivot_computers": [],
+        "pivot_user_sids": [],
+        "process_paths": [],
+        "sample": [],
+        "evidence_excerpt": None,
+    }
+    p = Path(csv_path)
+    try:
+        if not p.exists() or p.stat().st_size == 0:
+            return empty
+    except OSError:
+        return empty
+
+    try:
+        csv.field_size_limit(_EVTX_CSV_FIELD_LIMIT)
+    except (OverflowError, ValueError):
+        try:
+            csv.field_size_limit(2**31 - 1)
+        except (OverflowError, ValueError):
+            pass
+
+    try:
+        with p.open("r", encoding="utf-8-sig", errors="replace", newline="") as fh:
+            reader = csv.DictReader(_nul_stripped(fh))
+            for row in reader:
+                # Full (untruncated) record: transient -- used for aggregates +
+                # path extraction, then discarded unless it joins the sample.
+                rec = _evtx_record_from_row(row, channel, truncate_wide=False)
+                if rec is None:
+                    continue
+                total += 1
+                channel_counts[rec.channel] = channel_counts.get(rec.channel, 0) + 1
+                _add_capped(pivot_event_ids, seen_eid, rec.event_id, _EVTX_PIVOT_CAP)
+                _add_capped(pivot_channels, seen_ch, rec.channel, _EVTX_PIVOT_CAP)
+                if rec.computer:
+                    _add_capped(pivot_computers, seen_comp, rec.computer, _EVTX_PIVOT_CAP)
+                if rec.user_sid:
+                    _add_capped(pivot_user_sids, seen_sid, rec.user_sid, _EVTX_PIVOT_CAP)
+                for path in _evtx_paths_from_record(rec):
+                    _add_capped(process_paths, seen_path, path, _EVTX_PROCESS_PATH_CAP)
+                if len(sample) < _EVTX_SAMPLE_CAP:
+                    srec = _evtx_record_from_row(row, channel, truncate_wide=True)
+                    if srec is not None:
+                        sample.append(srec)
+                        if evidence_excerpt is None and srec.message_summary:
+                            evidence_excerpt = srec.message_summary
+    except OSError:
+        # Unreadable mid-stream: return whatever was accumulated rather than
+        # raising (caller treats the partial summary as the result).
+        pass
+
+    return {
+        "total_records": total,
+        "channel_counts": channel_counts,
+        "pivot_event_ids": pivot_event_ids,
+        "pivot_channels": pivot_channels,
+        "pivot_computers": pivot_computers,
+        "pivot_user_sids": pivot_user_sids,
+        "process_paths": process_paths,
+        "sample": sample,
+        "evidence_excerpt": evidence_excerpt,
+    }
+
+
+def _evtx_summary_finding_ids(
+    total_records: int,
+    *,
+    evtx_dir: str,
+    channel: Optional[str],
+    execution_id: str,
+) -> list[str]:
+    """Persist the single count-based EVTX summary finding (streaming path).
+
+    Byte-identical to the finding the legacy _build_evtx_records produced with
+    create_findings=True, but driven by the streamed total instead of a
+    materialized record list. No finding when nothing parsed.
+    """
+    if not total_records or _state is None:
+        return []
+    finding = Finding(
+        case_id=_case_id(),
+        finding_type="other",
+        artifact_type="disk",
+        artifact_path=evtx_dir,
+        tool_name="disk.summarize_evtx",
+        execution_id=execution_id,
+        iteration=_current_iteration(),
+        evidence_kind=EvidenceKind.OBSERVATION,
+        finding_status=FindingStatus.ACTIVE,
+        confidence=0.9,
+        description=(
+            f"Parsed {total_records} event log entries from {evtx_dir}"
+            + (f" (channel filter: {channel})" if channel else "")
+            + ". Events may reveal logon activity, process creation, service "
+            "installation, and other attacker behaviours."
+        ),
+        supporting_indicators=[evtx_dir],
+    )
+    return [_state.add_finding(finding.model_dump(mode="json"))]
+
+
+def _evtx_contract_inputs(
+    stream: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Build the (normalized_observations, pivot_entities) the EVTX contract
+    needs from a streaming-summary result. Pivots use the FULL-scan capped
+    first-seen sets (not the sample) so depth matches the legacy path exactly.
+    """
+    sample = stream["sample"]
+    normalized = [
+        {
+            "event_id": record.event_id,
+            "channel": record.channel,
+            "timestamp": _dt_to_iso(record.timestamp),
+            "computer": record.computer,
+            "provider": record.provider,
+        }
+        for record in sample[:20]
+    ]
+    pivots = {
+        "event_ids": compact_unique(stream["pivot_event_ids"]),
+        "channels": compact_unique(stream["pivot_channels"]),
+        "computers": compact_unique(stream["pivot_computers"]),
+        "user_sids": compact_unique(stream["pivot_user_sids"]),
+        "process_paths": compact_unique(stream["process_paths"]),
+    }
+    return normalized, pivots
+
+
 def _build_evtx_records(
     rows: list[dict[str, str]],
     *,
@@ -1532,82 +1868,18 @@ def _build_evtx_records(
     execution_id: str,
     create_findings: bool,
 ) -> tuple[list[EventRecord], list[str]]:
-    """Parse EvtxECmd rows into records and optional summary finding."""
+    """Parse EvtxECmd rows into records and optional summary finding.
+
+    Legacy materializing path, retained for back-compat and direct unit tests.
+    summarize_evtx no longer calls this (it streams via _stream_evtx_summary);
+    the per-row parse is shared via _evtx_record_from_row.
+    """
     records: list[EventRecord] = []
 
     for row in rows:
-        try:
-            ch = (row.get("Channel") or row.get("EventChannel") or "").strip()
-            if channel and ch.lower() != channel.lower():
-                continue
-
-            event_id_raw = row.get("EventId") or row.get(
-                "EventID") or row.get("Id") or "0"
-            try:
-                event_id = int(event_id_raw)
-            except (ValueError, TypeError):
-                event_id = 0
-
-            ts = _parse_dt(
-                row.get("TimeCreated") or row.get(
-                    "Timestamp") or row.get("Date/Time - UTC") or ""
-            )
-            if ts is None:
-                ts = datetime.now(tz=timezone.utc)
-
-            message = (
-                row.get("PayloadData1")
-                or row.get("MapDescription")
-                or row.get("UserData")
-                or row.get("Message")
-                or f"Event ID {event_id}"
-            ).strip()[:500]
-
-            skip_cols = {
-                "EventId",
-                "EventID",
-                "Id",
-                "Channel",
-                "EventChannel",
-                "TimeCreated",
-                "Timestamp",
-                "Date/Time - UTC",
-                "PayloadData1",
-                "MapDescription",
-                "UserData",
-                "Message",
-                "Computer",
-                "UserSID",
-                "UserId",
-                "Level",
-                "Provider",
-                "ProviderName",
-                "SourceName",
-            }
-            extra: dict[str, Any] = {
-                k: v for k, v in row.items() if k not in skip_cols and v and v.strip()
-            }
-
-            records.append(
-                EventRecord(
-                    event_id=event_id,
-                    channel=ch or "Unknown",
-                    provider=(
-                        row.get("Provider") or row.get(
-                            "ProviderName") or row.get("SourceName") or None
-                    ),
-                    timestamp=ts,
-                    level=row.get("Level") or row.get(
-                        "LevelDisplayName") or None,
-                    computer=row.get("Computer") or None,
-                    user_sid=(row.get("UserSID") or row.get("UserId") or None),
-                    message_summary=message or f"Event {event_id}",
-                    raw_xml_ref=None,
-                    extra_fields=extra,
-                )
-            )
-        except Exception:
-            continue
+        rec = _evtx_record_from_row(row, channel)
+        if rec is not None:
+            records.append(rec)
 
     finding_ids: list[str] = []
     if records and create_findings and _state is not None:
@@ -1638,36 +1910,9 @@ def _build_evtx_records(
 def _extract_evtx_process_paths(records: list[EventRecord]) -> list[str]:
     """Extract candidate process paths from 4688 / Sysmon-1 style events."""
     candidates: list[str] = []
-    interesting_keys = (
-        "newprocessname",
-        "processname",
-        "imagename",
-        "image",
-        "application",
-        "commandline",
-        "processpath",
-    )
-    path_re = re.compile(
-        r"[A-Za-z]:\\[^\"'\r\n]+\.(?:exe|dll|cmd|bat|ps1|vbs)", re.IGNORECASE)
-
     for record in records:
-        if record.event_id not in {1, 4688}:
-            continue
-
-        for key, value in record.extra_fields.items():
-            key_norm = key.lower().replace(" ", "").replace("_", "")
-            text = str(value or "").strip()
-            if not text:
-                continue
-
-            if any(name in key_norm for name in interesting_keys):
-                match = path_re.search(text)
-                candidates.append(match.group(0) if match else text)
-
-        if not record.extra_fields:
-            candidates.extend(path_re.findall(record.message_summary))
-
-    return [candidate for candidate in candidates if candidate]
+        candidates.extend(_evtx_paths_from_record(record))
+    return candidates
 
 
 def _build_registry_records(
@@ -3620,7 +3865,6 @@ def summarize_evtx(
         required_keys=("csv_path", "source_execution_id"),
     )
     if cached is not None:
-        rows = _read_csv(str(cached["csv_path"]))
         cache_meta = record_cache_hit(
             _audit,
             _state,
@@ -3637,23 +3881,20 @@ def summarize_evtx(
             cache_source_execution_id=str(
                 cached.get("source_execution_id") or ""),
         )
-        records, _ = _build_evtx_records(
-            rows,
-            evtx_dir=evtx_dir,
-            channel=channel,
-            tool=tool,
-            execution_id=cache_meta["execution_id"],
-            create_findings=False,
-        )
+        # Memory-bounded: the cache-hit path MUST use the same streaming helper
+        # as the fresh path -- a half-patched cache re-read of the same 2.4GB CSV
+        # would OOM identically (review 2026-06-02, non-negotiable).
+        stream = _stream_evtx_summary(str(cached["csv_path"]), channel=channel)
         promote_corroborated_findings(
             _state,
             "evtx_process_creation",
-            _extract_evtx_process_paths(records),
+            stream["process_paths"],
         )
-        full_records = list(records)
-        detailed_records = list(full_records)
-        if max_entries and max_entries > 0:
-            detailed_records = detailed_records[:max_entries]
+        total_records = stream["total_records"]
+        sample = stream["sample"]
+        detailed_records = (
+            sample[:max_entries] if (max_entries and max_entries > 0) else list(sample)
+        )
         response = {
             "tool_name": tool,
             "status": "success",
@@ -3661,14 +3902,14 @@ def summarize_evtx(
             "execution_id": cache_meta["execution_id"],
             "raw_command": cache_meta["raw_command"],
             "records_count": len(detailed_records),
-            "total_records": len(rows),
+            "total_records": total_records,
             "csv_path": str(cached["csv_path"]),
             "requires_agent": cached.get("requires_agent", "@evtx-analyst"),
             "agent_instruction": cached.get(
                 "agent_instruction",
-                f"Analyze {cached['csv_path']} for attacker lifecycle — auth anomalies, lateral movement, persistence. {len(rows)} total rows.",
+                f"Analyze {cached['csv_path']} for attacker lifecycle — auth anomalies, lateral movement, persistence. {total_records} total rows.",
             ),
-            "note": f"Returning {len(records)} of {len(rows)} rows. Full CSV at {cached['csv_path']}.",
+            "note": f"Returning a bounded sample of {len(detailed_records)} of {total_records} rows. Full CSV at {cached['csv_path']}.",
             "channel_filter": channel,
             "event_id_filter": cached.get(
                 "event_id_filter",
@@ -3692,8 +3933,8 @@ def summarize_evtx(
         formatted = _apply_response_format(
             response,
             response_format=normalized_format,
-            records=detailed_records if normalized_format == "detailed" else full_records,
-            total_records=len(rows),
+            records=detailed_records if normalized_format == "detailed" else sample,
+            total_records=total_records,
         )
         formatted = _warn_if_empty(formatted, "summarize_evtx", evtx_dir, min_expected=100)
         if "data" in formatted:
@@ -3701,12 +3942,17 @@ def summarize_evtx(
                 sanitize_payload_fields(record, "message_summary", "extra_fields")
                 for record in formatted["data"]
             ]
+        normalized_obs, pivots = _evtx_contract_inputs(stream)
         return _evtx_contract_payload(
             response=formatted,
-            records=detailed_records if normalized_format == "detailed" else full_records,
+            records=detailed_records if normalized_format == "detailed" else sample,
             image_path=image_path,
             evtx_dir=evtx_dir,
             csv_path=str(cached["csv_path"]),
+            channel_counts=stream["channel_counts"],
+            pivot_entities=pivots,
+            normalized=normalized_obs,
+            evidence_excerpt=stream["evidence_excerpt"],
         )
 
     with tempfile.TemporaryDirectory(prefix="savvydfir_evtx_") as tmp_dir:
@@ -3759,7 +4005,9 @@ def summarize_evtx(
                 "stderr": result.stderr,
             }
 
-        rows = _read_csv(csv_path)
+        # Memory-bounded: single streaming pass over the (possibly multi-GB)
+        # CSV instead of _read_csv + _build_evtx_records materializing every row.
+        stream = _stream_evtx_summary(csv_path, channel=channel)
         persistent_csv = _persist_csv(csv_path, "evtx")
         durable_csv, artifact_persistence = _finalize_artifact_persistence(
             artifact_label="EVTX CSV",
@@ -3767,18 +4015,17 @@ def summarize_evtx(
             preflight=preflight,
         )
 
-    records, finding_ids = _build_evtx_records(
-        rows,
+    total_records = stream["total_records"]
+    finding_ids = _evtx_summary_finding_ids(
+        total_records,
         evtx_dir=evtx_dir,
         channel=channel,
-        tool=tool,
         execution_id=result.execution_id,
-        create_findings=True,
     )
-    full_records = list(records)
-    detailed_records = list(full_records)
-    if max_entries and max_entries > 0:
-        detailed_records = detailed_records[:max_entries]
+    sample = stream["sample"]
+    detailed_records = (
+        sample[:max_entries] if (max_entries and max_entries > 0) else list(sample)
+    )
     response = {
         "tool_name": tool,
         "status": "success",
@@ -3786,20 +4033,20 @@ def summarize_evtx(
         "execution_id": result.execution_id,
         "raw_command": result.command_line,
         "records_count": len(detailed_records),
-        "total_records": len(rows),
+        "total_records": total_records,
         "csv_path": durable_csv,
         "artifact_persistence": artifact_persistence,
         "requires_agent": "@evtx-analyst",
         "agent_instruction": (
-            f"Analyze {durable_csv} for attacker lifecycle — auth anomalies, lateral movement, persistence. {len(rows)} total rows."
+            f"Analyze {durable_csv} for attacker lifecycle — auth anomalies, lateral movement, persistence. {total_records} total rows."
             if durable_csv
             else "Analyze the returned EVTX summary and persisted artifacts for attacker lifecycle pivots; the CSV handle could not be persisted cleanly."
         ),
         "note": (
-            f"Returning {len(detailed_records)} of {len(rows)} rows. Full CSV at {durable_csv}."
+            f"Returning a bounded sample of {len(detailed_records)} of {total_records} rows. Full CSV at {durable_csv}."
             if durable_csv
             else (
-                f"Returning {len(detailed_records)} of {len(rows)} rows. "
+                f"Returning a bounded sample of {len(detailed_records)} of {total_records} rows. "
                 "CSV persistence did not produce a durable analyst-facing handle; "
                 'rerun summarize_evtx after fixing OUTPUT_BASE permissions before using run_analysis().'
             )
@@ -3820,8 +4067,8 @@ def summarize_evtx(
     response = _apply_response_format(
         response,
         response_format=normalized_format,
-        records=detailed_records if normalized_format == "detailed" else full_records,
-        total_records=len(rows),
+        records=detailed_records if normalized_format == "detailed" else sample,
+        total_records=total_records,
     )
     if not durable_csv:
         response["status"] = "warning"
@@ -3841,7 +4088,7 @@ def summarize_evtx(
                 "findings_created": finding_ids,
                 "requires_agent": response.get("requires_agent"),
                 "agent_instruction": response.get("agent_instruction"),
-                "total_records": len(rows),
+                "total_records": total_records,
                 "channel_filter": channel,
                 "event_id_filter": effective_eids if effective_eids else "all",
                 "event_id_strategy": event_id_strategy,
@@ -3851,19 +4098,24 @@ def summarize_evtx(
     promote_corroborated_findings(
         _state,
         "evtx_process_creation",
-        _extract_evtx_process_paths(records),
+        stream["process_paths"],
     )
     if "data" in response:
         response["data"] = [
             sanitize_payload_fields(record, "message_summary", "extra_fields")
             for record in response["data"]
         ]
+    normalized_obs, pivots = _evtx_contract_inputs(stream)
     return _evtx_contract_payload(
         response=response,
-        records=detailed_records if normalized_format == "detailed" else full_records,
+        records=detailed_records if normalized_format == "detailed" else sample,
         image_path=image_path,
         evtx_dir=evtx_dir,
         csv_path=durable_csv,
+        channel_counts=stream["channel_counts"],
+        pivot_entities=pivots,
+        normalized=normalized_obs,
+        evidence_excerpt=stream["evidence_excerpt"],
     )
 
 
