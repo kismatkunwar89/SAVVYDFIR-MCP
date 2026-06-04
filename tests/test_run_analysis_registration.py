@@ -69,21 +69,20 @@ class RunAnalysisLiveRegistrationTests(unittest.TestCase):
         self.server = server
 
     def _registered_tool_names(self) -> set:
-        mcp = self.server.mcp
-        # FastMCP 2.x exposes a sync tool manager; tolerate API drift.
-        mgr = getattr(mcp, "_tool_manager", None)
-        tools = getattr(mgr, "_tools", None) if mgr is not None else None
-        if isinstance(tools, dict):
-            return set(tools.keys())
-        get_tools = getattr(mcp, "get_tools", None)
-        if get_tools is not None:
-            import asyncio
+        import asyncio
+        import inspect
 
-            result = asyncio.run(get_tools())
-            if isinstance(result, dict):
-                return set(result.keys())
-            return {getattr(t, "name", str(t)) for t in result}
-        self.skipTest("cannot introspect FastMCP tool registry in this version")
+        mcp = self.server.mcp
+        # FastMCP 2.x: list_tools() is the registry accessor (may be async).
+        lister = getattr(mcp, "list_tools", None) or getattr(mcp, "get_tools", None)
+        if lister is None:
+            self.skipTest("cannot introspect FastMCP tool registry in this version")
+        result = lister()
+        if inspect.isawaitable(result):
+            result = asyncio.run(result)
+        if isinstance(result, dict):
+            return set(result.keys())
+        return {getattr(t, "name", str(t)) for t in result}
 
     def test_run_analysis_registered(self) -> None:
         self.assertIn("run_analysis", self._registered_tool_names())

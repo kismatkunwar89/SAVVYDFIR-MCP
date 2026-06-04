@@ -54,6 +54,7 @@ from typing import Any, Optional
 
 from sift_mcp.audit import AuditLogger
 from sift_mcp.state import CaseStateManager
+from sift_mcp.semantics import resolve_cluster_source_family
 
 __all__ = [
     "compare_disk_and_memory",
@@ -1629,16 +1630,38 @@ def find_temporal_clusters(
         if not timestamp:
             continue
 
+        # G1 fix (review 2026-06-04): key cluster diversity on the FINE
+        # source family (mft/usn/evtx/prefetch/amcache/registry/srum/process/
+        # network), not the coarse artifact_type (disk/memory/correlation). A
+        # disk burst from 3 different extractors must register as 3 sources, not
+        # 1. Resolver uses existing allowlisted signals only (subtype/tool/path).
+        source_family = resolve_cluster_source_family(finding) or "unknown"
         timestamped_events.append({
             "timestamp": timestamp,
             "finding_id": finding.get("finding_id"),
             "artifact_type": finding.get("artifact_type", "unknown"),
+            "source_family": source_family,
             "description": finding.get("description", ""),
             "confidence": finding.get("confidence", 0.5)
         })
 
     # Sort chronologically
     timestamped_events.sort(key=lambda e: e["timestamp"])
+
+    # G1 diagnostics (review 2026-06-04): make "0 clusters" explainable -
+    # is it too few timestamps, one collapsed source family, or sparse windows?
+    from collections import Counter as _Counter
+    diag_source_hist = dict(_Counter(e["source_family"] for e in timestamped_events))
+    diag_coarse_hist = dict(_Counter(e["artifact_type"] for e in timestamped_events))
+    diag_max_window = 0
+    diag_windows_ge_min = 0
+    for _k in range(len(timestamped_events)):
+        _ws = timestamped_events[_k]["timestamp"]
+        _we = _ws + timedelta(seconds=window_seconds)
+        _cnt = sum(1 for e in timestamped_events[_k:] if e["timestamp"] <= _we)
+        diag_max_window = max(diag_max_window, _cnt)
+        if _cnt >= min_events:
+            diag_windows_ge_min += 1
 
     # Sliding window clustering
     clusters = []
@@ -1659,7 +1682,14 @@ def find_temporal_clusters(
             i += 1
             continue
 
-        sources = {e["artifact_type"] for e in window_events}
+        # Source diversity keys on FINE source_family and EXCLUDES synthesis
+        # ('correlation') findings - they re-describe already-counted source
+        # findings, so letting them satisfy min_sources would double-count
+        # (peer reviewer constraint, review 2026-06-04).
+        sources = {
+            e["source_family"] for e in window_events
+            if e["source_family"] not in ("correlation", "unknown")
+        }
         if len(sources) < min_sources:
             i += 1
             continue
@@ -1696,6 +1726,19 @@ def find_temporal_clusters(
         "case_id": case_id,
         "cluster_count": len(clusters),
         "clusters": clusters,
+        "diagnostics": {
+            "timestamped_event_count": len(timestamped_events),
+            "source_histogram": diag_source_hist,
+            "coarse_artifact_type_histogram": diag_coarse_hist,
+            "max_events_in_any_window": diag_max_window,
+            "windows_with_ge_min_events": diag_windows_ge_min,
+            "note": (
+                "0 clusters with events present usually means one collapsed "
+                "source family (need >=2 distinct fine families co-occurring) or "
+                "timestamps that never co-locate within window_seconds. Sparse "
+                "timestamped_event_count means findings lack timestamp_observed."
+            ),
+        },
         "parameters": {
             "window_seconds": window_seconds,
             "min_sources": min_sources,

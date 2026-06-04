@@ -361,6 +361,54 @@ def _derive_artifact_subtype_from_path(artifact_path: Any) -> Optional[str]:
     return None
 
 
+# Memory tool -> coarse source family (peer reviewer allowlist, G1 fix 2026-06-04).
+# Memory findings have artifact_type="memory" with no subtype; map the producing
+# Volatility tool to process/network so a memory burst can register as a distinct
+# clustering source instead of collapsing into one "memory" bucket.
+_MEMORY_TOOL_TO_SOURCE = {
+    "list_processes": "process",
+    "scan_processes": "process",
+    "detect_injection": "process",
+    "list_dlls": "process",
+    "detect_profile": "process",
+    "load_memory": "process",
+    "scan_network": "network",
+}
+
+
+def resolve_cluster_source_family(finding: dict[str, Any]) -> Optional[str]:
+    """Resolve a finding's FINE source family for temporal-cluster diversity.
+
+    G1 fix (review 2026-06-04): find_temporal_clusters previously keyed
+    cluster sources on the COARSE artifact_type (disk/memory/correlation), so a
+    burst of 30 disk findings from MFT+USN+Prefetch+Amcache+Registry collapsed to
+    ONE source and could never satisfy min_sources>=2. This resolver derives the
+    fine family using ONLY existing allowlisted signals - no free-text token
+    scraping - in priority order:
+      1. explicit artifact_subtype
+      2. producing tool name (disk extractors + memory tools)
+      3. staged artifact_path /artifacts/<subtype>/
+      4. coarse artifact_type fallback
+    Returns None only when nothing resolves.
+    """
+    sub = _normalize_whitespace(finding.get("artifact_subtype")).lower()
+    if sub:
+        return sub
+    fam = _derive_artifact_subtype_from_tool(finding.get("tool_name"))
+    if fam:
+        return fam
+    tn = _normalize_whitespace(finding.get("tool_name")).lower()
+    if "." in tn:
+        tn = tn.split(".")[-1]
+    if tn in _MEMORY_TOOL_TO_SOURCE:
+        return _MEMORY_TOOL_TO_SOURCE[tn]
+    fam = _derive_artifact_subtype_from_path(finding.get("artifact_path"))
+    if fam:
+        return fam
+    at = _normalize_whitespace(finding.get("artifact_type")).lower()
+    return at or None
+
+
 def _canonicalize_evidence_kind(value: Any) -> str:
     token = _normalize_lower_token(value)
     if not token:

@@ -121,5 +121,89 @@ class FindTemporalClustersMainAgentTests(unittest.TestCase):
                                 "3 sources within 2s must form a cluster")
 
 
+class FineSourceFamilyClusterTests(unittest.TestCase):
+    """G1 fix (2026-06-04): cluster diversity must key on FINE source_family, so a
+    burst of disk findings from different extractors registers as multiple sources
+    instead of collapsing into one coarse 'disk' bucket (the 0-clusters defect)."""
+
+    def setUp(self):
+        ts = "2026-05-24T03:01:5"
+        # All artifact_type='disk' (coarse) but THREE different extractors.
+        # Old code: sources={'disk'} -> 1 -> no cluster. New: {mft,evtx,registry}.
+        findings = [
+            {"finding_id": "F-1", "artifact_type": "disk",
+             "tool_name": "disk.extract_mft_timeline", "timestamp_observed": f"{ts}1"},
+            {"finding_id": "F-2", "artifact_type": "disk",
+             "tool_name": "disk.summarize_evtx", "timestamp_observed": f"{ts}2"},
+            {"finding_id": "F-3", "artifact_type": "disk",
+             "tool_name": "disk.extract_registry_run_keys", "timestamp_observed": f"{ts}3"},
+        ]
+
+        class _Fake:
+            def get_findings(self_inner):
+                return findings
+
+        self._orig = c._state_mgr
+        c._state_mgr = _Fake()
+
+    def tearDown(self):
+        c._state_mgr = self._orig
+
+    def test_coarse_disk_burst_now_clusters(self):
+        out = c.find_temporal_clusters("CASE-Y", window_seconds=300,
+                                       min_sources=2, min_events=3)
+        self.assertEqual(out.get("cluster_count"), 1,
+                         "3 distinct disk extractors must form 1 cluster (fine source_family)")
+        diag = out.get("diagnostics", {})
+        self.assertEqual(diag["coarse_artifact_type_histogram"], {"disk": 3})
+        self.assertEqual(set(diag["source_histogram"]), {"mft", "evtx", "registry"})
+
+    def test_diagnostics_present_even_when_zero_clusters(self):
+        # single family -> 0 clusters, but diagnostics must explain why
+        class _One:
+            def get_findings(self_inner):
+                return [
+                    {"finding_id": f"F-{i}", "artifact_type": "disk",
+                     "tool_name": "disk.extract_mft_timeline",
+                     "timestamp_observed": f"2026-05-24T03:01:0{i}"} for i in range(3)
+                ]
+        c._state_mgr = _One()
+        out = c.find_temporal_clusters("CASE-Z", min_sources=2, min_events=3)
+        self.assertEqual(out["cluster_count"], 0)
+        self.assertEqual(out["diagnostics"]["source_histogram"], {"mft": 3})
+
+
+class CorrelationExclusionTests(unittest.TestCase):
+    """Synthesis ('correlation') findings must not satisfy min_sources alone -
+    they re-describe already-counted sources (peer reviewer constraint)."""
+
+    def setUp(self):
+        ts = "2026-05-24T03:01:0"
+        findings = [
+            {"finding_id": "F-1", "artifact_type": "correlation",
+             "tool_name": "correlation.compare_disk_and_memory", "timestamp_observed": f"{ts}1"},
+            {"finding_id": "F-2", "artifact_type": "correlation",
+             "tool_name": "correlation.compare_disk_and_memory", "timestamp_observed": f"{ts}2"},
+            {"finding_id": "F-3", "artifact_type": "disk",
+             "tool_name": "disk.extract_mft_timeline", "timestamp_observed": f"{ts}3"},
+        ]
+
+        class _Fake:
+            def get_findings(self_inner):
+                return findings
+
+        self._orig = c._state_mgr
+        c._state_mgr = _Fake()
+
+    def tearDown(self):
+        c._state_mgr = self._orig
+
+    def test_correlation_findings_excluded_from_diversity(self):
+        out = c.find_temporal_clusters("CASE-C", min_sources=2, min_events=3)
+        # only 'mft' counts as a source -> 1 source -> no cluster
+        self.assertEqual(out.get("cluster_count"), 0,
+                         "correlation summaries must not inflate source diversity")
+
+
 if __name__ == "__main__":
     unittest.main()
