@@ -7,10 +7,20 @@ query (e.g. a multi-GB intermediate on the MFT/USN CSV) drove server RSS to
 This module is spawned as a CHILD process (`python -m sift_mcp.analysis_worker`):
 it caps its own address space with RLIMIT_AS *before importing pandas*, runs the
 query via the existing run_safe_analysis, and returns a small JSON envelope on
-stdout. If the query blows the cap, only THIS child dies (clean MemoryError, or
-SIGKILL if mmap bypasses the soft limit) — the parent MCP server survives and
-returns a structured error. This restores the process isolation that existed
-when analysis ran via Bash, before run_analysis became an in-process MCP tool.
+stdout.
+
+THE GUARANTEE IS THE PROCESS BOUNDARY, NOT RLIMIT_AS PRECISION (validated by
+deep-research, 2026-06-04). RLIMIT_AS is a best-effort early-trip only: numpy can
+fail well below the configured cap (numpy#26551) and stack growth past the limit
+raises SIGSEGV rather than MemoryError (man7 getrlimit); a cgroup OOM likewise
+cannot be converted to a Python MemoryError (bugs.python.org/issue42411). So a
+runaway query may die by a clean MemoryError OR by SIGKILL/SIGSEGV — and that is
+fine: in every case only THIS child dies and the parent maps the non-zero/signal
+exit to AnalysisBudgetError. The MCP server survives regardless. This restores
+the isolation that existed when analysis ran via Bash, before run_analysis became
+an in-process MCP tool. (subprocess.run+timeout reaps the child; we avoid
+preexec_fn / multiprocessing.Pool, both of which are unsafe/hang-prone here —
+also research-validated.)
 
 Protocol: a single JSON object on stdin:
     {"data_path": str, "query": str, "output_format": str, "mem_cap_bytes": int}
@@ -47,7 +57,10 @@ def _apply_memory_cap(cap_bytes: int) -> None:
             new_hard = cap_bytes
         resource.setrlimit(resource.RLIMIT_AS, (cap_bytes, new_hard))
     except (ValueError, OSError):
-        # Soft-fail: isolation (separate PID) is the real guard.
+        # SOFT-FAIL by design: if the platform rejects the limit, the cap is not
+        # applied but process isolation (this separate PID + the parent's
+        # non-zero-exit -> AnalysisBudgetError mapping) STILL protects the server.
+        # Never raise here - a failed cap must not abort the analysis.
         pass
 
 
