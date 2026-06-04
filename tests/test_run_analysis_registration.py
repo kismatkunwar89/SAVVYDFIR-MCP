@@ -40,6 +40,12 @@ def _decorated_with_mcp_tool(tree: ast.Module, func_name: str) -> bool:
     raise AssertionError(f"function {func_name!r} not found in server.py")
 
 
+def _exists(tree: ast.Module, func_name: str) -> bool:
+    return any(
+        isinstance(n, ast.FunctionDef) and n.name == func_name for n in ast.walk(tree)
+    )
+
+
 class RunAnalysisDecoratorAstTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tree = ast.parse(SERVER_PY.read_text(encoding="utf-8"))
@@ -51,11 +57,20 @@ class RunAnalysisDecoratorAstTests(unittest.TestCase):
             "mcp__savvydfir__run_analysis for PART B audit join",
         )
 
-    def test_instrument_helper_is_not_decorated(self) -> None:
-        self.assertFalse(
-            _decorated_with_mcp_tool(self.tree, "_instrument_run_analysis"),
-            "_instrument_run_analysis is a private helper and MUST NOT be an MCP tool",
-        )
+    def test_private_analysis_helpers_not_decorated(self) -> None:
+        # F1 (2026-06-04): the in-process path was replaced by a memory-capped
+        # subprocess worker. These private helpers must NEVER become MCP tools.
+        for helper in (
+            "_run_analysis_isolated",
+            "_audit_analysis_started",
+            "_audit_analysis_completed",
+            "_instrument_run_analysis",  # legacy name; only checked if still present
+        ):
+            if _exists(self.tree, helper):
+                self.assertFalse(
+                    _decorated_with_mcp_tool(self.tree, helper),
+                    f"{helper} is a private helper and MUST NOT be an MCP tool",
+                )
 
 
 class RunAnalysisLiveRegistrationTests(unittest.TestCase):
