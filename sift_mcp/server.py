@@ -7178,6 +7178,7 @@ def extract_windows_artifacts(
     families: Optional[Any] = None,
     tsk_device_path: Optional[str] = None,
     partition_offset_sectors: Optional[int] = None,
+    force_reextract: bool = False,
 ) -> dict[str, Any]:
     """Extract core Windows artifacts from a direct TSK-readable image.
 
@@ -7198,6 +7199,44 @@ def extract_windows_artifacts(
         offset_args = ["-o", str(int(partition_offset_sectors))]
     command_line = " ".join(["fls", "-r", "-p", *offset_args, device])
 
+    # Durable-reuse MVP (consensus 2026-06-03): content-aware skip-if-present.
+    # Probe each selected family against THIS case's raw_base (parameterized -
+    # never via module _case_id()). All present + not force_reextract => full
+    # short-circuit (skip fls+icat). Partial => stage missing families only
+    # (fls still runs). Content-presence only - NOT an evidence fingerprint.
+    from sift_mcp.tools.disk import probe_durable_raw as _probe_durable_raw
+
+    def _reused_family_paths(probe_path: str) -> list[str]:
+        p = Path(probe_path)
+        if p.is_file():
+            return [str(p)]
+        if p.is_dir():
+            try:
+                return [str(f) for f in sorted(p.iterdir())
+                        if f.is_file() and f.stat().st_size > 0]
+            except OSError:
+                return []
+        return []
+
+    reused_paths: dict[str, list[str]] = {}
+    if not force_reextract:
+        for _fam in sorted(selected):
+            try:
+                _hit = _probe_durable_raw(raw_base, _fam)
+            except Exception:
+                _hit = None
+            if _hit:
+                files = _reused_family_paths(_hit)
+                if files:
+                    reused_paths[_fam] = files
+    missing_families = sorted(set(selected) - set(reused_paths))
+    full_cache_hit = bool(selected) and not force_reextract and not missing_families
+    if full_cache_hit:
+        command_line = (
+            f"extract_windows_artifacts(cache_hit content_presence_only "
+            f"families={sorted(selected)})"
+        )
+
     try:
         started_at = time.monotonic()
         _audit_logger.log_execution(
@@ -7212,6 +7251,76 @@ def extract_windows_artifacts(
             },
             command_line=command_line,
         )
+
+        # Full cache hit: every selected family already staged + valid -> skip
+        # fls+icat entirely (the ~25-min win). Response mirrors a successful
+        # staging so downstream parsers/hooks behave identically; labeled as
+        # content-presence reuse, NOT evidence-fingerprint validation.
+        if full_cache_hit:
+            evtx_dir = raw_base / "evtx"
+            registry_dir = raw_base / "registry"
+            amcache_hive = raw_base / "amcache" / "Amcache.hve"
+            prefetch_dir = raw_base / "prefetch"
+            mft_path = raw_base / "mft" / "$MFT"
+            total_reused = sum(len(p) for p in reused_paths.values())
+            cache_response = {
+                "status": "ok",
+                "tool": tool,
+                "tool_name": tool,
+                "case_id": case_id,
+                "execution_id": execution_id,
+                "image_path": image_path,
+                "tsk_device_path": device,
+                "partition_offset_sectors": partition_offset_sectors,
+                "families": sorted(selected),
+                "raw_artifact_root": str(raw_base),
+                "export_dir": str(raw_base),
+                "extracted": reused_paths,
+                "evtx_dir": str(evtx_dir) if reused_paths.get("evtx") else None,
+                "registry_dir": str(registry_dir) if reused_paths.get("registry") else None,
+                "amcache_hive": str(amcache_hive) if amcache_hive.exists() else None,
+                "prefetch_dir": str(prefetch_dir) if reused_paths.get("prefetch") else None,
+                "mft_path": str(mft_path) if mft_path.exists() else None,
+                "data_gaps": [],
+                "failures": [],
+                "raw_command": command_line,
+                "total_artifacts_staged": total_reused,
+                "families_with_artifacts": sorted(reused_paths),
+                "families_empty": [],
+                "failures_count": 0,
+                "critical_failures": [],
+                "critical_failures_count": 0,
+                # durable-reuse trust labels (explicit, non-fingerprint)
+                "reused_from_cache": True,
+                "cache_validation": "content_presence_only_no_evidence_fingerprint",
+                "force_reextract_available": True,
+                "reused_families": sorted(reused_paths),
+                "extracted_families": [],
+            }
+            duration = time.monotonic() - float(started_at)
+            _audit_logger.log_result(
+                execution_id=execution_id,
+                exit_code=0,
+                duration=duration,
+                outputs_summary=(
+                    f"reused_staged_raw content_presence_only "
+                    f"families={len(reused_paths)}/{len(selected)} staged={total_reused}"
+                ),
+                finding_ids=[],
+                tool_name=tool,
+                command_line=command_line,
+                parameters={
+                    "case_id": case_id,
+                    "image_path": image_path,
+                    "families": sorted(selected),
+                    "tsk_device_path": tsk_device_path,
+                    "partition_offset_sectors": partition_offset_sectors,
+                    "force_reextract": force_reextract,
+                    "cache_validation": "content_presence_only_no_evidence_fingerprint",
+                },
+            )
+            return _finalize_tool_response(tool, cache_response)
+
         if not Path(device).exists():
             raise FileNotFoundError(f"TSK device/image path does not exist: {device}")
 
@@ -7250,6 +7359,12 @@ def extract_windows_artifacts(
             }
 
         extracted: dict[str, list[str]] = {family: [] for family in sorted(selected)}
+        # Partial cache reuse: pre-seed already-staged families and icat ONLY the
+        # missing ones (fls still runs - it's the whole-image walk). reused empty
+        # on force_reextract / cold start -> stage_set == selected (full stage).
+        for _rf, _rp in reused_paths.items():
+            extracted[_rf] = list(_rp)
+        stage_set: set[str] = set(missing_families)
         data_gaps: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         seen_targets: set[str] = set()
@@ -7266,7 +7381,9 @@ def extract_windows_artifacts(
             if parsed is None:
                 continue
             meta_addr, source_path = parsed
-            family = _classify_raw_artifact(source_path, selected)
+            # stage_set excludes already-reused families (partial cache reuse) so
+            # icat runs only for the missing ones; == selected on cold/forced runs.
+            family = _classify_raw_artifact(source_path, stage_set)
             if family is None:
                 continue
             target = _raw_artifact_target(raw_base=raw_base, family=family, source_path=source_path)
@@ -7408,6 +7525,14 @@ def extract_windows_artifacts(
             "failures_count": len(failures),
             "critical_failures": critical_failures,
             "critical_failures_count": len(critical_failures),
+            # durable-reuse labels: which families were reused vs freshly staged
+            "reused_from_cache": bool(reused_paths),
+            "cache_validation": (
+                "content_presence_only_no_evidence_fingerprint" if reused_paths else None
+            ),
+            "force_reextract_available": True,
+            "reused_families": sorted(reused_paths),
+            "extracted_families": sorted(f for f in stage_set if extracted.get(f)),
         }
         duration = time.monotonic() - float(started_at)
         _audit_logger.log_result(

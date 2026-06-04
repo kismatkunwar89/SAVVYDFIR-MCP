@@ -563,17 +563,16 @@ def _raw_artifact_base() -> Path:
     return Path(os.environ.get("OUTPUT_BASE", "/cases")) / _case_id() / "artifacts" / "raw"
 
 
-def _durable_raw_artifact_path(kind: str) -> Optional[str]:
-    """Return a durable extracted artifact path for *kind* - content-aware.
+def probe_durable_raw(raw_base: Path, kind: str) -> Optional[str]:
+    """Content-aware probe for a durable staged artifact under an EXPLICIT raw_base.
 
-    review: the prior 'first existing path' check
-    accepted empty directories created by failed/partial extract_windows_
-    artifacts runs. An empty raw/evtx would then shadow a valid mounted
-    Windows root and break A.2 path resolution.
-
-    Now: only return a path that contains the artifact files we expect.
+    Parameterized form (durable-reuse consensus 2026-06-03): callers pass the
+    raw_base they computed from their OWN case_id, so server.py staging never
+    probes the wrong case via module-level _case_id() state. Returns a path ONLY
+    when the expected artifact files are actually present (rejects empty/partial
+    dirs - a prior bug let an empty raw/evtx shadow a valid mounted Windows root).
     """
-    base = _raw_artifact_base()
+    base = Path(raw_base)
     if kind == "evtx":
         candidate = base / "evtx"
         if candidate.is_dir() and any(candidate.glob("*.evtx")):
@@ -608,7 +607,39 @@ def _durable_raw_artifact_path(kind: str) -> Optional[str]:
         if candidate.is_file() and candidate.stat().st_size > 0:
             return str(candidate)
         return None
+    if kind == "srum":
+        candidate = base / "srum" / "SRUDB.dat"
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            return str(candidate)
+        return None
+    if kind == "usn":
+        usn_dir = base / "usn"
+        if usn_dir.is_dir():
+            # known staged journal names (mirror _resolve_usn_path_input variants)
+            for name in ("$J", "$UsnJrnl_$J", "$UsnJrnl_J", "UsnJrnl_J",
+                         "usn_journal_J", "$UsnJrnl"):
+                cand = usn_dir / name
+                if cand.is_file() and cand.stat().st_size > 0:
+                    return str(usn_dir)
+            # fallback: any non-empty staged file in the usn dir
+            try:
+                for cand in usn_dir.iterdir():
+                    if cand.is_file() and cand.stat().st_size > 0:
+                        return str(usn_dir)
+            except OSError:
+                pass
+        return None
     return None
+
+
+def _durable_raw_artifact_path(kind: str) -> Optional[str]:
+    """Back-compat wrapper: probe under the module-state case raw base.
+
+    Downstream disk.py parsers keep calling this (module _case_id() base);
+    server.py staging calls probe_durable_raw(raw_base, kind) with its OWN
+    case_id-derived base to avoid wrong-case probing (durable-reuse consensus).
+    """
+    return probe_durable_raw(_raw_artifact_base(), kind)
 
 
 def _unsafe_runtime_tmp_input(path: str) -> bool:
