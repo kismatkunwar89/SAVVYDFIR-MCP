@@ -71,6 +71,10 @@ from sift_mcp.tools.disk import extract_lnk_files as _extract_lnk_files
 from sift_mcp.tools.disk import extract_jump_lists as _extract_jump_lists
 from sift_mcp.tools.disk import extract_browser_history as _extract_browser_history
 from sift_mcp.tools.disk import extract_registry_fileaccess as _extract_registry_fileaccess
+from sift_mcp.tools.disk import (
+    is_critical_extraction_failure as _is_critical_extraction_failure,
+    classify_extraction_failure as _classify_extraction_failure,
+)
 from sift_mcp.tools.evidence import get_provenance as _get_provenance
 from sift_mcp.tools.evidence import verify_integrity as _verify_integrity
 from sift_mcp.state import CaseStateManager
@@ -7484,18 +7488,69 @@ def extract_windows_artifacts(
         else:
             status_value = "ok"
 
-        # Critical-failure promotion: a failure on a known mandatory artifact
-        # (Security.evtx, System.evtx, $MFT, NTUSER.DAT, SYSTEM hive) belongs
-        # in the summary so the agent sees it instead of digging through
-        # failures[]. Detected by source_path basename or family.
-        _CRITICAL_NAMES = {
-            "security.evtx", "system.evtx", "$mft", "ntuser.dat",
-            "system", "software", "sam", "security",
-        }
-        critical_failures = [
-            f for f in failures
-            if any(name in str(f.get("source_path", "")).lower() for name in _CRITICAL_NAMES)
-        ]
+        # Critical-failure promotion (consensus 2026-06-03): family-aware BASENAME
+        # match (the old substring check matched 'system' in every Windows/System32
+        # path -> false criticals). A critical artifact that failed to extract is a
+        # forensic GAP even when the family staged other files (e.g. live
+        # Security.evtx torn while 200 other EVTX + Archive-Security succeeded).
+        critical_failures = [f for f in failures if _is_critical_extraction_failure(f)]
+
+        # Runtime identification + recovery routing: surface each DISTINCT critical
+        # failure as a data_gap (visible to the agent), classified by stderr. A
+        # decompression signature -> damaged_artifact_recovery_required + route to
+        # disk.analyze_vss (VSS); else generic critical failure (retry/document).
+        # NOTE: this data_gap is in the TOOL RESPONSE (the agent sees it + the VSS
+        # next_required_tool). HTML-report Data Gaps still come via the agent's
+        # record_analysis_lane(data_gaps=...) writeback - a separate merge is a
+        # documented follow-up, not promised here.
+        _CRITICAL_GAP_CAP = 25
+        _seen_gap_keys: set[tuple[str, str]] = set()
+        _critical_gap_overflow = 0
+        for _cf in critical_failures:
+            _sp = str(_cf.get("source_path") or "")
+            _cls = _classify_extraction_failure(_cf)
+            _key = (_sp, _cls)
+            if _key in _seen_gap_keys:
+                continue
+            if len(_seen_gap_keys) >= _CRITICAL_GAP_CAP:
+                _critical_gap_overflow += 1
+                continue
+            _seen_gap_keys.add(_key)
+            _fam = str(_cf.get("family") or "")
+            _base = _sp.replace("\\", "/").rsplit("/", 1)[-1]
+            _recovery = _cls == "damaged_artifact_recovery_required"
+            data_gaps.append({
+                "artifact_family": _fam,
+                "classification": _cls,
+                "reason": (
+                    f"Critical artifact '{_base}' failed to extract"
+                    + (
+                        " (NTFS decompression error - standard extraction failed; "
+                        "likely a torn/compressed live artifact - recover the "
+                        "point-in-time copy via Volume Shadow Copies). stderr-pattern "
+                        "heuristic, not proven cluster damage."
+                        if _recovery else
+                        " (critical-artifact extraction failure; retry or record a "
+                        "documented-absence)."
+                    )
+                ),
+                "lane_id": (
+                    "event_auth" if _fam == "evtx"
+                    else "timeline_correlation" if _fam == "mft"
+                    else "disk_execution_persistence"
+                ),
+                "source_path": _sp,
+                "next_required_tool": "disk.analyze_vss" if _recovery else None,
+                "recovery_hint": "decompression_signature" if _recovery else "generic",
+            })
+        if _critical_gap_overflow:
+            data_gaps.append({
+                "artifact_family": "multiple",
+                "classification": "critical_artifact_extraction_failed",
+                "reason": f"{_critical_gap_overflow} additional critical-artifact "
+                          f"failures beyond the first {_CRITICAL_GAP_CAP} (see failures[]).",
+                "lane_id": "disk_execution_persistence",
+            })
 
         response = {
             "status": status_value,

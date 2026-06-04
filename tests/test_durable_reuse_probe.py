@@ -95,3 +95,55 @@ def test_wrapper_uses_module_base(monkeypatch):
     (rb / "prefetch" / "X.pf").write_bytes(b"x")
     monkeypatch.setattr(disk, "_raw_artifact_base", lambda: rb)
     assert disk._durable_raw_artifact_path("prefetch") == str(rb / "prefetch")
+
+
+# --- extraction-failure classification (consensus 2026-06-03) ---------------
+from sift_mcp.tools.disk import (  # noqa: E402
+    is_critical_extraction_failure,
+    classify_extraction_failure,
+)
+
+
+def test_system32_path_not_critical_by_substring():
+    # the blocker peer reviewer/peer reviewer flagged: 'system' in Windows/System32 must NOT match
+    f = {"family": "evtx",
+         "source_path": "/Windows/System32/winevt/Logs/Microsoft-Windows-Sysmon%4Operational.evtx"}
+    assert is_critical_extraction_failure(f) is False
+
+
+def test_security_evtx_is_critical():
+    f = {"family": "evtx", "source_path": "/Windows/System32/winevt/Logs/Security.evtx"}
+    assert is_critical_extraction_failure(f) is True
+
+
+def test_system_evtx_is_critical():
+    f = {"family": "evtx", "source_path": "/Windows/System32/winevt/Logs/System.evtx"}
+    assert is_critical_extraction_failure(f) is True
+
+
+def test_registry_hives_and_ntuser_critical():
+    assert is_critical_extraction_failure({"family": "registry", "source_path": "/Windows/System32/config/SYSTEM"})
+    assert is_critical_extraction_failure({"family": "registry", "source_path": "/Windows/System32/config/SOFTWARE"})
+    assert is_critical_extraction_failure({"family": "registry", "source_path": "/Users/x/NTUSER.DAT"})
+    # per-user staging slug
+    assert is_critical_extraction_failure({"family": "registry", "source_path": "/raw/registry/fredr_NTUSER.DAT"})
+
+
+def test_mft_critical():
+    assert is_critical_extraction_failure({"family": "mft", "source_path": "/$MFT"})
+
+
+def test_decompression_stderr_classified_recovery():
+    f = {"family": "evtx", "source_path": "/x/Security.evtx",
+         "stderr": "Failed to decompress file: Value too large for defined data type"}
+    assert classify_extraction_failure(f) == "damaged_artifact_recovery_required"
+
+
+def test_timeout_stderr_classified_generic():
+    f = {"family": "evtx", "source_path": "/x/Security.evtx",
+         "stderr": "icat timeout after 300s"}
+    assert classify_extraction_failure(f) == "critical_artifact_extraction_failed"
+
+
+def test_empty_stderr_generic():
+    assert classify_extraction_failure({"stderr": ""}) == "critical_artifact_extraction_failed"

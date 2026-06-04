@@ -642,6 +642,56 @@ def _durable_raw_artifact_path(kind: str) -> Optional[str]:
     return probe_durable_raw(_raw_artifact_base(), kind)
 
 
+# ---------------------------------------------------------------------------
+# Extraction-failure classification (consensus 2026-06-03).
+# Family-aware BASENAME matching (NOT path substring - 'system' must not match
+# every Windows/System32/* path) + narrow stderr decompression signatures so a
+# torn/compressed live artifact routes to RECOVERY (VSS) instead of retry.
+# Pure + importable (no fastmcp) so server.py uses these for both
+# critical_failures[] and the per-file data_gaps.
+# ---------------------------------------------------------------------------
+_CRITICAL_FAILURE_BASENAMES: dict[str, frozenset[str]] = {
+    "evtx": frozenset({"security.evtx", "system.evtx"}),
+    "registry": frozenset({"system", "software", "sam", "security", "ntuser.dat"}),
+    "mft": frozenset({"$mft"}),
+}
+# stderr signatures that indicate decompression / compressed-data corruption
+# (recover via VSS) vs a generic/retryable failure (timeout, write, bad meta).
+_DECOMPRESSION_SIGNATURES: tuple[str, ...] = (
+    "value too large", "ntfs_uncompress", "uncompress", "decompress",
+    "compression", "compressed", "compunit", "data error", "lzxpress",
+    "invalid compressed", "unable to decompress", "bad compression",
+)
+
+
+def _failure_basename(failure: dict[str, Any]) -> str:
+    sp = str(failure.get("source_path") or "").replace("\\", "/")
+    return sp.rsplit("/", 1)[-1].strip().lower()
+
+
+def is_critical_extraction_failure(failure: dict[str, Any]) -> bool:
+    """True iff this per-file failure is a forensically critical artifact,
+    matched by FAMILY + exact BASENAME (never path substring)."""
+    fam = str(failure.get("family") or "").strip().lower()
+    base = _failure_basename(failure)
+    if base in _CRITICAL_FAILURE_BASENAMES.get(fam, frozenset()):
+        return True
+    # per-user NTUSER staging slug: {user}_NTUSER.DAT
+    if fam == "registry" and base.endswith("ntuser.dat"):
+        return True
+    return False
+
+
+def classify_extraction_failure(failure: dict[str, Any]) -> str:
+    """'damaged_artifact_recovery_required' (decompression/corruption -> VSS) or
+    'critical_artifact_extraction_failed' (generic/retryable). stderr is a
+    heuristic recovery HINT, not proof of cluster damage."""
+    stderr = str(failure.get("stderr") or "").lower()
+    if any(sig in stderr for sig in _DECOMPRESSION_SIGNATURES):
+        return "damaged_artifact_recovery_required"
+    return "critical_artifact_extraction_failed"
+
+
 def _unsafe_runtime_tmp_input(path: str) -> bool:
     """Reject broad or ad hoc /tmp artifact sources created by manual recovery."""
     try:
