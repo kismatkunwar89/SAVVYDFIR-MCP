@@ -210,6 +210,7 @@ def score(gt: dict[str, Any], findings: list[dict[str, Any]]) -> dict[str, Any]:
     gt_rows = gt.get("findings", []) or []
     per_gt = []
     tp = fn = 0
+    courseware_only = []  # GT entries flagged not image-extractable (excluded from recall)
     for g in gt_rows:
         ga = distinctive_anchors(gt_anchor_text(g))
         best = None
@@ -217,6 +218,20 @@ def score(gt: dict[str, Any], findings: list[dict[str, Any]]) -> dict[str, Any]:
             shared = ga & fa
             if shared and (best is None or len(shared) > len(best[1])):
                 best = (fid, shared)
+        # An entry explicitly flagged image_extractable: false is courseware-only -
+        # the fact is not present in the evidence image, so an evidence-bound run
+        # cannot surface it without fabricating. Excluded from the recall
+        # denominator (reported separately) so we never reward hallucination.
+        extractable = g.get("image_extractable", True)
+        if extractable is False:
+            verdict = "COURSEWARE_ONLY_FOUND" if best else "COURSEWARE_ONLY"
+            courseware_only.append({
+                "gt_id": g.get("id"), "finding_type": g.get("finding_type"),
+                "verdict": verdict,
+                "matched_finding": best[0] if best else None,
+                "note": "not image-extractable; excluded from image-recall",
+            })
+            continue
         if best:
             tp += 1
             per_gt.append({
