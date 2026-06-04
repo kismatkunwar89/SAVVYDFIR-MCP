@@ -68,6 +68,7 @@ uninstalled uninstall installed install received receive header headers based ap
 tied hosts host hosted ties total counts count files-only image-only filled answer answers blank
 default profile profiles local-profile workstation laptop desktop server machine host evidencing
 navigation explorer-folder shellbag shellbags lastwrite last-write modified created accessed
+guid uuid sid timestamp uninstallstring uninstall-string vsc vss snapshot value-data hex offset
 """.split())
 
 # Ubiquitous app / tool / domain names that are NOT case-distinctive: a match on

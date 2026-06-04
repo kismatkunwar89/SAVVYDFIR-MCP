@@ -1,0 +1,45 @@
+{
+  "case_id": "ROCBA-2020-FREDS-LAPTOP",
+  "run_date_utc": "2026-06-04",
+  "label": "post-idempotency + F1-OOM-isolation + 8-core run (clean, no re-parse)",
+  "score": {
+    "recall": 0.90,
+    "tp": 9,
+    "fn": 1,
+    "gt_findings_image_extractable": 10,
+    "fn_ids": ["GT-007"],
+    "fn_reason": "Edge-download specifics weakly anchored (browser extraction ran; no distinctive anchor)",
+    "hallucinations": 0,
+    "eval_target_coverage": "3/6",
+    "scorer": "scripts/eval/gt_match_scorer.py (anchored, generic-token-reject)",
+    "gt_006_excluded": "Natasha Romanoff = courseware-only (image_extractable:false), verified absent from SAM/registry/profiles"
+  },
+  "report": {
+    "triage_status": "COMPLETE_WITH_GAPS",
+    "findings_count": 107,
+    "status_breakdown": {"ACTIVE": 104, "CONFIRMED": 3},
+    "confirmed": [
+      {"id": "F-102", "type": "lateral_movement", "corroborated_by": 3},
+      {"id": "F-103", "type": "other", "corroborated_by": 5},
+      {"id": "F-104", "type": "exfiltration", "corroborated_by": 7}
+    ],
+    "coverage_percent": 64.3,
+    "covered_tactics": ["TA0001","TA0002","TA0003","TA0005","TA0008","TA0009","TA0010","TA0011","TA0040"]
+  },
+  "infrastructure_proof": {
+    "durable_reuse_fired": ["E-023 extract_mft_timeline CACHE_HIT", "E-037 extract_usn_journal CACHE_HIT", "E-049 summarize_evtx CACHE_HIT"],
+    "fls_icat_over_e01": 0,
+    "dotnet_reparse": "none (all 3 v1 tools reused)",
+    "evtx_timeout": "none (parse skipped via reuse)",
+    "stop_hook_loop": "none",
+    "oom": "none (run_analysis isolated in 4GB-capped child; server alive)",
+    "vcpu": 8,
+    "findings_recreated_on_reuse": {"E-037_usn": 4, "E-049_evtx": 3, "E-023_mft": 0}
+  },
+  "notes": [
+    "MFT reuse recreated 0 auto-findings = correct (no timestomping candidates; MFT mined via run_analysis).",
+    "Coverage 64.3% vs prior clean run 71.4% is agent-driven pivot variance, not the reuse fix (findings recreated correctly).",
+    "Reuse confidence = legacy_unverified (no prior sidecars); a future force_reparse run would stamp sidecars for fingerprint_verified.",
+    "vs prior baseline ROCBA-prior-2026-05-31: recall 90% (tied); this run's win is infrastructure stability (zero re-parse/timeout/loop/OOM)."
+  ]
+}
