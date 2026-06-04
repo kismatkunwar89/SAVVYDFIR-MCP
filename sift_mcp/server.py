@@ -95,6 +95,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 from datetime import datetime, timezone
@@ -10754,32 +10755,54 @@ def _analysis_missing_path_hint(path_text: str) -> str:
     return _analysis_handle_hint_for_path(normalized)
 
 
-def _instrument_run_analysis(
-    resolved_path: str,
-    query: str,
-    output_format: str,
-    result: Any,
-) -> None:
-    """Step 0 (PART B): write an audit + state.executions row for a run_analysis call.
+# --- run_analysis memory isolation (F1, review 2026-06-04) -----------
+# run_analysis used to execute pandas IN this MCP server process; a runaway query
+# on the MFT/USN CSV drove server RSS to 15.3GB and systemd-oomd killed the whole
+# server mid-investigation. It now runs in a memory-capped CHILD process
+# (sift_mcp.analysis_worker). ONE child at a time so the RLIMIT_AS cap math holds
+# on a 15GiB VM that is also running sequential dotnet tools. This restores the
+# process isolation that existed when analysis ran via Bash, before the P0 fix
+# made run_analysis an in-process MCP tool.
+_ANALYSIS_LOCK = threading.Lock()
 
-    The analysis-debt detector joins ``parameters.data_path`` of these rows back
-    to extraction handles to decide which CSV/JSON outputs were actually mined.
-    Best-effort: any failure (no case loaded, audit error) is swallowed so the
-    analysis result is never lost.
-    """
+
+class AnalysisBudgetError(RuntimeError):
+    """run_analysis child exceeded its memory (RLIMIT_AS/SIGKILL) or time budget."""
+
+
+def _analysis_mem_cap_bytes() -> int:
     try:
-        row_count = result.get("row_count") if isinstance(result, dict) else None
-        columns = result.get("columns") if isinstance(result, dict) else None
-        col_n = len(columns) if isinstance(columns, list) else 0
-        params = {
-            "data_path": resolved_path,
-            "query": str(query),
-            "output_format": str(output_format),
-        }
-        command_repr = f"run_analysis(data_path={resolved_path!r}, query={query!r})"
-        outputs_summary = (
-            f"run_analysis rows={row_count} cols={col_n} on {resolved_path}"
-        )
+        mb = int(os.environ.get("SAVVYDFIR_ANALYSIS_MEM_CAP_MB", "4096"))
+    except (TypeError, ValueError):
+        mb = 4096
+    return max(256, mb) * 1024 * 1024
+
+
+def _analysis_timeout_secs() -> int:
+    try:
+        return max(10, int(os.environ.get("SAVVYDFIR_ANALYSIS_TIMEOUT_SECS", "240")))
+    except (TypeError, ValueError):
+        return 240
+
+
+def _analysis_audit_params(resolved_path: str, query: str, output_format: str) -> dict[str, Any]:
+    return {
+        "data_path": resolved_path,
+        "query": str(query),
+        "query_sha1": hashlib.sha1(str(query).encode("utf-8", "replace")).hexdigest(),
+        "output_format": str(output_format),
+        "mem_cap_mb": _analysis_mem_cap_bytes() // (1024 * 1024),
+        "timeout_secs": _analysis_timeout_secs(),
+    }
+
+
+def _audit_analysis_started(resolved_path: str, query: str, output_format: str):
+    """Write the 'started' audit row BEFORE the worker spawns, so a fatal query is
+    postmortem-visible (the prior in-process OOM left NO audit row at all).
+    Returns (execution_id, started_entry, params, command_repr)."""
+    params = _analysis_audit_params(resolved_path, query, output_format)
+    command_repr = f"run_analysis(data_path={resolved_path!r}, query={query!r})"
+    try:
         eid = _audit_logger.next_execution_id()
         started = _audit_logger.log_execution(
             execution_id=eid,
@@ -10787,9 +10810,22 @@ def _instrument_run_analysis(
             parameters=params,
             command_line=command_repr,
         )
+        return eid, started, params, command_repr
+    except Exception:
+        return None, None, params, command_repr
+
+
+def _audit_analysis_completed(eid, started, params, command_repr, *, exit_code, outputs_summary, result=None):
+    """Write the 'completed' audit + execution-parity rows for a run_analysis call.
+
+    Always runs (success OR failure) so analysis-debt join + postmortem stay intact.
+    """
+    if eid is None:
+        return
+    try:
         completed = _audit_logger.log_result(
             execution_id=eid,
-            exit_code=0,
+            exit_code=exit_code,
             duration=0.0,
             outputs_summary=outputs_summary,
             finding_ids=[],
@@ -10803,7 +10839,7 @@ def _instrument_run_analysis(
             command_line=command_repr,
             parameters=params,
             duration_seconds=0.0,
-            exit_code=0,
+            exit_code=exit_code,
             outputs_summary=outputs_summary,
             started_entry=started,
             completed_entry=completed,
@@ -10812,6 +10848,59 @@ def _instrument_run_analysis(
             result.setdefault("execution_id", eid)
     except Exception:
         pass
+
+
+def _run_analysis_isolated(resolved_path: str, query: str, output_format: str):
+    """Run run_safe_analysis in a memory-capped child process (F1).
+
+    Returns the AnalysisResult dict. Raises SafeAnalysisError for an unsafe/bad
+    query, AnalysisBudgetError for OOM (RLIMIT_AS / SIGKILL) or wall-clock
+    timeout. The MCP server is never at risk regardless of the query.
+    """
+    cap = _analysis_mem_cap_bytes()
+    timeout = _analysis_timeout_secs()
+    req = json.dumps({
+        "data_path": resolved_path,
+        "query": query,
+        "output_format": output_format,
+        "mem_cap_bytes": cap,
+    })
+    with _ANALYSIS_LOCK:  # single active analysis child (cap math on 15GiB VM)
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "sift_mcp.analysis_worker"],
+                input=req,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                start_new_session=True,  # own process group -> clean timeout kill
+            )
+        except subprocess.TimeoutExpired:
+            raise AnalysisBudgetError(
+                f"analysis exceeded the {timeout}s wall-clock budget on {resolved_path}"
+            )
+    if proc.returncode != 0:
+        # Non-zero/negative => child died (e.g. SIGKILL when RLIMIT_AS is bypassed
+        # via mmap). The server survives; surface a clean, actionable error.
+        sig = -proc.returncode if proc.returncode < 0 else proc.returncode
+        raise AnalysisBudgetError(
+            f"analysis worker terminated (exit/signal {sig}) - likely exceeded the "
+            f"{cap // (1024 * 1024)}MB memory budget on {resolved_path}"
+        )
+    out = (proc.stdout or "").strip()
+    if len(out) > 8_000_000:
+        raise AnalysisBudgetError("analysis worker returned an oversized payload")
+    try:
+        env = json.loads(out) if out else {}
+    except Exception as exc:
+        raise AnalysisBudgetError(f"analysis worker produced unparseable output: {exc}")
+    if env.get("ok"):
+        return env.get("result")
+    kind = env.get("kind")
+    msg = env.get("error", "analysis failed")
+    if kind == "memory":
+        raise AnalysisBudgetError(msg)
+    raise SafeAnalysisError(msg)
 
 
 @mcp.tool()
@@ -10850,37 +10939,72 @@ def run_analysis(
     dict
         AnalysisResult with tabulated output, row count, column names, and insights.
     """
+    if not validate_path(data_path, write=False):
+        return ToolResult(
+            status="error", tool="run_analysis",
+            error=f"RBAC: path not permitted: {data_path}",
+        ).model_dump()
+
+    path = Path(data_path).resolve()
+    if not path.exists():
+        hint = _analysis_missing_path_hint(str(path))
+        return ToolResult(
+            status="error", tool="run_analysis",
+            error=f"File not found: {data_path}.{hint}",
+        ).model_dump()
+
+    # F1 (review 2026-06-04): audit STARTED before spawning the worker so a
+    # fatal/OOM query is postmortem-visible, then run pandas in a memory-capped
+    # CHILD process. A runaway query kills only the child; the server survives.
+    eid, started, params, command_repr = _audit_analysis_started(
+        str(path), query, output_format
+    )
     try:
-        if not validate_path(data_path, write=False):
-            return ToolResult(
-                status="error", tool="run_analysis",
-                error=f"RBAC: path not permitted: {data_path}",
-            ).model_dump()
-
-        path = Path(data_path).resolve()
-        if not path.exists():
-            normalized_missing = str(path)
-            hint = _analysis_missing_path_hint(normalized_missing)
-            return ToolResult(
-                status="error", tool="run_analysis",
-                error=f"File not found: {data_path}.{hint}",
-            ).model_dump()
-
-        result = run_safe_analysis(str(path), query, output_format)
-        # Step 0 (PART B, review 2026-06-03): instrument run_analysis into
-        # the ledger so analysis-debt detection can join data_path -> execution.
-        # Best-effort: a logging failure (e.g. no case loaded) must never break
-        # the analysis result itself.
-        _instrument_run_analysis(str(path), query, output_format, result)
-        return result
+        result = _run_analysis_isolated(str(path), query, output_format)
     except SafeAnalysisError as exc:
-        return ToolResult(
-            status="error", tool="run_analysis", error=str(exc)
+        _audit_analysis_completed(
+            eid, started, params, command_repr,
+            exit_code=2, outputs_summary=f"run_analysis rejected/error: {exc}",
+        )
+        out = ToolResult(status="error", tool="run_analysis", error=str(exc)).model_dump()
+        if eid:
+            out["execution_id"] = eid
+        return out
+    except AnalysisBudgetError as exc:
+        _audit_analysis_completed(
+            eid, started, params, command_repr,
+            exit_code=137, outputs_summary=f"run_analysis budget exceeded: {exc}",
+        )
+        out = ToolResult(
+            status="error", tool="run_analysis",
+            error=(
+                f"{exc}. Narrow the query (filter rows, select columns, .head(N)) "
+                "or raise SAVVYDFIR_ANALYSIS_MEM_CAP_MB. The server was not affected."
+            ),
         ).model_dump()
+        if eid:
+            out["execution_id"] = eid
+        return out
     except Exception as exc:
-        return ToolResult(
-            status="error", tool="run_analysis", error=str(exc),
-        ).model_dump()
+        _audit_analysis_completed(
+            eid, started, params, command_repr,
+            exit_code=1, outputs_summary=f"run_analysis failed: {exc}",
+        )
+        out = ToolResult(status="error", tool="run_analysis", error=str(exc)).model_dump()
+        if eid:
+            out["execution_id"] = eid
+        return out
+
+    row_count = result.get("row_count") if isinstance(result, dict) else None
+    columns = result.get("columns") if isinstance(result, dict) else None
+    col_n = len(columns) if isinstance(columns, list) else 0
+    _audit_analysis_completed(
+        eid, started, params, command_repr,
+        exit_code=0,
+        outputs_summary=f"run_analysis rows={row_count} cols={col_n} on {path}",
+        result=result,
+    )
+    return result
 
 
 # ===========================================================================
