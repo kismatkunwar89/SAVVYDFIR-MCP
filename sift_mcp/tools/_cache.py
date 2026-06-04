@@ -111,6 +111,160 @@ def _entry_hash(entry: Any) -> Optional[str]:
     return None
 
 
+# --- F-A durable-reuse: versioned sidecar fingerprint (review 2026-06-04) ---
+# Reuse a prior dotnet-parsed CSV after state.json (and its artifact-cache index)
+# is cleared, IF the source evidence is unchanged. Read-only forensic evidence
+# makes size+mtime a defensible fingerprint; an EVTX *directory* uses a per-file
+# manifest hash (dir mtime alone is insufficient). SHA-256 of content is optional
+# (env), not default on multi-GB blobs.
+_SIDECAR_SCHEMA = 1
+_SIDECAR_SUFFIX = ".savvyreuse.json"
+
+
+def _sidecar_path(csv_path: str) -> Path:
+    return Path(str(csv_path) + _SIDECAR_SUFFIX)
+
+
+def source_fingerprint(source_path: str) -> Optional[dict[str, Any]]:
+    """Cheap, deterministic fingerprint of a raw evidence source (file or dir).
+
+    File: resolved path + size + mtime_ns. Directory (e.g. EVTX corpus): a
+    manifest hash over each file's (relpath, size, mtime_ns) — catches changed,
+    added or removed files without hashing GBs of content.
+    """
+    p = Path(source_path)
+    try:
+        if p.is_dir():
+            entries = []
+            total = 0
+            for f in sorted(p.rglob("*")):
+                if f.is_file():
+                    st = f.stat()
+                    entries.append(f"{f.relative_to(p)}|{st.st_size}|{st.st_mtime_ns}")
+                    total += st.st_size
+            manifest = hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
+            return {"kind": "dir", "path": str(p.resolve()),
+                    "file_count": len(entries), "total_bytes": total,
+                    "manifest_sha256": manifest}
+        if p.is_file():
+            st = p.stat()
+            return {"kind": "file", "path": str(p.resolve()),
+                    "size": st.st_size, "mtime_ns": st.st_mtime_ns}
+    except OSError:
+        return None
+    return None
+
+
+def fingerprints_match(a: Optional[dict[str, Any]], b: Optional[dict[str, Any]]) -> bool:
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return False
+    if a.get("kind") != b.get("kind"):
+        return False
+    if a.get("kind") == "file":
+        return a.get("size") == b.get("size") and a.get("mtime_ns") == b.get("mtime_ns")
+    if a.get("kind") == "dir":
+        return (a.get("file_count") == b.get("file_count")
+                and a.get("manifest_sha256") == b.get("manifest_sha256"))
+    return False
+
+
+def write_reuse_sidecar(csv_path: str, *, tool_name: str, source_path: str,
+                        parser_version: Optional[str] = None) -> None:
+    """Persist the source fingerprint next to a freshly-parsed CSV so a later run
+    (after state clear) can verify-and-reuse it. Best-effort; never raises."""
+    try:
+        fp = source_fingerprint(source_path)
+        if not fp:
+            return
+        sidecar = {
+            "schema": _SIDECAR_SCHEMA,
+            "tool": tool_name,
+            "parser_version": parser_version,
+            "fingerprint_algo": "size_mtime_manifest",
+            "source_fingerprint": fp,
+            "csv_path": str(csv_path),
+        }
+        _sidecar_path(csv_path).write_text(json.dumps(sidecar), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _read_reuse_sidecar(csv_path: str) -> Optional[dict[str, Any]]:
+    try:
+        raw = _sidecar_path(csv_path).read_text(encoding="utf-8")
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def try_durable_reuse(
+    audit_logger: AuditLogger,
+    state_manager: CaseStateManager,
+    *,
+    tool_name: str,
+    parameters: dict[str, Any],
+    output_base: str,
+    case_id: str,
+    subtype: str,
+    canonical_filename: str,
+    source_path: Optional[str],
+    force_reparse: bool = False,
+) -> Optional[dict[str, Any]]:
+    """Probe the durable output CSV; if present (and source unchanged when a
+    sidecar exists), record a cache-hit and return reuse metadata so the caller
+    can SKIP the dotnet parse. Returns None -> caller must parse normally.
+
+    Reuse confidence:
+      - ``fingerprint_verified``: sidecar present AND source fingerprint matches.
+      - ``legacy_unverified``:   CSV exists but no sidecar (pre-dates this change)
+        -> reused with a warning; pass force_reparse=True to regenerate.
+    Source changed (sidecar present, fingerprint mismatch) -> returns None (reparse).
+    """
+    if force_reparse:
+        try:
+            probe = probe_durable_output_csv(output_base, case_id, subtype, filename=canonical_filename)
+            if probe:
+                _sidecar_path(probe["csv_path"]).unlink(missing_ok=True)  # invalidate
+        except (OSError, TypeError):
+            pass
+        return None
+
+    probe = probe_durable_output_csv(output_base, case_id, subtype, filename=canonical_filename)
+    if not probe:
+        return None
+    csv_path = probe["csv_path"]
+
+    confidence = "legacy_unverified"
+    sidecar = _read_reuse_sidecar(csv_path)
+    if sidecar and source_path:
+        current = source_fingerprint(source_path)
+        if fingerprints_match(sidecar.get("source_fingerprint"), current):
+            confidence = "fingerprint_verified"
+        else:
+            return None  # source evidence changed -> must reparse
+
+    meta = record_cache_hit(
+        audit_logger, state_manager,
+        tool_name=tool_name, parameters=parameters,
+        cache_key=build_cache_key(tool_name, parameters),
+        artifact_path=csv_path, cache_source_execution_id=None,
+    )
+    return {
+        "csv_path": csv_path,
+        "reused_output": True,
+        "reuse_confidence": confidence,
+        "reuse_note": (
+            "Durable output CSV reused (source fingerprint verified)."
+            if confidence == "fingerprint_verified" else
+            "Durable output CSV reused WITHOUT fingerprint verification (no sidecar; "
+            "pre-dates reuse-tracking). Pass force_reparse=True to regenerate."
+        ),
+        "execution_id": meta["execution_id"],
+        "raw_command": meta["raw_command"],
+    }
+
+
 def record_cache_hit(
     audit_logger: AuditLogger,
     state_manager: CaseStateManager,
