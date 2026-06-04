@@ -54,6 +54,8 @@ from sift_mcp.tools._cache import (
     build_cache_key,
     get_valid_cached_artifact,
     record_cache_hit,
+    try_durable_reuse,
+    write_reuse_sidecar,
 )
 from sift_mcp.tools._contracts import (
     build_contract_response,
@@ -3138,6 +3140,7 @@ def extract_mft_timeline(
     case_id: Optional[str] = None,
     max_entries: int = 0,
     response_format: str = "summary",
+    force_reparse: bool = False,
 ) -> dict[str, Any]:
     """Parse the NTFS Master File Table into a timestomping-aware timeline.
 
@@ -3297,6 +3300,93 @@ def extract_mft_timeline(
             evidence_excerpt=stream["evidence_excerpt"],
         )
 
+    # F-A durable reuse (review 2026-06-04): after the state-cache MISS,
+    # if the durable mft_timeline.csv already exists and the source $MFT is
+    # unchanged (size+mtime sidecar), reuse it and SKIP the MFTECmd parse. Because
+    # state may have been cleared (cache index gone), the prior findings are gone
+    # too -> this is a SEPARATE branch from the state-cache hit: create_findings
+    # =True with the reuse execution_id so the fresh investigation gets findings.
+    reuse = try_durable_reuse(
+        _audit, _state,
+        tool_name=tool,
+        parameters={"mft_path": resolved_mft_path},
+        output_base=os.environ.get("OUTPUT_BASE", "/cases"),
+        case_id=_case_id(),
+        subtype="mft",
+        canonical_filename="mft_timeline.csv",
+        source_path=resolved_mft_path,
+        force_reparse=force_reparse,
+    )
+    if reuse is not None:
+        reuse_csv = reuse["csv_path"]
+        stream = _stream_mft_summary(
+            reuse_csv,
+            mft_path=resolved_mft_path,
+            tool=tool,
+            execution_id=reuse["execution_id"],
+            create_findings=True,
+        )
+        finding_ids = stream["finding_ids"]
+        timestomping_candidates = stream["timestomping_candidates"]
+        total_records = stream["raw_rows"]
+        sample = stream["sample"]
+        detailed_records = (
+            sample[:max_entries] if (max_entries and max_entries > 0) else list(sample)
+        )
+        response = {
+            "tool_name": tool,
+            "status": "success",
+            "findings_created": finding_ids,
+            "execution_id": reuse["execution_id"],
+            "raw_command": reuse["raw_command"],
+            "records_count": len(detailed_records),
+            "total_records": total_records,
+            "matched_records": total_records,
+            "timestomping_candidates": timestomping_candidates,
+            "timestomping_findings_truncated": stream["timestomping_findings_truncated"],
+            "data_truncated": total_records > len(detailed_records),
+            "data_scope": "head_sample",
+            "sample_cap": _MFT_SAMPLE_CAP,
+            "csv_path": reuse_csv,
+            "reused_output": True,
+            "reuse_confidence": reuse["reuse_confidence"],
+            "note": (
+                f"Reused durable MFT CSV ({reuse['reuse_confidence']}); MFTECmd parse "
+                f"skipped, findings recreated. {total_records} rows at {reuse_csv}. "
+                + reuse.get("reuse_note", "")
+            ),
+            "requires_agent": "@mft-analyst",
+            "agent_instruction": (
+                f"Analyze {reuse_csv} for timestomping, attacker file drops, staging. "
+                f"{total_records} total rows."
+            ),
+            "cache_hit": True,
+            "artifact_persistence": {
+                "status": "durable",
+                "persisted_path": reuse_csv,
+                "reason": "Reused durable MFTECmd CSV (source fingerprint checked).",
+                "fix_hint": None,
+            },
+        }
+        formatted = _apply_response_format(
+            response,
+            response_format=normalized_format,
+            records=detailed_records,
+            total_records=total_records,
+        )
+        formatted = _warn_if_empty(formatted, "extract_mft_timeline", mft_path, min_expected=10000)
+        normalized_obs, pivots = _mft_contract_inputs(stream)
+        return _mft_contract_payload(
+            response=formatted,
+            records=detailed_records,
+            image_path=image_path,
+            mft_path=mft_path,
+            csv_path=reuse_csv,
+            normalized=normalized_obs,
+            pivot_entities=pivots,
+            evidence_excerpt=stream["evidence_excerpt"],
+        )
+
     with tempfile.TemporaryDirectory(prefix="savvydfir_mftecmd_") as tmp_dir:
         csv_filename = "mft_timeline.csv"
         csv_path = os.path.join(tmp_dir, csv_filename)
@@ -3334,6 +3424,10 @@ def extract_mft_timeline(
             persisted_path=persistent_csv,
             preflight=preflight,
         )
+        # F-A: stamp a source-fingerprint sidecar next to the durable CSV so a
+        # later run (after state clear) can verify-and-reuse instead of re-parsing.
+        if durable_csv:
+            write_reuse_sidecar(durable_csv, tool_name=tool, source_path=resolved_mft_path)
         # Stream from the durable CSV if persisted (so findings cite the durable
         # path), else from the temp CSV while still inside the temp dir.
         stream = _stream_mft_summary(
@@ -3497,6 +3591,7 @@ def extract_usn_journal(
     mft_path: Optional[str] = None,
     case_id: Optional[str] = None,
     response_format: str = "summary",
+    force_reparse: bool = False,
 ) -> dict[str, Any]:
     """Parse the NTFS USN Journal ($UsnJrnl:$J) via MFTECmd.
 
@@ -3565,6 +3660,87 @@ def extract_usn_journal(
         if durable_mft and Path(durable_mft).is_file():
             mft_path = durable_mft
 
+    # F-A durable reuse (review 2026-06-04): USN has no state-cache, so
+    # probe the durable usn_journal.csv BEFORE the (slow, 4GB-source) MFTECmd USN
+    # parse. If present + source $J unchanged, reuse it, recreate the summary
+    # finding with the reuse execution_id, and skip the parse. This is what breaks
+    # the cleared-state -> reparse -> timeout -> stop-hook re-demand loop for USN.
+    reuse = try_durable_reuse(
+        _audit, _state,
+        tool_name=tool,
+        parameters={"usn_path": resolved_usn},
+        output_base=os.environ.get("OUTPUT_BASE", "/cases"),
+        case_id=_case_id(),
+        subtype="usn",
+        canonical_filename="usn_journal.csv",
+        source_path=resolved_usn,
+        force_reparse=force_reparse,
+    )
+    if reuse is not None:
+        reuse_csv = reuse["csv_path"]
+        total_rows = 0
+        try:
+            with open(reuse_csv, "r", encoding="utf-8-sig", newline="") as fh:
+                total_rows = max(0, sum(1 for _ in fh) - 1)
+        except OSError:
+            total_rows = 0
+        finding_ids: list[str] = []
+        try:
+            finding_ids.append(_state.add_finding({
+                "case_id": _case_id(),
+                "finding_type": "other",
+                "artifact_type": "disk",
+                "artifact_path": resolved_usn,
+                "tool_name": tool,
+                "execution_id": reuse["execution_id"],
+                "iteration": _current_iteration(),
+                "evidence_kind": "observation",
+                "finding_status": "active",
+                "confidence": 0.7 if total_rows > 0 else 0.4,
+                "description": (
+                    f"USN Journal reused ({reuse['reuse_confidence']}): {total_rows} change "
+                    f"records from {resolved_usn}. Use run_analysis on the CSV for "
+                    "rename/delete/large-write pivots."
+                ),
+                "supporting_indicators": [
+                    f"row_count={total_rows}",
+                    f"csv={reuse_csv}",
+                    f"mft_correlated={'yes' if mft_path else 'no'}",
+                    f"reuse_confidence={reuse['reuse_confidence']}",
+                ],
+            }))
+        except Exception:
+            pass
+        response = {
+            "tool_name": tool,
+            "status": "success",
+            "data": [],
+            "findings_created": finding_ids,
+            "execution_id": reuse["execution_id"],
+            "raw_command": reuse["raw_command"],
+            "total_records": total_rows,
+            "csv_path": reuse_csv,
+            "reused_output": True,
+            "reuse_confidence": reuse["reuse_confidence"],
+            "cache_hit": True,
+            "mft_correlated": bool(mft_path),
+            "artifact_persistence": {
+                "status": "durable", "persisted_path": reuse_csv,
+                "reason": "Reused durable USN CSV (MFTECmd parse skipped).", "fix_hint": None,
+            },
+            "requires_agent": "@mft-analyst",
+            "agent_instruction": (
+                f"USN journal at {reuse_csv} ({total_rows} records). Run targeted "
+                "run_analysis queries (rename-burst, encryption signature, staging dirs). "
+                "Do NOT load the full CSV into context."
+            ),
+            "note": (
+                f"Reused durable USN CSV ({reuse['reuse_confidence']}); {total_rows} records; "
+                f"finding recreated. {reuse.get('reuse_note','')}"
+            ),
+        }
+        return _finalize_tool_response_with_envelope(tool, response)
+
     with tempfile.TemporaryDirectory(prefix="savvydfir_usn_") as tmp_dir:
         csv_filename = "usn_journal.csv"
         csv_path = os.path.join(tmp_dir, csv_filename)
@@ -3610,6 +3786,9 @@ def extract_usn_journal(
             persisted_path=persistent_csv,
             preflight={"ok": True},  # USN doesn't have its own preflight
         )
+        # F-A: stamp source-fingerprint sidecar for verify-and-reuse next run.
+        if durable_csv:
+            write_reuse_sidecar(durable_csv, tool_name=tool, source_path=resolved_usn)
 
     # Build a small preview when detailed is requested (capped at 25 rows)
     preview: list[dict[str, Any]] = []
@@ -4070,6 +4249,7 @@ def summarize_evtx(
     end_date: Optional[str] = None,
     event_ids: Optional[list[int]] = None,
     response_format: str = "summary",
+    force_reparse: bool = False,
 ) -> dict[str, Any]:
     """Parse Windows EVTX event logs using EvtxECmd (EZ Tools).
 
@@ -4313,6 +4493,109 @@ def summarize_evtx(
             evidence_excerpt=stream["evidence_excerpt"],
         )
 
+    # F-A durable reuse (review 2026-06-04): after the state-cache MISS,
+    # reuse the durable evtx_timeline.csv if the EVTX corpus (per-file manifest
+    # fingerprint) is unchanged. EVTX is the heavy parse (420 files -> 2.5GB) that
+    # timed out and triggered the stop-hook re-demand loop on cleared state.
+    # SEPARATE branch from the state-cache hit: recreate findings via
+    # _evtx_summary_finding_ids with the reuse execution_id (cleared state -> the
+    # cached findings are gone, so a fresh investigation needs them recreated).
+    reuse = try_durable_reuse(
+        _audit, _state,
+        tool_name=tool,
+        parameters={
+            "evtx_dir": _resolved_path_str(evtx_dir),
+            "channel": channel,
+            "start_date": start_date,
+            "end_date": end_date,
+            "event_ids": list(effective_eids) if effective_eids else [],
+        },
+        output_base=os.environ.get("OUTPUT_BASE", "/cases"),
+        case_id=_case_id(),
+        subtype="evtx",
+        canonical_filename="evtx_timeline.csv",
+        source_path=resolved_evtx_dir,
+        force_reparse=force_reparse,
+    )
+    if reuse is not None:
+        reuse_csv = reuse["csv_path"]
+        stream = _stream_evtx_summary(reuse_csv, channel=channel)
+        promote_corroborated_findings(_state, "evtx_process_creation", stream["process_paths"])
+        total_records = stream["total_records"]
+        matched_records = stream["matched_records"]
+        finding_ids = _evtx_summary_finding_ids(
+            matched_records,
+            evtx_dir=evtx_dir,
+            channel=channel,
+            execution_id=reuse["execution_id"],
+        )
+        sample = stream["sample"]
+        detailed_records = (
+            sample[:max_entries] if (max_entries and max_entries > 0) else list(sample)
+        )
+        response = {
+            "tool_name": tool,
+            "status": "success",
+            "findings_created": finding_ids,
+            "execution_id": reuse["execution_id"],
+            "raw_command": reuse["raw_command"],
+            "records_count": len(detailed_records),
+            "total_records": total_records,
+            "matched_records": matched_records,
+            "data_truncated": matched_records > len(detailed_records),
+            "data_scope": "head_sample",
+            "sample_cap": _EVTX_SAMPLE_CAP,
+            "csv_path": reuse_csv,
+            "reused_output": True,
+            "reuse_confidence": reuse["reuse_confidence"],
+            "requires_agent": "@evtx-analyst",
+            "agent_instruction": (
+                f"Analyze {reuse_csv} for attacker lifecycle — auth anomalies, lateral "
+                f"movement, persistence. {total_records} total rows."
+            ),
+            "note": (
+                f"Reused durable EVTX CSV ({reuse['reuse_confidence']}); EvtxECmd parse "
+                f"skipped, findings recreated. {total_records} rows at {reuse_csv}. "
+                + reuse.get("reuse_note", "")
+            ),
+            "channel_filter": channel,
+            "event_id_filter": effective_eids if effective_eids else "all",
+            "event_id_strategy": event_id_strategy,
+            "date_range": {"start": start_date, "end": end_date} if start_date or end_date else None,
+            "cache_hit": True,
+            "cache_source_execution_id": None,
+            "artifact_persistence": {
+                "status": "durable", "persisted_path": reuse_csv,
+                "reason": "Reused durable EvtxECmd CSV (corpus fingerprint checked).",
+                "fix_hint": None,
+            },
+            "evtx_inventory": evtx_inventory_summary,
+        }
+        formatted = _apply_response_format(
+            response,
+            response_format=normalized_format,
+            records=detailed_records if normalized_format == "detailed" else sample,
+            total_records=total_records,
+        )
+        formatted = _warn_if_empty(formatted, "summarize_evtx", evtx_dir, min_expected=100)
+        if "data" in formatted:
+            formatted["data"] = [
+                sanitize_payload_fields(record, "message_summary", "extra_fields")
+                for record in formatted["data"]
+            ]
+        normalized_obs, pivots = _evtx_contract_inputs(stream)
+        return _evtx_contract_payload(
+            response=formatted,
+            records=detailed_records if normalized_format == "detailed" else sample,
+            image_path=image_path,
+            evtx_dir=evtx_dir,
+            csv_path=reuse_csv,
+            channel_counts=stream["channel_counts"],
+            pivot_entities=pivots,
+            normalized=normalized_obs,
+            evidence_excerpt=stream["evidence_excerpt"],
+        )
+
     with tempfile.TemporaryDirectory(prefix="savvydfir_evtx_") as tmp_dir:
         csv_filename = "evtx_timeline.csv"
         csv_path = os.path.join(tmp_dir, csv_filename)
@@ -4464,6 +4747,10 @@ def summarize_evtx(
                 "date_range": response.get("date_range"),
             },
         )
+        # F-A: stamp a corpus-manifest fingerprint sidecar so a later run (after
+        # state clear) verify-and-reuses this 2.5GB CSV instead of re-parsing
+        # 420 EVTX files (the parse that timed out + looped on the prior run).
+        write_reuse_sidecar(durable_csv, tool_name=tool, source_path=resolved_evtx_dir)
     promote_corroborated_findings(
         _state,
         "evtx_process_creation",
