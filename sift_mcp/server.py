@@ -9503,6 +9503,39 @@ def generate_report(case_id: str, response_format: str = "summary", allow_partia
 
 
 @mcp.tool()
+def _ntfs_mount_argv(device: str, offset_sectors: Optional[int], disk_mount: str,
+                     *, use_sudo: bool = True) -> list[str]:
+    """Consensus-pinned read-only ntfs-3g mount argv (dual-path NTFS mount fix).
+
+    offset 0 / None -> ntfs-3g directly on the device; offset != 0 -> mount -t
+    ntfs-3g with loop,offset (the proven Step-3 mechanism). Options:
+      ro          - the controlling no-write guarantee (zero evidence writes)
+      norecover   - do NOT replay/clear $LogFile on the dirty live volume
+                    (replaces the deprecated 'force'; ro already prevents writes)
+      allow_other - the MCP user's disk tools can read root's mount
+      streams_interface=windows - expose ADS (Zone.Identifier)
+    """
+    common = "norecover,allow_other,streams_interface=windows"
+    off = int(offset_sectors or 0)
+    if off != 0:
+        argv = ["/usr/bin/mount", "-t", "ntfs-3g", "-o",
+                f"ro,loop,offset={off * 512},{common}", str(device), str(disk_mount)]
+    else:
+        argv = ["/usr/bin/ntfs-3g", "-o", f"ro,{common}", str(device), str(disk_mount)]
+    if use_sudo and hasattr(_os, "geteuid") and _os.geteuid() != 0 and Path("/usr/bin/sudo").exists():
+        argv = ["/usr/bin/sudo", "-n", *argv]
+    return argv
+
+
+def _is_windows_volume_root(disk_mount: str) -> bool:
+    """A mounted path looks like a Windows volume root iff it has Windows/ or Users/."""
+    base = Path(disk_mount)
+    try:
+        return (base / "Windows").exists() or (base / "Users").exists()
+    except OSError:
+        return False
+
+
 def mount_image(
     image_path: str,
     mount_point: str = "/mnt/evidence",
@@ -9671,15 +9704,25 @@ def mount_image(
             if is_e01:
                 # Step 1: ewfmount
                 Path(mount_point).mkdir(parents=True, exist_ok=True)
+                # -X allow_root so a later root ntfs-3g can read this user-owned FUSE
+                # mount (dual-path NTFS fix). Requires user_allow_other in /etc/fuse.conf;
+                # if absent, ewfmount falls back to no allow_root (mount path then
+                # degrades to tsk_direct, which is the preserved fallback).
                 proc = _sp.run(
-                    ["/usr/bin/ewfmount", str(image), mount_point],
+                    ["/usr/bin/ewfmount", "-X", "allow_root", str(image), mount_point],
                     capture_output=True, text=True, timeout=120
                 )
+                if proc.returncode != 0 and ("allow_root" in (proc.stderr or "")):
+                    # fuse.conf may lack user_allow_other - retry without allow_root
+                    proc = _sp.run(
+                        ["/usr/bin/ewfmount", str(image), mount_point],
+                        capture_output=True, text=True, timeout=120
+                    )
                 if proc.returncode != 0:
                     # Try with nonempty flag if directory has stale contents
                     if "not empty" in proc.stderr or "nonempty" in proc.stderr:
                         proc = _sp.run(
-                            ["/usr/bin/ewfmount", "-X", "nonempty",
+                            ["/usr/bin/ewfmount", "-X", "allow_root", "-X", "nonempty",
                                 str(image), mount_point],
                             capture_output=True, text=True, timeout=120
                         )
@@ -9785,6 +9828,68 @@ def mount_image(
         tsk_probe = ""
         if is_e01:
             tsk_direct_ok, tsk_probe = _tsk_direct_access(device, offset)
+
+            # DUAL-PATH NTFS mount (consensus 2026-06-03): try a real read-only
+            # ntfs-3g mount FIRST so the 5 file-access tools get /mnt/disk. On
+            # ANY failure, fall through to the tsk_direct return below (unchanged).
+            # Disk staging tools keep tsk_device_path + the durable raw path.
+            try:
+                Path(disk_mount).mkdir(parents=True, exist_ok=True)
+                _already = _path_is_mount(disk_mount, _mounts_text())
+                _mount_ok = _already and _is_windows_volume_root(disk_mount)
+                _mount_argv = _ntfs_mount_argv(device, offset, disk_mount)
+                if not _already:
+                    _mp = _sp.run(_mount_argv, capture_output=True, text=True, timeout=120)
+                    # post-mount validation: actually mounted AND a Windows root
+                    _mount_ok = (
+                        _mp.returncode == 0
+                        and _path_is_mount(disk_mount, _mounts_text())
+                        and _is_windows_volume_root(disk_mount)
+                    )
+                    if not _mount_ok:
+                        # clean up a partial/failed mount so it can't shadow tsk_direct
+                        _unmount_path(disk_mount)
+                        data["ntfs_mount_error"] = (_mp.stderr or _mp.stdout or "")[-300:]
+                if _mount_ok:
+                    data.update({
+                        "mount_path": disk_mount,
+                        "mount_status": "mounted",
+                        "access_mode": "ntfs_read_only",      # never sleuthkit_direct on success
+                        "filesystem": sector0_fs or "ntfs",
+                        "tsk_device_path": device,
+                        "tsk_direct_available": bool(tsk_direct_ok),
+                        "partition_offset_sectors": offset,
+                        "mount_options": _mount_argv,
+                        "dirty_ntfs_mount_policy": "ro,norecover",
+                        "mount_integrity_note": (
+                            "read-only ntfs-3g mount; norecover set (no $LogFile replay); "
+                            "ro guarantees no writes to the evidence volume."
+                        ),
+                        # file-access tools MUST use /mnt/disk (start_investigation seeds
+                        # them with the .e01 pre-mount); staging tools keep the device.
+                        "file_access_image_path": disk_mount,
+                        "next_tools": {
+                            "file_access_image_path": disk_mount,
+                            "staging": {"device_path": device, "partition_offset_sectors": offset},
+                        },
+                        "note": (
+                            f"NTFS read-only mount ready at {disk_mount} (file-access tools: pass "
+                            f"image_path='{disk_mount}'). SleuthKit-direct also available at {device} "
+                            f"for staging tools (extract_windows_artifacts / MFT / EVTX / etc.)."
+                        ),
+                    })
+                    _mark_evidence_access_lane("mount_image", f"NTFS read-only mount at {disk_mount}")
+                    return ToolResult(
+                        status="ok", tool="mount_image",
+                        message=f"NTFS read-only mount at {disk_mount} (file-access ready); SleuthKit-direct also available",
+                        data=data,
+                        duration_seconds=round(_time.monotonic() - _start, 3),
+                    ).model_dump()
+            except Exception as _mount_exc:
+                data["ntfs_mount_error"] = str(_mount_exc)[-300:]
+                _unmount_path(disk_mount)
+            # mount not achieved -> preserved tsk_direct path below
+
             if tsk_direct_ok:
                 probe_lines = tsk_probe.splitlines()
                 data.update({
