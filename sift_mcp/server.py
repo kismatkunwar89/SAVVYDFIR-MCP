@@ -4033,6 +4033,31 @@ def sigma_hunt(
                 parsed_hits = []
         return [hit for hit in parsed_hits if isinstance(hit, dict)]
 
+    def _parse_chainsaw_telemetry(stderr_text: str) -> dict[str, Any]:
+        """Extract observability counts from Chainsaw stderr (P2 #3 fix).
+
+        Chainsaw logs lines like ``[+] Loaded 2980 detection rules`` and
+        ``[+] Loaded 12 forensic documents``. When hits=0 these tell the
+        analyst WHY: 0 documents -> wrong/empty target; 0 rules -> mapping or
+        sigma dir failed to load. None when a count is not present in stderr.
+        """
+        text = stderr_text or ""
+        telemetry: dict[str, Any] = {
+            "documents_loaded": None,
+            "rules_loaded": None,
+        }
+        doc_match = re.search(
+            r"[Ll]oaded\s+([\d,]+)\s+(?:forensic\s+)?document", text
+        )
+        if doc_match:
+            telemetry["documents_loaded"] = int(doc_match.group(1).replace(",", ""))
+        rule_match = re.search(
+            r"[Ll]oaded\s+([\d,]+)\s+(?:detection\s+rule|rule|sigma)", text
+        )
+        if rule_match:
+            telemetry["rules_loaded"] = int(rule_match.group(1).replace(",", ""))
+        return telemetry
+
     fallback_applied = False
     fallback_reason = ""
     fallback_targets: list[str] = []
@@ -4526,10 +4551,50 @@ def sigma_hunt(
                     "reason": reason,
                 })
 
+    # P2 #3 observability: parse Chainsaw telemetry + resolve scan target so a
+    # 0-hit / 0-document result is diagnosable (wrong target vs no rules vs
+    # genuinely clean). Counts are None when Chainsaw did not log them.
+    _telemetry = _parse_chainsaw_telemetry(proc.stderr or "")
+    try:
+        if evtx_target.is_dir():
+            _evtx_files_found = sum(1 for _p in evtx_target.rglob("*.evtx"))
+        else:
+            _evtx_files_found = 1 if evtx_target.is_file() else 0
+    except Exception:
+        _evtx_files_found = None
+    _zero_hit_diagnostic = ""
+    if hits_total == 0:
+        if _telemetry.get("documents_loaded") == 0 or _evtx_files_found == 0:
+            _zero_hit_diagnostic = (
+                "0 documents scanned - the scan target resolved to no readable "
+                f".evtx records (target={requested_target!s}, evtx_files_found="
+                f"{_evtx_files_found}). Verify evtx_path points at the EVTX "
+                "directory/file, not an empty mount or wrong volume."
+            )
+        elif _telemetry.get("rules_loaded") in (0, None):
+            _zero_hit_diagnostic = (
+                "Documents scanned but no/unknown Sigma rules loaded - check the "
+                f"mapping file ({mapping_file}) and sigma rules dir ({sigma_dir})."
+            )
+        else:
+            _zero_hit_diagnostic = (
+                f"{_telemetry.get('documents_loaded')} documents scanned against "
+                f"{_telemetry.get('rules_loaded')} rules with 0 matches - "
+                "legitimately clean for the selected filters."
+            )
+
     response_payload = {
         "status": "success" if hits_total > 0 else "no_hits",
         "tool": tool_name,
         "evtx_path": evtx_path,
+        "scan_target": str(requested_target),
+        "scan_target_is_dir": bool(evtx_target.is_dir()),
+        "evtx_files_found": _evtx_files_found,
+        "mapping_file": mapping_file,
+        "mapping_resolved": bool(mapping_file),
+        "documents_loaded": _telemetry.get("documents_loaded"),
+        "rules_loaded": _telemetry.get("rules_loaded"),
+        "zero_hit_diagnostic": _zero_hit_diagnostic or None,
         "sigma_rules": sigma_dir,
         "hits_total": hits_total,
         "raw_hits_total": raw_hits_total,
@@ -10689,7 +10754,6 @@ def _analysis_missing_path_hint(path_text: str) -> str:
     return _analysis_handle_hint_for_path(normalized)
 
 
-@mcp.tool()
 def _instrument_run_analysis(
     resolved_path: str,
     query: str,
@@ -10750,6 +10814,7 @@ def _instrument_run_analysis(
         pass
 
 
+@mcp.tool()
 def run_analysis(
     data_path: str,
     query: str,

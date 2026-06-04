@@ -424,6 +424,61 @@ def _parse_json_output(stdout: str) -> list[dict[str, Any]]:
 _SYSTEM32 = "\\windows\\system32\\"
 _SYSWOW64 = "\\windows\\syswow64\\"
 
+# --- DLL path classification (P2 #5, review 2026-06-03) -------------
+# System paths whose DLLs are unambiguously legitimate.
+_SYSTEM_DLL_PATH_FRAGMENTS: tuple[str, ...] = (
+    "\\windows\\system32\\",
+    "\\windows\\syswow64\\",
+    "\\program files\\",
+    "\\program files (x86)\\",
+    "\\windows\\winsxs\\",
+    "\\windows\\assembly\\",
+    "\\windows\\microsoft.net\\",
+)
+
+# User-writable directories where mainstream vendor/Electron/Python apps
+# legitimately load DLLs. A DLL here is OFF the system path but is NOT, by
+# itself, DLL-hijack evidence (the prior code flagged every OneDrive/Teams/
+# Electron/PyInstaller DLL at confidence 0.9). These down-rank a hit to
+# informational; they do NOT whitelist the process - parent/signing/peer still
+# get reviewed per the suspicious-network-process disposition checklist.
+_VENDOR_APP_DLL_FRAGMENTS: tuple[str, ...] = (
+    "\\appdata\\local\\microsoft\\onedrive\\",
+    "\\appdata\\local\\microsoft\\teams\\",
+    "\\appdata\\local\\microsoft\\teams meeting add-in\\",
+    "\\appdata\\local\\programs\\",          # Electron default install root (VS Code, Slack, Discord, Signal...)
+    "\\appdata\\local\\slack\\",
+    "\\appdata\\local\\discord\\",
+    "\\appdata\\local\\zoom\\",
+    "\\appdata\\roaming\\zoom\\",
+    "\\appdata\\local\\google\\chrome\\",
+    "\\appdata\\local\\google\\update\\",
+    "\\appdata\\local\\microsoft\\edge\\",
+    "\\appdata\\local\\mozilla firefox\\",
+    "\\appdata\\local\\jetbrains\\",
+    "\\appdata\\local\\github desktop\\",
+    "\\appdata\\local\\temp\\_mei",          # PyInstaller onefile extraction dir (_MEIxxxxxx)
+    "\\appdata\\local\\temp\\2\\_mei",
+)
+
+
+def _classify_dll_path(dll_path: str) -> str:
+    """Classify a loaded DLL path as 'system', 'vendor', or 'suspicious'.
+
+    'system'     -> standard Windows / Program Files location
+    'vendor'     -> known user-writable mainstream-app dir (down-ranked lead)
+    'suspicious' -> off-path and unrecognised (potential hijack/sideload)
+    """
+    p = (dll_path or "").lower()
+    if not p:
+        return "system"  # no path -> cannot flag; treat as non-suspicious
+    if any(frag in p for frag in _SYSTEM_DLL_PATH_FRAGMENTS):
+        return "system"
+    if any(frag in p for frag in _VENDOR_APP_DLL_FRAGMENTS):
+        return "vendor"
+    return "suspicious"
+
+
 # Known processes that should only run from System32
 _SYSTEM32_ONLY: set[str] = {
     "svchost.exe", "lsass.exe", "csrss.exe", "wininit.exe",
@@ -1790,21 +1845,41 @@ def list_dlls(dump_path: str, pid: int) -> dict[str, Any]:
 
     # Create a summary finding
     if records:
-        # Flag DLLs loaded from suspicious paths (not System32, SysWOW64, or
-        # standard program paths)
+        # P2 #5 fix: partition off-path DLLs into known-vendor app dirs
+        # (down-ranked: OneDrive/Teams/Electron/PyInstaller legitimately load
+        # from user-writable paths) vs truly unrecognised paths. Only the latter
+        # is a DLL-hijack/sideload lead. Confidence is set from the truly-
+        # suspicious count, not "any off-path DLL" -> kills the 0.9 false-positive
+        # storm the ROCBA run produced.
+        vendor_dlls = [
+            r for r in records
+            if r.dll_path and _classify_dll_path(r.dll_path) == "vendor"
+        ]
         suspicious_dlls = [
             r for r in records
-            if r.dll_path and not any(
-                fragment in r.dll_path.lower()
-                for fragment in (
-                    "\\windows\\system32\\",
-                    "\\windows\\syswow64\\",
-                    "\\program files\\",
-                    "\\program files (x86)\\",
-                    "\\windows\\winsxs\\",
-                )
-            )
+            if r.dll_path and _classify_dll_path(r.dll_path) == "suspicious"
         ]
+
+        if suspicious_dlls:
+            # Path anomaly is a LEAD, not a disposition (needs signing + parent
+            # + peer review per the disposition checklist) -> observation tier.
+            dll_confidence = 0.7
+            dll_description = (
+                f"{len(suspicious_dlls)} DLL(s) loaded from unrecognised "
+                "non-standard paths (potential DLL hijacking or sideloading - "
+                "corroborate with signing status, parent process, and peer). "
+                f"Suspicious DLL paths: {[r.dll_path for r in suspicious_dlls[:5]]}."
+            )
+        elif vendor_dlls:
+            dll_confidence = 0.4
+            dll_description = (
+                f"{len(vendor_dlls)} DLL(s) loaded from known vendor/app "
+                "user-writable paths (OneDrive/Teams/Electron/PyInstaller-class - "
+                "expected for these apps, not a hijack indicator)."
+            )
+        else:
+            dll_confidence = 0.3
+            dll_description = "All DLLs loaded from standard Windows paths."
 
         finding = Finding(
             case_id=_case_id(),
@@ -1816,21 +1891,13 @@ def list_dlls(dump_path: str, pid: int) -> dict[str, Any]:
             iteration=_current_iteration(),
             evidence_kind=EvidenceKind.OBSERVATION,
             finding_status=FindingStatus.ACTIVE,
-            confidence=0.9,
-            description=(
-                f"PID {pid}: {len(records)} DLLs loaded. "
-                + (
-                    f"{len(suspicious_dlls)} DLLs loaded from non-standard paths "
-                    "(potential DLL hijacking or sideloading). "
-                    f"Suspicious DLL paths: {[r.dll_path for r in suspicious_dlls[:5]]}."
-                    if suspicious_dlls else
-                    "All DLLs loaded from standard Windows paths."
-                )
-            ),
+            confidence=dll_confidence,
+            description=f"PID {pid}: {len(records)} DLLs loaded. " + dll_description,
             supporting_indicators=[
                 f"pid={pid}",
                 f"dll_count={len(records)}",
                 f"suspicious_dll_count={len(suspicious_dlls)}",
+                f"vendor_dll_count={len(vendor_dlls)}",
             ] + [r.dll_path for r in suspicious_dlls[:10]],
             # E.2: structured PID field so the report gate can verify
             # per-PID coverage of network_followup_pids rather than

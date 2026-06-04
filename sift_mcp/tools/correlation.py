@@ -576,7 +576,7 @@ def _check_usn_journal_timestomp(
     for mft_finding in mft_findings:
         if mft_finding.get("artifact_type") != "mft_entry":
             continue
-        path = _extract_path_candidate(mft_finding)
+        path = _finding_path(mft_finding)
         if not path:
             continue
 
@@ -600,16 +600,17 @@ def _check_usn_journal_timestomp(
             ))
         else:
             # Check timestamp alignment
-            mft_si_timestamp = _extract_timestamp_indicator(mft_finding, "$SI_Modified")
+            mft_si_timestamp = _finding_timestamp(
+                mft_finding, "si_modified:", "$SI_Modified", "si_created:"
+            )
             usn_timestamp_str = usn_matches[0].get("Timestamp", "")
             if not mft_si_timestamp or not usn_timestamp_str:
                 continue
 
-            # Parse USN timestamp
-            try:
-                from datetime import datetime
-                usn_timestamp = datetime.fromisoformat(usn_timestamp_str.replace("Z", "+00:00"))
-            except (ValueError, AttributeError):
+            # Parse USN timestamp (always tz-aware UTC so it can be subtracted
+            # from the tz-aware MFT $SI datetime without naive/aware TypeError).
+            usn_timestamp = _coerce_datetime(usn_timestamp_str)
+            if not usn_timestamp:
                 continue
 
             diff = abs((mft_si_timestamp - usn_timestamp).total_seconds())
@@ -642,14 +643,17 @@ def _check_shimcache_amcache_presence(
     discrepancies = []
 
     # Build path inventories
-    shimcache_paths = {_extract_path_candidate(f).lower() for f in shimcache_findings if _extract_path_candidate(f)}
-    amcache_paths = {_extract_path_candidate(f).lower() for f in amcache_findings if _extract_path_candidate(f)}
+    shimcache_paths = {_finding_path(f).lower() for f in shimcache_findings if _finding_path(f)}
+    amcache_paths = {_finding_path(f).lower() for f in amcache_findings if _finding_path(f)}
 
     # ShimCache entries without Amcache
     suspicious = shimcache_paths - amcache_paths
 
     for path in suspicious:
-        shimcache_finding = next((f for f in shimcache_findings if _extract_path_candidate(f).lower() == path), None)
+        shimcache_finding = next(
+            (f for f in shimcache_findings if (_finding_path(f) or "").lower() == path),
+            None,
+        )
         if not shimcache_finding:
             continue
 
@@ -692,7 +696,7 @@ def _check_event_log_clearing(
     vss_available = len(vss_findings) > 0
 
     for finding in eid_1102_findings:
-        timestamp = _extract_timestamp_indicator(finding, "timestamp")
+        timestamp = _finding_timestamp(finding, "timestamp:", "timestamp")
         discrepancies.append(_make_discrepancy(
             "event_log_cleared",
             "CRITICAL",
@@ -944,6 +948,113 @@ def _extract_timestamp_indicator(
         except ValueError:
             continue
     return None
+
+
+# ---------------------------------------------------------------------------
+# Finding-level extractors (P1 #1/#2 fix, review 2026-06-03)
+#
+# checks 7-10 and find_temporal_clusters previously passed a *finding dict* to
+# _extract_path_candidate(value: str) / _extract_timestamp_indicator(indicators:
+# list, ...). Both silently returned None -> the extended anti-forensics checks
+# and temporal clustering no-opped on every finding (the "0 results" defect).
+# W1.7 also moved evidence into supporting_indicators free-text + the structured
+# timestamp_observed field, so the extractors must read BOTH and be tolerant of
+# whichever prefix the analyst used (prefix contract is best-effort, not load-
+# bearing). These wrappers take the finding dict and try, in order:
+#   structured fields -> requested prefixes -> any indicator -> description regex.
+# ---------------------------------------------------------------------------
+
+# ISO-8601-ish timestamp anywhere in a free-text string (date + time, optional
+# fractional seconds / Z / +HH:MM offset). Used as the last-resort fallback.
+_ANY_ISO_TS_RE = re.compile(
+    r"(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?"
+)
+
+
+def _coerce_datetime(value: Any) -> Optional[datetime]:
+    """Coerce a finding timestamp field (datetime or ISO string) to tz-aware UTC.
+
+    state.json findings serialise timestamps as ISO strings, but the clustering
+    math needs real datetimes. A naive datetime is assumed UTC.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    return _parse_any_timestamp(text)
+
+
+def _parse_any_timestamp(text: str) -> Optional[datetime]:
+    """Find and parse the first ISO-8601-ish timestamp in *text*."""
+    s = str(text or "")
+    if not s:
+        return None
+    # Fast path: whole string is an ISO timestamp.
+    try:
+        dt = datetime.fromisoformat(s.strip().replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, AttributeError):
+        pass
+    m = _ANY_ISO_TS_RE.search(s)
+    if not m:
+        return None
+    date_part, time_part, offset = m.group(1), m.group(2), m.group(3)
+    iso = f"{date_part}T{time_part}"
+    if offset:
+        iso += "+00:00" if offset == "Z" else offset
+    try:
+        dt = datetime.fromisoformat(iso)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _finding_timestamp(
+    finding: dict[str, Any],
+    *prefixes: str,
+) -> Optional[datetime]:
+    """Best-effort event timestamp for a finding dict, as tz-aware UTC datetime.
+
+    Order: structured event-time fields -> requested indicator prefixes ->
+    any indicator that parses as a timestamp -> description regex.
+    """
+    if not isinstance(finding, dict):
+        return None
+    for key in ("timestamp_observed", "timestamp"):
+        dt = _coerce_datetime(finding.get(key))
+        if dt:
+            return dt
+    indicators = finding.get("supporting_indicators", []) or []
+    for prefix in prefixes:
+        dt = _extract_timestamp_indicator(indicators, prefix)
+        if dt:
+            return dt
+    for ind in indicators:
+        dt = _parse_any_timestamp(str(ind))
+        if dt:
+            return dt
+    return _parse_any_timestamp(finding.get("description", ""))
+
+
+def _finding_path(finding: dict[str, Any]) -> Optional[str]:
+    """Best-effort file/binary path for a finding dict.
+
+    Order: path-bearing supporting_indicators -> artifact_path ->
+    description regex. Tolerant of any indicator prefix.
+    """
+    if not isinstance(finding, dict):
+        return None
+    for ind in finding.get("supporting_indicators", []) or []:
+        candidate = _extract_path_candidate(str(ind))
+        if candidate:
+            return candidate
+    artifact_path = str(finding.get("artifact_path") or "").strip()
+    if artifact_path:
+        return _extract_path_candidate(artifact_path) or artifact_path
+    return _path_from_description(finding.get("description", ""))
 
 
 def _collect_disk_inventory(disk_findings: list[dict[str, Any]]) -> dict[str, set[str]]:
@@ -1503,17 +1614,17 @@ def find_temporal_clusters(
     # Extract timestamped events
     timestamped_events = []
     for finding in all_findings:
-        # Run 9 fix: prefer artifact event-time (timestamp_observed) over
-        # finding creation-time (timestamp). timestamp_observed is set by
-        # detectors that have a single event-time in scope (MFT timestomping
-        # $SI_created, Sigma hit system_time, Prefetch last_run, etc.).
-        # Fall back to timestamp + indicator-extraction for legacy findings.
-        timestamp = (
-            finding.get("timestamp_observed") or
-            finding.get("timestamp") or
-            _extract_timestamp_indicator(finding, "timestamp") or
-            _extract_timestamp_indicator(finding, "$SI_Modified") or
-            _extract_timestamp_indicator(finding, "FirstExecutionTime")
+        # P1 #1 fix (review 2026-06-03): _finding_timestamp returns a
+        # tz-aware datetime (never a raw ISO string), so the sliding-window math
+        # below cannot crash on str+timedelta. It prefers the structured
+        # timestamp_observed/timestamp fields, then scans supporting_indicators
+        # for any of the requested prefixes, then any indicator that parses as a
+        # timestamp, then the description. This is what makes the tool work on
+        # main-agent findings (W1.7) that carry event-time only in free-text.
+        # The previous code passed the finding DICT to _extract_timestamp_indicator
+        # (which expects a list) -> always None -> 0 clusters.
+        timestamp = _finding_timestamp(
+            finding, "timestamp:", "$SI_Modified", "si_created:", "FirstExecutionTime"
         )
         if not timestamp:
             continue

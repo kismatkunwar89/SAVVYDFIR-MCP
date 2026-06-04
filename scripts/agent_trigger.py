@@ -988,6 +988,42 @@ def _detect_block_reason(result_data: dict[str, Any], raw_text: str) -> Optional
     return None
 
 
+# P2 #7 fix (review 2026-06-03): documented-absence / no-data outcomes.
+# These are NOT status="error" (already skipped) but produce no analyzable
+# handle, so dispatching a specialist just emits "ANALYSIS REQUIRED" against
+# nothing and churns the lane. Mirror the _ABSENCE_MARKERS the workflow-enforce
+# hooks use (Run-9: artifact_absent / no_data / tool_incompatible) plus the
+# explicit documented-negative statuses extraction tools emit.
+_ABSENCE_STATUSES = frozenset({
+    "artifact_absent", "no_data", "tool_incompatible",
+    "collection_failed", "not_applicable", "documented_absence", "absent",
+})
+_ABSENCE_MARKER_SUBSTRINGS = ("artifact_absent", "no_data", "tool_incompatible",
+                              "documented absence", "documented_absence")
+
+
+def _result_signals_absence(result_data: dict[str, Any]) -> bool:
+    """True when a (non-error) tool result is a documented absence / no-data
+    outcome with no analyzable handle - nothing for a specialist to mine."""
+    status = str(result_data.get("status") or "").strip().lower()
+    if status in _ABSENCE_STATUSES:
+        return True
+    # Explicit boolean flags some extractors set on documented absence.
+    for flag in ("documented_absence", "artifact_absent", "absence"):
+        if result_data.get(flag) is True:
+            return True
+    # Marker substrings in summary-ish fields, but ONLY when no durable handle
+    # is present (a real CSV means there IS something to analyze).
+    if _source_artifact_path(result_data) is None:
+        for key in ("outputs_summary", "message", "reason", "note", "summary"):
+            value = result_data.get(key)
+            if isinstance(value, str) and any(
+                m in value.lower() for m in _ABSENCE_MARKER_SUBSTRINGS
+            ):
+                return True
+    return False
+
+
 def _normalize_subagent_type(agent: str) -> str:
     """Return the Agent() subagent_type without legacy @ prose prefix."""
     return str(agent or "").strip().lstrip("@")
@@ -1636,6 +1672,11 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
     # retry the originating tool first.
     tool_status = str(result_data.get("status") or "").strip().lower()
     if tool_status in {"error", "failed", "fail", "not_initialised", "tool_not_found"}:
+        return None
+
+    # P2 #7 fix: also skip documented-absence / no-data outcomes (peer reviewer gap -
+    # these are not status="error" but have no handle to analyze).
+    if _result_signals_absence(result_data):
         return None
 
     dispatch = _resolve_dispatch(tool_name, result_data)

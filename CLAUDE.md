@@ -154,6 +154,24 @@ Discrepancies detected here trigger **`CorrectionEvent`** writes to
 `audit.jsonl` (W1.5) - the structural self-correction proof for hackathon
 criterion #1 (Autonomous Execution Quality, the tiebreaker).
 
+**Supporting-indicator prefix contract (so the correlation engine can read your
+findings).** `compare_disk_and_memory` and `find_temporal_clusters` mine
+`submit_finding(supporting_indicators=[...])` free-text for evidence. The
+extended anti-forensics + temporal checks are now prefix-tolerant (they will
+scrape any path-like / ISO-timestamp string), but the disk↔memory cross-checks
+match on **semantic prefixes** - emit these so the right check fires:
+- `path:` / `process_path:` - full binary path (memory process, injection)
+- `executable:` - executable basename or path (disk execution artefact)
+- `owner_process:` - owning process for a network socket
+- `value_data:` - registry value data (persistence binary)
+- `file_path:` - deleted-file or MFT path
+- `si_modified:` / `si_created:` / `fn_created:` - MFT $SI / $FN timestamps (UTC ISO)
+- `timestamp:` - event time (EVTX, sigma hit). Prefer the structured
+  `timestamp_observed=` parameter for the single event-time of a finding -
+  `find_temporal_clusters` reads it first.
+One indicator per line, `prefix: value`. Timestamps must be ISO-8601 UTC
+(`YYYY-MM-DDTHH:MM:SS`), the form every detector and the report layer expect.
+
 ### PHASE 6: Cross-Artifact Synthesis (5 min)
 
 **MANDATORY - main-agent inline. Delegate synthesis is opt-in.** Run 2

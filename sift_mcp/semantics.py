@@ -891,13 +891,100 @@ def adaptive_eids_from_findings(findings: Iterable[dict[str, Any]]) -> list[int]
     return sorted(eids)
 
 
+_TACTIC_TOKEN_RE = re.compile(r"TA\d{4}")
+_TECHNIQUE_TOKEN_RE = re.compile(r"T\d{4}(?:\.\d{3})?", re.IGNORECASE)
+_TACTIC_NAME_TO_ID: dict[str, str] = {
+    name.lower(): tactic_id for tactic_id, name in _TACTIC_CATALOG
+}
+_TECHNIQUE_TACTIC_INDEX: Optional[dict[str, set[str]]] = None
+
+
+def _technique_tactic_index() -> dict[str, set[str]]:
+    """Build (and cache) a technique-ID -> tactic-ID-set index from the routing
+    catalog. Both the full sub-technique key (T1021.001) and its base (T1021,
+    mapped to the union of all sub-technique tactics) are indexed so a finding
+    that records only the base technique still resolves.
+    """
+    global _TECHNIQUE_TACTIC_INDEX
+    if _TECHNIQUE_TACTIC_INDEX is not None:
+        return _TECHNIQUE_TACTIC_INDEX
+    index: dict[str, set[str]] = {}
+    try:
+        from sift_mcp.routing import load_routing_catalog
+
+        catalog = load_routing_catalog()
+    except Exception:
+        catalog = {}
+    for technique_id, entry in (catalog or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        tactics = {
+            str(t).strip().upper()
+            for t in (entry.get("tactics") or [])
+            if str(t).strip()
+        }
+        if not tactics:
+            continue
+        tid = str(technique_id).strip().upper()
+        index.setdefault(tid, set()).update(tactics)
+        base = tid.split(".")[0]
+        index.setdefault(base, set()).update(tactics)
+    _TECHNIQUE_TACTIC_INDEX = index
+    return index
+
+
+def _normalize_tactic_ids(value: Any) -> set[str]:
+    """Resolve an explicit mitre_tactic value to a set of TA-IDs.
+
+    Accepts TA-IDs (``TA0008``), tactic display names (``Lateral Movement``),
+    or a comma/space-joined mix. Returns an empty set when nothing resolves.
+    """
+    text = _to_text(value)
+    if not text:
+        return set()
+    ids = {tok.upper() for tok in _TACTIC_TOKEN_RE.findall(text.upper())}
+    if ids:
+        return ids
+    key = text.strip().lower()
+    if key in _TACTIC_NAME_TO_ID:
+        return {_TACTIC_NAME_TO_ID[key]}
+    return set()
+
+
+def _tactics_from_technique(value: Any) -> set[str]:
+    """Resolve a mitre_technique value (e.g. ``T1021.001`` or ``T1021``) to its
+    tactic-ID set via the routing catalog. Tolerates names appended to the ID
+    (``T1021.001 (Remote Desktop)``) and lists rendered as text.
+    """
+    text = _to_text(value).upper()
+    if not text:
+        return set()
+    index = _technique_tactic_index()
+    resolved: set[str] = set()
+    for token in _TECHNIQUE_TOKEN_RE.findall(text):
+        token = token.upper()
+        if token in index:
+            resolved |= index[token]
+        else:
+            resolved |= index.get(token.split(".")[0], set())
+    return resolved
+
+
 def compute_coverage_from_findings(findings: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    """Compute ATT&CK tactic coverage and suggested next tools."""
-    covered_ids = {
-        _to_text(finding.get("mitre_tactic")).upper()
-        for finding in findings
-        if _to_text(finding.get("mitre_tactic")).upper()
-    }
+    """Compute ATT&CK tactic coverage and suggested next tools.
+
+    Coverage resolves per finding as: explicit ``mitre_tactic`` wins; otherwise
+    the tactic is derived from ``mitre_technique`` via the routing catalog
+    (P1 #9, review 2026-06-03). Before this, findings that carried only a
+    technique (e.g. F-094 ``T1021.*`` lateral movement with a null tactic) left
+    their tactic uncovered, understating the report's ATT&CK matrix.
+    """
+    covered_ids: set[str] = set()
+    for finding in findings:
+        tactic_ids = _normalize_tactic_ids(finding.get("mitre_tactic"))
+        if not tactic_ids:
+            tactic_ids = _tactics_from_technique(finding.get("mitre_technique"))
+        covered_ids |= tactic_ids
     all_ids = [tactic_id for tactic_id, _ in _TACTIC_CATALOG]
 
     covered = [
