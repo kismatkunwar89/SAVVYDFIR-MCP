@@ -663,7 +663,11 @@ class SafeRunner:
             A human-readable summary string, truncated to 500 characters.
         """
         if timed_out:
-            return "TIMED OUT — process killed"
+            # F-B (review 2026-06-04): a recognizable token so the stop
+            # hook + report gate treat a genuine timeout as "attempted-with-gap"
+            # (breaks the re-demand loop) rather than "never ran" (re-demanded
+            # forever) or "success". exit_code stays non-zero -> still a gap.
+            return "collection_timeout: process exceeded its timeout budget and was killed"
 
         lines = len(stdout.splitlines())
         stderr_snippet = stderr[:120].strip() if stderr else ""

@@ -289,7 +289,12 @@ def _missing_tools_actionable(state_path: str, audit_path: str | None) -> list[s
     }
     # peer reviewer-tightened: only explicit structured markers count as gap.
     # No 3-attempt bypass — persistent failure stays unsatisfied.
-    ABSENCE = ("artifact_absent", "no_data")
+    # F-B (review 2026-06-04): collection_timeout = an honest required-tool
+    # attempt that timed out (e.g. a multi-GB EVTX/USN parse on this 4-vCPU box).
+    # Treat it as attempted-with-gap so the stop hook stops RE-DEMANDING the same
+    # heavy parse forever (the timeout loop). It is NOT success - the report still
+    # records it as a data gap (exit_code != 0).
+    ABSENCE = ("artifact_absent", "no_data", "collection_timeout")
     try:
         state = json.loads(Path(state_path).read_text())
     except Exception:

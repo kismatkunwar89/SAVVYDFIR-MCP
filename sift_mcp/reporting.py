@@ -1321,6 +1321,9 @@ _FILE_ACCESS_ABSENCE_TOKENS = (
     "no_windows_volume_at_image_path",
     "artifact_absent",
     "no_data",
+    # F-B (review 2026-06-04): a genuine timeout is an honest attempt with
+    # a documented gap -> do not hard-block the report; surface it as a data gap.
+    "collection_timeout",
 )
 _FILE_ACCESS_SELECTOR_VERSION = 1
 
