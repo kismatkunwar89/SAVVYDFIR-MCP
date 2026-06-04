@@ -9650,12 +9650,28 @@ def mount_image(
         mounts = _mounts_text()
 
         if _path_is_mount(disk_mount, mounts):
-            # Already fully mounted - return immediately, skip all steps
+            # Already fully mounted - return immediately, skip all steps.
+            # Carry the dual-path file-access handoff when it's a valid Windows
+            # root, so a reused /mnt/disk mount still routes the 5 file-access
+            # tools to /mnt/disk (otherwise reuse silently drops the handoff).
+            _premount = {
+                "image_path": str(image), "mount_path": disk_mount,
+                "mount_status": "already_mounted", "already_mounted": True,
+            }
+            if _is_windows_volume_root(disk_mount):
+                _premount.update({
+                    "access_mode": "ntfs_read_only",
+                    "file_access_image_path": disk_mount,
+                    "next_tools": {"file_access_image_path": disk_mount},
+                    "note": (
+                        f"NTFS volume already mounted at {disk_mount}; file-access tools: "
+                        f"pass image_path='{disk_mount}'."
+                    ),
+                })
             return ToolResult(
                 status="ok", tool="mount_image",
                 message=f"Already mounted at {disk_mount} (pre-existing mount detected)",
-                data={"image_path": str(image), "mount_path": disk_mount,
-                      "mount_status": "already_mounted", "already_mounted": True},
+                data=_premount,
             ).model_dump()
 
         is_e01 = image.suffix.lower() in (".e01", ".ex01", ".s01")
