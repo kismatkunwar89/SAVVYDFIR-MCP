@@ -9522,7 +9522,7 @@ def _ntfs_mount_argv(device: str, offset_sectors: Optional[int], disk_mount: str
                 f"ro,loop,offset={off * 512},{common}", str(device), str(disk_mount)]
     else:
         argv = ["/usr/bin/ntfs-3g", "-o", f"ro,{common}", str(device), str(disk_mount)]
-    if use_sudo and hasattr(_os, "geteuid") and _os.geteuid() != 0 and Path("/usr/bin/sudo").exists():
+    if use_sudo and hasattr(os, "geteuid") and os.geteuid() != 0 and Path("/usr/bin/sudo").exists():
         argv = ["/usr/bin/sudo", "-n", *argv]
     return argv
 
