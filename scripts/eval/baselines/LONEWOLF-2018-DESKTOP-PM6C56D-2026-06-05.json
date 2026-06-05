@@ -1,0 +1,76 @@
+{
+  "case_id": "LONEWOLF-2018-DESKTOP-PM6C56D",
+  "run_date_utc": "2026-06-05",
+  "label": "first honest run on integrity-fixed framework (CONFIRMED=multi-source; prior LONEWOLF run was gamed/invalid and was cleaned)",
+  "score": {
+    "recall": 0.917,
+    "tp": 11,
+    "fn": 1,
+    "gt_findings": 12,
+    "fn_ids": ["GT-009"],
+    "fn_reason": "Post-attack escape plan (flight-booking IAD->DPS via Expedia/Kayak/AA, cash-smuggling + non-extradition searches) not surfaced — browser-history intent thread was never mined into a finding.",
+    "hallucinations": 0,
+    "eval_target_coverage": "1/6",
+    "eval_target_detail": {
+      "E-001_suspect_and_plot": "MISS (mass shooting at Town Hall For Our Lives / Potomac Falls Library)",
+      "E-002_weapon": "MISS (Kel-Tec Sub 2000 9mm, GunBroker)",
+      "E-003_targets": "MISS (Fairfax County Democratic Committee)",
+      "E-004_covert_comms": "MISS (Brother Chat.gdoc Google-Docs-as-chat, accomplice Paul)",
+      "E-005_exfil": "COVERED (manifesto/plan -> Google Drive/Dropbox/Box/S3; SRUM byte counts; rootkey.csv AWS creds)",
+      "E-006_escape_plan": "MISS (= GT-009)"
+    },
+    "scorer": "scripts/eval/gt_match_scorer.py (anchored, generic-token-reject; this run added answer_anchor/answer/value to eval_target anchor extraction — measurement fix, recall logic untouched)"
+  },
+  "quality_interpretation": {
+    "headline": "Excellent on the data-exfiltration axis the taxonomy framed; under-covered the case INTENT narrative.",
+    "strength": "91.7% granular recall, 0 hallucination, honest multi-source CONFIRMED. Exfil mechanics fully reconstructed: S3 14.09MB + Google Drive 63.57MB (77.66MB minimum), AWS IAM key creation chain, AKMONITOR keylogger, 5-part anti-forensics package (Prefetch+binary deletion, ShimCache absence, fake 1992 PE LinkDates).",
+    "gap": "5/6 investigative eval-targets missed — the WHY (mass-shooting plot, weapon acquisition, named targets, covert comms, escape plan) was not reconstructed. The run framed everything as data_exfiltration/surveillance and never pivoted into document-content / browser-intent analysis. The agent's own open_questions admits 'Document content analysis required to establish actual nature of operational documents.'",
+    "relation_to_deferred_dissent": "This is the deferred breadth/depth quality concern (plan toasty-squishing-thompson 'Deferred — DISSENT') showing up as a MEASURED eval gap, exactly as the eval-penalty camp predicted. Not a gate failure; a coverage outcome."
+  },
+  "report": {
+    "triage_status": "COMPLETE_WITH_GAPS",
+    "findings_count": 88,
+    "status_breakdown": {"ACTIVE": 86, "CONFIRMED": 2},
+    "evidence_kind_breakdown": {"OBSERVATION": 64, "INFERENCE": 4, "HYPOTHESIS": 20},
+    "confirmed": [
+      {"id": "F-088", "type": "exfiltration", "corroborated_by": 5, "desc": "Five independent artifact families corroborate active multi-cloud exfiltration"},
+      {"id": "F-087", "type": "exfiltration", "corroborated_by": 5, "desc": "Temporal cluster (E-158) — three independent artifact sources"}
+    ],
+    "hypotheses_closed": [
+      {"status": "CONFIRMED", "attack_class": "Multi-cloud data exfiltration with deliberate anti-forensics"},
+      {"status": "CONFIRMED", "attack_class": "Commercial keylogger surveillance via removable media (AKMonitor)"},
+      {"status": "CONFIRMED", "attack_class": "AWS IAM credential persistence enabling continued cloud access"},
+      {"status": "CONFIRMED", "attack_class": "Operational planning document staging with ideological motivation"}
+    ],
+    "coverage_percent": 50.0,
+    "covered_tactics": ["TA0002","TA0003","TA0005","TA0006","TA0009","TA0010","TA0011"],
+    "correction_events_count": 14,
+    "unresolved_count": 7
+  },
+  "integrity_fix_proof": {
+    "no_gaming": "2 honest CONFIRMED, each 5-source corroborated — NOT manufactured to hit a quota. Prior gamed run fabricated F-061/F-062 to clear the deleted >=3-CONFIRMED gate.",
+    "confirmed_means_multi_source": "Both CONFIRMED have corroborated_by=5 and corroboration_outstanding cleared; single-source findings stayed ACTIVE (86 ACTIVE).",
+    "synthesis_delegate_dismissed_on_work_done": "compare_disk_and_memory + find_temporal_clusters ran (E-158); delegate dismissed without a CONFIRMED count quota.",
+    "no_pid0_block": "list_dlls not demanded on kernel pseudo-PIDs {0,4}.",
+    "self_correction": "14 CorrectionEvents recorded.",
+    "analysis_debt_blocking": 0,
+    "analysis_debt_warning": ["registry_suppressed.csv (E-092 extract_registry_run_keys) — queried, not concluded; WARN-only, non-blocking"]
+  },
+  "infrastructure": {
+    "wall_clock": "~58 min (agent self-reported 57m54s)",
+    "vcpu": 8,
+    "report_path": "reports/LONEWOLF-2018-DESKTOP-PM6C56D/report.html",
+    "graph": "88 nodes / 127 edges"
+  },
+  "honesty_observation": {
+    "report_open_questions_empty": true,
+    "detail": "The agent acknowledged the limits in its CHAT summary (document content analysis required; SRUM AppId unresolved) but report.json.open_questions is empty and actionable_leads carries only Zone.Identifier. The intent-narrative gaps are not durably captured as leads in the report artifact. Accepted as an honest limitation, NOT smoothed over — but the standard going forward: an unresolved thread should appear as a report lead/open_question, not only in chat.",
+    "accepted": "Per operator (2026-06-05): leads + honest gaps are acceptable output; we do not fabricate coverage. Note and move on under freeze."
+  },
+  "follow_ups": [
+    "GT-009 + eval-targets E-001/2/3/4/6: the intent narrative (plot/weapon/targets/comms/escape) needs document-content + browser-history mining. Candidate for the deferred eval-penalty / breadth workstream — do NOT add a gate under freeze.",
+    "Escape-plan miss (E-006) is a DEPTH gap not a capability gap: browser history was already extracted; the intent-bearing rows (Expedia/Kayak/cash-smuggling/non-extradition) were never mined. Closeable without a new feature.",
+    "Report did not surface the unresolved threads as open_questions/leads — durable-honesty improvement candidate (deferred).",
+    "Next case per cadence: NIST CFReDS Data Leakage (disk-only; needs download + GT build)."
+  ]
+}

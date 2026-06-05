@@ -272,7 +272,15 @@ def score(gt: dict[str, Any], findings: list[dict[str, Any]]) -> dict[str, Any]:
         all_f_anchors |= fa
     for et in gt.get("eval_targets", []) or []:
         eta = distinctive_anchors(" ".join(
-            str(et.get(k, "")) for k in ("account", "partial_ground_truth", "filter_date", "question")
+            str(et.get(k, "")) for k in (
+                "account", "partial_ground_truth", "filter_date", "question",
+                # the answer field holds the distinctive ground-truth tokens
+                # (suspect name, weapon, target, IOCs); without it the matcher
+                # only sees the generic question text. distinctive_anchors()
+                # still strips non-distinctive words, so this cannot match on
+                # generic tokens.
+                "answer_anchor", "answer", "value",
+            )
         ))
         covered = bool(eta & all_f_anchors)
         et_cov.append({"id": et.get("id"), "covered": covered,
