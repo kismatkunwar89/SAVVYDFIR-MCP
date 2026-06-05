@@ -1483,6 +1483,13 @@ def _list_dlls_missing_pids(findings: list[dict[str, Any]]) -> list[int]:
     existed, so running list_dlls on PID 1234 falsely satisfied the gate
     for PIDs 5678 and 9999 too.
     """
+    # Kernel pseudo-processes (0 = System Idle, 4 = System) can NEVER have
+    # user-mode DLLs enumerated; list_dlls on them is impossible. A network
+    # socket Volatility could not attribute to a real process lands on PID 0,
+    # which previously made the coverage gate demand an impossible
+    # list_dlls(0) -> report blocked forever (LONEWOLF run, 2026-06-05).
+    # Universal Windows truth -> case-agnostic exclusion.
+    _KERNEL_PSEUDO_PIDS = frozenset({0, 4})
     required: set[int] = set()
     covered: set[int] = set()
     for f in findings:
@@ -1490,9 +1497,12 @@ def _list_dlls_missing_pids(findings: list[dict[str, Any]]) -> list[int]:
         if isinstance(pids, list):
             for p in pids:
                 try:
-                    required.add(int(p))
+                    pid_int = int(p)
                 except (TypeError, ValueError):
                     continue
+                if pid_int in _KERNEL_PSEUDO_PIDS:
+                    continue  # idle/System: not a real process, can't list DLLs
+                required.add(pid_int)
         covered_pid = f.get("dlllist_covered_pid")
         if covered_pid is not None:
             try:

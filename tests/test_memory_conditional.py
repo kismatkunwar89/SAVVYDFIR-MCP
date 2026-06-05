@@ -116,5 +116,23 @@ class StateMemoryPresentTests(unittest.TestCase):
         self.assertTrue(mgr.get_memory_present())
 
 
+class ListDllsKernelPseudoPidTests(unittest.TestCase):
+    """A network socket attributed to PID 0 (System Idle) or PID 4 (System) must
+    NOT make the coverage gate demand an impossible list_dlls (LONEWOLF 2026-06-05
+    run-blocker). Real PIDs still required."""
+
+    def test_pid0_excluded_real_pid_covered(self):
+        fs = [{"network_pids": [0, 9020]}, {"dlllist_covered_pid": 9020}]
+        self.assertEqual(reporting._list_dlls_missing_pids(fs), [])
+
+    def test_pid0_and_4_excluded_real_pid_remains(self):
+        fs = [{"network_pids": [0, 4, 1234]}]
+        self.assertEqual(reporting._list_dlls_missing_pids(fs), [1234])
+
+    def test_real_uncovered_pid_still_demanded(self):
+        fs = [{"network_pids": [5678]}]
+        self.assertEqual(reporting._list_dlls_missing_pids(fs), [5678])
+
+
 if __name__ == "__main__":
     unittest.main()
