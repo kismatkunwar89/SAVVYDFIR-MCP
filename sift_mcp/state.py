@@ -1298,6 +1298,31 @@ class CaseStateManager:
             value = self._state.get("file_access_selector")
             return dict(value) if isinstance(value, dict) else None
 
+    def set_memory_present(self, present: bool) -> None:
+        """SEAM (review 2026-06-05): freeze whether the manifest provided a
+        memory image at investigation start. Mirrors the file-access selector — the
+        report gate, required-lane set, the three workflow hooks, and the stop hook
+        all key on THIS frozen flag so a legitimately DISK-ONLY case (manifest
+        memory_dumps == []) does not brick on unconditional memory-tool
+        requirements. Re-frozen on every start_investigation so a resumed run
+        re-reads the current manifest (no drift)."""
+        with self._lock:
+            self._assert_loaded()
+            self._state["memory_present"] = bool(present)
+            self._save_locked()
+
+    def get_memory_present(self) -> bool:
+        """Whether a memory image is in scope. Defaults TRUE when the flag is
+        absent (legacy / existing state stays memory-mandatory = zero behavior
+        change); only a NEW disk-only case explicitly sets it False. Scope
+        (manifest intent) is distinct from runtime readiness (file exists) —
+        a listed-but-missing dump is a hard error at start_investigation, NOT a
+        silent downgrade to disk-only."""
+        with self._lock:
+            self._assert_loaded()
+            value = self._state.get("memory_present")
+            return True if value is None else bool(value)
+
     def add_open_question(self, question: str) -> None:
         """Append an open question / limitation to the state and persist.
 
