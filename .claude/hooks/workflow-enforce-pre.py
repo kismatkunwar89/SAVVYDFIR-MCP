@@ -331,6 +331,18 @@ def main() -> None:
         # No state yet — let the MCP tool itself handle this case
         return
 
+    # Memory-conditional (review 2026-06-05): a disk-only case
+    # (state.memory_present == False, set at start_investigation from an empty
+    # manifest.memory_dumps) cannot run the 5 memory tools — do NOT block
+    # generate_report on them. compare_disk_and_memory is NOT in this set (stays
+    # mandatory; disk-primary checks). Default True keeps every memory case
+    # unchanged. Case-agnostic.
+    memory_present = bool(state.get("memory_present", True))
+    MEMORY_ONLY_TOOLS = {
+        "list_processes", "scan_processes", "scan_network",
+        "detect_injection", "list_dlls",
+    }
+
     # Build {tool_name: [(exit_code, outputs_summary_lower), ...]}
     attempts: dict[str, list[tuple[Any, str]]] = {}
     for exe in state.get("executions") or []:
@@ -357,7 +369,11 @@ def main() -> None:
                 return True
         return False
 
-    missing = [short for short, full in MANDATORY.items() if not _is_satisfied(full)]
+    missing = [
+        short for short, full in MANDATORY.items()
+        if not _is_satisfied(full)
+        and not (not memory_present and short in MEMORY_ONLY_TOOLS)
+    ]
 
     if not missing:
         # All mandatory tools have run — allow the report.

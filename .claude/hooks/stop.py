@@ -295,10 +295,20 @@ def _missing_tools_actionable(state_path: str, audit_path: str | None) -> list[s
     # heavy parse forever (the timeout loop). It is NOT success - the report still
     # records it as a data gap (exit_code != 0).
     ABSENCE = ("artifact_absent", "no_data", "collection_timeout")
+    # Memory-conditional (review 2026-06-05): on a disk-only case (manifest
+    # had no memory_dumps -> state.memory_present == False) the 5 memory tools can
+    # never run; do NOT re-demand them. compare_disk_and_memory is NOT in this set
+    # (it stays mandatory; its checks are disk-primary). Default True (absent flag)
+    # keeps every memory case unchanged. Case-agnostic.
+    MEMORY_ONLY_TOOLS = frozenset({
+        "list_processes", "scan_processes", "scan_network",
+        "detect_injection", "list_dlls",
+    })
     try:
         state = json.loads(Path(state_path).read_text())
     except Exception:
         return list(MANDATORY.keys())
+    memory_present = bool(state.get("memory_present", True))
     attempts: dict[str, list[tuple]] = {}
     for exe in state.get("executions") or []:
         tn = exe.get("tool_name") or ""
@@ -310,6 +320,8 @@ def _missing_tools_actionable(state_path: str, audit_path: str | None) -> list[s
 
     missing: list[str] = []
     for short, full in MANDATORY.items():
+        if not memory_present and short in MEMORY_ONLY_TOOLS:
+            continue  # disk-only case: memory tools not applicable, never demand
         runs = attempts.get(full) or []
         if not runs:
             missing.append(short)

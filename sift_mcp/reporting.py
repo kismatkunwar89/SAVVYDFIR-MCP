@@ -615,7 +615,23 @@ def evaluate_investigation_success_gate(
     lane_contributions: dict[str, dict[str, Any]] = {}
     missing_lanes: list[dict[str, Any]] = []
 
+    # Memory-conditional (review 2026-06-05): on a disk-only case (no memory
+    # image in the manifest) the memory lane is an auto-recorded documented-absence
+    # lane and cannot contribute findings. Skip its specialist-contribution audit so
+    # a legitimately memory-less case is not failed here. Case-agnostic: keyed on the
+    # frozen memory_present flag; default True keeps every memory case unchanged.
+    try:
+        _memory_present = bool(state_manager.get_memory_present())
+    except Exception:
+        _memory_present = True
+
     for lane_id in _SPECIALIST_REQUIRED_LANES:
+        if lane_id == "memory" and not _memory_present:
+            lane_contributions[lane_id] = {
+                "passed": True,
+                "reason": "memory_not_in_scope_disk_only_case",
+            }
+            continue
         expected = list(expected_lane_agents.get(lane_id, ()))
         # Path A success: any expected specialist registered ≥1 finding.
         path_a_hits = {
@@ -1647,8 +1663,15 @@ def evaluate_ir_coverage_gate(
     analysis_lanes: list[dict[str, Any]] | None = None,
     selector: dict[str, Any] | None = None,
     analysis_roots: tuple[str, ...] = (),
+    memory_present: bool = True,
 ) -> dict[str, Any]:
     """Return missing Windows IR tool coverage required before a final report.
+
+    *memory_present* (review 2026-06-05) gates the baseline memory-triage
+    requirement. Default True preserves current behavior for every case that has a
+    memory image; only a frozen-False (manifest memory_dumps == []) disk-only case
+    relaxes it. compare_disk_and_memory stays mandatory regardless (disk-primary
+    checks). Case-agnostic: keyed solely on the flag, no case specifics.
 
     *selector* is the frozen file-access selector snapshot persisted at
     start_investigation (``build_file_access_selector_snapshot``). When it sets
@@ -1740,22 +1763,27 @@ def evaluate_ir_coverage_gate(
                 "reason": f"{reason} A prior execution was recorded but did not succeed; retry.",
             })
 
-    for suff in ("list_processes", "scan_processes", "scan_network"):
-        _add(
-            f"memory.{suff}",
-            suff,
-            "mandatory_memory_baseline",
-            "Universal Windows IR memory triage requires pslist, psscan, and netscan.",
-        )
+    # Memory baseline triage is required ONLY when a memory image is in scope
+    # (review 2026-06-05). A disk-only case (frozen memory_present=False)
+    # cannot run pslist/psscan/netscan; requiring them would brick the report.
+    # Default True = unchanged for every memory case.
+    if memory_present:
+        for suff in ("list_processes", "scan_processes", "scan_network"):
+            _add(
+                f"memory.{suff}",
+                suff,
+                "mandatory_memory_baseline",
+                "Universal Windows IR memory triage requires pslist, psscan, and netscan.",
+            )
 
-    if _needs_detect_injection(findings):
+    if memory_present and _needs_detect_injection(findings):
         _add(
             "memory.detect_injection",
             "detect_injection",
             "memory_hidden_process_followup",
             "Psscan-only PIDs or requires_deeper_analysis; run detect_injection on the dump.",
         )
-    missing_dll_pids = _list_dlls_missing_pids(findings)
+    missing_dll_pids = _list_dlls_missing_pids(findings) if memory_present else []
     if missing_dll_pids:
         # E.2: surface the specific uncovered PIDs so the parent agent
         # knows which list_dlls invocations to make, not just that some
@@ -3325,6 +3353,10 @@ def generate_report_payload(
     analysis_debt_blocking = _debt.get("blocking", [])
 
     if not allow_partial:
+        try:
+            _memory_present = bool(state_manager.get_memory_present())
+        except Exception:
+            _memory_present = True
         coverage_check = evaluate_ir_coverage_gate(
             findings=findings,
             executions=executions,
@@ -3332,6 +3364,7 @@ def generate_report_payload(
             analysis_lanes=state_manager.get_analysis_lanes(),
             selector=state_manager.get_file_access_selector(),
             analysis_roots=analysis_roots,
+            memory_present=_memory_present,
         )
         if not coverage_check["ok"]:
             # Tier-B2: surface allow_partial=True

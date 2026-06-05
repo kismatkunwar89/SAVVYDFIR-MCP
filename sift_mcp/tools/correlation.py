@@ -531,7 +531,17 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
             f"{confirmed_consistencies} cross-artifact pairs are consistent."
         )
 
-    return {
+    # Memory-conditional scope annotation (review 2026-06-05): this tool
+    # STAYS mandatory on a disk-only case because most of its checks (USN timestomp,
+    # shimcache/amcache, log clearing, SRUM exfil, $SI/$FN) are DISK-primary. But
+    # when no memory image is in scope, the memory-vs-disk checks cannot run -- make
+    # that EXPLICIT so "0 such discrepancies" is read as "not checked (no RAM)" not
+    # "checked, clean". Case-agnostic: keyed on the frozen memory_present flag.
+    try:
+        _mem_present = bool(_state_mgr.get_memory_present())
+    except Exception:
+        _mem_present = True
+    result_out = {
         "status": "ok",
         "case_id": case_id,
         "discrepancies": discrepancies,
@@ -541,7 +551,20 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
         "confirmed_consistencies": confirmed_consistencies,
         "checked_at": checked_at,
         "summary": summary,
+        "memory_present": _mem_present,
     }
+    if not _mem_present:
+        result_out["memory_checks_skipped"] = [
+            "process_in_memory_no_disk_binary",
+            "vad_injection_on_legitimate_path",
+            "network_socket_no_disk_artifact",
+        ]
+        result_out["scope_note"] = (
+            "Disk-only case (no memory image in manifest): memory-vs-disk checks "
+            "skipped. Disk-primary anti-forensics checks (USN timestomp, "
+            "shimcache/amcache, log clearing, SRUM exfil, $SI/$FN) ran normally."
+        )
+    return result_out
 
 
 # ---------------------------------------------------------------------------

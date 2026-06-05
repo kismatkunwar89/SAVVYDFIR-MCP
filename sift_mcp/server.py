@@ -6792,6 +6792,30 @@ def extract_srum(
 # ===========================================================================
 
 
+def _manifest_memory_paths(manifest: dict[str, Any], manifest_dir: Path) -> list[str]:
+    """Normalize manifest.memory_dumps into a list of resolved path strings.
+
+    Case-agnostic memory-scope signal (review 2026-06-05). Accepts both
+    entry shapes the schema allows: a bare string, or a dict ``{"path": ...}``.
+    Blank/malformed entries are dropped. Relative paths resolve against the
+    manifest directory. Returns [] for an intentionally disk-only case
+    (``memory_dumps: []``) -> memory NOT in scope.
+    """
+    out: list[str] = []
+    dumps = manifest.get("memory_dumps") or []
+    if not isinstance(dumps, (list, tuple)):
+        return out
+    for entry in dumps:
+        raw = entry.get("path") if isinstance(entry, dict) else entry
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        p = Path(raw.strip())
+        if not p.is_absolute():
+            p = (manifest_dir / p)
+        out.append(str(p))
+    return out
+
+
 @mcp.tool()
 def start_investigation(manifest_path: str) -> dict[str, Any]:
     """Start a new investigation from a case manifest.
@@ -6874,6 +6898,54 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
                 status="PENDING",
             )
 
+        # Memory-conditional scope (review 2026-06-05): freeze whether a
+        # memory image is in scope so the report gate, the required-lane set, the
+        # three workflow hooks, and the stop hook do NOT brick a legitimately
+        # DISK-ONLY case. Case-agnostic: keyed solely on manifest.memory_dumps.
+        # SCOPE (manifest intent) != RUNTIME READINESS: a LISTED-but-MISSING dump
+        # is a HARD ERROR here, never a silent downgrade to disk-only.
+        _memory_paths = _manifest_memory_paths(manifest, manifest_file.parent)
+        _missing_memory = [p for p in _memory_paths if not Path(p).exists()]
+        if _missing_memory:
+            return {
+                "status": "error",
+                "classification": "memory_image_missing",
+                "error": (
+                    "Manifest lists memory_dumps but the file(s) are missing/unreadable: "
+                    + "; ".join(_missing_memory)
+                    + ". Provide the memory image(s), or for an intentionally disk-only "
+                    "case remove them so memory_dumps is []. A missing listed image is "
+                    "an acquisition error, not 'no memory intended'."
+                ),
+            }
+        memory_present = bool(_memory_paths)
+        _state_manager.set_memory_present(memory_present)
+        if not memory_present:
+            # Auto-record a documented-absence memory lane (status COMPLETE) so
+            # TRIAGE_COMPLETE / all_required_complete is satisfied AND the report
+            # explicitly shows "memory: N/A (no image)" rather than silently
+            # dropping a forensic pillar. Lane shape preserved (vs mutating
+            # _LANE_SPECS.required); the report-success gate skips this lane's
+            # finding-contribution check when memory_present is False.
+            _state_manager.upsert_analysis_lane(
+                "memory",
+                title="Memory Analyst",
+                phase="analysis",
+                required=True,
+                status="COMPLETE",
+                assigned_agent="main-agent",
+                summary=(
+                    "No memory image in manifest (memory_dumps: []) — memory phase "
+                    "not applicable for this disk-only case (documented absence)."
+                ),
+                data_gaps=[{
+                    "gap": "No RAM capture provided; memory-only analysis (live process "
+                           "list, injection, network sockets) is impossible for this case.",
+                    "severity": "info",
+                    "reason": "no_memory_image",
+                }],
+            )
+
         result: dict[str, Any] = {
             "status": "ok",
             "case_id": case_id,
@@ -6913,15 +6985,28 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
             ],
             "workflow_contract": {
                 "doc_reference": "CLAUDE.md — Investigation Workflow (7 Phases). Do not re-explain in responses.",
+                # Memory tools are listed ONLY when a memory image is in scope
+                # (review 2026-06-05). compare_disk_and_memory STAYS
+                # mandatory regardless: its checks 2/5/6-10 are disk-primary
+                # (timestomping, persistence, log-clearing, SRUM); on a disk-only
+                # case it runs the disk checks and annotates the memory checks as
+                # skipped. Case-agnostic: keyed on the frozen memory_present flag.
                 "mandatory_tools_for_report_gate": [
-                    "list_processes", "scan_processes", "detect_injection",
-                    "scan_network", "list_dlls",
+                    *(["list_processes", "scan_processes", "detect_injection",
+                       "scan_network", "list_dlls"] if memory_present else []),
                     "extract_mft_timeline", "extract_usn_journal", "summarize_evtx",
                     "extract_prefetch", "get_amcache", "extract_shimcache",
                     "extract_registry_run_keys", "extract_srum",
                     "sigma_hunt", "compare_disk_and_memory",
                 ],
-                "next_action": "Begin Phase 1: call list_processes, scan_processes, detect_injection, scan_network in one parallel batch.",
+                "next_action": (
+                    "Begin Phase 1: call list_processes, scan_processes, detect_injection, "
+                    "scan_network in one parallel batch."
+                    if memory_present else
+                    "No memory image in scope (disk-only case) — skip Phase 1 memory triage. "
+                    "Begin Phase 2: mount_image, then extract_mft_timeline / summarize_evtx / "
+                    "the disk + file-access extractors."
+                ),
                 "fallback_if_no_mount": "extract_windows_artifacts stages hives, SRUDB.dat, USN journal so shimcache/srum fall back automatically.",
                 # CRITICAL: extraction without analysis is half a run. Every
                 # tool that returns csv_path/output_path is a PIVOT POINT, not

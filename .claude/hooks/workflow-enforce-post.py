@@ -192,8 +192,22 @@ def main() -> None:
                      "mcp__savvydfir__sigma_hunt",
                      "mcp__savvydfir__compare_disk_and_memory"):
         called = _called_tools(state_path)
+        # Memory-conditional (review 2026-06-05): on a disk-only case
+        # (state.memory_present == False) don't nudge impossible Phase-1 memory
+        # work. compare_disk_and_memory stays in the nudge (disk-primary). Default
+        # True keeps every memory case unchanged. Case-agnostic.
+        try:
+            _mem_present = bool(json.loads(state_path.read_text()).get("memory_present", True))
+        except Exception:
+            _mem_present = True
+        _memory_only = {
+            "memory.list_processes", "memory.scan_processes", "memory.scan_network",
+            "memory.detect_injection", "memory.list_dlls",
+        }
         pending: list[str] = []
         for mcp_name, meta in MANDATORY_PHASE_TOOLS.items():
+            if not _mem_present and meta["exec"] in _memory_only:
+                continue
             if meta["exec"] not in called:
                 pending.append(mcp_name.replace("mcp__savvydfir__", ""))
         if pending:
