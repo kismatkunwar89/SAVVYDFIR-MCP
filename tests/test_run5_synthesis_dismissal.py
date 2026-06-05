@@ -42,6 +42,31 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 
+# --- helpers for the post-integrity-fix contract (2026-06-05) -----------------
+# Dismissal now keys on synthesis WORK done (compare_disk_and_memory +
+# find_temporal_clusters ran successfully, lane-linked), NOT a >=3 CONFIRMED quota.
+def _ok_exec(tool):
+    return {"tool_name": tool, "exit_code": 0, "duration_seconds": 1.0,
+            "audit_completed_entry_hash": "h"}
+
+
+class _FakeStateMgr:
+    """Minimal state_manager exposing get_execution for the actions-ran check."""
+    def __init__(self, execs):
+        self._execs = execs  # {execution_id: execution_dict}
+
+    def get_execution(self, eid):
+        return self._execs.get(eid)
+
+
+def _synth_actions_state():
+    """A state_manager where E-1/E-2 are successful compare + clusters runs."""
+    return _FakeStateMgr({
+        "E-1": _ok_exec("correlation.compare_disk_and_memory"),
+        "E-2": _ok_exec("correlation.find_temporal_clusters"),
+    })
+
+
 class TestBugAFindTemporalClustersImport:
     """BUG-A: correlation.py:1430 had dead import that crashed the tool."""
 
@@ -108,42 +133,61 @@ class TestBugBInlineSynthesisDismissal:
         )
         assert result is False  # specialist recorded, not main-agent
 
-    def test_predicate_returns_false_if_fewer_than_3_confirmed(self):
+    def test_predicate_ignores_confirmed_count_dismisses_with_actions(self):
+        """INTEGRITY FIX (2026-06-05): the >=3 CONFIRMED quota is GONE. A lane with
+        0 CONFIRMED but with the synthesis ACTIONS run (compare + clusters) must
+        DISMISS — CONFIRMED is an outcome, not a quota (kills the fabrication
+        incentive)."""
         from sift_mcp.reporting import _inline_synthesis_satisfies_delegate
         result = _inline_synthesis_satisfies_delegate(
-            lane_record={"lane_id": "synthesis_corroboration", "assigned_agent": "main-agent", "status": "COMPLETE", "finding_ids": ["F-1", "F-2"]},
+            lane_record={"lane_id": "synthesis_corroboration", "assigned_agent": "main-agent",
+                         "status": "COMPLETE", "finding_ids": ["F-1"],
+                         "execution_ids": ["E-1", "E-2"]},
             delegate_subagent="synthesis-analyst",
-            state_findings=[
-                {"finding_id": "F-1", "finding_status": "CONFIRMED"},
-                {"finding_id": "F-2", "finding_status": "CONFIRMED"},
-            ],
+            state_findings=[{"finding_id": "F-1", "finding_status": "ACTIVE"}],  # 0 CONFIRMED
+            state_manager=_synth_actions_state(),
         )
-        assert result is False  # only 2 CONFIRMED, need ≥3
+        assert result is True  # actions ran -> dismiss, regardless of CONFIRMED count
 
-    def test_predicate_returns_false_when_finding_ids_not_confirmed_in_state(self):
-        """peer reviewer's strict check: lane CLAIMS 3 finding_ids but actual state shows
-        only 2 are CONFIRMED — predicate must reject."""
+    def test_predicate_returns_false_hollow_lane_no_actions(self):
+        """Anti-hollow-lane: lane COMPLETE with findings but the synthesis actions
+        did NOT run (no compare/clusters execution_ids) -> must NOT dismiss. This
+        is the new gaming guard replacing the >=3 quota."""
         from sift_mcp.reporting import _inline_synthesis_satisfies_delegate
         result = _inline_synthesis_satisfies_delegate(
-            lane_record={"lane_id": "synthesis_corroboration", "assigned_agent": "main-agent", "status": "COMPLETE", "finding_ids": ["F-1", "F-2", "F-3"]},
+            lane_record={"lane_id": "synthesis_corroboration", "assigned_agent": "main-agent",
+                         "status": "COMPLETE", "finding_ids": ["F-1", "F-2", "F-3"],
+                         "execution_ids": []},  # no synthesis actions recorded
             delegate_subagent="synthesis-analyst",
-            state_findings=[
-                {"finding_id": "F-1", "finding_status": "CONFIRMED"},
-                {"finding_id": "F-2", "finding_status": "ACTIVE"},  # NOT confirmed
-                {"finding_id": "F-3", "finding_status": "CONFIRMED"},
-            ],
+            state_findings=[{"finding_id": f"F-{i}", "finding_status": "CONFIRMED"} for i in range(1, 4)],
+            state_manager=_synth_actions_state(),
         )
-        assert result is False  # only 2 of 3 are actually CONFIRMED
+        assert result is False  # even 3 CONFIRMED can't dismiss a hollow (no-actions) lane
+
+    def test_predicate_returns_false_partial_actions(self):
+        """Only one of compare/clusters ran -> not dismissed (both required)."""
+        from sift_mcp.reporting import _inline_synthesis_satisfies_delegate
+        partial = _FakeStateMgr({"E-1": _ok_exec("correlation.compare_disk_and_memory")})
+        result = _inline_synthesis_satisfies_delegate(
+            lane_record={"lane_id": "synthesis_corroboration", "assigned_agent": "main-agent",
+                         "status": "COMPLETE", "finding_ids": ["F-1"], "execution_ids": ["E-1"]},
+            delegate_subagent="synthesis-analyst",
+            state_findings=[{"finding_id": "F-1", "finding_status": "ACTIVE"}],
+            state_manager=partial,
+        )
+        assert result is False
 
     def test_predicate_returns_true_for_valid_inline_synthesis(self):
-        """Happy path: main-agent recorded synthesis with 3+ CONFIRMED."""
+        """Happy path: main-agent recorded synthesis with the actions run."""
         from sift_mcp.reporting import _inline_synthesis_satisfies_delegate
         result = _inline_synthesis_satisfies_delegate(
-            lane_record={"lane_id": "synthesis_corroboration", "assigned_agent": "main-agent", "status": "COMPLETE", "finding_ids": ["F-1", "F-2", "F-3", "F-4"]},
+            lane_record={"lane_id": "synthesis_corroboration", "assigned_agent": "main-agent",
+                         "status": "COMPLETE", "finding_ids": ["F-1", "F-2"],
+                         "execution_ids": ["E-1", "E-2"]},
             delegate_subagent="synthesis-analyst",
-            state_findings=[
-                {"finding_id": f"F-{i}", "finding_status": "CONFIRMED"} for i in range(1, 5)
-            ],
+            state_findings=[{"finding_id": "F-1", "finding_status": "CONFIRMED"},
+                            {"finding_id": "F-2", "finding_status": "ACTIVE"}],
+            state_manager=_synth_actions_state(),
         )
         assert result is True
 
@@ -151,18 +195,23 @@ class TestBugBInlineSynthesisDismissal:
         """Backward-compat: older delegates may target corroboration-analyst."""
         from sift_mcp.reporting import _inline_synthesis_satisfies_delegate
         result = _inline_synthesis_satisfies_delegate(
-            lane_record={"lane_id": "synthesis_corroboration", "assigned_agent": "main-agent", "status": "COMPLETE", "finding_ids": ["F-1", "F-2", "F-3"]},
+            lane_record={"lane_id": "synthesis_corroboration", "assigned_agent": "main-agent",
+                         "status": "COMPLETE", "finding_ids": ["F-1"], "execution_ids": ["E-1", "E-2"]},
             delegate_subagent="corroboration-analyst",  # legacy name
-            state_findings=[{"finding_id": f"F-{i}", "finding_status": "CONFIRMED"} for i in range(1, 4)],
+            state_findings=[{"finding_id": "F-1", "finding_status": "ACTIVE"}],
+            state_manager=_synth_actions_state(),
         )
         assert result is True
 
     def test_predicate_accepts_complete_with_gaps_status(self):
         from sift_mcp.reporting import _inline_synthesis_satisfies_delegate
         result = _inline_synthesis_satisfies_delegate(
-            lane_record={"lane_id": "synthesis_corroboration", "assigned_agent": "main-agent", "status": "COMPLETE_WITH_GAPS", "finding_ids": ["F-1", "F-2", "F-3"]},
+            lane_record={"lane_id": "synthesis_corroboration", "assigned_agent": "main-agent",
+                         "status": "COMPLETE_WITH_GAPS", "finding_ids": ["F-1"],
+                         "execution_ids": ["E-1", "E-2"]},
             delegate_subagent="synthesis-analyst",
-            state_findings=[{"finding_id": f"F-{i}", "finding_status": "CONFIRMED"} for i in range(1, 4)],
+            state_findings=[{"finding_id": "F-1", "finding_status": "ACTIVE"}],
+            state_manager=_synth_actions_state(),
         )
         assert result is True
 

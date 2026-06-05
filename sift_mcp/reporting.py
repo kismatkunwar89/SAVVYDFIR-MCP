@@ -134,7 +134,10 @@ def _lane_recorded_by_same_specialist(
 # COMPLETE with ≥3 CONFIRMED findings → delegate satisfied.
 _SYNTHESIS_LANE_NAME = "synthesis_corroboration"
 _SYNTHESIS_DELEGATE_NAMES = {"synthesis-analyst", "corroboration-analyst"}
-_SYNTHESIS_MIN_CONFIRMED = 3
+# _SYNTHESIS_MIN_CONFIRMED (=3) REMOVED 2026-06-05 (integrity fix): it was a
+# CONFIRMED quota that incentivized fabricating findings to clear the synthesis
+# delegate gate. Dismissal now keys on synthesis WORK done (see
+# _inline_synthesis_satisfies_delegate), not a CONFIRMED count.
 
 
 def _safe_get_findings(state_manager: Any) -> list[dict[str, Any]]:
@@ -154,20 +157,31 @@ def _inline_synthesis_satisfies_delegate(
     lane_record: dict[str, Any],
     delegate_subagent: str,
     state_findings: list[dict[str, Any]],
+    state_manager: Any = None,
 ) -> bool:
-    """Run-5 consensus: return True iff the synthesis_corroboration lane has
-    been recorded by main-agent inline with sufficient CONFIRMED corroborated
-    findings to satisfy the pending @synthesis-analyst delegate WITHOUT
-    requiring a path_b_would_allow ledger row (synthesis inline is Path A,
-    not a fallback).
+    """Return True iff the synthesis_corroboration lane was genuinely WORKED by
+    main-agent inline, satisfying the pending @synthesis-analyst delegate.
 
-    Conditions (per A-REFINED + strict-confirmed-resolution):
+    INTEGRITY FIX (review 2026-06-05): the prior rule required >=3 CONFIRMED
+    findings in the lane (_SYNTHESIS_MIN_CONFIRMED). That made CONFIRMED a QUOTA and
+    directly incentivized fabricating CONFIRMED findings to clear the gate. CONFIRMED
+    must be an OUTCOME of evidence, never a target.
+
+    New rule gates on synthesis WORK DONE, not on a CONFIRMED count:
       - lane_id is the synthesis lane
       - delegate target normalizes to a synthesis specialist
       - lane assigned_agent normalizes to 'main-agent'
       - lane status is a done state (COMPLETE / COMPLETE_WITH_GAPS)
-      - ≥3 of lane's finding_ids RESOLVE to status=CONFIRMED in state
-        (not just `len(finding_ids) >= 3` - actual confirmation from state)
+      - lane has >=1 finding_id (synthesis produced something)
+      - the synthesis ACTIONS actually RAN: the lane's OWN execution_ids resolve to
+        SUCCESSFUL correlation.compare_disk_and_memory AND
+        correlation.find_temporal_clusters executions (lane-linked, audit-verified
+        via _execution_was_successful). This is the anti-hollow-lane guard: a lane
+        marked COMPLETE without the synthesis tools actually running cannot dismiss
+        the delegate. We do NOT require those actions to PRODUCE results -- a sparse
+        honest case legitimately yields 0 clusters; requiring output re-introduces
+        the fabrication incentive.
+    The honest CONFIRMED count (0, 1, 2, ...) is then whatever the evidence supports.
     """
     if not isinstance(lane_record, dict):
         return False
@@ -180,16 +194,32 @@ def _inline_synthesis_satisfies_delegate(
     lane_status = str(lane_record.get("status") or "").upper()
     if lane_status not in {"COMPLETE", "COMPLETE_WITH_GAPS"}:
         return False
-    # Resolve CONFIRMED count from state (trust state, not caller claim)
     lane_finding_ids = {str(fid).strip() for fid in (lane_record.get("finding_ids") or [])}
     if not lane_finding_ids:
         return False
-    confirmed_in_lane = sum(
-        1 for f in state_findings
-        if str(f.get("finding_id") or "") in lane_finding_ids
-        and str(f.get("finding_status") or "").upper() == "CONFIRMED"
-    )
-    return confirmed_in_lane >= _SYNTHESIS_MIN_CONFIRMED
+    # Anti-hollow-lane: require the synthesis tools to have RUN successfully,
+    # referenced by THIS lane's execution_ids (not merely "ran somewhere").
+    if state_manager is None:
+        return False
+    lane_exec_ids = [str(e).strip() for e in (lane_record.get("execution_ids") or []) if str(e).strip()]
+    if not lane_exec_ids:
+        return False
+    required_actions = {
+        "correlation.compare_disk_and_memory",
+        "correlation.find_temporal_clusters",
+    }
+    satisfied_actions: set[str] = set()
+    for eid in lane_exec_ids:
+        try:
+            ex = state_manager.get_execution(eid)
+        except Exception:
+            ex = None
+        if not isinstance(ex, dict):
+            continue
+        tool_name = str(ex.get("tool_name") or "")
+        if tool_name in required_actions and _execution_was_successful(ex):
+            satisfied_actions.add(tool_name)
+    return required_actions.issubset(satisfied_actions)
 
 
 def _find_lane_in_state(
@@ -286,6 +316,7 @@ def _dismiss_stale_delegates(
             lane_record=lane_record,
             delegate_subagent=subagent,
             state_findings=_safe_get_findings(state_manager),
+            state_manager=state_manager,
         ):
             # W1.7 Run-5 BUG-B fix: main-agent inline synthesis is Path A
             # for this lane (not a fallback). Dismiss the @synthesis-analyst
@@ -293,9 +324,10 @@ def _dismiss_stale_delegates(
             event_name = "delegate_satisfied_by_inline_synthesis"
             basis = (
                 f"lane={lane_id!r} status={status} "
-                f"assigned_agent=main-agent recorded synthesis with "
-                f"≥{_SYNTHESIS_MIN_CONFIRMED} CONFIRMED findings - "
-                f"inline Path A satisfies @{subagent} delegate per W1.7"
+                f"assigned_agent=main-agent ran inline synthesis "
+                f"(compare_disk_and_memory + find_temporal_clusters executed) - "
+                f"inline Path A satisfies @{subagent} delegate; CONFIRMED count is "
+                f"evidence-determined (no quota)"
             )
         else:
             # Different actor - check ledger for Path B allowance.
@@ -3198,6 +3230,7 @@ def generate_report_payload(
                     lane_record=_legacy_lane_record,
                     delegate_subagent=_legacy_specialist,
                     state_findings=_safe_get_findings(state_manager),
+                    state_manager=state_manager,
                 ):
                     _legacy_dismiss_event = "delegate_satisfied_by_inline_synthesis"
                     _legacy_dismiss_basis = (

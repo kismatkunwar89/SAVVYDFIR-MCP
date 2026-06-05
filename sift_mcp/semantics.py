@@ -682,6 +682,41 @@ def _alternative_hypothesis_complete(
     return False, "disposition_empty"
 
 
+def _satisfied_source_classes(finding: dict[str, Any], state_manager: Any = None) -> set[str]:
+    """Lowercased set of source classes already corroborating this finding.
+
+    Source-aware (review 2026-06-05): a raw source-class token in
+    corroborated_by (e.g. 'prefetch', 'evtx_process_creation' from the promoter
+    path) counts directly; an F-NNN finding id is RESOLVED via state to the cited
+    finding's fk_source_class. Unresolvable ids do NOT clear a requirement
+    (fail-safe — opaque ids cannot satisfy FK corroboration). corroboration_
+    completed_by counts too. Used by the FK auto-populate subtraction AND the A3
+    CONFIRMED gate so a genuine 2+-source stack clears its outstanding.
+    """
+    satisfied: set[str] = set()
+    for item in _normalize_indicator_list(finding.get("corroborated_by")):
+        token = _to_text(item).lower()
+        if not token:
+            continue
+        if not token.startswith("f-"):
+            satisfied.add(token)  # raw source-class token (e.g. "prefetch")
+            continue
+        if state_manager is None:
+            continue  # cannot resolve the id -> fail-safe, do not clear
+        try:
+            other = state_manager.get_finding(item)
+        except Exception:
+            other = None
+        if isinstance(other, dict):
+            sc = other.get("fk_source_class") or classify_fk_source(other)
+            if sc:
+                satisfied.add(_to_text(sc).lower())
+    completed = _to_text(finding.get("corroboration_completed_by")).lower()
+    if completed:
+        satisfied.add(completed)
+    return satisfied
+
+
 def _apply_confirmed_gates(
     normalized: dict[str, Any], state_manager: Any
 ) -> dict[str, Any]:
@@ -706,6 +741,22 @@ def _apply_confirmed_gates(
     alt_ok, alt_reason = _alternative_hypothesis_complete(normalized)
     if not alt_ok:
         gate_failures.append(f"alternative_hypothesis:{alt_reason}")
+    # Tier-A3 (integrity fix, review 2026-06-05): a finding that still has
+    # UNSATISFIED corroboration cannot be CONFIRMED -- it is self-contradictory
+    # ("still needs X" vs "confirmed"). This closes the manufacturing hole where a
+    # finding flagged corroboration_outstanding=[prefetch, amcache, ...] was
+    # nonetheless labeled CONFIRMED (F-061). Source-aware: a genuine 2+-source
+    # stack whose corroborated_by covers the outstanding sources clears it (so real
+    # CONFIRMED, incl ROCBA F-102/103/104 and any analyst-built stack, are
+    # untouched); only GENUINELY-uncorroborated single-source CONFIRMED demote.
+    outstanding = normalized.get("corroboration_outstanding")
+    if isinstance(outstanding, (list, tuple)) and len(outstanding) > 0:
+        satisfied = _satisfied_source_classes(normalized, state_manager)
+        effective = [o for o in outstanding if _to_text(o).lower() not in satisfied]
+        if effective:
+            gate_failures.append(
+                "corroboration_outstanding:" + ",".join(str(x) for x in effective)
+            )
 
     if not gate_failures:
         return normalized
@@ -797,13 +848,23 @@ def validate_and_prepare_finding(
     if source_class:
         normalized["fk_source_class"] = source_class
         if source_class in _FK_CORROBORATION_REQUIREMENTS:
-            if not normalized.get("corroboration_outstanding"):
-                normalized["corroboration_outstanding"] = list(
-                    _FK_CORROBORATION_REQUIREMENTS[source_class]
+            # Correlation exemption + source-aware subtraction (review
+            # 2026-06-05). Synthesis/inference findings (artifact_type=correlation)
+            # ARE the cross-source stack -> NEVER auto-populate FK requirements for
+            # them (e.g. persistence+correlation mis-classes as registry_run and
+            # would falsely demote legit synthesis CONFIRMED). For single-artifact
+            # FK findings, outstanding = required MINUS already-satisfied sources,
+            # so a genuine 2+-source stack has empty outstanding and stays CONFIRMED.
+            if _to_text(normalized.get("artifact_type")).lower() != "correlation":
+                if not normalized.get("corroboration_outstanding"):
+                    satisfied = _satisfied_source_classes(normalized, state_manager)
+                    normalized["corroboration_outstanding"] = [
+                        r for r in _FK_CORROBORATION_REQUIREMENTS[source_class]
+                        if _to_text(r).lower() not in satisfied
+                    ]
+                normalized["corroboration_outstanding"] = _normalize_indicator_list(
+                    normalized.get("corroboration_outstanding")
                 )
-            normalized["corroboration_outstanding"] = _normalize_indicator_list(
-                normalized.get("corroboration_outstanding")
-            )
         if not normalized.get("fk_confidence_note"):
             original_confidence = float(normalized.get("confidence", 0.0) or 0.0)
             applied_multiplier = _FK_CONFIDENCE_MULTIPLIERS[source_class]
@@ -1146,15 +1207,27 @@ def promote_corroborated_findings(
         support_inputs["promotion_method"] = confidence_note
         support_inputs["artifact_sources"] = list(artifact_sources)
 
+        # Integrity fix (review 2026-06-05): promote to CONFIRMED ONLY when
+        # ALL outstanding corroboration is cleared (remaining == []). If sources
+        # are still outstanding, record the progress (new corroborated_by +
+        # reduced remaining + higher confidence) but keep the finding ACTIVE --
+        # never CONFIRMED-with-outstanding (the F-061 self-contradiction). This is
+        # consistent with _apply_confirmed_gates Tier-A3.
+        promoted_status = (
+            FindingStatus.CONFIRMED.value.upper()
+            if not remaining
+            else FindingStatus.ACTIVE.value.upper()
+        )
         state_manager.update_finding(
             finding_id,
-            finding_status=FindingStatus.CONFIRMED.value.upper(),
+            finding_status=promoted_status,
             corroborated_by=corroborated_by,
             corroboration_outstanding=remaining,
             corroboration_completed_by=evidence_source_class,
             confidence=new_confidence,
             confidence_support_inputs=support_inputs,
         )
-        promoted.append(finding_id)
+        if promoted_status == FindingStatus.CONFIRMED.value.upper():
+            promoted.append(finding_id)
 
     return promoted

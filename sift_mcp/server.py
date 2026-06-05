@@ -9023,6 +9023,17 @@ def submit_finding(
             corr = stored.get("corroborated_by") or []
             if not corr:
                 eligibility["missing"].append("corroborated_by (recommended: ≥2 source finding IDs for stacked evidence)")
+            # A3 (integrity fix 2026-06-05): outstanding corroboration is a HARD
+            # block on CONFIRMED -- a finding that still declares it needs
+            # corroboration cannot be confirmed (self-contradictory). Surface it
+            # here at submit time, not only when _apply_confirmed_gates demotes it.
+            outstanding = stored.get("corroboration_outstanding") or []
+            if isinstance(outstanding, (list, tuple)) and len(outstanding) > 0:
+                eligibility["gate_blocks"].append(
+                    "A3_corroboration_outstanding: still needs "
+                    + ",".join(str(x) for x in outstanding)
+                    + " — cannot be CONFIRMED until cleared"
+                )
             # Compute eligibility
             eligibility["eligible"] = (
                 stored_status == "CONFIRMED"

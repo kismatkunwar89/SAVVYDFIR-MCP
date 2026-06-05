@@ -107,30 +107,38 @@ class SemanticRegressionTests(unittest.TestCase):
                 }
             )
 
-            promoted = promote_corroborated_findings(
-                manager,
-                "prefetch",
-                [r"C:\Users\Alice\AppData\Roaming\evil.exe"],
-            )
+            ipath = r"C:\Users\Alice\AppData\Roaming\evil.exe"
+            # INTEGRITY FIX (2026-06-05): CONFIRMED carries weight — it requires
+            # ALL of the FK class's corroboration sources cleared, not one. shimcache
+            # requires [prefetch, amcache, evtx_process_creation]. Partial
+            # corroboration keeps the finding ACTIVE (not promoted); only when the
+            # LAST required source clears does it become CONFIRMED.
+            # 1 of 3 -> still ACTIVE, NOT promoted
+            self.assertEqual(promote_corroborated_findings(manager, "prefetch", [ipath]), [])
+            self.assertEqual(manager.get_finding(finding_id)["finding_status"], "ACTIVE")
+            # 2 of 3 -> still ACTIVE
+            self.assertEqual(promote_corroborated_findings(manager, "amcache", [ipath]), [])
+            self.assertEqual(manager.get_finding(finding_id)["finding_status"], "ACTIVE")
+            # 3 of 3 (all required cleared) -> CONFIRMED
+            promoted = promote_corroborated_findings(manager, "evtx_process_creation", [ipath])
 
             self.assertEqual(promoted, [finding_id])
             finding = manager.get_finding(finding_id)
             assert finding is not None
             self.assertEqual(finding["finding_status"], "CONFIRMED")
-            self.assertIn("prefetch", finding["corroborated_by"])
-            self.assertEqual(finding["corroboration_completed_by"], "prefetch")
-            # Execution hierarchy: {prefetch, shimcache} both fall in
-            # execution_sources → _derive_execution_confidence returns
-            # 0.85 ("probable_execution_prefetch"). Prior 0.78 expectation
-            # was unreachable before the peer reviewer A1/A2 gates because the
-            # status was being silently kept ACTIVE on missing provenance.
-            self.assertAlmostEqual(finding["confidence"], 0.85, places=3)
+            self.assertEqual(finding.get("corroboration_outstanding"), [])
+            for src in ("prefetch", "amcache", "evtx_process_creation"):
+                self.assertIn(src, finding["corroborated_by"])
+            # All 3 execution sources cleared -> definitive execution (1.0)
+            self.assertAlmostEqual(finding["confidence"], 1.0, places=3)
             self.assertEqual(finding["promotion_eligibility"], "confirmed")
             self.assertIn("disk", finding["supporting_tool_families"])
             self.assertIn("disk", finding["supporting_artifact_families"])
+            # completed_corroboration reflects the LAST corroboration event (the
+            # one that cleared the final required source -> CONFIRMED).
             self.assertEqual(
                 finding["confidence_support_inputs"]["completed_corroboration"],
-                ["prefetch"],
+                ["evtx_process_creation"],
             )
 
 

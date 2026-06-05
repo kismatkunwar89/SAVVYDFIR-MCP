@@ -262,8 +262,11 @@ def test_gate_still_fires_on_submit_finding_findings(tmp_path):
 
 
 def test_confirmed_submit_finding_with_full_alt_hypothesis_stays_confirmed(tmp_path):
-    """The happy path: submit_finding with proper alt-hypothesis disposition
-    keeps CONFIRMED status AND retains assigned_agent."""
+    """Happy path under the integrity-fix contract (2026-06-05): A1 (provenance) +
+    A2 (alt-hypothesis) + A3 (corroboration cleared) keeps CONFIRMED AND retains
+    assigned_agent. CONFIRMED now carries weight — it requires 2+ sources — so this
+    legitimate finding cites the sources its FK class (mft_timestomp) requires
+    (prefetch + evtx_process_creation), clearing its outstanding."""
     sm = _make_state(tmp_path)
     _record_execution(sm, "E-001", "disk.extract_mft_timeline")
     fid = sm.add_finding({
@@ -286,11 +289,42 @@ def test_confirmed_submit_finding_with_full_alt_hypothesis_stays_confirmed(tmp_p
             "$FN timestamp post-dates $SI by >3y — only NTFS-API timestomping can produce this",
         ],
         "disposition": "ruled_out",
+        # A3: corroboration cleared (2+ sources) -> CONFIRMED carries weight
+        "corroborated_by": ["prefetch", "evtx_process_creation"],
     })
     stored = sm.get_finding(fid)
     assert stored["finding_status"] == "CONFIRMED"
     assert stored.get("assigned_agent") == "mft-analyst"
     assert not stored.get("requires_re_extraction")
+
+
+def test_confirmed_single_source_demotes_to_active(tmp_path):
+    """Integrity fix (2026-06-05): a single-artifact CONFIRMED with full A1+A2 but
+    NO corroboration is demoted to ACTIVE — CONFIRMED requires 2+ sources (stacking
+    principle). This is the F-061 prevention: one source of truth is not 'confirmed'."""
+    sm = _make_state(tmp_path)
+    _record_execution(sm, "E-001", "disk.extract_mft_timeline")
+    fid = sm.add_finding({
+        "case_id": "TEST-CASE",
+        "finding_type": "timestomping",
+        "artifact_type": "disk",
+        "artifact_path": "/x/mft.csv",
+        "tool_name": "state.submit_finding",
+        "execution_id": "E-001",
+        "iteration": 1,
+        "evidence_kind": "observation",
+        "confidence": 0.95,
+        "finding_status": "CONFIRMED",
+        "description": "$SI<$FN timestomping, single MFT artifact only.",
+        "alternative_hypothesis": "Legitimate maintenance backdating",
+        "evidence_against_it": ["no change ticket"],
+        "disposition": "ruled_out",
+        # NO corroborated_by -> outstanding (prefetch, evtx) stays -> demote
+    })
+    stored = sm.get_finding(fid)
+    assert stored["finding_status"] == "ACTIVE", "single-source CONFIRMED must demote"
+    blocks = stored.get("confidence_support_inputs", {}).get("confirmed_gate_blocks", [])
+    assert any(b.startswith("corroboration_outstanding:") for b in blocks), blocks
 
 
 # ---------------------------------------------------------------------------
