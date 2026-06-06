@@ -4580,9 +4580,23 @@ def sigma_hunt(
         else:
             _zero_hit_diagnostic = (
                 f"{_telemetry.get('documents_loaded')} documents scanned against "
-                f"{_telemetry.get('rules_loaded')} rules with 0 matches - "
-                "legitimately clean for the selected filters."
+                f"{_telemetry.get('rules_loaded')} rules with 0 matches - this MAY be "
+                "genuinely clean for the selected filters, OR a mapping/field-binding "
+                "mismatch (rules load but bind nothing - the Run-11 mapping bug). Do NOT "
+                "certify 'clean' on 0 hits without confirming mapping integrity via the "
+                "Sigma positive-control (scripts/eval/sigma_positive_control.sh)."
             )
+
+    # Mapping provenance (consensus 2026-06-06): record WHICH mapping ran + its
+    # hash so a silent mapping regression (the Run-11 0-hit bug) is traceable in
+    # every response + audit row.
+    _mapping_sha256 = None
+    if mapping_file:
+        try:
+            import hashlib as _hashlib
+            _mapping_sha256 = _hashlib.sha256(Path(mapping_file).read_bytes()).hexdigest()
+        except Exception:
+            _mapping_sha256 = None
 
     response_payload = {
         "status": "success" if hits_total > 0 else "no_hits",
@@ -4593,6 +4607,7 @@ def sigma_hunt(
         "evtx_files_found": _evtx_files_found,
         "mapping_file": mapping_file,
         "mapping_resolved": bool(mapping_file),
+        "mapping_sha256": _mapping_sha256,
         "documents_loaded": _telemetry.get("documents_loaded"),
         "rules_loaded": _telemetry.get("rules_loaded"),
         "zero_hit_diagnostic": _zero_hit_diagnostic or None,
