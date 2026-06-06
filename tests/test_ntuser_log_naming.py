@@ -1,6 +1,6 @@
 """Regression tests for NTUSER hive + transaction-log target naming.
 
-peer reviewer adversarial review of commit 435f261 (the .LOG1/.LOG2 staging fix)
+review adversarial review of commit 435f261 (the .LOG1/.LOG2 staging fix)
 identified a follow-up high-severity bug: _raw_artifact_target only
 applied the per-user prefix to the hive itself (NTUSER.DAT → alice_NTUSER.DAT)
 but not to its transaction logs (NTUSER.DAT.LOG1 stayed unprefixed).
@@ -157,7 +157,7 @@ def test_rla_replay_contract_holds_for_per_user_hives(tmp_path: Path):
 
 @_requires_fastmcp
 def test_relative_fls_path_triggers_prefix(tmp_path: Path):
-    """peer reviewer follow-up regression: fls -r -p emits RELATIVE paths like
+    """review follow-up regression: fls -r -p emits RELATIVE paths like
     "Users/alice/NTUSER.DAT" (no leading slash, no drive). The old
     "/Users/" substring guard missed these entirely, bypassing the
     per-user prefix branch for the actual extraction path."""
@@ -179,7 +179,7 @@ def test_relative_fls_path_triggers_prefix(tmp_path: Path):
         assert target.name == expected_name, (
             f"Relative fls path {source!r} should produce {expected_name!r} "
             f"but got {target.name!r}. The substring-based guard was the "
-            f"original bug — peer reviewer follow-up. Path segment detection is required."
+            f"original bug — review follow-up. Path segment detection is required."
         )
 
 
@@ -230,7 +230,7 @@ def test_classifier_and_target_naming_source_check():
     src = (ROOT / "sift_mcp" / "server.py").read_text()
     # The fix introduces _NTUSER_VARIANTS constant
     assert "_NTUSER_VARIANTS" in src, (
-        "peer reviewer consensus regression: _NTUSER_VARIANTS constant missing. "
+        "design review regression: _NTUSER_VARIANTS constant missing. "
         "The per-user prefix must cover all NTUSER transaction-log variants "
         "(NTUSER.DAT + .LOG + .LOG1 + .LOG2), not just the bare hive."
     )
@@ -256,10 +256,10 @@ def test_classifier_and_target_naming_source_check():
         "Old narrow `== \"NTUSER.DAT\"` check still present — the fix "
         "needs to broaden to the variant set."
     )
-    # peer reviewer follow-up: the substring-based "/Users/" check missed relative
+    # review follow-up: the substring-based "/Users/" check missed relative
     # fls paths entirely. Must use path-segment detection now.
     assert '"/Users/" in normalized' not in body, (
-        "peer reviewer follow-up regression: the substring-based '/Users/' check "
+        "review follow-up regression: the substring-based '/Users/' check "
         "missed relative fls paths like 'Users/alice/NTUSER.DAT'. Path "
         "must be detected as a segment, not via substring."
     )

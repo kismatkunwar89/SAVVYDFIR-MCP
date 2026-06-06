@@ -16,7 +16,7 @@ from sift_mcp.reporting import (
 )
 
 
-# --- artifact_name_for_finding mapping table (peer reviewer blocker #1) -------------
+# --- artifact_name_for_finding mapping table (review blocker #1) -------------
 @pytest.mark.parametrize("source_class,expected", [
     ("prefetch", "prefetch"),
     ("amcache", "amcache"),

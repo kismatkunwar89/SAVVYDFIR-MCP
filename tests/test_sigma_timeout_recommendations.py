@@ -1,6 +1,6 @@
 """Regression tests for Tier-B1: sigma_hunt timeout recommended_next_calls.
 
-peer reviewer consensus 2026-05-19 (MEDIUM-HIGH): on chainsaw full-directory
+design review 2026-05-19 (MEDIUM-HIGH): on chainsaw full-directory
 timeout, sigma_hunt MUST return a ranked recommended_next_calls list
 based on EVTX inventory. System.evtx is FIRST (EID 7045 service install
 — central corroboration that was missed in Run-10).
@@ -27,7 +27,7 @@ def test_sigma_hunt_source_carries_recommended_next_calls():
 
     assert "recommended_next_calls" in body, (
         "sigma_hunt must build recommended_next_calls on timeout fallback "
-        "per peer reviewer consensus Tier-B1."
+        "per design review Tier-B1."
     )
     assert "directory_timeout" in body, (
         "recommendation list must gate on fallback_reason == 'directory_timeout'."
@@ -39,7 +39,7 @@ def test_sigma_hunt_source_carries_recommended_next_calls():
 
 
 def test_sigma_hunt_ranks_system_evtx_first():
-    """Per peer reviewer sign-off, System.evtx must rank first because EID 7045
+    """Per review sign-off, System.evtx must rank first because EID 7045
     service install was the Run-10 miss."""
     src = (ROOT / "sift_mcp" / "server.py").read_text()
     func_idx = src.find("def sigma_hunt(")

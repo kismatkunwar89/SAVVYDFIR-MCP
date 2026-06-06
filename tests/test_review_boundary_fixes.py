@@ -1,4 +1,4 @@
-"""Regression tests for peer reviewer adversarial review boundary fixes."""
+"""Regression tests for review adversarial review boundary fixes."""
 
 import json
 import os
@@ -11,10 +11,10 @@ from sift_mcp.state import CaseStateManager
 
 
 class peer reviewerBoundaryTests(unittest.TestCase):
-    """Tests for issues found in peer reviewer adversarial review."""
+    """Tests for issues found in review adversarial review."""
 
     def test_corroboration_dispatch_atomic_write_then_claim(self) -> None:
-        """peer reviewer fix: delegate write must complete BEFORE flag claim.
+        """review fix: delegate write must complete BEFORE flag claim.
         
         If delegate write fails, flag must NOT be claimed (allows retry).
         Original bug: claimed flag first, then wrote delegate. Transient
@@ -53,7 +53,7 @@ class peer reviewerBoundaryTests(unittest.TestCase):
                 os.environ.pop("SAVVYDFIR_DELEGATE_PATH", None)
 
     def test_corroboration_dispatch_write_failure_no_claim(self) -> None:
-        """peer reviewer fix: if delegate write fails, flag must NOT be claimed."""
+        """review fix: if delegate write fails, flag must NOT be claimed."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_path = Path(tmp_dir) / "state.json"
             state_mgr = CaseStateManager(str(state_path))
@@ -88,7 +88,7 @@ class peer reviewerBoundaryTests(unittest.TestCase):
                 unwritable.chmod(0o755)  # restore for cleanup
 
     def test_stop_hook_blocks_on_missing_audit_for_active_investigation(self) -> None:
-        """peer reviewer fix: Stop hook must block if audit.jsonl is missing for in-progress investigation."""
+        """review fix: Stop hook must block if audit.jsonl is missing for in-progress investigation."""
         import sys
         import io
         from contextlib import redirect_stdout

@@ -1,4 +1,4 @@
-"""Regression guard for the Chainsaw Sigma mapping (consensus 2026-06-06).
+"""Regression guard for the Chainsaw Sigma mapping (review 2026-06-06).
 
 Background: the Run-11 hand-authored ``rules/chainsaw-sigma-mapping.yml`` used the
 ``kind: !evtx`` + per-channel ``groups:`` format. It PARSED and loaded ~2284

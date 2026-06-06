@@ -9,7 +9,7 @@ if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
 
-# W1.7 (Run 2 consensus 2026-05-24, Q4): hypothesis gate now fires even under
+# W1.7 (Run 2 review 2026-05-24, Q4): hypothesis gate now fires even under
 # allow_partial=True. Most pre-W1.7 tests assume allow_partial bypasses ALL
 # gates and don't seed hypotheses. Default-bypass the gate via env var so
 # legacy tests keep passing; tests that EXERCISE the gate (in

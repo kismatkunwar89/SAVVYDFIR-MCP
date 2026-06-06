@@ -259,7 +259,7 @@ class ReportingHtmlTests(unittest.TestCase):
 
 class HypothesisValidationRenderTests(unittest.TestCase):
     """Closes the hunting loop: the report surfaces each recorded hypothesis
-    with its resolved verdict + linked findings (consensus 2026-05-30)."""
+    with its resolved verdict + linked findings (review 2026-05-30)."""
 
     def test_empty_renders_graceful_message(self) -> None:
         from sift_mcp.reporting import _render_hypothesis_validation
@@ -441,7 +441,7 @@ class ReportStructureRenderTests(unittest.TestCase):
 
     def test_exec_summary_no_overstated_corroboration(self) -> None:
         """A CONFIRMED finding with empty corroborated_by must not yield a
-        report-level claim of multi-source corroboration (peer reviewer adversarial)."""
+        report-level claim of multi-source corroboration (review adversarial)."""
         from sift_mcp.reporting import _render_executive_summary
         p = self._payload()
         p["status_breakdown"] = {"CONFIRMED": 1, "ACTIVE": 1}

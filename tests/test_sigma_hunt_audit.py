@@ -9,7 +9,7 @@ class SigmaHuntAuditTests(unittest.TestCase):
     def test_validation_finalizer_exists(self) -> None:
         """I.2 fix: sigma_hunt validation failures should produce complete audit records.
 
-        peer reviewer adversarial review MEDIUM priority: sigma_hunt opened audit execution
+        review adversarial review MEDIUM priority: sigma_hunt opened audit execution
         before validation, but several post-start failure paths (missing rules, missing
         EVTX, invalid format) returned without log_result or _record_execution_parity.
 

@@ -1,4 +1,4 @@
-"""Regression tests for C-PRIME (peer reviewer consensus 2026-05-20 final round).
+"""Regression tests for C-PRIME (design review 2026-05-20 final round).
 
 C-PRIME has two coupled pieces:
   1. Prompt tweak at top of every specialist .md — "re-emit JSON after every
@@ -79,7 +79,7 @@ def _read_rows(path: Path) -> list[dict]:
     "srum-analyst", "timeline-analyst",
 ])
 def test_specialist_has_c_prime_tweak(specialist):
-    """C-PRIME revised wording (peer reviewer 2026-05-21): persist-first via
+    """C-PRIME revised wording (review 2026-05-21): persist-first via
     add_finding(), evidence-gated, pivot-scoped. Replaces the prior
     'do not chase additional pivots' clause that caused Run-13's
     zero-CONFIRMED regression.
@@ -126,7 +126,7 @@ def test_json_repair_agent_does_not_have_tweak():
 
 def test_json_repair_agent_is_tool_less():
     """The repair agent MUST be declared with empty tools to enforce
-    transcription-only containment per peer reviewer."""
+    transcription-only containment per review."""
     path = ROOT / ".claude" / "agents" / "json-repair.md"
     text = path.read_text()
     # Check the YAML frontmatter

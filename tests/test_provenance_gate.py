@@ -1,6 +1,6 @@
 """Regression tests for Tier-A1 execution-ID provenance gate.
 
-peer reviewer consensus 2026-05-19: CONFIRMED status requires a resolvable
+design review 2026-05-19: CONFIRMED status requires a resolvable
 execution_id (or operator override at report layer via allow_partial=True).
 The finding-level gate is STRICT — `requires_re_extraction` is a state
 marker, not a bypass.
@@ -197,7 +197,7 @@ def test_source_text_helper_is_strict():
     src = inspect.getsource(_execution_id_resolvable)
     # The bypass pattern must be GONE
     assert 'finding.get("requires_re_extraction")' not in src, (
-        "peer reviewer consensus regression: _execution_id_resolvable must not "
+        "design review regression: _execution_id_resolvable must not "
         "treat requires_re_extraction as a finding-level bypass. Operator "
         "override happens at report layer via allow_partial=True."
     )

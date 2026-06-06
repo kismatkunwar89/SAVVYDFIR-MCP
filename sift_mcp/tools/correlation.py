@@ -1708,7 +1708,7 @@ def find_temporal_clusters(
         # Source diversity keys on FINE source_family and EXCLUDES synthesis
         # ('correlation') findings - they re-describe already-counted source
         # findings, so letting them satisfy min_sources would double-count
-        # (peer reviewer constraint, review 2026-06-04).
+        # (review constraint, review 2026-06-04).
         sources = {
             e["source_family"] for e in window_events
             if e["source_family"] not in ("correlation", "unknown")

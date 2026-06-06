@@ -608,7 +608,7 @@ def _raw_artifact_base() -> Path:
 def probe_durable_raw(raw_base: Path, kind: str) -> Optional[str]:
     """Content-aware probe for a durable staged artifact under an EXPLICIT raw_base.
 
-    Parameterized form (durable-reuse consensus 2026-06-03): callers pass the
+    Parameterized form (durable-reuse review 2026-06-03): callers pass the
     raw_base they computed from their OWN case_id, so server.py staging never
     probes the wrong case via module-level _case_id() state. Returns a path ONLY
     when the expected artifact files are actually present (rejects empty/partial
@@ -679,13 +679,13 @@ def _durable_raw_artifact_path(kind: str) -> Optional[str]:
 
     Downstream disk.py parsers keep calling this (module _case_id() base);
     server.py staging calls probe_durable_raw(raw_base, kind) with its OWN
-    case_id-derived base to avoid wrong-case probing (durable-reuse consensus).
+    case_id-derived base to avoid wrong-case probing (durable-reuse review).
     """
     return probe_durable_raw(_raw_artifact_base(), kind)
 
 
 # ---------------------------------------------------------------------------
-# Extraction-failure classification (consensus 2026-06-03).
+# Extraction-failure classification (review 2026-06-03).
 # Family-aware BASENAME matching (NOT path substring - 'system' must not match
 # every Windows/System32/* path) + narrow stderr decompression signatures so a
 # torn/compressed live artifact routes to RECOVERY (VSS) instead of retry.
@@ -3785,7 +3785,7 @@ def extract_usn_journal(
         csv_filename = "usn_journal.csv"
         csv_path = os.path.join(tmp_dir, csv_filename)
 
-        # Size-aware USN timeout (consensus 2026-06-06): the $UsnJrnl:$J can be
+        # Size-aware USN timeout (review 2026-06-06): the $UsnJrnl:$J can be
         # multi-GB and the flat 1800s default timed out on the Hacking Case. Scale
         # by the staged $J size (60s/GB, volatility precedent), capped at 3600s so
         # a pathological journal can't block the 4-vCPU host for hours. If it still
@@ -5921,7 +5921,7 @@ def _finalize_useractivity_response(
     # it as "no activity". parser_failures DOMINATES the persistence `warning`:
     # an incomplete collection that ALSO failed to persist is still primarily a
     # collection gap (exit 1), and the persistence problem is surfaced alongside
-    # it via artifact_persistence / warning / note (consensus 2026-06-02).
+    # it via artifact_persistence / warning / note (review 2026-06-02).
     failed_sources = [
         str(f.get("profile") or f.get("artifact") or f.get("source") or "?")
         for f in parser_failures
@@ -6968,7 +6968,7 @@ def extract_registry_fileaccess(
     # the case dir, NOT to this image/hive set, so reusing it risks mis-attributing
     # one host's UserAssist/RecentDocs to another. Parsing per-NTUSER here is
     # correct-by-construction - each row is stamped with its actual source profile
-    # BEFORE merge (peer reviewer + peer reviewer tri-agent consensus 2026-06-02).
+    # BEFORE merge (design review design review 2026-06-02).
     batch_file_used: Optional[str] = None
     for candidate in DFIR_BATCH_PATHS:
         if os.path.isfile(candidate):
@@ -7114,7 +7114,7 @@ def extract_registry_fileaccess(
         src_path = row.get("__source_path") or source_artifact or row.get("HivePath") or ""
         # Real per-hive status (set above); rows salvaged from a failed hive must
         # carry that failure status, NOT a hardcoded "ok" (registry was strictly
-        # worse than the EZ-backed loops - peer reviewer flag, consensus 2026-06-02).
+        # worse than the EZ-backed loops - review flag, review 2026-06-02).
         src_status = row.get("__source_status") or "ok"
         clean = {k: v for k, v in row.items() if not k.startswith("__")}
         clean["fileaccess_artifact"] = frag

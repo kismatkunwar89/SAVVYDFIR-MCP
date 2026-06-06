@@ -213,7 +213,7 @@ def _resolve_heuristic_artifact(tool_name: str) -> Optional[str]:
     return None
 
 
-# W1.7 (Run 2 consensus 2026-05-24, +signed): runtime-dep registry.
+# W1.7 (Run 2 review 2026-05-24, +signed): runtime-dep registry.
 # server.py wires _state_manager / _audit_logger here via init_all_tools so the
 # CONTRACT path (build_contract_response → _attach_heuristic_slice) has live
 # singletons without lazy `from sift_mcp.server import ...`. The lazy import
@@ -249,7 +249,7 @@ def _attach_heuristic_slice(
     tool is one of the artifact extractors AND the artifact has a canonical
     .md file.
 
-    Dep resolution (Run 2 consensus 2026-05-24):
+    Dep resolution (Run 2 review 2026-05-24):
       1. Explicit kwargs (finalize path passes; defense-in-depth in callers)
       2. Module-level registry set via set_runtime_deps (contract path,
          registered from init_all_tools)

@@ -257,7 +257,7 @@ replaced with `<install>/`, `<home>/`, `<case-dir>/`, `<evidence>/`, `<mount>/`.
 Forensic evidence (case emails, attacker IPs, registry paths, hostnames, finding
 IDs) is preserved. No flags needed - it runs automatically on every
 `generate_graph`. Design notes + the maintenance contract (how to add a new
-artifact family) live in [`docs/graph-ui-design.md`](docs/graph-ui-design.md);
+artifact family) are documented inline in the graph renderer module;
 the bucket/redaction regression fixture is `tests/fixtures/graph_bucket_synthetic/`.
 
 ---

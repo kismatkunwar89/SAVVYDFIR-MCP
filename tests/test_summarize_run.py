@@ -1,6 +1,6 @@
 """Regression tests for scripts/summarize_run.py — the consolidated post-mortem.
 
-peer reviewer / user request 2026-05-19: a single tool that pulls audit.jsonl,
+review / user request 2026-05-19: a single tool that pulls audit.jsonl,
 state.json, delegation_ledger.jsonl, session_pointer, and report.json
 into ONE markdown/JSON summary so the operator does not have to grep
 across multiple files to understand a run.

@@ -22,7 +22,7 @@ References:
   - PLAN-FIND-EVIL-HACKATHON-2026-05-23.md Section 3 (Bet #3: guardrail bypass tests)
   - DECISION-2026-05-23-branch-triage.md
   - FIND EVIL! Devpost rules — judging criterion #4
-  - Yash's critique (Jaswanthreview/SAVVYDFIR-MCP-Analysis.pdf Contradiction 2)
+  - an external reviewer's critique (external-review/SAVVYDFIR-MCP-Analysis.pdf Contradiction 2)
 """
 from __future__ import annotations
 
@@ -143,7 +143,7 @@ class TestEvidenceFindingSchemaEnforcement:
     """The EvidenceFinding schema must REJECT structurally invalid findings.
 
     These tests prove the LLM cannot persuade the schema to skip required
-    fields. This is Yash's thesis (Jaswanthreview/SAVVYDFIR-MCP-Analysis.pdf
+    fields. This is an external reviewer's thesis (external-review/SAVVYDFIR-MCP-Analysis.pdf
     Contradiction 2): "The model literally cannot output a high-confidence
     finding without 2+ supporting artifact types. Not because the prompt
     says so — because the schema validator rejects it."

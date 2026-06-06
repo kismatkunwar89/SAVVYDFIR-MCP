@@ -2,7 +2,7 @@
 # ============================================================
 # sigma_positive_control.sh — prove the Chainsaw Sigma mapping actually MATCHES
 # ============================================================
-# Consensus 2026-06-06: the Run-11 hand-authored mapping LOADED 2284 rules but
+# Review 2026-06-06: the Run-11 hand-authored mapping LOADED 2284 rules but
 # matched 0 events on known-malicious EVTX (silent no-op). This control runs the
 # REPO mapping against known-malicious samples and FAILS if detections fall below
 # a baseline — so a mapping regression can never again masquerade as "0 = clean".

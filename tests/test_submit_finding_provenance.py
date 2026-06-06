@@ -1,6 +1,6 @@
 """Regression tests for Phase 1 — submit_finding typed tool + durable provenance.
 
-peer reviewer consensus 2026-05-22: every specialist-registered finding must carry
+design review 2026-05-22: every specialist-registered finding must carry
 ``assigned_agent`` provenance so the Phase 5 investigation-success gate can
 verify per-lane specialist contribution. ``submit_finding`` is the typed
 entry point that enforces this — ``add_finding`` continues to work for
@@ -11,7 +11,7 @@ Critical invariants:
   2. submit_finding REQUIRES assigned_agent + lane_id (rejects empty).
   3. submit_finding persists assigned_agent to the Finding record.
   4. tool_name stays as ``state.submit_finding`` — NOT overloaded with the
-     specialist name (peer reviewer sign-off — would break lane/tool inference elsewhere).
+     specialist name (review sign-off — would break lane/tool inference elsewhere).
   5. assigned_agent normalization strips leading ``@``.
   6. submit_finding still routes through validate_and_prepare_finding so
      A1 (provenance) and A2 (alt-hypothesis) gates fire as before.
@@ -120,7 +120,7 @@ def test_submit_finding_signature_has_required_params():
 
 
 def test_submit_finding_keeps_tool_name_unchanged():
-    """peer reviewer sign-off: tool_name MUST stay as 'state.submit_finding'.
+    """review sign-off: tool_name MUST stay as 'state.submit_finding'.
     Overloading tool_name with the specialist would break lane/tool inference."""
     src = (ROOT / "sift_mcp" / "server.py").read_text()
     func_idx = src.find("def submit_finding(")
@@ -129,7 +129,7 @@ def test_submit_finding_keeps_tool_name_unchanged():
     # Tool name must be the MCP function name, NOT the specialist name.
     assert '"tool_name": "state.submit_finding"' in body, (
         "submit_finding must set tool_name='state.submit_finding'. "
-        "peer reviewer required keeping the producing-tool identity in tool_name."
+        "review required keeping the producing-tool identity in tool_name."
     )
     # And it must explicitly set assigned_agent separately (the provenance anchor).
     assert "'assigned_agent': normalized_agent" in body or '"assigned_agent": normalized_agent' in body, (

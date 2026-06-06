@@ -53,7 +53,7 @@
   "known_iocs": [],
   "max_iterations": 4,
   "workflow_guidance": {
-    "description": "Staged-flow investigation per W1.7 (CR12 tri-agent consensus). Main-agent inline analysis is PRIMARY; specialist Task spawn is opt-in for cross-artifact isolation only. dotnet disk tools MUST run sequentially on 4-vCPU SIFT (repo-enforced via _recommended_batch_mode_for_tool).",
+    "description": "Staged-flow investigation per W1.7 (CR12 design review). Main-agent inline analysis is PRIMARY; specialist Task spawn is opt-in for cross-artifact isolation only. dotnet disk tools MUST run sequentially on 4-vCPU SIFT (repo-enforced via _recommended_batch_mode_for_tool).",
     "phase_0_dip": {
       "label": "Digital Investigative Plan",
       "action": "Read investigative_taxonomy above. Form initial hypothesis seed from intel/scope. Defines investigation destination (prevents rabbit holes per Advanced Digital Forensics methodology).",

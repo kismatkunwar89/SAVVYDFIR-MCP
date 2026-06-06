@@ -335,7 +335,7 @@ _FK_MAP = {
     "memory.detect_injection":        "volatility_memory",
     "memory.list_dlls":               "volatility_memory",
     "detection.sigma_hunt":           "hayabusa_alerts",
-    # FK-wiring consensus map-fixes: these call _forensic_envelope() but were
+    # FK-wiring review map-fixes: these call _forensic_envelope() but were
     # unmapped, so their enriched YAMLs never loaded. (recycle_bin stays mapped
     # but disk.extract_recycle_bin does NOT call the envelope - documented orphan.)
     "disk.extract_usn_journal":       "usn_journal",
@@ -399,7 +399,7 @@ _init_fk()  # runs at import time
 # Per-session call counter - resets when Claude session restarts (correct behaviour)
 _tool_call_counters: dict[str, int] = {}
 
-# ITEM A (FK-wiring consensus): session-level char budget for the additive
+# ITEM A (FK-wiring review): session-level char budget for the additive
 # advisory_* envelope reference, ON TOP of the per-tool first-3-calls decay.
 # Per-tool decay alone can't protect a 15-tool triage pass (4 memory tools in
 # one batch each open their own first-3 window against volatility_memory).
@@ -470,7 +470,7 @@ def _forensic_envelope(tool_name: str) -> dict:
                 f"Full baseline at /opt/SAVVYDFIR-MCP/data/hunt-evil-baseline.json"
             )
 
-    # ITEM A (FK-wiring consensus): additive STATIC advisory reference on the
+    # ITEM A (FK-wiring review): additive STATIC advisory reference on the
     # first 3 calls per tool, honoring a session-level char budget. Keys are
     # advisory_* / sanitized (no computed tier/gap, no promotion numerics).
     # Failure here must never break the tool response.
@@ -1002,7 +1002,7 @@ def _record_execution_parity(
 def _windows_volume_resolves(image_path: str) -> bool:
     """True if a Windows volume root resolves (case-insensitive) under image_path.
 
-    1c positive-absence guard (consensus 2026-06-06): only call an artifact
+    1c positive-absence guard (review 2026-06-06): only call an artifact
     'absent' when the Windows root actually resolves but the artifact is missing
     (genuine absence, e.g. pre-Win8 Amcache, Server-OS Prefetch). If the root
     itself is unresolvable it is a path/mount FAILURE (retryable error), NOT
@@ -1179,7 +1179,7 @@ def _record_tool_success_audit(
     """follow-up: monolithic tools must record execution parity
     for SUCCESS paths with REAL provenance, not synthetic placeholders.
 
-    Caller responsibilities (consensus contract):
+    Caller responsibilities (review contract):
       * ``start_time``: capture ``time.monotonic`` BEFORE the heavy
         subprocess work (esedbexport, AppCompatCacheParser, etc.). Falls
         back to ``time.monotonic`` at helper-call time with a stderr
@@ -1544,7 +1544,7 @@ def extract_prefetch(
         # -> record documented-absence via the AUDIT-BACKED helper (exit 0 + audit
         # + state parity) so the gate is satisfied by a REAL tool run with
         # provenance, NOT a fabricated state row. 1c positive-absence guard
-        # (consensus 2026-06-06): ONLY claim absent if the Windows volume root
+        # (review 2026-06-06): ONLY claim absent if the Windows volume root
         # actually resolves (case-insensitive); if the root itself is unresolvable
         # this is a path/mount FAILURE, not genuine absence -> keep it a retryable
         # error, never overclaim "not present" (the XP case-sensitivity false-absence).
@@ -1604,7 +1604,7 @@ def get_amcache(
             _r.update(_forensic_envelope("disk.get_amcache"))
         # Genuine artifact absence (Amcache.hve introduced in Win8; absent on
         # Server 2008 / XP / older) -> documented-absence via the AUDIT-BACKED
-        # helper. 1c positive-absence guard (consensus 2026-06-06): only claim
+        # helper. 1c positive-absence guard (review 2026-06-06): only claim
         # absent if the Windows volume root resolves (case-insensitive); an
         # unresolvable root = path/mount failure (retryable error), not absence.
         if isinstance(_r, dict) and _r.get("needs_extract_windows_artifacts"):
@@ -4312,7 +4312,7 @@ def sigma_hunt(
     below_threshold_summary = _aggregate_below_threshold_summary(below_threshold_hits)
 
     # State-finding policy is now DECOUPLED from response visibility (
-    # consensus Q5): create individual state findings ONLY for actionable hits,
+    # review Q5): create individual state findings ONLY for actionable hits,
     # capped at max_entries as a SAFETY ceiling against pathological volumes.
     # max_entries no longer gates "what the agent sees" - it gates "how many
     # raw_detector_hit findings pollute state.json".
@@ -4638,7 +4638,7 @@ def sigma_hunt(
                 "Sigma positive-control (scripts/eval/sigma_positive_control.sh)."
             )
 
-    # Mapping provenance (consensus 2026-06-06): record WHICH mapping ran + its
+    # Mapping provenance (review 2026-06-06): record WHICH mapping ran + its
     # hash so a silent mapping regression (the Run-11 0-hit bug) is traceable in
     # every response + audit row.
     _mapping_sha256 = None
@@ -7423,7 +7423,7 @@ def extract_windows_artifacts(
         offset_args = ["-o", str(int(partition_offset_sectors))]
     command_line = " ".join(["fls", "-r", "-p", *offset_args, device])
 
-    # Durable-reuse MVP (consensus 2026-06-03): content-aware skip-if-present.
+    # Durable-reuse MVP (review 2026-06-03): content-aware skip-if-present.
     # Probe each selected family against THIS case's raw_base (parameterized -
     # never via module _case_id()). All present + not force_reextract => full
     # short-circuit (skip fls+icat). Partial => stage missing families only
@@ -7708,7 +7708,7 @@ def extract_windows_artifacts(
         else:
             status_value = "ok"
 
-        # Critical-failure promotion (consensus 2026-06-03): family-aware BASENAME
+        # Critical-failure promotion (review 2026-06-03): family-aware BASENAME
         # match (the old substring check matched 'system' in every Windows/System32
         # path -> false criticals). A critical artifact that failed to extract is a
         # forensic GAP even when the family staged other files (e.g. live
@@ -8490,7 +8490,7 @@ def record_analysis_lane(
             and (existing_lane.get("assigned_agent") or "") == (normalized_agent or "")
             and set(existing_lane.get("execution_ids") or []) == set(normalized_execution_ids)
             and set(existing_lane.get("finding_ids") or []) == set(normalized_finding_ids)
-            # PART B (peer reviewer ship-blocker #2): also compare a data_gaps
+            # PART B (review ship-blocker #2): also compare a data_gaps
             # fingerprint so a COMPLETE_WITH_GAPS -> COMPLETE_WITH_GAPS resubmit
             # that ADDS gaps (after a debt reject) is a real write, not a noop.
             and _data_gaps_fingerprint(existing_lane.get("data_gaps"))
@@ -9757,7 +9757,7 @@ def generate_report(case_id: str, response_format: str = "summary", allow_partia
 @mcp.tool()
 def _ntfs_mount_argv(device: str, offset_sectors: Optional[int], disk_mount: str,
                      *, use_sudo: bool = True) -> list[str]:
-    """Consensus-pinned read-only ntfs-3g mount argv (dual-path NTFS mount fix).
+    """Pinned read-only ntfs-3g mount argv (dual-path NTFS mount fix).
 
     offset 0 / None -> ntfs-3g directly on the device; offset != 0 -> mount -t
     ntfs-3g with loop,offset (the proven Step-3 mechanism). Options:
@@ -10097,7 +10097,7 @@ def mount_image(
         if is_e01:
             tsk_direct_ok, tsk_probe = _tsk_direct_access(device, offset)
 
-            # DUAL-PATH NTFS mount (consensus 2026-06-03): try a real read-only
+            # DUAL-PATH NTFS mount (review 2026-06-03): try a real read-only
             # ntfs-3g mount FIRST so the 5 file-access tools get /mnt/disk. On
             # ANY failure, fall through to the tsk_direct return below (unchanged).
             # Disk staging tools keep tsk_device_path + the durable raw path.

@@ -36,7 +36,7 @@ def _exec(
 
     For sigma_hunt: pass `outputs_summary` containing '.json' OR
     `finding_ids_generated=["F-1"]` to mark durable output, per the
-    peer reviewer round-2 #H bypass-resistant check.
+    review round-2 #H bypass-resistant check.
     """
     return {
         "execution_id": "E-TEST",
@@ -51,7 +51,7 @@ def _exec(
 
 
 class SigmaHuntGateTests(unittest.TestCase):
-    """6 cases peer reviewer review #2 required us to cover."""
+    """6 cases review review #2 required us to cover."""
 
     def test_case1_only_sigma_scan_ran(self) -> None:
         """Run2 pattern: sigma_scan fast 6 times, sigma_hunt never called."""
@@ -78,7 +78,7 @@ class SigmaHuntGateTests(unittest.TestCase):
         self.assertTrue(_needs_sigma_hunt_run(execs))
 
     def test_case6_sigma_hunt_no_durable_output(self) -> None:
-        """peer reviewer round-2 #H: success but no finding_ids/output_handle → still fail."""
+        """review round-2 #H: success but no finding_ids/output_handle → still fail."""
         execs = [_exec("detection.sigma_hunt", outputs_summary="0 hits")]
         self.assertTrue(
             _needs_sigma_hunt_run(execs),
@@ -144,7 +144,7 @@ class CoverageGateWiringTests(unittest.TestCase):
         self.assertIn("detection.sigma_hunt", tools)
 
     def test_gate_passes_with_successful_sigma_hunt(self) -> None:
-        # Must include durable-output hint (peer reviewer round-2 #H)
+        # Must include durable-output hint (review round-2 #H)
         execs = self._baseline_execs() + [_exec(
             "detection.sigma_hunt",
             outputs_summary="0 hits", finding_ids_generated=["F-SUM"],
@@ -173,7 +173,7 @@ class CoverageGateWiringTests(unittest.TestCase):
 
 
 class BaselineGateSuccessTests(unittest.TestCase):
-    """peer reviewer round-2 #M2: gate must demand retry when a baseline tool was
+    """review round-2 #M2: gate must demand retry when a baseline tool was
     recorded with populated success metadata that shows failure."""
 
     def _baseline_with_one_failure(self, failed_tool: str) -> list[dict]:
@@ -238,7 +238,7 @@ class BaselineGateSuccessTests(unittest.TestCase):
 
 
 class ValidateRunSplitBrainTests(unittest.TestCase):
-    """peer reviewer round-3 #M: validate_run must use the same predicate as the
+    """review round-3 #M: validate_run must use the same predicate as the
     report gate, and recompute coverage live rather than trust stored fields."""
 
     def test_stored_ok_gate_with_bad_sigma_hunt_still_fails(self) -> None:
@@ -279,7 +279,7 @@ class ValidateRunSplitBrainTests(unittest.TestCase):
 
 
 class ValidateRunAuditDefaultTests(unittest.TestCase):
-    """peer reviewer round-2 #M3: missing audit.jsonl must NOT be silently skipped by default."""
+    """review round-2 #M3: missing audit.jsonl must NOT be silently skipped by default."""
 
     def test_missing_audit_fails_by_default(self) -> None:
         """Without --allow-missing-audit, missing audit.jsonl → exit 1."""
@@ -567,7 +567,7 @@ class HayabusaCatalogTests(unittest.TestCase):
 
 
 class PerPidDllCoverageTests(unittest.TestCase):
-    """E.2 (peer reviewer round-1 P2): the gate must require list_dlls coverage
+    """E.2 (review round-1 P2): the gate must require list_dlls coverage
     for every PID in network_followup_pids, not just one execution."""
 
     def test_zero_required_pids_means_no_missing(self) -> None:
@@ -646,7 +646,7 @@ class PerPidDllCoverageTests(unittest.TestCase):
 
 
 class MultiDumpPslistTests(unittest.TestCase):
-    """E.1 (peer reviewer round-1 P2): multi-dump cases must pair each psscan
+    """E.1 (review round-1 P2): multi-dump cases must pair each psscan
     with the matching dump's pslist, not the latest-written one."""
 
     def test_dump_identifier_is_stable_and_safe(self) -> None:
@@ -713,7 +713,7 @@ class MultiDumpPslistTests(unittest.TestCase):
 
 
 class CorroborationDispatchTests(unittest.TestCase):
-    """C.1 (peer reviewer round-1 #4): corroboration-analyst dispatch must be a
+    """C.1 (review round-1 #4): corroboration-analyst dispatch must be a
     durable state transition, not an event-local hook. Fires once per
     case when all artifact lanes complete. Idempotent on retries."""
 
@@ -814,7 +814,7 @@ class CorroborationDispatchTests(unittest.TestCase):
                 os.environ.pop("SAVVYDFIR_DELEGATE_PATH", None)
 
     def test_concurrent_dispatch_only_one_delegate_wins(self) -> None:
-        """peer reviewer Phase-C-boundary #high: two concurrent _dispatch calls
+        """review Phase-C-boundary #high: two concurrent _dispatch calls
         must produce at most ONE delegate write. The atomic claim in
         try_claim_status_flag prevents the check-then-act race."""
         import threading as _threading
@@ -878,7 +878,7 @@ class CorroborationDispatchTests(unittest.TestCase):
 
 
 class PsscanUnverifiedTests(unittest.TestCase):
-    """peer reviewer round-7 P2-#1: scan_processes without pslist must not force
+    """review round-7 P2-#1: scan_processes without pslist must not force
     detect_injection on every clean run. The gate recomputes the delta
     when pslist later runs."""
 
@@ -914,7 +914,7 @@ class PsscanUnverifiedTests(unittest.TestCase):
 
 
 class SpecialistFindingsCountTests(unittest.TestCase):
-    """peer reviewer round-7 P2-#2: minimum specialist findings must not be hardcoded."""
+    """review round-7 P2-#2: minimum specialist findings must not be hardcoded."""
 
     def test_default_minimum_is_one_not_five(self) -> None:
         """Default threshold dropped from 5 to 1."""
@@ -1174,7 +1174,7 @@ class PathResolutionA2Tests(unittest.TestCase):
 
 
 class SigmaHuntFailureAuditTests(unittest.TestCase):
-    """peer reviewer round-5 P2-#1: a failed Chainsaw run must still write a
+    """review round-5 P2-#1: a failed Chainsaw run must still write a
     completed audit entry, so validate_run can distinguish 'real failure'
     from 'never completed'."""
 
@@ -1203,7 +1203,7 @@ class SigmaHuntFailureAuditTests(unittest.TestCase):
 
 
 class RlaFallbackLogPreservationTests(unittest.TestCase):
-    """peer reviewer round-5 P2-#2: when rla.exe fails on a system hive, the fallback
+    """review round-5 P2-#2: when rla.exe fails on a system hive, the fallback
     must copy the hive AND its .LOG1/.LOG2 transaction logs (not just the hive)
     so RECmd can still replay them. Smoke-level test — we verify the helper
     logic structure rather than mocking the full RECmd subprocess."""
@@ -1240,7 +1240,7 @@ class RlaFallbackLogPreservationTests(unittest.TestCase):
             self.assertTrue((cleaned_dir / "SYSTEM").is_file())
             self.assertTrue(
                 (cleaned_dir / "SYSTEM.LOG1").is_file(),
-                ".LOG1 must be copied in fallback (peer reviewer round-5 P2-#2)",
+                ".LOG1 must be copied in fallback (review round-5 P2-#2)",
             )
             self.assertTrue(
                 (cleaned_dir / "SYSTEM.LOG2").is_file(),

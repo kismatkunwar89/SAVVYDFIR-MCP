@@ -1,6 +1,6 @@
-"""peer reviewer adversarial-review fix regressions (2026-05-22).
+"""review adversarial-review fix regressions (2026-05-22).
 
-peer reviewer flagged two HIGH-severity wiring bugs after Phases 1-5 shipped:
+review flagged two HIGH-severity wiring bugs after Phases 1-5 shipped:
 
   Fix #1 — submit_finding audit row was silently never written because
            log_execution() was called with unsupported kwargs (exit_code,
@@ -13,7 +13,7 @@ peer reviewer flagged two HIGH-severity wiring bugs after Phases 1-5 shipped:
            fallback could never satisfy the success gate even when a
            json-repair Task actually salvaged findings for a lane.
 
-These tests exercise the END-TO-END contract peer reviewer required:
+These tests exercise the END-TO-END contract review required:
   test_submit_finding_writes_audit_row_phase_5_gate_can_read
   test_json_repair_credits_original_lane_phase_5_gate_passes
 """
@@ -74,7 +74,7 @@ def test_submit_finding_source_uses_log_result_not_kwargs():
     body = src[fn_idx:end if end > 0 else fn_idx + 15000]
     assert "_audit_logger.log_result(" in body, (
         "submit_finding must write a completed audit row via log_result(...). "
-        "peer reviewer review 2026-05-22 [HIGH]."
+        "review review 2026-05-22 [HIGH]."
     )
     # Should NOT pass unsupported kwargs to log_execution
     for forbidden in (
@@ -95,13 +95,13 @@ def test_submit_finding_source_uses_log_result_not_kwargs():
     for kw in forbidden_kwargs:
         assert kw not in le_call, (
             f"submit_finding's log_execution call still passes {kw!r}, which "
-            "is not in the log_execution signature. This is the exact bug peer reviewer "
+            "is not in the log_execution signature. This is the exact bug review "
             "flagged on 2026-05-22 — TypeError raised and silently swallowed."
         )
 
 
 def test_submit_finding_audit_failure_surfaces_in_response():
-    """peer reviewer required: audit write failures must surface, not be silently
+    """review required: audit write failures must surface, not be silently
     swallowed. The response should include an `audit_warning` field on failure."""
     src = (ROOT / "sift_mcp" / "server.py").read_text()
     fn_idx = src.find("def submit_finding(")
@@ -109,7 +109,7 @@ def test_submit_finding_audit_failure_surfaces_in_response():
     body = src[fn_idx:end if end > 0 else fn_idx + 15000]
     assert "audit_warning" in body, (
         "submit_finding must surface audit write failures via an "
-        "`audit_warning` field on the response. peer reviewer required this — "
+        "`audit_warning` field on the response. review required this — "
         "silent swallow is what created the Phase 5 invisibility bug."
     )
 
@@ -250,7 +250,7 @@ def isolated_ledger(monkeypatch, tmp_path):
 
 
 def test_json_repair_task_writes_repair_succeeded_with_original_lane(isolated_ledger):
-    """peer reviewer required: when a json-repair Task fires, the repair_succeeded
+    """review required: when a json-repair Task fires, the repair_succeeded
     ledger row must carry the ORIGINAL lane_id (the lane the specialist
     that truncated belongs to), not '(repair)' or empty.
 
@@ -288,7 +288,7 @@ def test_json_repair_task_writes_repair_succeeded_with_original_lane(isolated_le
     row = repair_rows[0]
     assert row.get("lane_id") == "memory", (
         f"repair_succeeded must carry the ORIGINAL lane_id ('memory'), "
-        f"got lane_id={row.get('lane_id')!r}. This is the peer reviewer 2026-05-22 "
+        f"got lane_id={row.get('lane_id')!r}. This is the review 2026-05-22 "
         "Fix #2 bug — without the original lane, the Phase 5 gate's "
         "repair_by_lane lookup can never credit the lane and repair "
         "fallback is dead-code."

@@ -1,4 +1,4 @@
-"""Agnostic analysis-debt detection (PART B, review signed 2026-06-03).
+"""Agnostic analysis-debt detection (PART B, validated 2026-06-03).
 
 Closes the "compliance-by-extraction" failure mode: an extraction tool runs and
 writes a durable CSV/JSON handle, but the agent never analyzes it (0 run_analysis,
@@ -14,7 +14,7 @@ This module is PURE and self-contained:
     derives FILE_ACCESS_TOOL_SUFFIXES from it (additive migration; a unit test
     guards drift against the legacy _COVERAGE_SUFFIX_LANES coverage map).
 
-Signed-off invariants (do not weaken without re-consensus):
+Signed-off invariants (do not weaken without re-review):
   1. Debt clears ONLY via an analyst submit_finding (assigned_agent provenance) OR
      a documented-negative. A run_analysis ALONE never clears -- the goal is
      findings, not queries. (Item 1.)
@@ -103,7 +103,7 @@ def _is_transient(path: str) -> bool:
 
 
 # report/state/audit/graph artifacts are NOT analyzable handles even though they
-# live under the case dir (peer reviewer + peer reviewer denylist).
+# live under the case dir (design review denylist).
 _DENY_BASENAMES = frozenset({
     "report.json", "report.html", "graph.json", "graph.html",
     "state.json", "audit.jsonl",
@@ -374,7 +374,7 @@ def data_gaps_fingerprint(data_gaps: Any) -> str:
     The record_analysis_lane duplicate-noop guard compares status + execution_ids
     + finding_ids but NOT data_gaps -- so a COMPLETE_WITH_GAPS -> COMPLETE_WITH_GAPS
     resubmit that ADDS gaps (after a debt reject) was swallowed as a duplicate
-    (peer reviewer ship-blocker #2). Folding this fingerprint into the noop check makes a
+    (review ship-blocker #2). Folding this fingerprint into the noop check makes a
     gap-only change a real write.
     """
     if not isinstance(data_gaps, list):

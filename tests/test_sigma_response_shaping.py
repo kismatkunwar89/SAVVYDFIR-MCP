@@ -1,7 +1,7 @@
 """Tests for W1.7 Run-4 fix — sigma_hunt + query_sigma_results response shaping.
 
 User constraint (verbatim 2026-05-24): "fix should be not have gap on detection
-triggered okay ? based on the sigma rule". Tri-agent consensus (peer reviewer+peer reviewer)
+triggered okay ? based on the sigma rule". Design review (design review)
 ratified: cap by sigma rule level, never by arbitrary count for actionable
 detections; below-threshold gets summary projection (never raw dump, never gap).
 
@@ -67,7 +67,7 @@ class TestSeverityNormalization:
         assert _normalize_sigma_level("critical") == "critical"
 
     def test_unknown_defaults_to_informational(self):
-        """Per peer reviewer: never silently classify unknown as actionable."""
+        """Per review: never silently classify unknown as actionable."""
         from sift_mcp.server import _normalize_sigma_level
         assert _normalize_sigma_level("unknown") == "informational"
         assert _normalize_sigma_level("") == "informational"
@@ -130,7 +130,7 @@ class TestActionableThreshold:
 
 
 class TestCompactProjection:
-    """peer reviewer mandate: inline ≠ full raw record. Compact preserves triage
+    """review mandate: inline ≠ full raw record. Compact preserves triage
     fields (rule, level, EID, ts, technique, who/where) without event body bloat."""
 
     def test_compact_hit_has_required_fields(self):
@@ -200,7 +200,7 @@ class TestBelowThresholdSummary:
         assert "User Logoff" in noise_names
 
     def test_summary_caps_examples_per_rule(self):
-        """peer reviewer mandate: ≤3 sample_indices per rule, ≤20 rules total."""
+        """review mandate: ≤3 sample_indices per rule, ≤20 rules total."""
         from sift_mcp.server import _aggregate_below_threshold_summary
         hits = [{"name": "rule_a", "level": "info"} for _ in range(100)]
         summary = _aggregate_below_threshold_summary(hits)

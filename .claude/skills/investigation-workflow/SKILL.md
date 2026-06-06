@@ -65,7 +65,7 @@ for audit. For pivot-loop depth, call `get_heuristic(artifact, topic)`.
 
 ### Synthesis SOP - main-agent inline (MANDATORY before generate_report)
 
-Per W1.7 Run 2 consensus 2026-05-24 - delegate synthesis
+Per W1.7 Run 2 review 2026-05-24 - delegate synthesis
 is opt-in; do not wait for `@synthesis-analyst`. Run 2 produced 0 CONFIRMED
 because the specialist Task hung and the operator was forced into
 `allow_partial=True`, which previously bypassed quality gates.

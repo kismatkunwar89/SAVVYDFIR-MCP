@@ -1,9 +1,9 @@
 """Regression tests for Phase 2 — pre-compute context for playbook specialists.
 
-peer reviewer consensus 2026-05-22: extraction tools should return enriched metadata
+design review 2026-05-22: extraction tools should return enriched metadata
 (schema, timestamp_bounds, attack_window) in their result. As a fallback that
 ALSO works for legacy tools and any drift, ``agent_trigger.py`` does a
-bounded local CSV inspect (NEVER an MCP callback — peer reviewer specifically
+bounded local CSV inspect (NEVER an MCP callback — review specifically
 forbade hook→MCP recursion).
 
 Tests cover:
@@ -238,11 +238,11 @@ def test_augment_instruction_injects_originating_execution_id(sample_csv):
 
 
 # ---------------------------------------------------------------------------
-# Source-text guards — peer reviewer hard requirement: NO MCP callback from hook
+# Source-text guards — review hard requirement: NO MCP callback from hook
 # ---------------------------------------------------------------------------
 
 def test_hook_does_not_call_mcp():
-    """peer reviewer consensus required: agent_trigger.py must NOT call back into
+    """design review required: agent_trigger.py must NOT call back into
     MCP tools (subprocess.run on the MCP server, requests to MCP endpoints,
     re-importing the MCP server from inside the hook, etc.).
 
@@ -257,7 +257,7 @@ def test_hook_does_not_call_mcp():
         "_state_manager",
     ):
         assert forbidden not in src, (
-            f"agent_trigger.py contains {forbidden!r} — peer reviewer consensus "
+            f"agent_trigger.py contains {forbidden!r} — design review "
             f"forbade MCP callbacks from the PostToolUse hook (recursion + latency risk)."
         )
     # And it MUST use pandas directly for the fallback

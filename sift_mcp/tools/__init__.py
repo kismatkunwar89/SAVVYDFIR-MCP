@@ -164,7 +164,7 @@ def init_all_tools(audit_logger, state_manager) -> None:
 
     Called once at server startup by :mod:`sift_mcp.server`.
 
-    W1.7 (Run 2 consensus 2026-05-24, Q1+C / amendment): also
+    W1.7 (Run 2 review 2026-05-24, Q1+C / amendment): also
     register runtime deps with sift_mcp.tools._contracts so the CONTRACT
     path (build_contract_response → _attach_heuristic_slice) has live
     singletons WITHOUT a lazy ``from sift_mcp.server import ...``. The

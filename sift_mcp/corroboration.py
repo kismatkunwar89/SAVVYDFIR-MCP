@@ -1,4 +1,4 @@
-"""Corroboration escalation engine (review signed 2026-06-03, FK-wiring).
+"""Corroboration escalation engine (validated 2026-06-03, FK-wiring).
 
 ADVISORY-ONLY, PURE module. Given a finding + the case finding set + that
 artifact's forensic-knowledge slice, it computes:
@@ -8,7 +8,7 @@ artifact's forensic-knowledge slice, it computes:
   * gap_sources / suggested_tools - the MINIMAL next step toward the next tier
   * rationale - one line, carries the advisory disclaimer
 
-Non-disruption invariants (do NOT weaken without re-consensus):
+Non-disruption invariants (do NOT weaken without re-review):
   - NEVER writes state, NEVER promotes findings, NEVER sets confidence/status.
   - Promotion authority stays in semantics._derive_execution_confidence /
     promote_corroborated_findings. This module is DISPLAY/ADVISORY only.
@@ -243,7 +243,7 @@ FK_YAML_STEMS = frozenset(SOURCE_CLASS_TO_FK_YAML.values())
 def artifact_name_for_finding(finding: dict[str, Any]) -> Optional[str]:
     """Resolve a finding to its FK YAML stem (e.g. 'registry_fileaccess').
 
-    Precedence (consensus): artifact_subtype that names a YAML stem directly ->
+    Precedence (review): artifact_subtype that names a YAML stem directly ->
     SOURCE_CLASS_TO_FK_YAML[source_class] -> tool/artifact alias via ARTIFACT_VOCAB.
     Returns None when unmappable (caller emits an advisory_error row).
     """

@@ -1,4 +1,4 @@
-"""Durable-reuse MVP: content-aware probe tests (consensus 2026-06-03).
+"""Durable-reuse MVP: content-aware probe tests (review 2026-06-03).
 
 probe_durable_raw(raw_base, kind) is the parameterized, wrong-case-safe probe
 that extract_windows_artifacts uses to skip re-staging. It rejects empty/partial
@@ -97,7 +97,7 @@ def test_wrapper_uses_module_base(monkeypatch):
     assert disk._durable_raw_artifact_path("prefetch") == str(rb / "prefetch")
 
 
-# --- extraction-failure classification (consensus 2026-06-03) ---------------
+# --- extraction-failure classification (review 2026-06-03) ---------------
 from sift_mcp.tools.disk import (  # noqa: E402
     is_critical_extraction_failure,
     classify_extraction_failure,
@@ -105,7 +105,7 @@ from sift_mcp.tools.disk import (  # noqa: E402
 
 
 def test_system32_path_not_critical_by_substring():
-    # the blocker peer reviewer/peer reviewer flagged: 'system' in Windows/System32 must NOT match
+    # the blocker design review flagged: 'system' in Windows/System32 must NOT match
     f = {"family": "evtx",
          "source_path": "/Windows/System32/winevt/Logs/Microsoft-Windows-Sysmon%4Operational.evtx"}
     assert is_critical_extraction_failure(f) is False

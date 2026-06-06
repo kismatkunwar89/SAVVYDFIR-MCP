@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""PreToolUse workflow-gate hook (peer reviewer-tightened).
+"""PreToolUse workflow-gate hook (review-tightened).
 
 Fires before `mcp__savvydfir__generate_report` and BLOCKS the call if any
 mandatory Phase 1–5 tool has neither (a) run successfully nor (b) been
 attempted and explicitly reported a structured artifact-absent status.
 
-Per peer reviewer review (HIGH): the previous version had two loopholes that
+Per review review (HIGH): the previous version had two loopholes that
 silently bypassed coverage:
   * 3-attempt bypass — three transient failures unblocked generate_report
     even though zero evidence was collected. REMOVED.
@@ -65,11 +65,11 @@ ABSENCE_MARKERS: tuple[str, ...] = (
     "no_data",           # MCP tools set status="no_data" when tool ran but artifact empty
     "tool_incompatible", # Run 9 fix: VolatilityRunner._build_outputs_summary prepends
                          # "tool_incompatible: <code>" when Vol3 cannot run on this image
-                         # (missing_symbols / incompatible_profile). peer reviewer-signed; multi-
+                         # (missing_symbols / incompatible_profile). review-signed; multi-
                          # token regex in classify_error guards against corruption-error collision.
 )
 
-# Phase 3b/3c (peer reviewer consensus 2026-05-19): Path B authorization is
+# Phase 3b/3c (design review 2026-05-19): Path B authorization is
 # governed by the hook-owned delegation ledger. Default behavior is
 # dry-run (log decisions, allow all calls). Setting
 # SAVVYDFIR_LEDGER_ENFORCE=1 in the environment flips to real deny.
@@ -146,7 +146,7 @@ def _check_path_b_gate(event: dict[str, Any], repo_root: Path) -> None:
       - path_b_would_allow / path_b_would_deny (dry-run, both phases)
       - path_b_denied (Phase 3c when enforcement is active)
 
-    Decision basis recorded for every row so peer reviewer's "zero false positives /
+    Decision basis recorded for every row so review's "zero false positives /
     negatives" criterion is auditable, not anecdotal.
     """
     lane_id, assigned_agent = _extract_lane_record_inputs(event)
@@ -208,8 +208,8 @@ def _check_path_b_gate(event: dict[str, Any], repo_root: Path) -> None:
 # extraction is complete. Run-8 ROCBA proved the existing generate_report
 # gate fires too late: agent ran sigma_hunt (301s) and compare_disk_and_memory
 # while USN / SRUDB / ShimCache / Registry / Security.evtx were still missing,
-# then MCP died at the next heavy call before report time. Per peer reviewer + peer reviewer
-# consensus 2026-05-26: gate Phase 3 entry on Phase 2 completion.
+# then MCP died at the next heavy call before report time. Per design review
+# review 2026-05-26: gate Phase 3 entry on Phase 2 completion.
 PHASE3_ENTRY_TOOLS = {
     "mcp__savvydfir__sigma_hunt",
     "mcp__savvydfir__hayabusa_hunt",

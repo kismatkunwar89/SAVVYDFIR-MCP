@@ -361,7 +361,7 @@ def _derive_artifact_subtype_from_path(artifact_path: Any) -> Optional[str]:
     return None
 
 
-# Memory tool -> coarse source family (peer reviewer allowlist, G1 fix 2026-06-04).
+# Memory tool -> coarse source family (review allowlist, G1 fix 2026-06-04).
 # Memory findings have artifact_type="memory" with no subtype; map the producing
 # Volatility tool to process/network so a memory burst can register as a distinct
 # clustering source instead of collapsing into one "memory" bucket.

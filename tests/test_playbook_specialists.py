@@ -1,6 +1,6 @@
 """Regression tests for Phase 3 — playbook-mode specialists.
 
-peer reviewer consensus 2026-05-22: 8 artifact specialists become playbook executors
+Phase 3 refactor: 8 artifact specialists become playbook executors
 with one adaptive pivot slot. Universal forensic queries only (no case-specific
 values). Hard cap 6-8 run_analysis calls per specialist.
 
@@ -43,7 +43,7 @@ pytestmark = pytest.mark.skip(reason=(
 ROOT = Path(__file__).resolve().parent.parent
 AGENTS = ROOT / ".claude" / "agents"
 
-PLAYBOOK_MARKER = "## Playbook (Phase 3 refactor — peer reviewer consensus 2026-05-22)"
+PLAYBOOK_MARKER = "## Playbook (Phase 3 refactor)"
 ARTIFACT_SPECIALISTS = [
     ("mft-analyst", "timeline_correlation"),
     ("evtx-analyst", "event_auth"),
@@ -102,7 +102,7 @@ def test_playbook_has_numbered_queries(specialist, lane):
     )
     assert len(queries) <= 5, (
         f"{specialist} playbook has {len(queries)} numbered queries; "
-        "peer reviewer cap is 4-5 + adaptive."
+        "review cap is 4-5 + adaptive."
     )
 
 
@@ -111,7 +111,7 @@ def test_playbook_has_adaptive_pivot(specialist, lane):
     text = (AGENTS / f"{specialist}.md").read_text(encoding="utf-8")
     assert "### ADAPTIVE PIVOT" in text, (
         f"{specialist} playbook is missing the adaptive pivot section — "
-        "peer reviewer required ONE bounded creative slot per specialist."
+        "review required ONE bounded creative slot per specialist."
     )
     assert "≤2" in text or "bounded" in text.lower(), (
         f"{specialist} adaptive pivot is not visibly bounded."
@@ -181,7 +181,7 @@ def test_playbook_is_case_agnostic(specialist, _lane):
 
 @pytest.mark.parametrize("specialist", NON_PLAYBOOK_AGENTS)
 def test_non_playbook_specialists_unchanged(specialist):
-    """peer reviewer explicitly said corroboration-analyst + timeline-analyst stay
+    """review explicitly said corroboration-analyst + timeline-analyst stay
     creative (cross-artifact reasoning). json-repair stays as transcription-only.
     browser-analyst is deferred (no MCP browser-extract tool exists)."""
     text = (AGENTS / f"{specialist}.md").read_text(encoding="utf-8")
@@ -236,7 +236,7 @@ def test_playbook_preserves_persist_first_contract(specialist, _lane):
 
 @pytest.mark.parametrize("specialist,_lane", ARTIFACT_SPECIALISTS)
 def test_playbook_instructs_no_narration_between_queries(specialist, _lane):
-    """peer reviewer's key constraint: NO narration between queries. Playbook
+    """review's key constraint: NO narration between queries. Playbook
     must explicitly state this — otherwise specialists revert to free-form."""
     text = (AGENTS / f"{specialist}.md").read_text(encoding="utf-8")
     assert "No narration between queries" in text, (

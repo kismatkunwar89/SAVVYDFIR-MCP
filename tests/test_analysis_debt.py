@@ -191,7 +191,7 @@ def test_by_lane_grouping_and_lane_debt_helper():
 
 def test_catalog_lane_consistency_with_legacy_coverage_map():
     # drift guard: catalog lane assignments must agree with the legacy coverage
-    # map for every suffix they share (peer reviewer blocker: no silent drift).
+    # map for every suffix they share (review blocker: no silent drift).
     from sift_mcp.reporting import _COVERAGE_SUFFIX_LANES
     for entry in EXTRACTION_CATALOG:
         legacy = _COVERAGE_SUFFIX_LANES.get(entry.tool_suffix)

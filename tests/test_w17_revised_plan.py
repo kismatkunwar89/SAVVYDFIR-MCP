@@ -88,7 +88,7 @@ class TestBug1BehavioralIntegration:
         sm.load("BUG1-INTEG-TEST")
         audit = AuditLogger(str(tmp_path / "a.jsonl"))
         # W1.7 Run-2 fix: register via the production DI path, not srv singleton patching.
-        # The lazy `from sift_mcp.server import _state_manager` was deleted by peer reviewer consensus.
+        # The lazy `from sift_mcp.server import _state_manager` was deleted by review review.
         set_runtime_deps(state_manager=sm, audit_logger=audit)
         return sm, audit
 
@@ -124,7 +124,7 @@ class TestBug1BehavioralIntegration:
         assert resp["applicable_heuristics"]["artifact"] == "memory"
 
     def test_audit_jsonl_records_context_bundle(self, tmp_path):
-        """Run-2 BUG-4 tripwire (peer reviewer consensus 2026-05-24): assert audit
+        """Run-2 BUG-4 tripwire (review review 2026-05-24): assert audit
         AND state record together — the original Run-1 test only checked
         audit, exactly why BUG-4 shipped to production. Audit-without-state
         means CTX provenance is broken even though it looks fine.
@@ -163,7 +163,7 @@ class TestBug1BehavioralIntegration:
 
 
 class TestBug4ParityRegression:
-    """Run-2 consensus 2026-05-24 (Q3 D): unit doubles + 1 integration test
+    """Run-2 review 2026-05-24 (Q3 D): unit doubles + 1 integration test
     proving CONTRACT-path injection writes BOTH audit and state. This is the
     test BUG-4 needed before shipping.
     """
@@ -303,7 +303,7 @@ class TestBug4ParityRegression:
             set_runtime_deps(state_manager=None, audit_logger=None)
 
     def test_missing_deps_emits_visible_diagnostic(self, tmp_path):
-        """peer reviewer mandate (peer reviewer Q1 fail-visible): missing runtime deps must
+        """review mandate (review Q1 fail-visible): missing runtime deps must
         produce applicable_heuristics_skipped_reason, NOT silent skip.
         """
         from sift_mcp.tools._contracts import (
@@ -327,7 +327,7 @@ class TestBug4ParityRegression:
 
 
 class TestRun3MCPContractFixes:
-    """Run-3 consensus 2026-05-24 (peer reviewer+peer reviewer): MCP contract bugs that
+    """Run-3 review 2026-05-24 (design review): MCP contract bugs that
     caused 0 CONFIRMED in Run 3 despite agent calling synthesis tools.
 
     BUG-7: submit_finding/add_finding missing corroborated_by param
@@ -453,7 +453,7 @@ class TestRun3MCPContractFixes:
 
 
 class TestHypothesisGateSurvivesAllowPartial:
-    """Q4 (peer reviewer+peer reviewer): hypothesis gate must fire even when
+    """Q4 (design review): hypothesis gate must fire even when
     generate_report is called with allow_partial=True. Run 2's failure
     mode was the agent escaping via allow_partial=True to bypass a
     stuck synthesis delegate, which silently disabled all quality gates
@@ -499,7 +499,7 @@ class TestHypothesisGateSurvivesAllowPartial:
             delegate_path=str(tmp_path / "no_delegate.json"),
             allow_partial=True,  # <-- key: agent's emergency escape
         )
-        # Per Q4 consensus: hypothesis gate runs even under allow_partial
+        # Per Q4 review: hypothesis gate runs even under allow_partial
         assert result.get("status") == "needs_hypothesis", (
             f"Q4 regression: allow_partial=True bypassed hypothesis gate. Got: {result.get('status')}"
         )
@@ -509,7 +509,7 @@ class TestBug1CoverageCompleteness:
     """Every key in _HEURISTIC_ARTIFACT_FOR_TOOL must be injection-capable
     via EITHER the contract path OR the centralized finalize path.
 
-    Verification approach (per peer reviewer+peer reviewer): unit-level capability check —
+    Verification approach (per design review): unit-level capability check —
     confirm _resolve_heuristic_artifact returns non-None for each mapped key
     and the underlying extract_tier1_slice returns valid content for each
     mapped artifact. This validates the MAP is wired, not that each specific
@@ -561,10 +561,10 @@ class TestBug1CoverageCompleteness:
             "so the 11 non-contract tools get Tier-1 heuristic injection"
         )
         assert "state_manager=_state_manager" in body, (
-            "Centralized injection must pass state_manager as dep (peer reviewer guard d)"
+            "Centralized injection must pass state_manager as dep (review guard d)"
         )
         assert "audit_logger=_audit_logger" in body, (
-            "Centralized injection must pass audit_logger as dep (peer reviewer guard d)"
+            "Centralized injection must pass audit_logger as dep (review guard d)"
         )
 
 
@@ -603,7 +603,7 @@ class TestActivityThreadAutoClassification:
 
     def test_add_finding_with_singular_mitre_technique_normalized(self, tmp_path):
         """Legacy Finding model uses singular `mitre_technique` (string).
-        Per peer reviewer: the normalizer must accept BOTH conventions or classification
+        Per review: the normalizer must accept BOTH conventions or classification
         silently no-ops on most extraction-tool findings.
         """
         from sift_mcp.state import CaseStateManager
@@ -751,7 +751,7 @@ class TestHypothesisGate:
 
 
 class TestAttachHeuristicSliceGuards:
-    """All 4 guards on _attach_heuristic_slice (per peer reviewer+peer reviewer consensus)."""
+    """All 4 guards on _attach_heuristic_slice (per design review review)."""
 
     def _setup(self, tmp_path):
         from sift_mcp.state import CaseStateManager

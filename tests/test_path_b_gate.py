@@ -1,6 +1,6 @@
 """Regression tests for the Path B / main-agent gate in workflow-enforce-pre.py.
 
-peer reviewer consensus 2026-05-19 (ORIGINAL): the gate wrote machine-countable
+design review 2026-05-19 (ORIGINAL): the gate wrote machine-countable
 decision rows (path_b_would_deny / path_b_would_allow) during dry-run, and
 upgraded to actual deny when SAVVYDFIR_LEDGER_ENFORCE=1 was set. Path A
 (specialist Task spawn) was treated as mandatory; main-agent inline was

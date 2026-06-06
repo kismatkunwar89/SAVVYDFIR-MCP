@@ -129,7 +129,7 @@ class StopHookTests(unittest.TestCase):
             self.assertEqual(result["decision"], "approve")
 
     def test_no_global_glob_fallback_for_stale_shared_state(self) -> None:
-        """peer reviewer Phase-C-boundary #medium: prior implementation globbed
+        """review Phase-C-boundary #medium: prior implementation globbed
         /cases/*/state.json and /tmp/savvydfir/state.json. A stale state
         there could falsely block a non-DFIR session in the repo cwd.
         After the fix the hook only inspects the configured analysis dir

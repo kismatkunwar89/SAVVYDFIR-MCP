@@ -338,7 +338,7 @@ class ShellbagsTests(_Base):
             self.assertTrue(any("status=artifact_absent" in ln for ln in lines))
 
     def test_parser_failure_is_collection_failed_not_absent(self):
-        """Consensus-signed 4-way taxonomy: a discovered hive whose parse FAILS
+        """Review-signed 4-way taxonomy: a discovered hive whose parse FAILS
         and yields zero rows must report ``collection_failed`` (exit_code=1),
         NEVER ``artifact_absent`` - a failed collection is not evidence that no
         evidence exists (false-negative bug)."""
@@ -502,7 +502,7 @@ class BrowserTests(_Base):
         """A discovered DB that CONNECTS but whose queries fail (schema drift /
         incompatible / encrypted History) yields zero rows AND populated
         parser_failures -> ``collection_failed``, NEVER artifact_absent. This is
-        the consensus-signed false-negative guard for the browser path."""
+        the review-signed false-negative guard for the browser path."""
         with tempfile.TemporaryDirectory() as tmp:
             runner, audit, state = self._init(tmp)
             root = Path(tmp) / "mnt" / "C"
@@ -650,7 +650,7 @@ class RegistryFileAccessTests(_Base):
             self.assertNotIn("orphan_csv_warning", r)
 
     def test_multi_profile_distinct_source_profile(self):
-        """Regression guard (peer reviewer+peer reviewer consensus 2026-06-02): two NTUSER hives
+        """Regression guard (design review review 2026-06-02): two NTUSER hives
         under different profile dirs must yield merged rows tagged with DISTINCT
         ``source_profile`` values matching the actual profile dir names - never the
         generic ``NtUser`` HiveType or ``unknown`` fallback."""
@@ -958,7 +958,7 @@ class UserActivityHardFailTests(_Base):
 # CONVERGENCE: salvage-from-failed-parser must still record a parser_failure.
 # A run that recovered SOME rows from a source that exited non-zero / timed out
 # is a PARTIAL collection, NEVER a clean success (the "incomplete-collection-
-# looks-complete" family). Consensus-signed 2026-06-02.
+# looks-complete" family). Review-signed 2026-06-02.
 # ---------------------------------------------------------------------------
 
 class SalvageFromFailedParserTests(_Base):
@@ -1104,7 +1104,7 @@ class ParserFailureDominatesPersistenceTests(_Base):
 # ITEM 1: a FAILED rla replay (rla exit!=0, or the replay helper RAISES) must
 # NOT be reported as a clean success even when the parser salvages rows from the
 # unreplayed base hive - and the parser must NEVER run against the live profile
-# dir on the failure path. Consensus-signed 2026-06-02.
+# dir on the failure path. Review-signed 2026-06-02.
 # ---------------------------------------------------------------------------
 
 class ReplayFailureNotSilentSuccessTests(_Base):
@@ -1248,7 +1248,7 @@ class ReplayFailureNotSilentSuccessTests(_Base):
 
 # ---------------------------------------------------------------------------
 # ITEM 2: the in-response preview honors a caller-supplied max_entries cap
-# (the durable CSV stays full-size). Consensus-signed 2026-06-02.
+# (the durable CSV stays full-size). Review-signed 2026-06-02.
 # ---------------------------------------------------------------------------
 
 class PreviewHonorsMaxEntriesTests(_Base):

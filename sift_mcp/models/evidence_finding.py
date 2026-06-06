@@ -1,7 +1,7 @@
 """evidence_finding.py - Section 3-lite Pydantic schema for FIND EVIL! hackathon.
 
 This is the canonical Finding contract introduced in Architecture.pdf Section 3
-(Yash + Kismat, April 2026 hackathon blueprint). It replaces the prior
+(external reviewer + Kismat, April 2026 hackathon blueprint). It replaces the prior
 free-form Finding shape for structural enforcement of:
 
   - Cryptographic provenance (tool_input_hash + tool_output_hash)

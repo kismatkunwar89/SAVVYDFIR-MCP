@@ -1,6 +1,6 @@
 """Regression tests for the Phase 3a delegation ledger (observation-only).
 
-peer reviewer consensus 2026-05-19 ITEM-2/ITEM-3: the ledger is the hook-owned
+design review 2026-05-19 ITEM-2/ITEM-3: the ledger is the hook-owned
 source of truth for Path A / Path B authorization. Phase 3a writes only —
 no enforcement yet. These tests prove the writers produce the right
 rows under each event scenario and the read primitives respect session

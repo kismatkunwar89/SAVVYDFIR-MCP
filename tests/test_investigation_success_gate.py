@@ -1,6 +1,6 @@
 """Regression tests for Phase 5 — investigation-success gate.
 
-peer reviewer consensus 2026-05-22: a separate gate (NOT overloading
+design review 2026-05-22: a separate gate (NOT overloading
 evaluate_ir_coverage_gate) verifies each specialist lane received
 analyst contribution via submit_finding (Phase 1 provenance).
 

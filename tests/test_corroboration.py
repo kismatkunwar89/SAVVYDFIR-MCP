@@ -111,7 +111,7 @@ def test_corroborated_by_is_never_read():
 
 # --- tier split: execution vs non-execution --------------------------------
 def test_prefetch_alone_is_probable_not_observation():
-    # the bug the consensus caught: prefetch-alone = 0.85 = probable
+    # the bug the review caught: prefetch-alone = 0.85 = probable
     f = {"fk_source_class": "prefetch", "artifact_path": "C:/a.exe"}
     st = corroboration_state(f, [f], {"artifact": "prefetch"})
     assert st.advisory_corroboration_tier == "probable"

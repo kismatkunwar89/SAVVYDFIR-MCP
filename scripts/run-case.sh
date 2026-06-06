@@ -2,7 +2,7 @@
 # ============================================================
 # run-case.sh — investigation launch wrapper with auto agent-trace
 # ============================================================
-# Consensus C+D (peer reviewer+peer reviewer, 2026-06-06): the agent-session trace
+# Review C+D (design review, 2026-06-06): the agent-session trace
 # (reports/<case_id>/trace.html) must be produced for EVERY run, but
 # render_session_trace.py is deliberately NOT auto-fired from generate_report
 # (a render/redaction failure must not poison the report). This wrapper closes
@@ -14,7 +14,7 @@
 #   3. render the trace (best-effort; never blocks)
 #   4. refresh generate_report so the "Agent Session Trace" link surfaces
 #
-# LEAK GUARD (consensus): redaction is best-effort + --detail low. EYEBALL the
+# LEAK GUARD (review): redaction is best-effort + --detail low. EYEBALL the
 # trace before publishing/serving it externally. reports/<case>/ is NOT auto-
 # served by the framework's http server (that serves an explicit dir).
 #

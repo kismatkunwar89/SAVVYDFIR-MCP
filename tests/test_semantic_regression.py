@@ -69,7 +69,7 @@ class SemanticRegressionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             manager = CaseStateManager(str(Path(tmp_dir) / "state.json"))
             manager.load("CASE-SEM-PROMOTE")
-            # peer reviewer provenance gate (A1): the finding's cited execution_id
+            # review provenance gate (A1): the finding's cited execution_id
             # must resolve to a real execution row before promotion to
             # CONFIRMED can survive validation. Record the audit row that
             # this finding will reference.
@@ -95,7 +95,7 @@ class SemanticRegressionTests(unittest.TestCase):
                     "confidence": 0.9,
                     "description": "ShimCache shows execution of evil.exe from AppData.",
                     "supporting_indicators": [r"C:\Users\Alice\AppData\Roaming\evil.exe"],
-                    # peer reviewer alternative-hypothesis gate (A2): the
+                    # review alternative-hypothesis gate (A2): the
                     # promotion path requires structured alt-hypothesis
                     # disposition to keep CONFIRMED status.
                     "alternative_hypothesis": "Legitimate user-installed utility from AppData",

@@ -1,6 +1,6 @@
 """Integrity gate for hunting-hypothesis verdicts + clean executive summary.
 
-review 2026-06-05 (peer reviewer + peer reviewer + DeepSeek, unanimous):
+review 2026-06-05 (design review + DeepSeek, unanimous):
  - A CONFIRMED/REFUTED hypothesis verdict must be backed by its linked findings
    clearing the SAME multi-source bar findings face. Unsupported verdicts
    downgrade to SUSPENDED. Closes the relocated gaming hole (hypothesis verdict

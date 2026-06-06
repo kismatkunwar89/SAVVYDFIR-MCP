@@ -2310,7 +2310,7 @@ def validate_report(
 # ===========================================================================
 # Report-quality helpers. Deterministic, evidence-bounded, no LLM at render
 # time. Same report.json snapshot -> same HTML. See the report-rebuild
-# consensus for the full narrator policy and IOC/timeline guardrails.
+# review for the full narrator policy and IOC/timeline guardrails.
 # ===========================================================================
 
 def _status_color_class(status: Any) -> str:
@@ -3393,7 +3393,7 @@ def generate_report_payload(
                 "report_json_path": str(report_json_path),
             }
 
-    # W1.7 (Run 2 consensus 2026-05-24, Q4 / ordering): hypothesis
+    # W1.7 (Run 2 review 2026-05-24, Q4 / ordering): hypothesis
     # gate is now EXTRACTED from the `if not allow_partial:` wrapper so it
     # fires even under partial mode. Run 2 used allow_partial=True to bypass
     # a stuck synthesis delegate and the hypothesis gate was silently

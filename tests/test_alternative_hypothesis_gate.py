@@ -1,6 +1,6 @@
 """Regression tests for Tier-A2 alternative-hypothesis gate.
 
-peer reviewer consensus 2026-05-19: CONFIRMED findings MUST carry structured
+design review 2026-05-19: CONFIRMED findings MUST carry structured
 alternative-hypothesis disposition. Boilerplate is prevented by the
 4-field structure forcing specificity:
   - alternative_hypothesis (non-empty string)
@@ -8,7 +8,7 @@ alternative-hypothesis disposition. Boilerplate is prevented by the
   - evidence_against_it (list, ≥1 entry required when disposition='ruled_out')
   - disposition ('ruled_out' or 'not_applicable' to pass the gate)
 
-unresolved/partially_plausible dispositions MUST downgrade per peer reviewer sign-off.
+unresolved/partially_plausible dispositions MUST downgrade per review sign-off.
 """
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ def test_disposition_not_applicable_requires_reason():
 
 
 def test_unresolved_dispositions_fail_the_gate():
-    """Per peer reviewer sign-off: not_resolved and partially_plausible MUST fail
+    """Per review sign-off: not_resolved and partially_plausible MUST fail
     the gate — unresolved alternatives must cause report partitioning."""
     from sift_mcp.semantics import _alternative_hypothesis_complete
 
@@ -175,7 +175,7 @@ def test_confirmed_kept_when_not_applicable_with_reason():
 
 
 def test_confirmed_demoted_when_disposition_partially_plausible():
-    """peer reviewer sign-off: unresolved alternatives MUST cause partitioning,
+    """review sign-off: unresolved alternatives MUST cause partitioning,
     not CONFIRMED labeling. partially_plausible must downgrade."""
     from sift_mcp.semantics import validate_and_prepare_finding
     sm = _FakeStateManager({"E-100": {"tool_name": "test.tool"}})
@@ -186,7 +186,7 @@ def test_confirmed_demoted_when_disposition_partially_plausible():
     })
     out = validate_and_prepare_finding(f, state_manager=sm)
     assert out["finding_status"] == "ACTIVE", (
-        "partially_plausible must downgrade per peer reviewer sign-off."
+        "partially_plausible must downgrade per review sign-off."
     )
 
 

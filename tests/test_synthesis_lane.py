@@ -1,6 +1,6 @@
 """Regression tests for Phase 4 — synthesis-analyst + synthesis_corroboration lane.
 
-peer reviewer consensus 2026-05-22: cross-artifact creative reasoning gets its OWN
+design review 2026-05-22: cross-artifact creative reasoning gets its OWN
 lane so artifact-specialist completion of timeline_correlation doesn't
 silently close the dispatcher's check.
 
@@ -8,7 +8,7 @@ Critical invariants:
   1. synthesis_corroboration is a valid lane in EXPECTED_LANE_AGENTS.
   2. synthesis-analyst is the primary expected agent for that lane.
   3. .claude/agents/synthesis-analyst.md exists.
-  4. _CORROBORATION_PREREQ_LANES includes timeline_correlation (peer reviewer required).
+  4. _CORROBORATION_PREREQ_LANES includes timeline_correlation (review required).
   5. Dispatcher checks synthesis_corroboration status, NOT timeline_correlation.
   6. record_analysis_lane no longer skips dispatch on timeline_correlation.
   7. _SYNTHESIS_LANE_ID and _SYNTHESIS_SPECIALIST constants exist.
@@ -59,7 +59,7 @@ def test_synthesis_analyst_md_file_exists():
 
 
 def test_synthesis_analyst_inherits_assigned_agent_constraint():
-    """peer reviewer required: synthesis-analyst sets assigned_agent='synthesis-analyst'
+    """review required: synthesis-analyst sets assigned_agent='synthesis-analyst'
     on submit_finding calls (Phase 5 audits per-specialist provenance)."""
     text = (ROOT / ".claude" / "agents" / "synthesis-analyst.md").read_text(encoding="utf-8")
     assert "assigned_agent='synthesis-analyst'" in text or "'synthesis-analyst'" in text, (
@@ -72,7 +72,7 @@ def test_synthesis_analyst_inherits_assigned_agent_constraint():
 # ---------------------------------------------------------------------------
 
 def test_corroboration_prereqs_include_timeline_correlation():
-    """peer reviewer required: timeline_correlation is now a prereq for synthesis,
+    """review required: timeline_correlation is now a prereq for synthesis,
     not the lane synthesis runs into."""
     src = (ROOT / "sift_mcp" / "server.py").read_text()
     # Find the _CORROBORATION_PREREQ_LANES definition
@@ -118,14 +118,14 @@ def test_dispatcher_checks_synthesis_lane_not_timeline():
 
 
 def test_record_analysis_lane_no_longer_skips_timeline_correlation():
-    """peer reviewer required: remove the 'normalized_lane != timeline_correlation'
+    """review required: remove the 'normalized_lane != timeline_correlation'
     guard so dispatch fires when timeline_correlation closes."""
     src = (ROOT / "sift_mcp" / "server.py").read_text()
     # The OLD guard pattern must be gone
     old_guard = 'normalized_lane != "timeline_correlation"'
     assert old_guard not in src, (
         f"OLD lane-skip guard {old_guard!r} still present — Phase 4 incomplete. "
-        "peer reviewer required removing it so timeline_correlation closure triggers synthesis dispatch."
+        "review required removing it so timeline_correlation closure triggers synthesis dispatch."
     )
     # The NEW guard skips only when recording synthesis_corroboration ITSELF
     # (to prevent the synthesis-closes-its-own-lane infinite loop).

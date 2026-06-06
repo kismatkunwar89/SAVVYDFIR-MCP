@@ -884,7 +884,7 @@ svg.on('click', () => {
 // === Sidebar — Artifact Type / Analysis Layers / Node Roles ===
 //
 // Counts are computed once from the corpus and stay STATIC during focus /
-// chain / search (peer reviewer guardrail D3 #5). Canvas status line shows the
+// chain / search (review guardrail D3 #5). Canvas status line shows the
 // dynamic visible count separately.
 
 const corpusCounts = computeCorpusCounts();
@@ -935,7 +935,7 @@ function buildBucketTree(containerId, section) {
       + '<span class="count-badge">' + count + '</span>';
     container.appendChild(row);
 
-    // Caret click = expand only (peer reviewer guardrail D4 #1 — never filter)
+    // Caret click = expand only (review guardrail D4 #1 — never filter)
     if (hasSubs) {
       const subContainer = document.createElement('div');
       subContainer.className = 'tree-sub';

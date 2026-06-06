@@ -182,7 +182,7 @@ class Batch2ToolTests(unittest.TestCase):
                 for line in Path(tmp_dir, "audit.jsonl").read_text(encoding="utf-8").splitlines()
                 if line.strip()
             ]
-            # W1.7 (Run 2 consensus): _finalize_tool_response now also writes
+            # W1.7 (Run 2 review): _finalize_tool_response now also writes
             # context_bundle audit rows. Filter to durable execution-lifecycle
             # events so this assertion stays stable.
             lifecycle = [e for e in entries if e.get("event_type") in {"started", "completed", "linked"}]

@@ -1,6 +1,6 @@
 """Regression tests for Tier-B2: delegate idempotency + allow_partial hint.
 
-peer reviewer consensus 2026-05-19: an identical record_analysis_lane upsert must
+design review 2026-05-19: an identical record_analysis_lane upsert must
 return `duplicate_lane_noop` instead of re-firing _dispatch_corroboration_if_ready
 (which regenerates the very delegate that blocked the report — Run-10 had
 13 redundant lane writes in one investigation).
@@ -76,7 +76,7 @@ def test_needs_delegate_deny_message_includes_allow_partial_hint():
     block = src[needs_idx:needs_idx + 1500]
     assert "allow_partial" in block.lower(), (
         "needs_delegate deny message must mention allow_partial=True per "
-        "peer reviewer Tier-B2 consensus."
+        "review Tier-B2 review."
     )
     assert "allow_partial_hint" in block, (
         "Response dict must carry 'allow_partial_hint': True so the agent "

@@ -1,6 +1,6 @@
 """Tests for W1.7 Run-5 fix — main-agent inline synthesis Path-A dismissal.
 
-User's structural diagnosis (verbatim 2026-05-24, validated by tri-agent):
+User's structural diagnosis (verbatim 2026-05-24, validated by design):
 "_dismiss_stale_delegates has 2 paths: same-actor and DIFFERENT-actor WITH
 path_b_would_allow ledger row. Synthesis was inverted in W1.7: inline IS Path A.
 So no path_b_would_allow row gets written when main-agent records

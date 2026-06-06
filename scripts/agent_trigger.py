@@ -1597,7 +1597,7 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
                 pending_lane = str(pending.get("lane_id") or "").strip()
                 if pending_lane and recorded_lane == pending_lane:
                     _mark_trigger_processed(trigger_path=trigger_path)
-            # W1.7 Run-2 consensus 2026-05-24: soft nudge
+            # W1.7 Run-2 review 2026-05-24: soft nudge
             # toward inline main-agent synthesis when a prereq lane closes.
             # Run 2 showed Claude completed all 4 prereq lanes then jumped
             # straight to generate_report - never crossed the "should I
@@ -1674,7 +1674,7 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
     if tool_status in {"error", "failed", "fail", "not_initialised", "tool_not_found"}:
         return None
 
-    # P2 #7 fix: also skip documented-absence / no-data outcomes (peer reviewer gap -
+    # P2 #7 fix: also skip documented-absence / no-data outcomes (review gap -
     # these are not status="error" but have no handle to analyze).
     if _result_signals_absence(result_data):
         return None
@@ -1686,7 +1686,7 @@ def process_event(event: dict[str, Any], *, trigger_path: Optional[str] = None) 
     subagent_type, lane_id, base_instruction = dispatch
     # Phase 2 - pre-compute context for the specialist (schema, timestamp
     # bounds, manifest attack_window, originating execution_id).
-    # consensus 2026-05-22 - NOT via an MCP callback; bounded local inspect
+    # review 2026-05-22 - NOT via an MCP callback; bounded local inspect
     # of the CSV header + the manifest file on disk.
     instruction = _augment_instruction(
         base_instruction,

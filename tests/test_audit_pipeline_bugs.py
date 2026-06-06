@@ -221,7 +221,7 @@ def test_record_artifact_absent_audit_produces_state_row(tmp_path: Path, monkeyp
 
 @_requires_fastmcp
 def test_round2_item1_success_audit_links_csv_to_raw_evidence_refs(tmp_path: Path, monkeypatch):
-    """peer reviewer review round-2 ITEM-1: when _record_tool_success_audit is
+    """design review round-2 ITEM-1: when _record_tool_success_audit is
     called with csv_path, the resulting state.json:executions row must
     have raw_evidence_refs that _latest_durable_csv_for_tool() can find.
 
@@ -280,7 +280,7 @@ def test_round2_item1_success_audit_links_csv_to_raw_evidence_refs(tmp_path: Pat
 
 @_requires_fastmcp
 def test_round2_item2_success_audit_captures_real_duration_and_command(tmp_path: Path, monkeypatch):
-    """peer reviewer review round-2 ITEM-2: success audit must record real
+    """design review round-2 ITEM-2: success audit must record real
     duration (covering full subprocess+parsing) and a non-synthetic
     command_line. Fake placeholders weaken chain-of-custody."""
     monkeypatch.setenv("SAVVYDFIR_ANALYSIS_DIR", str(tmp_path))

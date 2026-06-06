@@ -175,7 +175,7 @@ class FineSourceFamilyClusterTests(unittest.TestCase):
 
 class CorrelationExclusionTests(unittest.TestCase):
     """Synthesis ('correlation') findings must not satisfy min_sources alone -
-    they re-describe already-counted sources (peer reviewer constraint)."""
+    they re-describe already-counted sources (review constraint)."""
 
     def setUp(self):
         ts = "2026-05-24T03:01:0"

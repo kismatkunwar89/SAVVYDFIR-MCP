@@ -35,9 +35,9 @@ GEMINI.md
 *.phase3-backup
 
 
-# === Internal planning / handoff / consensus (KEEP LOCALLY, do not commit) ===
-# Per tri-agent consensus 2026-05-25: these are project-development artifacts
-# (planning history, consensus session transcripts, run evaluations) preserved
+# === Internal planning / handoff / review (KEEP LOCALLY, do not commit) ===
+# Per design review 2026-05-25: these are project-development artifacts
+# (planning history, review session transcripts, run evaluations) preserved
 # on local disk for project continuity but excluded from the public main branch.
 runs/
 HANDOFF.md
@@ -46,7 +46,7 @@ plannext.md
 planforsubagents.md
 planforsubagents-v2.md
 IMPLEMENTATION_PLAN.md
-scratch.md
+review-*.md
 review-*.md
 DECISION-*.md
 RUN*_*.md
@@ -65,9 +65,9 @@ AGENTS.md
 *handoff*.md
 *-handoff.md
 paperplanhandoff.md
-docs/jaswanth.md
+docs/external-review-notes.md
 docs/reply.md
-docs/team-message-to-jaswanth.md
+docs/external-review-message.md
 team-message-*.md
 
 # Local screenshots and scratch artifacts that should never be tracked
@@ -84,3 +84,21 @@ medium2.md
 rules/chainsaw-sigma-mapping.yml.broken-run11.bak
 vm-midrun-server-change.diff
 review-*.md
+
+# --- pre-submission cleanup: internal/stale docs (keep local, untrack) ---
+EVAL_RESULTS.md
+savvydfir_disk_baseline_START.md
+legacy/
+docs/ENTERPRISE-ADK-LAYER.md
+docs/graph-ui-design.md
+docs/research-additions.md
+docs/PLAN-RUN-DEBRIEF-FIXES-2026-05-29.md
+research/RESEARCH_INDEX.md
+external-review/
+scratch.md
+review-*.md
+DECISION-*.md
+RUN*.md
+*handoff*.md
+*HANDOFF*.md
+paperplanhandoff.md

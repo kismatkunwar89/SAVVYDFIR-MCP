@@ -179,7 +179,7 @@ demonstrated the failure mode of waiting for `@synthesis-analyst`: the
 specialist Task subagent never recorded its lane, `synthesis_corroboration`
 was missing from state, `generate_report` blocked on `needs_delegate`, the
 operator forced `allow_partial=True`, and the report shipped with 0 CONFIRMED
-(no 3+ source stacking happened). Per W1.7 (Run 2 consensus 2026-05-24,
+(no 3+ source stacking happened). Per W1.7 (Run 2 review 2026-05-24,
 +signed): **do not rely on delegate synthesis as the only path.**
 
 **Main-agent inline synthesis SOP (run BEFORE generate_report once all 4
@@ -512,7 +512,7 @@ These tools must run in every investigation before `generate_report`. The covera
 
 | Tool | Why Mandatory | What It Detects | Enforced |
 |------|---------------|-----------------|----------|
-| `sigma_hunt(evtx_path, case_id)` | 2,278 community Sigma rules provide deterministic ATT&CK-mapped detection. Validates LLM interpretations against consensus. Rule-based detection catches patterns LLMs miss. | Lateral movement (PsExec, WinRM), credential theft (Mimikatz, LSASS dumps), persistence (scheduled tasks, services), defense evasion (log clearing, AV tampering). | ✅ YES |
+| `sigma_hunt(evtx_path, case_id)` | 2,278 community Sigma rules provide deterministic ATT&CK-mapped detection. Validates LLM interpretations against review. Rule-based detection catches patterns LLMs miss. | Lateral movement (PsExec, WinRM), credential theft (Mimikatz, LSASS dumps), persistence (scheduled tasks, services), defense evasion (log clearing, AV tampering). | ✅ YES |
 | `hayabusa_hunt(evtx_path, case_id)` | 3,700+ Sigma rules (superset of Chainsaw). Emits MITRE ATT&CK matrix HTML. Critical for comprehensive threat hunting beyond Chainsaw's coverage. | Additional C2 patterns, rare LOLBin abuse, Windows Defender event correlation, timeline-aware threat scoring. | ❌ NO |
 | `compare_disk_and_memory(case_id)` | 6 forensic contradiction checks. Detects anti-forensics: code injection, process hiding (DKOM), prefetch deletion, timestamp manipulation. Cross-artifact validation LLMs cannot perform. | Hidden processes (in memory but no disk artifact), injected code (memory-only malware), deleted Prefetch (anti-forensics), orphaned network connections (no matching process). | ✅ YES |
 | `build_timeline(case_id)` | Plaso super-timeline reconstructs attacker activity across all artifact types simultaneously. Temporal proximity analysis reveals staged attacks that single-artifact analysis misses. **OPTIONAL** - specialists work from individual CSV extracts; comprehensive timeline enhances but is not required. | Multi-stage intrusions (reconnaissance → credential theft → lateral movement), dwell time quantification, exfiltration staging windows, cleanup activity timestamps. | ❌ NO (optional) |

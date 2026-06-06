@@ -1,6 +1,6 @@
 # Synthetic graph BUCKET_MAP fixture
 
-D5 carry-forward from `consensus-graph-impl-plan-2026-05-30.md`. Validates every fallback path of the JS `BUCKET_MAP` in `templates/graph.html` against a controlled set of 10 synthetic findings.
+D5 carry-forward from `review-graph-impl-plan-2026-05-30.md`. Validates every fallback path of the JS `BUCKET_MAP` in `templates/graph.html` against a controlled set of 10 synthetic findings.
 
 ## What's here
 

@@ -55,7 +55,7 @@ DEFAULT_TIMEOUT = 300  # seconds
 
 #: Malfind-specific timeout.  ``windows.malfind`` scans every VAD region in
 #: every process - on an 18 GB image with 100+ processes (e.g. ROCBA's cloud
-#: sync sprawl), the default 300 s is insufficient.  Per Run-8 consensus
+#: sync sprawl), the default 300 s is insufficient.  Per Run-8 review
 #:: keep the global timeout tight,
 #: lift malfind specifically.  Override via ``SAVVYDFIR_MALFIND_TIMEOUT`` env.
 def _resolve_malfind_timeout() -> int:

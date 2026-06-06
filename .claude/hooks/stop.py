@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stop hook: ensures investigation is complete before ending session.
 
-peer reviewer-tightened: incomplete cases CANNOT exit silently after a retry
+review-tightened: incomplete cases CANNOT exit silently after a retry
 threshold. Closure requires either:
   * state.json status == COMPLETE + sigma_hunt + compare_disk_and_memory
     in audit.jsonl — i.e. the investigation actually finished, OR
@@ -11,7 +11,7 @@ threshold. Closure requires either:
 The hook detects the loop scenario (agent has nothing useful to do but
 keeps trying to stop) by counting consecutive block events. After
 MAX_BLOCKS, the reason now INSTRUCTS the operator to create the waiver
-file — but still blocks. Auto-approve is removed entirely per peer reviewer.
+file — but still blocks. Auto-approve is removed entirely per review.
 
 If the operator wants to bail without writing a waiver, Ctrl+C bypasses
 the hook (kernel signal, not a hook decision). This makes silent
@@ -178,7 +178,7 @@ def _audit_append(record: dict, audit_path: Path) -> tuple[bool, str]:
 def _consume_waiver(case_id: str, reason: str, missing: list[str]) -> dict:
     """Audit waiver consumption and rename the waiver file. Fail-closed.
 
-    peer reviewer-required attempt-then-finalize pattern:
+    review-required attempt-then-finalize pattern:
       1. Write `stop_hook_waiver_consumption_attempted` audit record (fsync).
       2. Rename waiver to unique consumed-filename (timestamp+pid+random tag).
       3. Write `stop_hook_waiver_consumed` audit record (fsync).
@@ -287,7 +287,7 @@ def _missing_tools_actionable(state_path: str, audit_path: str | None) -> list[s
         "compare_disk_and_memory":   "correlation.compare_disk_and_memory",
         "generate_report":           "reporting.generate_report",
     }
-    # peer reviewer-tightened: only explicit structured markers count as gap.
+    # review-tightened: only explicit structured markers count as gap.
     # No 3-attempt bypass — persistent failure stays unsatisfied.
     # F-B (review 2026-06-04): collection_timeout = an honest required-tool
     # attempt that timed out (e.g. a multi-GB EVTX/USN parse on this 4-vCPU box).
@@ -391,7 +391,7 @@ def main():
 
     missing = _missing_tools_actionable(state_path, audit_path)
 
-    # peer reviewer-required: explicit operator waiver is the only audited way to
+    # review-required: explicit operator waiver is the only audited way to
     # close an incomplete investigation. The consumption itself must succeed
     # (audit append + rename) before the hook approves — otherwise we'd
     # silently exit without the promised audit trail.

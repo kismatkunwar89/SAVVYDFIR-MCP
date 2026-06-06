@@ -1,6 +1,6 @@
 """Regression tests for the add_finding execution_id auto-link + alt-hypothesis schema.
 
-peer reviewer consensus 2026-05-19 follow-up: Run-11 produced 0 CONFIRMED findings
+design review 2026-05-19 follow-up: Run-11 produced 0 CONFIRMED findings
 because the framework's add_finding auto-generated orphan execution_ids
 (no audit link) AND the alt-hypothesis fields were not reachable from
 the MCP add_finding tool surface (only via the corroboration-analyst
@@ -269,7 +269,7 @@ def test_confirmed_finding_with_linked_eid_and_alt_hypothesis_stays_confirmed(tm
 def test_confirmed_finding_with_partial_alt_hypothesis_still_demoted(tmp_path):
     """Regression: even with a real execution_id, a CONFIRMED finding that
     lacks the full alt-hypothesis (e.g. disposition='not_resolved') must
-    still be demoted per peer reviewer sign-off."""
+    still be demoted per review sign-off."""
     sm = _make_state(tmp_path)
     _record_execution(sm, "E-001", "memory.scan_network")
 
@@ -286,12 +286,12 @@ def test_confirmed_finding_with_partial_alt_hypothesis_still_demoted(tmp_path):
         "iteration": 1,
         "alternative_hypothesis": "Legitimate user browser session",
         "evidence_against_it": ["non-browser process holds socket"],
-        "disposition": "not_resolved",  # The peer reviewer-mandated downgrade case
+        "disposition": "not_resolved",  # The review-mandated downgrade case
     }
     fid = sm.add_finding(finding)
     stored = sm.get_finding(fid)
     assert stored["finding_status"] == "ACTIVE", (
-        "disposition='not_resolved' must downgrade per peer reviewer sign-off."
+        "disposition='not_resolved' must downgrade per review sign-off."
     )
 
 

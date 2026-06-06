@@ -1,4 +1,4 @@
-"""Regression tests for the Run-12 defect package (peer reviewer consensus 2026-05-20).
+"""Regression tests for the Run-12 defect package (design review 2026-05-20).
 
 Three defects:
   DEFECT-2 — Phantom delegate regeneration when multiple specialists progress
@@ -7,7 +7,7 @@ Three defects:
   DEFECT-3 — generate_report blocks on stale delegates whose lane is already
              satisfied. Fix: walk per-lane queue, dismiss same-actor stale
              entries (and different-actor entries that have ledger path_b
-             allowance). peer reviewer distinguished these from phantom Path A
+             allowance). review distinguished these from phantom Path A
              completions, which MUST stay blocking.
   DEFECT-1 — Specialist .md files now carry a JSON-only contract block at
              the top with lane-specific budgets and cross-artifact carve-outs
@@ -48,7 +48,7 @@ def test_compute_delegate_key_deterministic(fresh_queue):
     k1 = dq.compute_delegate_key("CASE-A", "memory", "memory-analyst", 1)
     k2 = dq.compute_delegate_key("CASE-A", "memory", "memory-analyst", 1)
     assert k1 == k2, "delegate_key must be deterministic for same inputs"
-    # Different case → different key (case namespacing per peer reviewer)
+    # Different case → different key (case namespacing per review)
     k_other = dq.compute_delegate_key("CASE-B", "memory", "memory-analyst", 1)
     assert k1 != k_other
     # Different iteration → different key (allows fresh dispatch on retry)
@@ -223,7 +223,7 @@ def test_dismiss_stale_different_actor_without_path_b_allowance_stays_blocking(
 ):
     """If a delegate for evtx-analyst is satisfied by main-agent (Path B)
     but the ledger has NO path_b_would_allow row, the delegate MUST stay
-    blocking. This is the phantom-Path-A case peer reviewer insisted on."""
+    blocking. This is the phantom-Path-A case review insisted on."""
     dq, _ = fresh_queue
     monkeypatch.setenv("SAVVYDFIR_DELEGATION_LEDGER", str(tmp_path / "ledger.jsonl"))
     monkeypatch.setenv("SAVVYDFIR_SESSION_POINTER", str(tmp_path / "session.json"))
@@ -431,7 +431,7 @@ def test_specialist_has_json_only_contract(specialist):
 
 @pytest.mark.skip(reason=_PHASE3_OVERLAY_SKIP_REASON)
 def test_corroboration_analyst_has_cross_artifact_carveout():
-    """peer reviewer insisted corroboration-analyst MUST NOT have the
+    """review insisted corroboration-analyst MUST NOT have the
     'don't inspect unrelated artifacts' restriction."""
     text = (ROOT / ".claude" / "agents" / "corroboration-analyst.md").read_text()
     assert "Cross-artifact analysis is REQUIRED" in text, (

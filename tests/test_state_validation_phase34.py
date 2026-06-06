@@ -202,8 +202,8 @@ class StateValidationPhase34Tests(unittest.TestCase):
 class ArtifactSubtypePathDeriveTests(unittest.TestCase):
     """Runtime source-of-truth derive: analyst findings (tool_name=
     state.submit_finding) with blank artifact_subtype recover it from the
-    staged /artifacts/<subtype>/ segment of artifact_path. peer reviewer sign-off
-    2026-05-30 (consensus-runtime-subtype-derive-2026-05-30.md)."""
+    staged /artifacts/<subtype>/ segment of artifact_path. review sign-off
+    2026-05-30 (review-runtime-subtype-derive-2026-05-30.md)."""
 
     def _add(self, manager, *, artifact_type="disk", artifact_subtype=None,
              artifact_path="", tool_name="state.submit_finding"):

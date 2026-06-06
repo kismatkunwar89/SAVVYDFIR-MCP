@@ -33,7 +33,7 @@ def add_windows_ir_baseline_executions(
 ) -> None:
     """Register the universal mandatory memory + disk tool suffixes as executions.
 
-    sigma_hunt is now part of the mandatory IR baseline (peer reviewer review #2:
+    sigma_hunt is now part of the mandatory IR baseline (review review #2:
     gate must enforce a successful Chainsaw run, not just sigma_scan post-
     processing). Tests that need to verify gate-without-sigma_hunt behavior
     can pass `include_sigma_hunt=False`.

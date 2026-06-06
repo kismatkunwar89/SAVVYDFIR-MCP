@@ -684,7 +684,7 @@ class LaneV7Tests(unittest.TestCase):
         # alone do not substitute for the underlying tool call. This test's
         # original assertion (`ok=True` purely because a specialist-owned
         # lane claims to cover the missing tool) no longer holds; behavior
-        # is intentional per Run-2 consensus tightening. Assert the gate
+        # is intentional per Run-2 review tightening. Assert the gate
         # surfaces a clear next-required signal instead.
         if result["ok"]:
             self.assertTrue(any(
