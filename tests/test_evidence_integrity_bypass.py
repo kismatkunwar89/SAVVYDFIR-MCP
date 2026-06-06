@@ -19,7 +19,7 @@ guardrail were a system prompt. The tests pass because the guardrails are
 code, not text.
 
 References:
-  - PLAN-FIND-EVIL-HACKATHON-2026-05-23.md Section 3 (Bet #3: guardrail bypass tests)
+  - the design plan Section 3 (Bet #3: guardrail bypass tests)
   - DECISION-2026-05-23-branch-triage.md
   - FIND EVIL! Devpost rules — judging criterion #4
   - an external reviewer's critique (external-review/SAVVYDFIR-MCP-Analysis.pdf Contradiction 2)

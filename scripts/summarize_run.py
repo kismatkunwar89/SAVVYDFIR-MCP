@@ -16,7 +16,7 @@ reports/{case_id}/report.json) and emits ONE consolidated summary with:
 Two output formats: ``markdown`` (default, human-readable) and ``json``.
 
 Usage:
-  python3 scripts/summarize_run.py --case-id HACKATHON-2026-WKSTN01
+  python3 scripts/summarize_run.py --case-id CASE-HOST01
   python3 scripts/summarize_run.py --case-id <id> --format json
   python3 scripts/summarize_run.py --case-id <id> --out /tmp/run.md
 
@@ -678,7 +678,7 @@ def render_markdown(summary: dict[str, Any]) -> str:
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--case-id", required=True, help="Case identifier (e.g. HACKATHON-2026-WKSTN01)")
+    parser.add_argument("--case-id", required=True, help="Case identifier (e.g. CASE-HOST01)")
     parser.add_argument("--analysis-dir", type=Path, default=None,
                         help="Directory containing state.json + audit.jsonl (default: ./analysis or SAVVYDFIR_ANALYSIS_DIR)")
     parser.add_argument("--ledger", type=Path, default=None,

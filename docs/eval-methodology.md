@@ -64,7 +64,7 @@ python3 scripts/eval/gt_match_scorer.py \
 ```
 
 Recorded per-run results are committed at `scripts/eval/baselines/<case>-<date>.json`,
-and each run's full artifacts (report, graph, hash-chained `audit.jsonl`) are under
+and each run's full artifacts (report, graph, and — for 4/5 cases — the hash-chained `audit.jsonl`; ROCBA predates audit retention) are under
 [`agent-execution-logs/`](agent-execution-logs/).
 
 ---
@@ -87,4 +87,4 @@ Beyond accuracy, the test suite exercises the honesty invariants directly, e.g.:
 
 A baseline-vs-baseline comparison against a no-MCP "raw tools" run, and a multi-host
 enterprise corpus (SRL-2018), are supported by the framework but were **not executed**
-for this submission. The reported numbers are the five blind public cases only.
+for this submission. The reported numbers are the five independent blind cases only.

@@ -6,7 +6,7 @@ upgraded to actual deny when SAVVYDFIR_LEDGER_ENFORCE=1 was set. Path A
 (specialist Task spawn) was treated as mandatory; main-agent inline was
 the fallback that required evidence of failed Path A.
 
-W1.6.1a UPDATE 2026-05-23 (PLAN-FIND-EVIL-HACKATHON-2026-05-23.md):
+W1.6.1a UPDATE 2026-05-23:
 The architecture inverted. Main-agent inline is now the PRIMARY path
 (Custom MCP Server #2 in the FIND EVIL! hackathon). The pre-hook ALWAYS
 allows main-agent lane records through unconditionally; it still LOGS a
@@ -31,7 +31,7 @@ import pytest
 
 _W1_6_1A_SKIP = (
     "W1.6.1a (2026-05-23): main-agent inline is the PRIMARY path per "
-    "PLAN-FIND-EVIL-HACKATHON-2026-05-23.md. The pre-hook no longer denies "
+    "the design plan. The pre-hook no longer denies "
     "main-agent lane records under any condition (always logs would_allow). "
     "The deny / enforce-mode tests below encoded the prior 'Path A mandatory' "
     "architecture and are obsolete. Replacement assertion: any main-agent lane "

@@ -16,7 +16,7 @@ Pydantic validation REJECTS findings that lack the structural fields. This
 is the structural-enforcement layer that judges score on Criterion #4
 (Constraint Implementation - architectural vs prompt-based guardrails).
 
-Adoption path (W1 of PLAN-FIND-EVIL-HACKATHON-2026-05-23.md):
+Adoption path (W1 of the design plan):
   - Existing Finding model stays in finding.py for backward compat
   - Adapter (sift_mcp/models/finding_adapter.py) maps Finding → EvidenceFinding
   - submit_finding writes both shapes during transition

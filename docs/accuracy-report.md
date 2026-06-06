@@ -2,7 +2,7 @@
 
 **SAVVYDFIR-MCP — FIND EVIL! Hackathon 2026**
 
-This report documents the accuracy of SAVVYDFIR-MCP across five public DFIR cases,
+This report documents the accuracy of SAVVYDFIR-MCP across five independent blind cases,
 each run **blind** (ground truth never on the workstation). Metrics follow the
 definitions in [`eval-methodology.md`](eval-methodology.md). Per-run scores come
 from `scripts/eval/baselines/*.json`; full run artifacts (report, graph,
@@ -22,7 +22,7 @@ hash-chained audit) are under [`agent-execution-logs/`](agent-execution-logs/).
 
 ---
 
-## 2. Results — 5 blind public cases
+## 2. Results — 5 independent blind cases
 
 | Case | Scenario / OS | Recall (TP/GT) | Hallucinations | Eval-target coverage | CONFIRMED |
 |------|---------------|----------------|----------------|----------------------|-----------|

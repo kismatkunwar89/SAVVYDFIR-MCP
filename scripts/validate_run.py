@@ -12,7 +12,7 @@ Usage
 -----
     python3 scripts/validate_run.py                              # default paths
     python3 scripts/validate_run.py --state analysis/state.json  # explicit
-    python3 scripts/validate_run.py --case-id HACKATHON-2026-WKSTN01
+    python3 scripts/validate_run.py --case-id CASE-HOST01
     python3 scripts/validate_run.py --strict                     # also audit.jsonl
 """
 

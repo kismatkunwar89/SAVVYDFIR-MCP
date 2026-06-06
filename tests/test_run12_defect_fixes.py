@@ -394,7 +394,7 @@ def test_reporting_source_uses_dismiss_helper():
 # ---------------------------------------------------------------------------
 
 _PHASE3_OVERLAY_SKIP_REASON = (
-    "W1.2 (2026-05-23, PLAN-FIND-EVIL-HACKATHON-2026-05-23.md): "
+    "W1.2 (2026-05-23, the design plan): "
     "Phase 3 overlay (C-PRIME + Playbook + Final Response Contract) "
     "was stripped from specialist .md files. Specialists now exist as "
     "forensic-heuristic knowledge bases ('Heuristics, not procedures') "

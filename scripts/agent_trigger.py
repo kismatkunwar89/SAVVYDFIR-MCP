@@ -1437,13 +1437,13 @@ def _pending_requires_hard_block(
 def _delegation_block_reason(trigger: dict[str, Any]) -> str:
     """Build the BLOCK message that nudges the main agent to analyze the lane.
 
-    Hackathon update 2026-05-23 (PLAN-FIND-EVIL-HACKATHON-2026-05-23.md W1.6):
+    Hackathon update 2026-05-23:
     inverted from "MANDATORY Path A specialist Task spawn" to "preferred
     inline run_analysis using <artifact>-analyst heuristic context."
 
     Why: Task subagents hit the hardcoded 32K output-token ceiling
     (anthropics/claude-code#25569) and truncated in 7/8 cases on the
-    HACKATHON-2026-WKSTN01 run. Main-agent inline analysis has no such
+    an early test run. Main-agent inline analysis has no such
     ceiling, gets full case context, and persists findings immediately
     via add_finding/submit_finding.
 

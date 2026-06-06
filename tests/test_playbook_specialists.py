@@ -14,7 +14,7 @@ Tests verify:
   6. Each playbook references the typed submit_finding tool (Phase 1).
   7. No case-specific hardcoded values (case-agnostic invariant).
 
-ALL TESTS IN THIS FILE SKIPPED 2026-05-23 (W1.2 of PLAN-FIND-EVIL-HACKATHON-2026-05-23.md).
+ALL TESTS IN THIS FILE SKIPPED 2026-05-23 (W1.2 of the design plan).
 
 The Phase 3 playbook overlay was stripped from .md files because it
 overlaid prescriptive procedures on top of user-authored "Heuristics,
@@ -36,7 +36,7 @@ import pytest
 # Skip the entire module — Phase 3 overlay was stripped in W1.2.
 pytestmark = pytest.mark.skip(reason=(
     "Phase 3 playbook overlay stripped in W1.2 (2026-05-23). "
-    "See PLAN-FIND-EVIL-HACKATHON-2026-05-23.md and "
+    "See the design plan and "
     "DECISION-2026-05-23-branch-triage.md."
 ))
 

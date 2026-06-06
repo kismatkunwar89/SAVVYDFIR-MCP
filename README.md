@@ -317,7 +317,7 @@ the bucket/redaction regression fixture is `tests/fixtures/graph_bucket_syntheti
 
 ## Validation Status
 
-Validated **blind** end-to-end on five public DFIR cases — **0 hallucinations across all** (full results in [`docs/accuracy-report.md`](docs/accuracy-report.md); per-case artifacts in [`docs/agent-execution-logs/`](docs/agent-execution-logs/)):
+Validated **blind** end-to-end on five independent blind cases — **0 hallucinations across all** (full results in [`docs/accuracy-report.md`](docs/accuracy-report.md); per-case artifacts in [`docs/agent-execution-logs/`](docs/agent-execution-logs/)):
 
 - **ROCBA-2020-FREDS-LAPTOP** — insider IP theft (Windows) — 90% recall, 107 findings, 3 CONFIRMED.
 - **LONEWOLF-2018-DESKTOP-PM6C56D** — mass-shooting plot (Windows) — 91.7% recall, 88 findings, 2 CONFIRMED.

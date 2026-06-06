@@ -141,7 +141,7 @@ def main() -> None:
     # is a pivot point, not an endpoint.
     #
     # W1.6.1b (2026-05-23): inverted to mirror agent_trigger.py's
-    # main-agent-first orchestration (PLAN-FIND-EVIL-HACKATHON-2026-05-23.md).
+    # main-agent-first orchestration.
     # The .md files at .claude/agents/<artifact>-analyst.md are now
     # FORENSIC-HEURISTIC KNOWLEDGE BASES (reference context), not Task
     # subagent dispatch targets. Specialist Task spawn remains as an

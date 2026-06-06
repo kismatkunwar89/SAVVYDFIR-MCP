@@ -22,7 +22,7 @@ What gets preserved (per file):
 A short new intro is inserted between the title and heuristic content
 explaining the file is reference context (not a procedural playbook).
 
-(PLAN-FIND-EVIL-HACKATHON-2026-05-23.md Section 5.3).
+(the design plan Section 5.3).
 """
 from __future__ import annotations
 

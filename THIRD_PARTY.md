@@ -46,7 +46,7 @@ licensing/attribution.
 |-----|--------|---------|
 | Known-malicious EVTX for the Sigma positive-control (`scripts/eval/sigma_positive_control.sh`) — **downloaded at test time, not committed** | [sbousseaden/EVTX-ATTACK-SAMPLES](https://github.com/sbousseaden/EVTX-ATTACK-SAMPLES) | per upstream |
 
-## Evaluation datasets (public DFIR cases)
+## Evaluation datasets
 
 Used only to measure accuracy; evidence images are **not** committed (ground-truth
 answer keys are gitignored).

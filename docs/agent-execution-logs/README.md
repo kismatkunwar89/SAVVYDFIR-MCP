@@ -6,7 +6,7 @@ trail and outputs without running the tool themselves.
 
 ## Blind benchmark cases
 
-The five public DFIR cases used to validate the framework each have their full run
+The five independent blind cases used to validate the framework each have their full run
 artifacts under `docs/agent-execution-logs/<case>/`. All five were run **blind**
 (ground truth never on the workstation) with **zero hallucinations**.
 

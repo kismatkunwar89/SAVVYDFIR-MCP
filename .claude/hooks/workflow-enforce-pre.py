@@ -154,7 +154,7 @@ def _check_path_b_gate(event: dict[str, Any], repo_root: Path) -> None:
         return  # nothing we can gate
     # W1.6.1a (2026-05-23): main-agent inline is the PREFERRED path in the
     # FIND EVIL! hackathon submission architecture (Custom MCP Server #2,
-    # PLAN-FIND-EVIL-HACKATHON-2026-05-23.md). The Path A specialist Task
+    # the design plan). The Path A specialist Task
     # spawn became an opt-in escape hatch in W1.6 (agent_trigger.py).
     # The pre-existing "main-agent requires failed-Path-A evidence" gate
     # contradicted that inversion and would block legitimate inline
@@ -199,7 +199,7 @@ def _check_path_b_gate(event: dict[str, Any], repo_root: Path) -> None:
     except Exception:
         pass
     # No deny path — main-agent is the primary architecture per
-    # PLAN-FIND-EVIL-HACKATHON-2026-05-23.md Section 6 (Week 1 deliverable).
+    # the design plan Section 6 (Week 1 deliverable).
     return
 
 

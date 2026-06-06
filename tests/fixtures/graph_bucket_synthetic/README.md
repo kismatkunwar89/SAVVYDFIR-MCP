@@ -42,7 +42,7 @@ grep -c "ControlSet001" /tmp/.../graph.html               # → >0 (registry pat
 grep -c "<install>\|<case-dir>\|<evidence>" /tmp/.../graph.html  # → >0
 ```
 
-The redaction is a recursive pass over the entire graph payload (`_redact_infra_paths` in `scripts/investigation_graph.py`) applied before BOTH graph.json and graph.html are written - see `docs/graph-ui-design.md`.
+The redaction is a recursive pass over the entire graph payload (`_redact_infra_paths` in `scripts/investigation_graph.py`) applied before BOTH graph.json and graph.html are written - see `the graph renderer module`.
 
 ## How to run the validation
 

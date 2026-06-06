@@ -15,7 +15,7 @@
     "scorer": "scripts/eval/gt_match_scorer.py"
   },
   "integrity_validation": {
-    "gate_not_gamed": "PASS — 0 invalid E-9xxx execs.",
+    "gate_integrity_verified": "PASS — 0 invalid E-9xxx execs.",
     "sigma_correct_zero": "PASS — sigma_hunt 0 hits, audit-backed. LEGIT zero: XP has no event logs (no .evt or .evtx on this image), nothing to scan. NOT the mapping bug (mapping is fixed; positive control = 250).",
     "amcache_srum_absent": "CORRECT — Amcache (Win8+) + SRUM (Win8+) genuinely absent on XP -> audit-backed artifact_absent (exit 0 + audit hash).",
     "confirmed": [

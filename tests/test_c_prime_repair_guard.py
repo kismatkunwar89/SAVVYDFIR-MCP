@@ -61,7 +61,7 @@ def _read_rows(path: Path) -> list[dict]:
 
 @pytest.mark.skip(
     reason=(
-        "W1.2 (2026-05-23, PLAN-FIND-EVIL-HACKATHON-2026-05-23.md): "
+        "W1.2 (2026-05-23, the design plan): "
         "C-PRIME Output Discipline block was stripped from specialist "
         ".md files as part of the Phase 3 overlay removal. The user's "
         "original heuristic content (line 200+ of each file) is preserved "

@@ -7086,7 +7086,7 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
                 "analysis_contract": {
                     # W1.6.1e (2026-05-23) - main-agent inline analysis is the
                     # primary path for the FIND EVIL! hackathon submission.
-                    # See PLAN-FIND-EVIL-HACKATHON-2026-05-23.md.
+                    # See the design plan.
                     "rule": (
                         "Every tool response with csv_path or output_path REQUIRES a "
                         "follow-up via main-agent inline analysis: call run_analysis("

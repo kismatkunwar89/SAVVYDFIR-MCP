@@ -13,7 +13,7 @@ The adapter handles:
   - MITRE technique/tactic merge from legacy fields
   - finding_id legacy F-NNN preserved as alias; ULID generated for DAG
 
-See PLAN-FIND-EVIL-HACKATHON-2026-05-23.md Section 4.
+See the design plan Section 4.
 """
 from __future__ import annotations
 

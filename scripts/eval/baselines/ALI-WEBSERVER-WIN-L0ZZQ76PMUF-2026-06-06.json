@@ -28,7 +28,7 @@
     "measurement_followup": "GT known_negative 'EVTX 4720/4732' anchors are too generic ('evtx'/'security'/'account-creation'); should anchor only on '4720'/'4732'. Scorer-precision fix for future (do NOT retroactively inflate this run's headline)."
   },
   "integrity_validation": {
-    "gate_not_gamed": "PASS — NO invalid E-9xxx execs in state.json (the prior run's invalid prior behavior did not recur; legit audit-backed absence removed the need).",
+    "gate_integrity_verified": "PASS — NO invalid E-9xxx execs in state.json (the prior run's invalid prior behavior did not recur; legit audit-backed absence removed the need).",
     "sigma_mapping_fix_live": "PASS — E-114 recorded 18 real sigma hits across EVTX (was 0 with the broken mapping). Mapping fix validated on a real case.",
     "artifact_absent_audit_backed": "PASS — extract_prefetch (E-047) + get_amcache (E-050): exit_code=0, audit_completed_entry_hash=True, status=artifact_absent. Real tool runs with provenance (Server-2008 genuine absence), NOT invalid.",
     "code_alignment": "dev HEAD 45f0a44; VM server.py + mapping byte-identical (server.py 9e64f3ef, mapping 7a8d08a5)."
