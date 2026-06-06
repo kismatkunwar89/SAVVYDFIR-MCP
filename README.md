@@ -463,6 +463,21 @@ SAVVYDFIR-MCP/
 
 ---
 
+## Acknowledgements & Third-Party Attribution
+
+SAVVYDFIR-MCP is an **orchestration layer** — it does not reimplement forensic
+parsers; it drives best-in-class open-source DFIR tools (Sigma, Chainsaw,
+Hayabusa, Eric Zimmerman's EZ Tools, Volatility 3, Plaso, The Sleuth Kit, YARA,
+libyal) and adds cross-artifact correlation + an evidence-provenance gate on top.
+One file is vendored verbatim — Chainsaw's official Sigma→EVTX mapping
+(`rules/chainsaw-sigma-mapping.yml`, **GPL-3.0**, © WithSecure Labs).
+
+Full credits, sources, and licenses for every third-party tool, vendored file,
+Python dependency, test fixture, and evaluation dataset are in
+**[`THIRD_PARTY.md`](THIRD_PARTY.md)**. ATT&CK® is a trademark of The MITRE Corporation.
+
 ## License
 
 MIT License - Copyright (c) 2026 Kismat Kunwar. See [LICENSE](LICENSE).
+The MIT license covers **this project's own code only**; vendored/invoked
+third-party works retain their own licenses (see `THIRD_PARTY.md`).

@@ -1,3 +1,8 @@
+# ATTRIBUTION: This is a verbatim copy of Chainsaw's official Sigma->EVTX field
+# mapping (mappings/sigma-event-logs-all.yml) from WithSecureLabs/chainsaw.
+#   Source : https://github.com/WithSecureLabs/chainsaw
+#   License: GPL-3.0 (c) WithSecure Labs — NOT authored by this project.
+# Vendored so sigma_hunt's field bindings match Chainsaw 2.16+. See THIRD_PARTY.md.
 ---
 name: Chainsaw's groupless Sigma mappings for Event Logs
 kind: evtx
