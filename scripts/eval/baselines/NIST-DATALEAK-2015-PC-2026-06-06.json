@@ -1,0 +1,49 @@
+{
+  "case_id": "NIST-DATALEAK-2015-PC",
+  "run_date_utc": "2026-06-06",
+  "label": "first DISK-ONLY case on integrity-fixed framework (commit a281da4) - validates memory-conditional gate + clean exec summary + hypothesis-verdict gate, all live",
+  "score": {
+    "recall": 0.60,
+    "tp": 9,
+    "fn": 6,
+    "gt_findings": 15,
+    "fn_ids": ["GT-004", "GT-005", "GT-009", "GT-012", "GT-013", "GT-014"],
+    "fn_cluster": "email/Outlook OST exfil + deletion (GT-004/012/014), Google Drive client-DB cloud exfil + deletion (GT-005/013), CD-R UDF carving (GT-009)",
+    "fn_root_cause": "COVERAGE gap, not gaming: the framework lacks/ didn't pivot to specialized extractors for OST email, Google Drive snapshot.db/sync_config.db, UDF optical-media carving, and VSC recovery. It DID cover the filesystem + USB(RM#2) + anti-forensics-tool axis.",
+    "tp_anchors": "informant/INFORMANT-PC, secret-project files, winter_whether_advisory.zip, Authorized USB RM#2, Koala/Penguins/Tulips cover files, CCleaner/Eraser, Recycle Bin deletion",
+    "hallucinations": 0,
+    "eval_target_coverage": "4/6",
+    "scorer": "scripts/eval/gt_match_scorer.py"
+  },
+  "infrastructure_validation": {
+    "memory_conditional_disk_only_gate": "PASS - run COMPLETED (COMPLETE_WITH_GAPS) on a disk-only image; memory lane = COMPLETE with documented absence ('No memory image in manifest (memory_dumps: []) - memory phase not applicable'). No brick. First real-case proof of the disk-only path.",
+    "clean_executive_summary": "PASS - exec brief contains NO F-/E-ids, ULIDs, or raw MITRE codes; plain narrative.",
+    "hypothesis_verdict_gate": "PASS - 5 hypotheses -> 3 CONFIRMED (multi-source) + 2 SUSPENDED; one explicitly 'downgraded_from_CONFIRMED: no linked finding...' (optical_disc_secondary_exfiltration). Gate caught a live over-claim on a fresh case.",
+    "confirmed_integrity": "PASS - 4 CONFIRMED findings, all multi-source (corroborated_by 3/4/4/3); these are temporal-cluster synthesis findings (phase CONFIRMED within N seconds, K independent artifact families). No PID-0/quota gaming.",
+    "hallucinations": 0
+  },
+  "report": {
+    "triage_status": "COMPLETE_WITH_GAPS",
+    "findings_count": 503,
+    "status_breakdown": {"ACTIVE": 499, "CONFIRMED": 4},
+    "confirmed": [
+      {"id": "F-499", "type": "exfiltration", "corroborated_by": 3, "desc": "Cloud exfiltration tool procurement (84s cluster)"},
+      {"id": "F-498", "type": "exfiltration", "corroborated_by": 3, "desc": "Data collection phase (177s cluster)"},
+      {"id": "F-500", "type": "defense_evasion", "corroborated_by": 4, "desc": "Anti-forensics staging (CCleaner/Eraser, 154s cluster)"},
+      {"id": "F-501", "type": "defense_evasion", "corroborated_by": 4, "desc": "Evidence destruction finale (160s cluster)"}
+    ],
+    "hypotheses": {
+      "CONFIRMED": ["premeditated_insider_cloud_exfiltration", "deliberate_anti_forensics_tool_chain", "multi_channel_data_collection"],
+      "SUSPENDED": ["optical_disc_secondary_exfiltration (downgraded from CONFIRMED by the gate - no multi-source finding)", "possible_external_coordination"]
+    },
+    "correction_events_count": 0
+  },
+  "interpretation": {
+    "headline": "Infrastructure win + honest coverage gap. The disk-only memory-conditional path, clean exec summary, and hypothesis-verdict gate ALL held on a fresh real case; 0 hallucination.",
+    "recall_vs_prior": "60% < ROCBA 90% / LONEWOLF 91.7% - but those are Windows-endpoint cases matching the framework's filesystem/registry/memory extractors. NIST's misses are email(OST)/cloud-client-DB/optical-carving/VSC - artifact classes outside the current extractor set.",
+    "follow_ups": [
+      "Coverage candidates (deferred, NOT freeze-safe features): OST/PST email parsing, Google Drive snapshot.db/sync_config.db, UDF optical-media carving, VSC recovery.",
+      "These FNs are the disk-only equivalent of LONEWOLF's breadth gap - measured honestly, not gated."
+    ]
+  }
+}

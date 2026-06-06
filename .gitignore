@@ -79,3 +79,5 @@ paper/abstract-draft-*.md
 # Eval ground-truth answer keys + cited courseware (case-specific / copyrighted - local only)
 scripts/eval/ground_truth/
 docs/agent-execution-logs/case-reference.md
+medium1.md
+medium2.md
