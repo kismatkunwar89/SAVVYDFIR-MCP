@@ -81,3 +81,6 @@ scripts/eval/ground_truth/
 docs/agent-execution-logs/case-reference.md
 medium1.md
 medium2.md
+rules/chainsaw-sigma-mapping.yml.broken-run11.bak
+vm-midrun-server-change.diff
+review-*.md
