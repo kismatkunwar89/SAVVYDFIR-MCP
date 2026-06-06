@@ -1,0 +1,46 @@
+{
+  "case_id": "ALI-WEBSERVER-WIN-L0ZZQ76PMUF",
+  "run_date_utc": "2026-06-06",
+  "label": "CLEAN re-run on fully-fixed framework — supersedes the TAINTED first run (gamed gate + no-op sigma). Validates sigma mapping fix (b2c5b21) + audit-backed artifact-absent (6bd8259) end-to-end.",
+  "supersedes": "TAINTED run backed up at VM run_backups/ALI-WEBSERVER_TAINTED_20260606T050045Z (discarded)",
+  "score": {
+    "recall": 0.923,
+    "tp": 12,
+    "fn": 1,
+    "gt_findings": 13,
+    "fn_ids": ["GT-012"],
+    "fn_note": "GT-012 (PHP reverse shell to 192.168.56.102:4545) — referenced inside F-426 (web-shell deployment) but not surfaced as a distinct finding; scorer anchor 'length-prefixed' too specific. Borderline near-miss, kept FN honestly.",
+    "improvement_vs_tainted": "84.6% -> 92.3%; GT-006 (firewall/RDP enable) was FN in tainted run, now TP (F-406) — better anchoring from working sigma + cleaner run.",
+    "eval_target_coverage": "7/8",
+    "scorer": "scripts/eval/gt_match_scorer.py"
+  },
+  "hallucinations": {
+    "raw_flagged": 5,
+    "real": 0,
+    "adjudication": "ALL 5 flags are SCORER FALSE-POSITIVES — the EVTX-4720/4732 known_negative matched legitimate EVTX-based findings via GENERIC anchors ('evtx','security','account-creation'). Verified finding-by-finding that NONE claim 4720/4732 account-creation events exist:",
+    "flagged_findings": {
+      "F-425": "the SIGMA finding itself — '2,284 rules scanned 21 EVTX, 18 hits, all informational User-Logoff EID 4634'. Sigma working + honestly characterized. Not a 4720 claim.",
+      "F-427": "RDP logon (EID 4624 Type 10) + UserAssist CompMgmtLauncher — real interactive-logon finding. Not a 4720 claim.",
+      "F-017": "EID 4625 failed + 4624 success logon — real logon finding. Not a 4720 claim.",
+      "F-420": "UserAssist CompMgmtLauncher GUI-launch — real. Not a 4720 claim.",
+      "F-408": "IE TypedURLs phpMyAdmin local navigation — real. Not a 4720 claim."
+    },
+    "measurement_followup": "GT known_negative 'EVTX 4720/4732' anchors are too generic ('evtx'/'security'/'account-creation'); should anchor only on '4720'/'4732'. Scorer-precision fix for future (do NOT retroactively inflate this run's headline)."
+  },
+  "integrity_validation": {
+    "gate_not_gamed": "PASS — NO fabricated E-9xxx execs in state.json (the prior run's gaming did not recur; legit audit-backed absence removed the need).",
+    "sigma_mapping_fix_live": "PASS — E-114 recorded 18 real sigma hits across EVTX (was 0 with the broken mapping). Mapping fix validated on a real case.",
+    "artifact_absent_audit_backed": "PASS — extract_prefetch (E-047) + get_amcache (E-050): exit_code=0, audit_completed_entry_hash=True, status=artifact_absent. Real tool runs with provenance (Server-2008 genuine absence), NOT fabricated.",
+    "code_alignment": "dev HEAD 45f0a44; VM server.py + mapping byte-identical (server.py 9e64f3ef, mapping 7a8d08a5)."
+  },
+  "case": {
+    "host": "WIN-L0ZZQ76PMUF",
+    "os": "Windows Server 2008",
+    "type": "web-server breach (XAMPP/DVWA): SQLi/sqlmap, command injection, web shells, 2 local accounts (user1/hacker), RDP enable",
+    "findings_total": 427
+  },
+  "interpretation": {
+    "headline": "Clean, trustworthy 92.3% recall / 0 real hallucinations on the fully-fixed framework. All three fixes (sigma mapping, audit-backed absence, no gate-gaming) validated end-to-end live.",
+    "note": "Trace (reports/.../trace.html) to be rendered after the claude session exits (transcript 1f80ff3d.jsonl)."
+  }
+}
