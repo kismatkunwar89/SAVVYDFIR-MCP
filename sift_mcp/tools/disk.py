@@ -517,6 +517,40 @@ def _shared_windows_root_candidates() -> list[Path]:
     return candidates
 
 
+def _ci_resolve(root: Path, *parts: str) -> Optional[Path]:
+    """Resolve a path under ``root`` matching each component CASE-INSENSITIVELY.
+
+    NTFS is case-insensitive, but a Linux ntfs-3g mount is case-SENSITIVE, so an
+    XP/older image whose top dir is ``WINDOWS`` (uppercase) would not resolve a
+    hardcoded ``Windows`` lookup (Hacking Case 2026-06-06 edge case: 81 Prefetch
+    .pf were missed and falsely reported artifact_absent). This walks each path
+    component, preferring an exact match (fast path) then falling back to a
+    case-folded scan of the directory's children. Returns the real resolved Path
+    if every component matched, else ``None``.
+    """
+    cur = root
+    if not _path_exists(cur):
+        return None
+    for part in parts:
+        nxt = cur / part
+        if _path_exists(nxt):
+            cur = nxt
+            continue
+        found: Optional[Path] = None
+        try:
+            target = part.lower()
+            for child in cur.iterdir():
+                if child.name.lower() == target:
+                    found = child
+                    break
+        except OSError:
+            return None
+        if found is None:
+            return None
+        cur = found
+    return cur
+
+
 def _candidate_windows_volume_roots(image_path: str) -> list[Path]:
     """Return possible Windows volume roots for mounted-evidence lookups."""
     base = Path(image_path)
@@ -534,9 +568,9 @@ def _candidate_windows_volume_roots(image_path: str) -> list[Path]:
         _add(shared_root)
 
     if _path_is_dir(base):
-        if _path_exists(base / "Windows"):
+        if _ci_resolve(base, "Windows") is not None:
             _add(base)
-        if _path_exists(base / "mnt" / "C" / "Windows"):
+        if _ci_resolve(base / "mnt" / "C", "Windows") is not None:
             _add(base / "mnt" / "C")
 
     if not candidates and _path_is_dir(base):
@@ -551,6 +585,12 @@ def _candidate_windows_volume_roots(image_path: str) -> list[Path]:
 def _resolve_windows_relative_path(image_path: str, *relative_parts: str) -> str:
     """Resolve a Windows-relative artifact path from a mounted/root image path."""
     volume_roots = _candidate_windows_volume_roots(image_path)
+    for root in volume_roots:
+        # case-insensitive resolve (handles XP/older uppercase WINDOWS on a
+        # case-sensitive ntfs-3g mount); falls back to exact join below.
+        resolved = _ci_resolve(root, *relative_parts)
+        if resolved is not None:
+            return str(resolved)
     for root in volume_roots:
         candidate = root.joinpath(*relative_parts)
         if _path_exists(candidate):
@@ -3745,6 +3785,16 @@ def extract_usn_journal(
         csv_filename = "usn_journal.csv"
         csv_path = os.path.join(tmp_dir, csv_filename)
 
+        # Size-aware USN timeout (consensus 2026-06-06): the $UsnJrnl:$J can be
+        # multi-GB and the flat 1800s default timed out on the Hacking Case. Scale
+        # by the staged $J size (60s/GB, volatility precedent), capped at 3600s so
+        # a pathological journal can't block the 4-vCPU host for hours. If it still
+        # times out, the honest collection_timeout gap stands.
+        try:
+            _usn_gb = os.path.getsize(resolved_usn) / (1024 ** 3)
+        except OSError:
+            _usn_gb = 0.0
+        _usn_timeout = max(1800, min(3600, int(1800 + 60 * _usn_gb)))
         try:
             result = _ez_runner.run_mftecmd_usn(
                 usn_path=resolved_usn,
@@ -3752,6 +3802,7 @@ def extract_usn_journal(
                 csv_filename=csv_filename,
                 mft_path=mft_path,
                 tool_name=tool,
+                timeout=_usn_timeout,
             )
         except Exception as exc:
             return _runner_error(tool, exc)

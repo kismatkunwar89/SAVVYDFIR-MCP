@@ -999,6 +999,24 @@ def _record_execution_parity(
     )
 
 
+def _windows_volume_resolves(image_path: str) -> bool:
+    """True if a Windows volume root resolves (case-insensitive) under image_path.
+
+    1c positive-absence guard (consensus 2026-06-06): only call an artifact
+    'absent' when the Windows root actually resolves but the artifact is missing
+    (genuine absence, e.g. pre-Win8 Amcache, Server-OS Prefetch). If the root
+    itself is unresolvable it is a path/mount FAILURE (retryable error), NOT
+    absence - prevents the XP uppercase-path (WINDOWS) false-absence overclaim.
+    On any internal error, returns True to preserve genuine documented-absence.
+    """
+    try:
+        from sift_mcp.tools.disk import _candidate_windows_volume_roots, _ci_resolve
+        roots = _candidate_windows_volume_roots(str(image_path))
+        return any(_ci_resolve(r, "Windows") is not None for r in roots)
+    except Exception:
+        return True
+
+
 def _record_artifact_absent_audit(
     *,
     tool_name: str,
@@ -1522,22 +1540,24 @@ def extract_prefetch(
                                response_format=response_format)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.extract_prefetch"))
-        # Genuine artifact absence (e.g. Prefetch is disabled by default on
-        # Server OS) -> record documented-absence through the AUDIT-BACKED helper
-        # (exit 0 + audit.jsonl + state parity) so the coverage gate is satisfied
-        # by a REAL tool run with provenance, NOT a fabricated state row. NOTE:
-        # needs_extract_windows_artifacts can also mean "needs raw fallback" on a
-        # mountable image - refine to true-absence detection in Task #173; watch
-        # cases where Prefetch SHOULD exist (e.g. Win XP/10) for false-absence.
+        # Genuine artifact absence (e.g. Prefetch disabled by default on Server OS)
+        # -> record documented-absence via the AUDIT-BACKED helper (exit 0 + audit
+        # + state parity) so the gate is satisfied by a REAL tool run with
+        # provenance, NOT a fabricated state row. 1c positive-absence guard
+        # (consensus 2026-06-06): ONLY claim absent if the Windows volume root
+        # actually resolves (case-insensitive); if the root itself is unresolvable
+        # this is a path/mount FAILURE, not genuine absence -> keep it a retryable
+        # error, never overclaim "not present" (the XP case-sensitivity false-absence).
         if isinstance(_r, dict) and _r.get("needs_extract_windows_artifacts"):
-            return _record_artifact_absent_audit(
-                tool_name="disk.extract_prefetch",
-                artifact_name="Prefetch",
-                checked_paths=_r.get("checked_paths") or [str(image_path)],
-                reason=str(_r.get("error_message") or "Prefetch not present (e.g. disabled by default on Server OS)"),
-                case_id=case_id,
-                command_line=f"extract_prefetch(image_path={image_path!r}, case_id={case_id!r})",
-            )
+            if _windows_volume_resolves(str(image_path)):
+                return _record_artifact_absent_audit(
+                    tool_name="disk.extract_prefetch",
+                    artifact_name="Prefetch",
+                    checked_paths=_r.get("checked_paths") or [str(image_path)],
+                    reason=str(_r.get("error_message") or "Prefetch not present (e.g. disabled by default on Server OS)"),
+                    case_id=case_id,
+                    command_line=f"extract_prefetch(image_path={image_path!r}, case_id={case_id!r})",
+                )
         return _finalize_tool_response("disk.extract_prefetch", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "extract_prefetch"}
@@ -1582,21 +1602,21 @@ def get_amcache(
                           response_format=response_format)
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.get_amcache"))
-        # Genuine artifact absence (Amcache.hve was introduced in Win8; absent on
-        # Server 2008 / older) -> record documented-absence through the AUDIT-BACKED
-        # helper so the coverage gate is satisfied by a REAL tool run with
-        # provenance, NOT a fabricated state row. NOTE: needs_extract_windows_artifacts
-        # can also mean "needs raw fallback" - refine in Task #173; watch cases
-        # where Amcache SHOULD exist (Win8+) for false-absence.
+        # Genuine artifact absence (Amcache.hve introduced in Win8; absent on
+        # Server 2008 / XP / older) -> documented-absence via the AUDIT-BACKED
+        # helper. 1c positive-absence guard (consensus 2026-06-06): only claim
+        # absent if the Windows volume root resolves (case-insensitive); an
+        # unresolvable root = path/mount failure (retryable error), not absence.
         if isinstance(_r, dict) and _r.get("needs_extract_windows_artifacts"):
-            return _record_artifact_absent_audit(
-                tool_name="disk.get_amcache",
-                artifact_name="Amcache.hve",
-                checked_paths=_r.get("checked_paths") or [str(image_path)],
-                reason=str(_r.get("error_message") or "Amcache.hve not present (introduced in Win8; absent on older Windows)"),
-                case_id=case_id,
-                command_line=f"get_amcache(image_path={image_path!r}, case_id={case_id!r})",
-            )
+            if _windows_volume_resolves(str(image_path)):
+                return _record_artifact_absent_audit(
+                    tool_name="disk.get_amcache",
+                    artifact_name="Amcache.hve",
+                    checked_paths=_r.get("checked_paths") or [str(image_path)],
+                    reason=str(_r.get("error_message") or "Amcache.hve not present (introduced in Win8; absent on older Windows)"),
+                    case_id=case_id,
+                    command_line=f"get_amcache(image_path={image_path!r}, case_id={case_id!r})",
+                )
         return _finalize_tool_response("disk.get_amcache", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "get_amcache"}
@@ -6295,7 +6315,10 @@ def extract_shimcache(
     import time as _time_shim
     _shim_start_time = _time_shim.monotonic()
     mp = Path(mount_point)
-    system_hive = mp / "Windows" / "System32" / "config" / "SYSTEM"
+    # Case-insensitive resolve (XP/older images use uppercase WINDOWS on a
+    # case-sensitive ntfs-3g mount — Hacking Case 2026-06-06 edge case).
+    from sift_mcp.tools.disk import _resolve_windows_relative_path as _rwrp
+    system_hive = Path(_rwrp(str(mp), "Windows", "System32", "config", "SYSTEM"))
     # Fallback: when disk isn't mounted (TSK-direct workflow via
     # extract_windows_artifacts), look for the hive in the case's raw artifact dir.
     if not system_hive.exists():
