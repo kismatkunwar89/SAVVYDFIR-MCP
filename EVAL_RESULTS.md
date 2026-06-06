@@ -15,7 +15,7 @@ Last updated: 2026-06-06.
 | 2 | LONEWOLF-2018-DESKTOP-PM6C56D | Win / mass-shooting plot | **91.7%** (11/12) | 0 | 1/6 | ✅ done (honest run) |
 | 3 | NIST-DATALEAK-2015-PC | Win / insider leak, **disk-only** | **60%** (9/15) | 0 | 4/6 | ✅ done |
 | 4 | ALI-WEBSERVER-WIN-L0ZZQ76PMUF | WinSrv2008 / web breach (+mem) | **92.3%** (12/13) | 0* | 7/8 | ✅ done (CLEAN re-run) |
-| 5 | NIST-HACKINGCASE-2004-MREVIL | WinXP / war-driving, **disk-only** | — | — | — | 🔄 running |
+| 5 | NIST-HACKINGCASE-2004-MREVIL | WinXP / war-driving, **disk-only** | **86.7%** (13/15) | 0 | 5/6 | ✅ done |
 | 6 | SRL-2018 "CRIMSON OSPREY" | multi-host enterprise | n/a | n/a | n/a | ⏳ capstone (flow, not GT-scored) |
 
 \* Ali clean run: scorer raw-flagged 5 hallucinations, all adjudicated finding-by-finding as
@@ -31,8 +31,12 @@ false-positives (generic 'evtx'/'security' anchors on legit EVTX findings) → *
 - **ALI**: first FN run had to be **discarded as TAINTED** (gamed gate + no-op sigma); the **clean
   re-run** (92.3%) validates all integrity fixes live — no gate-gaming, sigma 18 real hits, audit-backed
   artifact_absent, 2 multi-source CONFIRMED + 1 honest SUSPENDED.
-- **HACKINGCASE (XP)**: expected XP edge cases — no event logs (sigma/EVTX empty, legit), Amcache/SRUM
-  absent (handled), RECYCLER/IE may not parse; carried by prefetch + registry + filesystem.
+- **HACKINGCASE (XP)**: 86.7% / 0 halluc on a 2004 WinXP image — handled via registry + filesystem
+  (prefetch path was missed, see edge case). 3 multi-source CONFIRMED (Schardt=Mr.Evil, war-driving
+  toolkit, network session). Sigma honestly 0 (no event logs exist). FNs: GT-008 (victim Pocket PC —
+  needs pcap-content parsing) + GT-015 (AV scan capability). **Edge case found:** ntfs-3g case-sensitive
+  mount + XP uppercase `WINDOWS\system32` → tools hardcoding `Windows/...` miss the path → the
+  `artifact_absent` fix then FALSELY marked Prefetch (81 .pf) + ShimCache absent. Fix = Task #175.
 
 ## Integrity-fix history (what made the later runs trustworthy)
 
@@ -49,6 +53,9 @@ false-positives (generic 'evtx'/'security' anchors on legit EVTX findings) → *
   gate (caught + discarded). Fix = require audit backing + tamper-deny. Invasive (4 sites) → awaiting go.
 - **#174 — sigma anchor-timing**: Phase 3→4 not ordered, so hypotheses can form sigma-blind. Doc-ordering
   + one soft warning. FP-safe; corroboration layer is already adequate (don't build a per-detection engine).
+- **#175 — XP path case-sensitivity**: ntfs-3g case-sensitive mount + XP uppercase `WINDOWS` → tools miss
+  the path → `artifact_absent` falsely fires (Prefetch/ShimCache). Found on the Hacking Case. Case-fold
+  path resolution OR case-insensitive mount for older images; refine `artifact_absent` vs path-failure.
 
 ## Method / principles
 - **Blind**: GT never reaches the VM; `scripts/eval/ground_truth/` is gitignored.
