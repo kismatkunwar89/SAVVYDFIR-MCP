@@ -72,6 +72,48 @@ SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns 
                                                                 └──────────────┘
 ```
 
+### Investigation & Decision Flow
+
+The agent does not free-associate over evidence — it runs a deterministic 7-phase
+pipeline where **detection anchors seed hypotheses**, hypotheses drive **targeted
+queries**, and every conclusion must **earn** its confidence by stacking
+independent sources through an evidence-provenance gate. Negative space (a missing
+artifact) is treated as evidence, not silence.
+
+```mermaid
+flowchart TD
+    E["Evidence<br/>disk E01 + memory"] --> X["Phase 1-2 · Acquire<br/>mount + extract MFT, EVTX, Prefetch,<br/>Amcache, Registry, SRUM, memory"]
+    X --> D["Phase 3 · Detect<br/>Sigma/Chainsaw rules · anti-forensics checks"]
+    D --> H["Phase 4 · Hypothesize<br/>detection anchors seed 2-5 ranked hypotheses"]
+    H --> P["Pivot loop<br/>targeted run_analysis over each artifact CSV<br/>(query the data, never load it into context)"]
+    P --> C["Phase 5 · Correlate<br/>temporal clusters + 10 disk-memory checks"]
+    C --> S["Phase 6 · Synthesize<br/>stack 2+ independent sources"]
+    S --> G{"Evidence-Provenance Gate<br/>(enforced by code)"}
+    G -->|"execution_id resolves to a real audit row<br/>+ corroborated_by ≥ 2<br/>+ benign alternative ruled out"| CONF["CONFIRMED<br/>court-defensible"]
+    G -->|"single source / unresolved"| ACT["ACTIVE<br/>honest lead"]
+    G -->|"contradicted by other artifacts"| REJ["REJECTED"]
+    CONF --> R["Phase 7 · Report<br/>report.html · graph.html · trace.html"]
+    ACT --> R
+    REJ --> R
+```
+
+**How a verdict is decided (the finding lifecycle).** Every finding starts as an
+`OBSERVATION` / `INFERENCE` / `HYPOTHESIS` and is **promoted to `CONFIRMED` only
+when it clears three code-enforced invariants** — not by the model's say-so:
+
+1. **Provenance** — its `execution_id` must resolve to a real `audit.jsonl` row
+   (no inherited claims, no placeholder IDs).
+2. **Corroboration** — ≥ 2 independent artifact sources agree (1 source = `ACTIVE`
+   lead, never confirmed; "stacking defeats anti-forensics").
+3. **Alternative ruled out** — the strongest benign explanation is recorded with a
+   specific observation that refutes it; unresolved alternatives force a downgrade.
+
+This is the human-reviewable verdict model: `CONFIRMED` / `ACTIVE` / `REJECTED`
+are defensible review states, not raw detector noise. The coverage gate further
+blocks reporting until the mandatory detectors actually ran, and disk↔memory
+contradictions emit **self-correction events** to the audit log. Full layer
+breakdown + interfaces: [`docs/architecture.md`](docs/architecture.md).
+
 ---
 
 ## Prerequisites
