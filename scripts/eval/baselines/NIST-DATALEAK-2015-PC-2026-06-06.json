@@ -1,7 +1,7 @@
 {
   "case_id": "NIST-DATALEAK-2015-PC",
   "run_date_utc": "2026-06-06",
-  "label": "first DISK-ONLY case on integrity-fixed framework (commit a281da4) - validates memory-conditional gate + clean exec summary + hypothesis-verdict gate, all live",
+  "label": "first DISK-ONLY case on integrity-fixed framework (a fix commit) - validates memory-conditional gate + clean exec summary + hypothesis-verdict gate, all live",
   "score": {
     "recall": 0.60,
     "tp": 9,
@@ -9,7 +9,7 @@
     "gt_findings": 15,
     "fn_ids": ["GT-004", "GT-005", "GT-009", "GT-012", "GT-013", "GT-014"],
     "fn_cluster": "email/Outlook OST exfil + deletion (GT-004/012/014), Google Drive client-DB cloud exfil + deletion (GT-005/013), CD-R UDF carving (GT-009)",
-    "fn_root_cause": "COVERAGE gap, not gaming: the framework lacks/ didn't pivot to specialized extractors for OST email, Google Drive snapshot.db/sync_config.db, UDF optical-media carving, and VSC recovery. It DID cover the filesystem + USB(RM#2) + anti-forensics-tool axis.",
+    "fn_root_cause": "COVERAGE gap, not invalid prior behavior: the framework lacks/ didn't pivot to specialized extractors for OST email, Google Drive snapshot.db/sync_config.db, UDF optical-media carving, and VSC recovery. It DID cover the filesystem + USB(RM#2) + anti-forensics-tool axis.",
     "tp_anchors": "informant/INFORMANT-PC, secret-project files, winter_whether_advisory.zip, Authorized USB RM#2, Koala/Penguins/Tulips cover files, CCleaner/Eraser, Recycle Bin deletion",
     "hallucinations": 0,
     "eval_target_coverage": "4/6",
@@ -19,7 +19,7 @@
     "memory_conditional_disk_only_gate": "PASS - run COMPLETED (COMPLETE_WITH_GAPS) on a disk-only image; memory lane = COMPLETE with documented absence ('No memory image in manifest (memory_dumps: []) - memory phase not applicable'). No brick. First real-case proof of the disk-only path.",
     "clean_executive_summary": "PASS - exec brief contains NO F-/E-ids, ULIDs, or raw MITRE codes; plain narrative.",
     "hypothesis_verdict_gate": "PASS - 5 hypotheses -> 3 CONFIRMED (multi-source) + 2 SUSPENDED; one explicitly 'downgraded_from_CONFIRMED: no linked finding...' (optical_disc_secondary_exfiltration). Gate caught a live over-claim on a fresh case.",
-    "confirmed_integrity": "PASS - 4 CONFIRMED findings, all multi-source (corroborated_by 3/4/4/3); these are temporal-cluster synthesis findings (phase CONFIRMED within N seconds, K independent artifact families). No PID-0/quota gaming.",
+    "confirmed_integrity": "PASS - 4 CONFIRMED findings, all multi-source (corroborated_by 3/4/4/3); these are temporal-cluster synthesis findings (phase CONFIRMED within N seconds, K independent artifact families). No PID-0/quota invalid prior behavior.",
     "hallucinations": 0
   },
   "report": {

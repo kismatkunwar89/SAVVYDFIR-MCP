@@ -102,3 +102,8 @@ RUN*.md
 *handoff*.md
 *HANDOFF*.md
 paperplanhandoff.md
+
+docs/novel-contribution.md
+Jaswanthreview/
+data/sans-posters/
+*.bak

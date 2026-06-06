@@ -678,8 +678,8 @@ The correlation engine runs **10 automated checks** (6 original + 4 new professi
 - Within ±10 seconds = causality confirmed
 
 **All patterns documented in**:
-- `CORRELATION_METHODOLOGY.md` (980 lines) - professional workflows → framework implementation
-- `FORENSIC_ARTIFACTS.md` (1060 lines) - artifact significance, limitations, corroboration needs
+- `docs/correlation-methodology.md` - professional workflows → framework implementation
+- `docs/forensic-artifacts.md` - artifact significance, limitations, corroboration needs
 
 ---
 
@@ -728,7 +728,7 @@ reports/
 
 ### Case ID Convention
 `{SCENARIO}-{HOST}` - uppercased, spaces/slashes → hyphens.
-Examples: `SRL-2018-WKSTN01`, `SRL-2018-DC`, `SRL-2018-MAIL`
+Examples: `CASE-WKSTN01`, `CASE-DC`, `CASE-MAIL`
 
 ### Per-host Isolation
 `server.py` reads `SAVVYDFIR_ANALYSIS_DIR` at startup.

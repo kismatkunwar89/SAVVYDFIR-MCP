@@ -15,7 +15,7 @@
     "scorer": "scripts/eval/gt_match_scorer.py"
   },
   "integrity_validation": {
-    "gate_not_gamed": "PASS — 0 fabricated E-9xxx execs.",
+    "gate_not_gamed": "PASS — 0 invalid E-9xxx execs.",
     "sigma_correct_zero": "PASS — sigma_hunt 0 hits, audit-backed. LEGIT zero: XP has no event logs (no .evt or .evtx on this image), nothing to scan. NOT the mapping bug (mapping is fixed; positive control = 250).",
     "amcache_srum_absent": "CORRECT — Amcache (Win8+) + SRUM (Win8+) genuinely absent on XP -> audit-backed artifact_absent (exit 0 + audit hash).",
     "confirmed": [
@@ -32,11 +32,11 @@
     "confirmed": "/mnt/disk/WINDOWS/Prefetch exists with 81 .pf; /mnt/disk/Windows/Prefetch does NOT resolve.",
     "impact": "extract_prefetch (81 .pf) + extract_shimcache (XP ShimCache in SYSTEM hive) FALSELY reported artifact_absent -> their evidence was MISSED. Forensic-accuracy problem (claims 'Prefetch not present' when 81 exist). Score impact limited here (GT carried by registry+filesystem), but real.",
     "relation": "This is the exact degradation risk flagged when porting the artifact_absent fix (needs_extract_windows_artifacts != genuine absence). It bit on XP uppercase paths.",
-    "fix": "Task #175 — case-insensitive path resolution for XP/older images; refine artifact_absent to distinguish path-resolution-failure from genuine OS absence.",
-    "fix_status": "FIXED + deployed + validated, commit 03a5516 (2026-06-06): _ci_resolve case-insensitive resolver (proven on the real image — /mnt/disk/WINDOWS/Prefetch + SYSTEM hive resolve, Amcache correctly None), shimcache case-fold, 1c positive-absence guard, USN size-aware timeout, 5 regression tests pass. RE-RUN SKIPPED by operator decision: the fix is validated at the resolver level and the v1 score (86.7%) was carried by registry+filesystem, so a full re-run to recover the 81 prefetch .pf was judged unnecessary. v1 score below STANDS with the documented prefetch/shimcache false-absence caveat; the fix protects all FUTURE cases (esp. SRL). v1 backed up run_backups/HACKINGCASE_v1_falseabsence_*."
+    "fix": "internal task — case-insensitive path resolution for XP/older images; refine artifact_absent to distinguish path-resolution-failure from genuine OS absence.",
+    "fix_status": "FIXED + deployed + validated, a fix commit (2026-06-06): _ci_resolve case-insensitive resolver (proven on the real image — /mnt/disk/WINDOWS/Prefetch + SYSTEM hive resolve, Amcache correctly None), shimcache case-fold, 1c positive-absence guard, USN size-aware timeout, 5 regression tests pass. RE-RUN SKIPPED by operator decision: the fix is validated at the resolver level and the v1 score (86.7%) was carried by registry+filesystem, so a full re-run to recover the 81 prefetch .pf was judged unnecessary. v1 score below STANDS with the documented prefetch/shimcache false-absence caveat; the fix protects all FUTURE cases (). v1 backed up (archived)*."
   },
   "interpretation": {
-    "headline": "Strong 86.7% / 0 halluc on a 2004 WinXP image — validates the framework handles XP via registry+prefetch+filesystem. No gaming, sigma honestly zero (no logs), Amcache/SRUM correctly absent. Surfaced one real edge case (XP uppercase paths -> false artifact_absent on prefetch/shimcache).",
+    "headline": "Strong 86.7% / 0 halluc on a 2004 WinXP image — validates the framework handles XP via registry+prefetch+filesystem. No invalid prior behavior, sigma honestly zero (no logs), Amcache/SRUM correctly absent. Surfaced one real edge case (XP uppercase paths -> false artifact_absent on prefetch/shimcache).",
     "xp_verdict": "Handled well enough; the 2 FNs are pcap-content + AV-scan capability gaps, and the 1 edge case (case-sensitivity) is a known fix."
   }
 }

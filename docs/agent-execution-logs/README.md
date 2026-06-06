@@ -1,43 +1,34 @@
-# Agent Execution Logs (Sample Run)
+# Agent Execution Logs
 
-This directory holds a complete, unedited sample of what the framework produces on
-one autonomous investigation. It exists so reviewers can inspect the agent's
-decision trail and outputs without having to run the tool themselves.
+This directory holds the complete, unedited artifacts the framework produced on
+its blind benchmark investigations, so reviewers can inspect the agent's decision
+trail and outputs without running the tool themselves.
 
-**Sample run:** `HACKATHON-2026-WKSTN01` (single Windows workstation host).
-The run was selected because it is representative and contains no operator
-infrastructure details. It produced 3 court-defensible CONFIRMED findings with
-full corroboration and alternative-hypothesis disposition.
+## Blind benchmark cases
 
-## Blind benchmark cases (full run artifacts)
+The five public DFIR cases used to validate the framework each have their full run
+artifacts under `docs/agent-execution-logs/<case>/`. All five were run **blind**
+(ground truth never on the workstation) with **zero hallucinations**.
 
-Beyond the featured sample above, the five public DFIR cases used to validate the
-framework each have their complete run artifacts committed under
-`docs/agent-execution-logs/<case>/` (`report.html`, `graph.html`, `report.json`,
-and the hash-chained `audit.jsonl` where preserved). All five were run **blind**
-(ground truth never on the workstation) with **zero hallucinations**:
+| Case | Scenario / OS | Recall | Findings | CONFIRMED | Artifacts |
+|------|---------------|--------|----------|-----------|-----------|
+| `ROCBA-2020-FREDS-LAPTOP` | insider IP theft (Windows) | 90% | 107 | 3 | report·graph·json |
+| `LONEWOLF-2018-DESKTOP-PM6C56D` | mass-shooting plot (Windows) | 91.7% | 88 | 2 | + audit.jsonl |
+| `NIST-DATALEAK-2015-PC` | insider data leak (Windows, disk-only) | 60% | 503 | 4 | + audit.jsonl + trace |
+| `ALI-WEBSERVER-WIN-L0ZZQ76PMUF` | web-server breach (Win Server 2008) | 92.3% | 427 | 2 | + audit.jsonl + trace |
+| `NIST-HACKINGCASE-2004-MREVIL` | war-driving / credential theft (Win XP) | 86.7% | 304 | 3 | + audit.jsonl + trace |
 
-| Case | Scenario / OS | Recall | Artifacts |
-|------|---------------|--------|-----------|
-| `ROCBA-2020-FREDS-LAPTOP` | insider IP theft (Windows) | 90% | report/graph/json |
-| `LONEWOLF-2018-DESKTOP-PM6C56D` | mass-shooting plot (Windows) | 91.7% | + audit.jsonl |
-| `NIST-DATALEAK-2015-PC` | insider data leak (Windows, disk-only) | 60% | + audit.jsonl + trace |
-| `ALI-WEBSERVER-WIN-L0ZZQ76PMUF` | web-server breach (WinSrv 2008) | 92.3% | + audit.jsonl + trace |
-| `NIST-HACKINGCASE-2004-MREVIL` | war-driving / credential theft (Win XP) | 86.7% | + audit.jsonl + trace |
-
-(Recall = granular ground-truth coverage; see `docs/accuracy-report.md`. Paths in
-the artifacts reflect the standard SANS SIFT workstation layout, e.g.
-`/home/referenceensics/...` — the default SIFT user — and the `audit.jsonl`
-hash chains are unmodified so they remain independently verifiable.)
+Recall = granular ground-truth coverage (see `docs/accuracy-report.md`).
 
 ## What each file is
 
 | File | What it shows |
 |---|---|
-| `audit.jsonl` | The agent execution log. One JSON object per tool invocation, in order. This is the primary "agent execution logs" artifact. |
-| `report.html` | The human-readable forensic report the run produced (open in a browser). |
-| `report.json` | The same findings in machine-readable form. |
+| `report.html` | The human-readable forensic report (open in a browser). |
 | `graph.html` | The interactive investigation graph (open in a browser). |
+| `report.json` | The same findings in machine-readable form. |
+| `trace.html` | The agent's step-by-step session trace (where rendered). |
+| `audit.jsonl` | The agent execution log — one JSON object per tool invocation, in order, with a tamper-evident hash chain. The primary "agent execution logs" artifact. |
 
 ## How to read `audit.jsonl`
 
@@ -54,13 +45,13 @@ Each row records a single agent action. Key fields:
 | `finding_ids_generated` | Findings produced by this step (e.g. `F-014`). |
 | `correction_event` | Set when the agent detected a contradiction and self-corrected. |
 | `execution_id` | Stable id every CONFIRMED finding cites for provenance. |
-| `entry_hash` / `prev_entry_hash` | Tamper-evident hash chain. Each row's `prev_entry_hash` equals the previous row's `entry_hash`. |
+| `entry_hash` / `prev_entry_hash` | Tamper-evident hash chain — each row's `prev_entry_hash` equals the previous row's `entry_hash`. |
 
 ## Why the hash chain matters
 
 The log is a linked hash chain: altering or deleting any row breaks the chain at
-that point, which is detectable. This is what makes the execution trail
-defensible rather than just a convenience log. You can verify the chain with:
+that point, which is detectable. This is what makes the execution trail defensible
+rather than just a convenience log. Verify it with:
 
 ```python
 import json
@@ -70,9 +61,11 @@ ok = all(rows[i]["prev_entry_hash"] == rows[i - 1]["entry_hash"]
 print("chain intact:", ok)
 ```
 
-## Where logs come from on a live run
+## Notes
 
-On a real investigation the framework writes the live log to
-`analysis/audit.jsonl` (and per-case copies alongside the state). The files here
-are a copy of one completed run, committed so the artifact is visible in the
-repository.
+- Paths in the artifacts reflect the standard SANS SIFT workstation layout (e.g.
+  `/home/referenceensics/...`, the default SIFT user); the `audit.jsonl` hash chains
+  are **unmodified** so they remain independently verifiable.
+- `ROCBA-2020-FREDS-LAPTOP` predates audit-log retention, so it ships report/graph/json only.
+- On a live run the framework writes the log to `analysis/audit.jsonl` alongside
+  per-case state; these are copies of completed runs, committed for visibility.

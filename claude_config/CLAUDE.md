@@ -74,7 +74,7 @@ Every finding produced during an investigation **MUST** be classified using exac
 ### OBSERVATION
 - **Definition:** Directly supported by tool output. Highest confidence.
 - **Requirements:** MUST include `artifact_path` (full path to source evidence file) AND `offset` (byte offset, memory address, or record number within that artifact).
-- **Example:** Process `svchost.exe` (PID 1284) at memory offset `0xfffffa800a3b2060` in `/cases/SRL-2018/evidence/wkstn-01.raw`.
+- **Example:** Process `svchost.exe` (PID 1284) at memory offset `0xfffffa800a3b2060` in `/cases/<case-id>/evidence/<host>.raw`.
 - **Do NOT use this label** without both `artifact_path` and `offset` in the provenance record.
 
 ### INFERENCE

@@ -10,7 +10,7 @@ from unittest.mock import patch
 from sift_mcp.state import CaseStateManager
 
 
-class peer reviewerBoundaryTests(unittest.TestCase):
+class ReviewBoundaryTests(unittest.TestCase):
     """Tests for issues found in review adversarial review."""
 
     def test_corroboration_dispatch_atomic_write_then_claim(self) -> None:

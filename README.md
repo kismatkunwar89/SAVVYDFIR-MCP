@@ -18,12 +18,12 @@ Every required turn-in is listed below with its exact location, so judges can ve
 | 2 | Open-source license (MIT) | [`LICENSE`](LICENSE) | DONE |
 | 3 | README with setup instructions | This file, [Installation](#installation) | DONE |
 | 4 | Step-by-step run instructions | This file, [Usage](#usage) | DONE |
-| 5 | Text description of features | This file, [What It Does](#what-it-does), plus [`docs/novel-contribution.md`](docs/novel-contribution.md) | DONE |
+| 5 | Text description of features | This file, [What It Does](#what-it-does) + [Architecture](#architecture) | DONE |
 | 6 | Demonstration video | **[ADD VIDEO URL BEFORE SUBMIT]** (see note below) | TODO |
 | 7 | Architecture diagram | This file, [Architecture](#architecture), plus [`docs/architecture.md`](docs/architecture.md) | DONE |
 | 8 | Evidence dataset documentation | [`docs/dataset-documentation.md`](docs/dataset-documentation.md) | DONE |
 | 9 | Accuracy report | [`docs/accuracy-report.md`](docs/accuracy-report.md) | DONE |
-| 10 | Agent execution logs | [`docs/agent-execution-logs/`](docs/agent-execution-logs/) (hash-chained `audit.jsonl` + rendered `report.html` and `graph.html`) | DONE |
+| 10 | Agent execution logs | [`docs/agent-execution-logs/`](docs/agent-execution-logs/) — rendered `report.html` + `graph.html` for all 5 cases; hash-chained `audit.jsonl` for 4/5 (ROCBA predates audit retention, disclosed) | DONE |
 
 > **ACTION REQUIRED before submitting:** replace the requirement #6 placeholder above with the live demonstration video URL. This is the only component that cannot be completed from the repository alone.
 
@@ -32,6 +32,15 @@ Every required turn-in is listed below with its exact location, so judges can ve
 ## What It Does
 
 SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It exposes 56 typed forensic tools over stdio transport (see `describe_tool_catalog`), supports cross-artifact correlation between disk and memory evidence via 10 anti-forensics detection checks, and keeps findings traceable through persisted artifacts, state, and audit logs with court-defensible provenance (Section 3-lite evidence schema + CTX heuristic provenance chain).
+
+**Design: autonomous-first.** You point it at a case `manifest.json` and it
+investigates with minimal interaction — the 7-phase workflow is enforced by **hooks
+and a coverage gate in code**, not by a human driving each step. The
+`CONFIRMED / ACTIVE / REJECTED` states are the agent's own evidence-graded output
+lifecycle (a human reviews the final `report.html` + hash-chained audit trail); this
+is **not** a manual, click-through investigator console. An interactive,
+analyst-driven review surface (e.g. an Approve/Reject canvas like the one in the
+decision flow below) is on the roadmap, not current scope.
 
 ---
 
@@ -108,8 +117,10 @@ when it clears three code-enforced invariants** — not by the model's say-so:
 3. **Alternative ruled out** — the strongest benign explanation is recorded with a
    specific observation that refutes it; unresolved alternatives force a downgrade.
 
-This is the human-reviewable verdict model: `CONFIRMED` / `ACTIVE` / `REJECTED`
-are defensible review states, not raw detector noise. The coverage gate further
+These are the agent's **autonomously-assigned, evidence-graded** output states
+(`CONFIRMED` / `ACTIVE` / `REJECTED`) — defensible, reviewable conclusions in the
+final report, not raw detector noise. A human reviews the finished report + audit
+trail; the agent is not driven click-by-click. The coverage gate further
 blocks reporting until the mandatory detectors actually ran, and disk↔memory
 contradictions emit **self-correction events** to the audit log. Full layer
 breakdown + interfaces: [`docs/architecture.md`](docs/architecture.md).
@@ -229,7 +240,7 @@ Run each host as a separate Claude session with its own analysis directory:
 
 ```bash
 # Per host - set SAVVYDFIR_ANALYSIS_DIR to isolate state
-SAVVYDFIR_ANALYSIS_DIR=/opt/SAVVYDFIR-MCP/investigations/SRL-2018-DC \
+SAVVYDFIR_ANALYSIS_DIR=/opt/SAVVYDFIR-MCP/investigations/<host-case-id> \
   claude --allowedTools "mcp__savvydfir__*" \
   -p "Read case-templates/manifest.json and investigate."
 
@@ -306,10 +317,15 @@ the bucket/redaction regression fixture is `tests/fixtures/graph_bucket_syntheti
 
 ## Validation Status
 
-Validated end-to-end on two published Windows intrusion datasets:
+Validated **blind** end-to-end on five public DFIR cases — **0 hallucinations across all** (full results in [`docs/accuracy-report.md`](docs/accuracy-report.md); per-case artifacts in [`docs/agent-execution-logs/`](docs/agent-execution-logs/)):
 
-- **HACKATHON-2026-WKSTN01** (Runs 1-7): F-Response Subject Agent deployment, BYOVD driver activity, NTLM lateral movement. Run 7 produced 3 CONFIRMED findings with full corroborated_by + alternative-hypothesis disposition. Framework engine + agnostic posture validated.
-- **ROCBA-2020-FREDS-LAPTOP** (Run 9): RDP brute-force breach → cloud-sync IP theft → lateral movement → SDelete/VSS anti-forensics. 63 findings, 3 CONFIRMED, all five case-briefing questions answered. Different attack class than HACKATHON; framework adapted correctly without contamination.
+- **ROCBA-2020-FREDS-LAPTOP** — insider IP theft (Windows) — 90% recall, 107 findings, 3 CONFIRMED.
+- **LONEWOLF-2018-DESKTOP-PM6C56D** — mass-shooting plot (Windows) — 91.7% recall, 88 findings, 2 CONFIRMED.
+- **NIST-DATALEAK-2015-PC** — insider data leak (Windows, disk-only) — 60% recall, 503 findings, 4 CONFIRMED.
+- **ALI-WEBSERVER-WIN-L0ZZQ76PMUF** — web-server breach (Win Server 2008) — 92.3% recall, 427 findings, 2 CONFIRMED.
+- **NIST-HACKINGCASE-2004-MREVIL** — war-driving / credential theft (Win XP) — 86.7% recall, 304 findings, 3 CONFIRMED.
+
+Each case is a different attack class and OS era (2004–2020); the framework adapted with no cross-case contamination.
 
 Framework operational properties:
 
@@ -353,9 +369,9 @@ Claude Code skills provide on-demand forensic expertise. Skills auto-discover at
 ```
 /evidence/
   disk/
-    base-wkstn-01-c-drive.E01     # Disk image (E01 format)
+    <host>.E01                     # Disk image (E01 or raw dd)
   memory/
-    base-wkstn-01-mem.zip          # Memory dump (compressed)
+    <host>-memory.zip              # Memory dump (optional - disk-only is supported)
 ```
 
 Evidence directories are READ-ONLY. By default output goes to `analysis/` and `reports/`. Set `SAVVYDFIR_ANALYSIS_DIR` before launching Claude when you want per-host isolation.

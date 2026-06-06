@@ -1,7 +1,7 @@
 {
   "case_id": "LONEWOLF-2018-DESKTOP-PM6C56D",
   "run_date_utc": "2026-06-05",
-  "label": "first honest run on integrity-fixed framework (CONFIRMED=multi-source; prior LONEWOLF run was gamed/invalid and was cleaned)",
+  "label": "first honest run on integrity-fixed framework (CONFIRMED=multi-source; prior LONEWOLF run was invalid/invalid and was cleaned)",
   "score": {
     "recall": 0.917,
     "tp": 11,
@@ -48,7 +48,7 @@
     "unresolved_count": 7
   },
   "integrity_fix_proof": {
-    "no_gaming": "2 honest CONFIRMED, each 5-source corroborated — NOT manufactured to hit a quota. Prior gamed run fabricated F-061/F-062 to clear the deleted >=3-CONFIRMED gate.",
+    "no_gaming": "2 honest CONFIRMED, each 5-source corroborated — NOT manufactured to hit a quota. Prior invalid run invalid F-061/F-062 to clear the deleted >=3-CONFIRMED gate.",
     "confirmed_means_multi_source": "Both CONFIRMED have corroborated_by=5 and corroboration_outstanding cleared; single-source findings stayed ACTIVE (86 ACTIVE).",
     "synthesis_delegate_dismissed_on_work_done": "compare_disk_and_memory + find_temporal_clusters ran (E-158); delegate dismissed without a CONFIRMED count quota.",
     "no_pid0_block": "list_dlls not demanded on kernel pseudo-PIDs {0,4}.",

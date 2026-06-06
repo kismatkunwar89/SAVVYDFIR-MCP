@@ -56,7 +56,7 @@ answer keys are gitignored).
 | NIST CFReDS — Data Leakage | [cfreds.nist.gov](https://cfreds.nist.gov) (NIST, U.S. Gov — public domain) |
 | NIST CFReDS — Hacking Case ("Mr. Evil") | [cfreds-archive.nist.gov/Hacking_Case.html](https://cfreds-archive.nist.gov/Hacking_Case.html) (NIST — public domain) |
 | Ali Hadi — Web Server Case (DFIR Challenge #1) | [ashemery.com/dfir.html](https://www.ashemery.com/dfir.html) |
-| SANS Realistic Lab (SRL-2018), ROCBA, LONEWOLF | SANS Institute course material (used per course terms; synthetic data) |
+| ROCBA-2020, LONEWOLF-2018 | SANS Institute course material — synthetic data, used per course terms, not redistributed |
 
 ATT&CK® is a registered trademark of The MITRE Corporation.
 

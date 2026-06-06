@@ -1,5 +1,5 @@
 {
-  "version": "SANS DFIR Hunt Evil Poster v4.7",
+  "version": "Windows process baseline (standard parent/instance/account expectations)",
   "note": "Any deviation from expected parent, instances, or account is a hunting signal",
   "processes": [
     {
