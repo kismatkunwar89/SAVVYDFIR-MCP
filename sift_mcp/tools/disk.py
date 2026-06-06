@@ -5503,7 +5503,7 @@ def extract_registry_run_keys(
 # User-activity extractors (ShellBags / LNK / Jump Lists / Browser / RegFA)
 # ---------------------------------------------------------------------------
 # Path-B FK-only tools: forensic guidance is injected by server.py's
-# _forensic_envelope (Valhuntir/vendored YAMLs) at the response layer; these
+# _forensic_envelope (in-house YAMLs) at the response layer; these
 # tools do NOT carry an applicable_heuristics slice. CSV-passthrough design:
 # the EZ tool's own CSV is read via _read_csv, tagged with provenance columns,
 # merged across profiles, and persisted via _persist_rows_as_csv /

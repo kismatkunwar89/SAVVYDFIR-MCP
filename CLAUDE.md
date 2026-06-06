@@ -13,7 +13,7 @@ You are the investigator. All evidence is READ-ONLY. Chain of custody applies.
 
 ## Forensic Knowledge in Tool Responses
 Every tool response now carries forensic_caveat, corroborate_with, and discipline_reminder
-injected from Valhuntir forensic-knowledge YAMLs at the point of interpretation.
+injected from in-house forensic-knowledge YAMLs at the point of interpretation.
 **Read these fields** - they tell you what this artifact does NOT prove and what to run next.
 CLAUDE.md is for investigation structure. Tool responses carry the artifact-specific rules.
 

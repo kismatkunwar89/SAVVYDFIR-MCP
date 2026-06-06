@@ -604,7 +604,7 @@ def build_advisory_reference(fk: Optional[dict[str, Any]], *, char_budget: int =
 # ---------------------------------------------------------------------------
 def _fk_bases() -> list[Path]:
     return [
-        Path("/opt/valhuntir-knowledge/packages/forensic-knowledge/data"),
+        Path("/opt/savvydfir-knowledge/packages/forensic-knowledge/data"),
         Path(__file__).parent.parent / "data" / "forensic-knowledge",
     ]
 

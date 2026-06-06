@@ -179,7 +179,7 @@ class _Base(unittest.TestCase):
 
 class FkFallbackTests(unittest.TestCase):
     def _load_fk(self, artifact):
-        external = Path("/opt/valhuntir-knowledge/packages/forensic-knowledge/data")
+        external = Path("/opt/savvydfir-knowledge/packages/forensic-knowledge/data")
         vendored = Path(__file__).resolve().parent.parent / "data" / "forensic-knowledge"
         for base in (external, vendored):
             for platform in ("windows", "linux"):

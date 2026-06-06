@@ -284,14 +284,14 @@ def _memory_unavailable(tool_name: str) -> dict[str, Any]:
 
 
 # ===========================================================================
-# FORENSIC KNOWLEDGE SYSTEM - Valhuntir forensic-knowledge YAMLs (MIT)
+# FORENSIC KNOWLEDGE SYSTEM - in-house forensic-knowledge YAMLs
 # Injects artifact-specific caveats into every tool response so forensic
 # discipline is reinforced at the point of interpretation, not just at
 # session start via CLAUDE.md (which Claude drifts from after 50+ calls).
 # ===========================================================================
-# External Valhuntir package if installed; otherwise the in-repo vendored copy
+# Optional external FK data directory if present; otherwise the in-repo vendored copy
 # so the forensic-knowledge feature is never silently inert on a fresh clone.
-_FK_BASE_EXTERNAL = Path("/opt/valhuntir-knowledge/packages/forensic-knowledge/data")
+_FK_BASE_EXTERNAL = Path("/opt/savvydfir-knowledge/packages/forensic-knowledge/data")
 _FK_BASE_VENDORED = Path(__file__).parent.parent / "data" / "forensic-knowledge"
 _FK_BASES = [_FK_BASE_EXTERNAL, _FK_BASE_VENDORED]
 # Back-compat alias: _init_fk()'s presence check uses _FK_BASE.
@@ -301,7 +301,7 @@ _FK_BASE = _FK_BASE_EXTERNAL if _FK_BASE_EXTERNAL.exists() else _FK_BASE_VENDORE
 def _load_fk(artifact: str) -> dict:
     """Load forensic knowledge YAML for an artifact. Returns {} if not found.
 
-    Checks the external Valhuntir install first, then the in-repo vendored
+    Checks the external FK directory first, then the in-repo vendored
     copy, so caveats are present even when the external package is absent.
     """
     for base in _FK_BASES:
@@ -376,7 +376,7 @@ def _init_fk() -> None:
         pass
 
     # Extend MFT caveat with complete $SI/$FN timestamp matrix (SANS DFIR Windows FA poster)
-    # These rules are NOT fully covered in Valhuntir's mft.yaml
+    # These rules are NOT fully covered in the base mft.yaml corpus
     _mft_extra = [
         "Cross-volume file copy — $SI and $FN timestamps are INHERITED from the original: "
         "malware copied from USB shows original USB timestamps, indistinguishable from timestomping",
@@ -411,7 +411,7 @@ def _forensic_envelope(tool_name: str) -> dict:
     """Return forensic context to merge into every tool response.
 
     Injects at the exact moment Claude is interpreting tool output:
-    - forensic_caveat: what this artifact does NOT prove (from Valhuntir YAMLs)
+    - forensic_caveat: what this artifact does NOT prove (from the forensic-knowledge YAMLs)
     - corroborate_with: which artifacts to consult next
     - discipline_reminder: rotating forensic methodology principle
     - data_provenance: prompt injection defence marker
@@ -1924,7 +1924,7 @@ def extract_registry_run_keys(
 
 # ---------------------------------------------------------------------------
 # User-activity extractors (OPTIONAL - never in a mandatory coverage gate).
-# Path-B FK-only: forensic guidance comes from _forensic_envelope (Valhuntir/
+# Path-B FK-only: forensic guidance comes from _forensic_envelope (in-house/
 # vendored YAMLs); these tools carry NO applicable_heuristics slice.
 # All are case-agnostic: every Users/* and Documents and Settings/* profile is
 # auto-discovered. No hardcoded usernames/dates/paths/domains/IPs.

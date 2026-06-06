@@ -52,7 +52,7 @@ or any PII. Use redacted/synthesized examples.
 
    **Exception - FK-only tools.** Not every tool feeds the heuristic-injection
    layer. Tools whose forensic guidance is delivered purely via the
-   `_forensic_envelope` (Valhuntir/vendored `forensic-knowledge` YAMLs) - e.g.
+   `_forensic_envelope` (in-house `forensic-knowledge` YAMLs) - e.g.
    the user-activity extractors `extract_shellbags`, `extract_lnk_files`,
    `extract_jump_lists`, `extract_browser_history`,
    `extract_registry_fileaccess` - intentionally do NOT carry an

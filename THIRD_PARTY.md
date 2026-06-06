@@ -8,9 +8,13 @@ project (MIT) claims no ownership over any of it.
 
 ## Bundled / vendored in this repo
 
-| File | Upstream source | License | Notes |
-|------|-----------------|---------|-------|
+| File / dir | Upstream source | License | Notes |
+|------------|-----------------|---------|-------|
 | `rules/chainsaw-sigma-mapping.yml` | [WithSecureLabs/chainsaw](https://github.com/WithSecureLabs/chainsaw) — `mappings/sigma-event-logs-all.yml` | **GPL-3.0** | Verbatim copy of Chainsaw's official Sigma→EVTX field mapping, used so `sigma_hunt` matches correctly. Credited here + in the file header. (Alternative: fetch at install time instead of vendoring — see `install.sh`.) |
+
+The `data/forensic-knowledge/**/*.yaml` corpus (per-artifact forensic guidance
+injected as `forensic_caveat` / `corroborate_with` / `applicable_heuristics`) is
+**original project-authored content** — not vendored from any third party.
 
 ## Detection / forensic engines invoked at runtime (not bundled)
 
