@@ -53,9 +53,10 @@ false-positives (generic 'evtx'/'security' anchors on legit EVTX findings) → *
   gate (caught + discarded). Fix = require audit backing + tamper-deny. Invasive (4 sites) → awaiting go.
 - **#174 — sigma anchor-timing**: Phase 3→4 not ordered, so hypotheses can form sigma-blind. Doc-ordering
   + one soft warning. FP-safe; corroboration layer is already adequate (don't build a per-detection engine).
-- **#175 — XP path case-sensitivity**: ntfs-3g case-sensitive mount + XP uppercase `WINDOWS` → tools miss
-  the path → `artifact_absent` falsely fires (Prefetch/ShimCache). Found on the Hacking Case. Case-fold
-  path resolution OR case-insensitive mount for older images; refine `artifact_absent` vs path-failure.
+- **#175 — XP path case-sensitivity**: ✅ **FIXED** (commit 03a5516) — `_ci_resolve` case-insensitive
+  resolver + shimcache case-fold + 1c positive-absence guard + USN size-aware timeout; validated on the
+  real XP image + 5 regression tests. Hacking-Case **re-run skipped by choice** (v1 86.7% stands with the
+  documented prefetch/shimcache false-absence; fix protects all future cases incl. SRL).
 
 ## Method / principles
 - **Blind**: GT never reaches the VM; `scripts/eval/ground_truth/` is gitignored.
