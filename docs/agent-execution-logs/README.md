@@ -9,6 +9,27 @@ The run was selected because it is representative and contains no operator
 infrastructure details. It produced 3 court-defensible CONFIRMED findings with
 full corroboration and alternative-hypothesis disposition.
 
+## Blind benchmark cases (full run artifacts)
+
+Beyond the featured sample above, the five public DFIR cases used to validate the
+framework each have their complete run artifacts committed under
+`docs/agent-execution-logs/<case>/` (`report.html`, `graph.html`, `report.json`,
+and the hash-chained `audit.jsonl` where preserved). All five were run **blind**
+(ground truth never on the workstation) with **zero hallucinations**:
+
+| Case | Scenario / OS | Recall | Artifacts |
+|------|---------------|--------|-----------|
+| `ROCBA-2020-FREDS-LAPTOP` | insider IP theft (Windows) | 90% | report/graph/json |
+| `LONEWOLF-2018-DESKTOP-PM6C56D` | mass-shooting plot (Windows) | 91.7% | + audit.jsonl |
+| `NIST-DATALEAK-2015-PC` | insider data leak (Windows, disk-only) | 60% | + audit.jsonl + trace |
+| `ALI-WEBSERVER-WIN-L0ZZQ76PMUF` | web-server breach (WinSrv 2008) | 92.3% | + audit.jsonl + trace |
+| `NIST-HACKINGCASE-2004-MREVIL` | war-driving / credential theft (Win XP) | 86.7% | + audit.jsonl + trace |
+
+(Recall = granular ground-truth coverage; see `docs/accuracy-report.md`. Paths in
+the artifacts reflect the standard SANS SIFT workstation layout, e.g.
+`/home/referenceensics/...` — the default SIFT user — and the `audit.jsonl`
+hash chains are unmodified so they remain independently verifiable.)
+
 ## What each file is
 
 | File | What it shows |
