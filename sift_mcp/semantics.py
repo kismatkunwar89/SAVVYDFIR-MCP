@@ -777,6 +777,89 @@ def _apply_confirmed_gates(
     return normalized
 
 
+def _finding_is_multisource_confirmed(
+    finding: dict[str, Any], state_manager: Any = None
+) -> bool:
+    """True iff a finding is CONFIRMED *and* cleared the multi-source bar - the
+    same bar ``_apply_confirmed_gates`` enforces: finding_status CONFIRMED, >=2
+    corroborating sources, and no UNSATISFIED ``corroboration_outstanding``
+    (source-aware). Used by the hunting-hypothesis verdict gate so a hypothesis
+    inherits the finding-level corroboration standard."""
+    if not isinstance(finding, dict):
+        return False
+    if _normalize_status(finding.get("finding_status")) != FindingStatus.CONFIRMED.value.upper():
+        return False
+    if len(_normalize_indicator_list(finding.get("corroborated_by"))) < 2:
+        return False
+    outstanding = finding.get("corroboration_outstanding")
+    if isinstance(outstanding, (list, tuple)) and len(outstanding) > 0:
+        satisfied = _satisfied_source_classes(finding, state_manager)
+        effective = [o for o in outstanding if _to_text(o).lower() not in satisfied]
+        if effective:
+            return False
+    return True
+
+
+def apply_hypothesis_status_gate(
+    hypothesis: dict[str, Any], state_manager: Any = None
+) -> dict[str, Any]:
+    """Integrity gate for hunting-hypothesis verdicts (review 2026-06-05).
+
+    Findings get the multi-source CONFIRMED gate (``_apply_confirmed_gates``);
+    hypotheses previously got only Pydantic shape-validation, so an agent could
+    stamp a hypothesis CONFIRMED on its own judgment - the same gaming hole,
+    relocated. This gate closes it:
+
+    - A ``CONFIRMED`` verdict requires >=1 linked finding that is itself
+      CONFIRMED with multi-source corroboration. Otherwise -> ``SUSPENDED``.
+    - A ``REFUTED`` verdict that links to a finding which is itself multi-source
+      CONFIRMED (attack evidence IS present) is self-contradictory -> ``SUSPENDED``.
+      Absence-based refutation (no supporting findings) is legitimate and kept.
+    - ``ACTIVE`` / ``INVESTIGATING`` / ``SUSPENDED`` need no gate.
+
+    A downgrade records an auditable ``status_gate_reason``. Returns a (possibly
+    modified) COPY; never mutates the input.
+    """
+    if not isinstance(hypothesis, dict):
+        return hypothesis
+    h = dict(hypothesis)
+    status = str(h.get("status") or "ACTIVE").upper()
+    if status not in ("CONFIRMED", "REFUTED"):
+        return h
+
+    linked = h.get("related_finding_ids")
+    linked = linked if isinstance(linked, list) else ([linked] if linked else [])
+    resolved: list[dict[str, Any]] = []
+    for fid in linked:
+        if not fid or state_manager is None:
+            continue
+        try:
+            f = state_manager.get_finding(str(fid))
+        except Exception:
+            f = None
+        if isinstance(f, dict):
+            resolved.append(f)
+
+    supports_attack = any(
+        _finding_is_multisource_confirmed(f, state_manager) for f in resolved
+    )
+    if status == "CONFIRMED" and not supports_attack:
+        h["status"] = "SUSPENDED"
+        h["status_gate_reason"] = (
+            "downgraded_from_CONFIRMED: no linked finding is CONFIRMED with "
+            "multi-source corroboration (>=2 independent sources). A hunting "
+            "hypothesis inherits the finding-level multi-source bar; a verdict "
+            "cannot exceed the evidence its findings carry."
+        )
+    elif status == "REFUTED" and supports_attack:
+        h["status"] = "SUSPENDED"
+        h["status_gate_reason"] = (
+            "downgraded_from_REFUTED: a linked finding is CONFIRMED with "
+            "multi-source corroboration, contradicting a refuted verdict."
+        )
+    return h
+
+
 def validate_and_prepare_finding(
     finding: dict[str, Any],
     *,

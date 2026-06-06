@@ -13,7 +13,10 @@ from typing import Any, Callable, Optional
 
 # Tier-A report-gate invariants:
 # alternative-hypothesis completeness check shared with semantics.py.
-from sift_mcp.semantics import _alternative_hypothesis_complete
+from sift_mcp.semantics import (
+    _alternative_hypothesis_complete,
+    apply_hypothesis_status_gate,
+)
 
 # PART B (review 2026-06-03): the single extraction catalog lives in
 # analysis_debt.py (pure, no reporting/server dependency). FILE_ACCESS_TOOL_SUFFIXES
@@ -2541,6 +2544,30 @@ def _render_finding_cards(
     return "\n".join(cards)
 
 
+# Executive summary is for decision-makers (managers, counsel, IR leads), NOT
+# analysts. It must read as plain narrative - internal identifiers (finding IDs,
+# execution/audit IDs, CTX refs, raw MITRE codes, hypothesis ULIDs) belong in
+# the Technical Appendix, never the brief. review 2026-06-05.
+_INTERNAL_TOKEN_RE = re.compile(
+    r"\b(?:F-\d+|E-\d+|CTX-\d+|TA\d{4}|T\d{4}(?:\.\d{3})?|[0-9A-HJKMNPQRSTVWXYZ]{26})\b"
+)
+
+
+def _strip_internal_tokens(text: str) -> str:
+    """Remove internal identifiers (F-/E-/CTX- IDs, raw MITRE TAxxxx/Txxxx codes,
+    26-char ULIDs) from executive-summary prose, then tidy the punctuation/space
+    the removal leaves behind. Court-readable narrative only; the IDs live in the
+    appendix."""
+    if not text:
+        return text
+    out = _INTERNAL_TOKEN_RE.sub("", text)
+    out = re.sub(r"\(\s*[;,/]?\s*\)", "", out)   # empty parens left behind
+    out = re.sub(r"\[\s*/?\s*\]", "", out)        # empty brackets
+    out = re.sub(r"[ \t]{2,}", " ", out)          # collapse runs of spaces
+    out = re.sub(r"\s+([.,;:])", r"\1", out)      # space before punctuation
+    return out.strip()
+
+
 def _render_executive_summary(payload: dict[str, Any]) -> str:
     """Deterministic narrative executive summary (Item 1 = A). Assembled from
     structured, agent-authored fields the payload already carries. No LLM at
@@ -2585,13 +2612,11 @@ def _render_executive_summary(payload: dict[str, Any]) -> str:
         )
         bullets = []
         for f in confirmed:
-            fid = html.escape(str(f.get("finding_id", "")))
-            conf = float(f.get("confidence", 0.0) or 0.0)
-            tac = html.escape(str(f.get("mitre_tactic") or ""))
-            tech = html.escape(str(f.get("mitre_technique") or ""))
-            mit = f" [{tac}{'/' + tech if tech else ''}]" if (tac or tech) else ""
-            d = html.escape(_short_description(f.get("description", ""), 160))
-            bullets.append(f'<li><span class="mono">{fid}</span> (conf {conf:.2f}){mit}: {d}</li>')
+            # Plain narrative only - no finding IDs, confidence decimals, or raw
+            # MITRE codes in the brief (they live in Top Confirmed Findings).
+            d = html.escape(_strip_internal_tokens(_short_description(f.get("description", ""), 200)))
+            if d:
+                bullets.append(f"<li>{d}</li>")
         if bullets:
             parts.append(
                 '<p class="muted" style="margin:.6rem 0 .3rem;">Confirmed activity '
@@ -2607,20 +2632,34 @@ def _render_executive_summary(payload: dict[str, Any]) -> str:
             f"before any conclusion is drawn.</p>"
         )
 
-    resolved = [h for h in hypotheses if str(h.get("status", "")).upper() in ("CONFIRMED", "REFUTED")]
-    if resolved:
-        vl = "; ".join(
-            f"{html.escape(str(h.get('hypothesis_id', '')))} "
-            f"{html.escape(str(h.get('status', '')).upper())}"
-            for h in resolved[:4]
+    # Hunt closure - summarize hypothesis verdicts by human-readable attack_class,
+    # NEVER raw ULIDs. Statuses are already gated (record_hypotheses write gate +
+    # payload-assembly re-check); we read them as-is. Self-contradicting verdicts
+    # (e.g. a CONFIRMED hypothesis with no multi-source finding) were downgraded
+    # to SUSPENDED upstream, so the brief never over-claims a hunt.
+    closure_groups: list[str] = []
+    for stat, word in (("CONFIRMED", "confirmed"), ("REFUTED", "refuted"), ("SUSPENDED", "suspended")):
+        labels = [
+            html.escape(_strip_internal_tokens(_short_description(str(h.get("attack_class") or "").strip(), 70)))
+            for h in hypotheses
+            if str(h.get("status", "")).upper() == stat
+        ]
+        labels = [l for l in labels if l]
+        if labels:
+            closure_groups.append(f"{len(labels)} {word} ({'; '.join(labels)})")
+    if closure_groups:
+        parts.append(
+            f'<p><span class="k">Hunt closed:</span> {"; ".join(closure_groups)}.</p>'
         )
-        parts.append(f'<p><span class="k">Hunt verdicts:</span> {vl}.</p>')
 
     syn = next((l for l in lanes if "synth" in str(l.get("lane_id", "")).lower()), None)
-    if syn and syn.get("summary"):
+    if syn and syn.get("summary") and multi_src:
+        # Clean derived sentence - the raw lane summary carries tool names and
+        # execution IDs that do not belong in the brief. Only claim multi-source
+        # corroboration when a confirmed finding actually carries it (multi_src).
         parts.append(
-            f'<p><span class="k">Cross-artifact synthesis:</span> '
-            f"{html.escape(_short_description(syn.get('summary', ''), 180))}</p>"
+            '<p><span class="k">Cross-artifact synthesis:</span> the confirmed '
+            "activity is corroborated across multiple independent artifact sources.</p>"
         )
 
     phases = activity_thread.get("phases") or {}
@@ -2646,7 +2685,9 @@ def _render_executive_summary(payload: dict[str, Any]) -> str:
             f'<p class="muted"><span class="k">Caveats:</span> '
             f"{html.escape('; '.join(caveats))}.</p>"
         )
-    return "\n".join(parts)
+    # Belt-and-suspenders: scrub any internal identifier that slipped through a
+    # description/caveat before the brief reaches a decision-maker.
+    return _strip_internal_tokens("\n".join(parts))
 
 
 # Activity Thread renderer. Maps the case's findings (via classified MITRE
@@ -3608,7 +3649,14 @@ def generate_report_payload(
         "anti_forensics_warnings": anti_forensics_warnings,
         "data_gaps": data_gaps,
         "activity_thread": activity_thread_state,
-        "hypotheses": state_manager.get_hypotheses(),
+        # Render-time re-application of the hunting-hypothesis verdict gate
+        # (defense in depth + corrects hypotheses recorded before the gate
+        # existed): a CONFIRMED/REFUTED verdict not backed by a multi-source
+        # finding is shown as SUSPENDED, never over-claimed in the report.
+        "hypotheses": [
+            apply_hypothesis_status_gate(h, state_manager)
+            for h in (state_manager.get_hypotheses() or [])
+        ],
         "findings_count": pre_summary.get("findings_count", 0),
         "unresolved_count": unresolved,
         "unresolved_discrepancies": unresolved_discrepancies,

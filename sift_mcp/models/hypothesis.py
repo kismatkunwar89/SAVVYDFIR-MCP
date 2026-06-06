@@ -54,9 +54,17 @@ class HypothesisStatus(str, Enum):
 
     ACTIVE → newly emitted, awaiting investigation
     INVESTIGATING → main agent has begun pivots against it
-    CONFIRMED → evidence chain converges (3+ corroborating sources)
-    REFUTED → evidence contradicts (CorrectionEvent path)
-    SUSPENDED → blocked on missing data / artifact unavailable
+    CONFIRMED → evidence chain converges. GATED (review 2026-06-05):
+                a CONFIRMED verdict is only accepted when >=1 linked finding is
+                itself CONFIRMED with multi-source corroboration (the same
+                finding-level multi-source bar). Otherwise it is downgraded to
+                SUSPENDED by apply_hypothesis_status_gate. Verdict status is NOT
+                pure agent judgment.
+    REFUTED → evidence contradicts (CorrectionEvent path). Absence-based
+                refutation is valid, but a REFUTED verdict linking to a
+                multi-source-CONFIRMED finding is downgraded to SUSPENDED.
+    SUSPENDED → blocked on missing data / artifact unavailable, OR a verdict
+                that did not clear the gate above.
     """
     ACTIVE = "ACTIVE"
     INVESTIGATING = "INVESTIGATING"

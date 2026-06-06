@@ -9385,6 +9385,7 @@ def record_hypotheses(case_id: str, hypotheses: list[dict[str, Any]]) -> dict[st
     try:
         _state_manager.load(case_id)
         from sift_mcp.models.hypothesis import Hypothesis
+        from sift_mcp.semantics import apply_hypothesis_status_gate
         validated: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         for h_input in hypotheses or []:
@@ -9393,7 +9394,26 @@ def record_hypotheses(case_id: str, hypotheses: list[dict[str, Any]]) -> dict[st
                 validated.append(model.model_dump())
             except Exception as exc:
                 errors.append({"input": h_input, "error": str(exc)})
-        ids = _state_manager.record_hypotheses(validated)
+        # Integrity gate (review 2026-06-05): a CONFIRMED/REFUTED
+        # hypothesis verdict must be backed by its linked findings clearing the
+        # same multi-source bar findings face. Unsupported verdicts downgrade to
+        # SUSPENDED with an auditable reason - the agent cannot stamp a verdict
+        # the evidence does not carry. Render-time re-checks this (defense in depth).
+        gated: list[dict[str, Any]] = []
+        verdict_downgrades: list[dict[str, Any]] = []
+        for v in validated:
+            before = str(v.get("status") or "ACTIVE").upper()
+            g = apply_hypothesis_status_gate(v, _state_manager)
+            after = str(g.get("status") or "ACTIVE").upper()
+            if after != before:
+                verdict_downgrades.append({
+                    "hypothesis_id": g.get("hypothesis_id"),
+                    "from": before,
+                    "to": after,
+                    "reason": g.get("status_gate_reason"),
+                })
+            gated.append(g)
+        ids = _state_manager.record_hypotheses(gated)
         return {
             "status": "ok" if not errors else "partial",
             "tool": "record_hypotheses",
@@ -9401,6 +9421,7 @@ def record_hypotheses(case_id: str, hypotheses: list[dict[str, Any]]) -> dict[st
             "hypothesis_ids": ids,
             "recorded_count": len(ids),
             "rejected": errors,
+            "verdict_downgrades": verdict_downgrades,
         }
     except Exception as exc:
         return ToolResult(
