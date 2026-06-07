@@ -7,7 +7,7 @@ allowed-tools:
 
 # Investigation Workflow - 5-Phase DFIR Methodology
 
-This workflow is an investigation loop, not a checklist. The parent agent keeps the case hypothesis, decides pivots, and writes the narrative. Specialist analysts handle large artifact context through durable CSV/storage handles.
+This workflow is an investigation loop, not a checklist. The parent agent keeps the case hypothesis, decides pivots, writes the narrative, and analyzes large artifacts **inline** using the heuristic slice delivered in each tool response. Durable CSV/storage handles keep raw data out of context.
 
 ## MANDATORY TOOLS (gate-enforced - report will not finalize without these)
 
@@ -28,9 +28,9 @@ If the parent agent attempts `generate_report` before these are satisfied, the g
 
 ## Non-Negotiables
 - Use MCP tools for forensic work. Shell fallback is only for classifying a tool gap.
-- Keep large artifacts out of parent context. EVTX, MFT, Registry, Amcache, Prefetch, and timeline data must be delegated by handle (`csv_path`, `storage_path`, or raw artifact directory).
-- Delegate immediately after large artifact tools: `@mft-analyst`, `@evtx-analyst`, `@registry-analyst`, `@prefetch-analyst`, `@amcache-analyst`, `@sigma-analyst`, `@srum-analyst`, `@browser-analyst`, `@timeline-analyst`, `@corroboration-analyst`.
-- After a specialist returns, the parent calls `record_analysis_lane(...)` with validated execution and finding IDs. If a subagent is unavailable, the parent may record `assigned_agent="main-agent"` with an explicit reason.
+- Keep large artifacts out of parent context. Read EVTX, MFT, Registry, Amcache, Prefetch, and timeline data through their handle (`csv_path`, `storage_path`, or raw artifact directory) via `run_analysis` - never dump rows into the chat.
+- Analyze each large artifact **inline** using the `applicable_heuristics` slice in its tool response (the 8 mapped KBs: mft, evtx, prefetch, amcache, registry, srum, sigma, memory). Artifact-specialist Task spawn is retired (the 32K output ceiling truncated 7/8 prior runs); see the Orchestration Contract below. Synthesis/corroboration/timeline specialists remain opt-in only.
+- After analyzing, the parent calls `record_analysis_lane(..., assigned_agent="main-agent", ...)` with validated execution and finding IDs.
 - If a parser returns `needs_extract_windows_artifacts=true`, call `extract_windows_artifacts(...)` and rerun the parser on the durable `/cases/<case_id>/artifacts/raw/...` path.
 - If `artifact_persistence.status="transient"` but `csv_path` exists, the CSV is still the data handle. Delegate on the handle; do not manually extract with `icat` or direct `dotnet`.
 - Full integrity hashing is deferred in fast IR unless manifest hashes exist, evidence access is inconsistent, or the operator asks for it.
@@ -160,24 +160,19 @@ Group A - run together when safe:
 2. `scan_processes(dump_path)`
 3. `scan_network(dump_path)`
 
-Delegate memory context:
-
-```text
-@memory-analyst
-Analyze memory lane for <case_id>. Review list_processes, scan_processes, scan_network, detect_injection, and related CSV handles. Confirm suspicious processes/network/C2, add evidence-backed findings, and return the Specialist Contract with lane_id="memory".
-```
+Analyze the memory lane **inline**: read the `applicable_heuristics` (memory) slice, `run_analysis` over the process/network handles to confirm suspicious processes/network/C2, `submit_finding` each conclusion, then `record_analysis_lane(lane_id="memory", assigned_agent="main-agent", ...)`.
 
 Group B - run one at a time or in small safe batches:
 1. `detect_injection(dump_path)`
 2. `get_amcache(image_path)`
 3. `extract_prefetch(image_path)`
 4. `list_deleted_files(image_path)`
-5. `extract_mft_timeline(image_path)` -> delegate to `@mft-analyst`
-6. `summarize_evtx(image_path, channel="Security")` -> delegate to `@evtx-analyst`
-7. `extract_registry_run_keys(image_path)` -> delegate to `@registry-analyst`
-8. `get_amcache(image_path)` -> delegate to `@amcache-analyst`
-9. `extract_prefetch(image_path)` -> delegate to `@prefetch-analyst`
-10. `extract_srum(image_path)` when SRUM exists or exfil volume matters -> delegate to `@srum-analyst`
+5. `extract_mft_timeline(image_path)` -> analyze inline (mft heuristics; lane `timeline_correlation`)
+6. `summarize_evtx(image_path, channel="Security")` -> analyze inline (evtx heuristics; lane `event_auth`)
+7. `extract_registry_run_keys(image_path)` -> analyze inline (registry heuristics; lane `disk_execution_persistence`)
+8. `get_amcache(image_path)` -> analyze inline (amcache heuristics; lane `disk_execution_persistence`)
+9. `extract_prefetch(image_path)` -> analyze inline (prefetch heuristics; lane `disk_execution_persistence`)
+10. `extract_srum(image_path)` when SRUM exists or exfil volume matters -> analyze inline (srum heuristics; lane `timeline_correlation`)
 11. **File-access bundle - REQUIRED when `investigative_taxonomy.dispute_type` ∈
     {intrusion_response, data_exfiltration, insider_threat, financial_fraud,
     policy_violation, ransomware} AND Windows is in scope** (the coverage gate
@@ -190,42 +185,13 @@ Group B - run one at a time or in small safe batches:
     documented-absence result (the gate accepts that); they are sequential dotnet
     (except sqlite browser_history) so expect a longer Phase 2.
 
-Use durable handles as context:
+Analyze each handle **inline** - read its `applicable_heuristics` slice, `run_analysis` for focused pivots, `submit_finding`, then `record_analysis_lane`:
 
-```text
-@mft-analyst
-Analyze the MFT CSV handle for <case_id>. Look for timestomping, M-before-C copy artifacts, sequence anomalies, deletion bursts, staging directories, and suspicious ADS. Use run_analysis for focused pivots. Return the Specialist Contract with lane_id="timeline_correlation".
-```
-
-```text
-@evtx-analyst
-Analyze EVTX CSV handles for <case_id>. Prioritize 1102/104 log clearing, 4648 to 5140/5145 lateral movement, RDP reconnects, Defender 1116/1117, Sysmon process/network chains, and event-log data gaps. Return the Specialist Contract with lane_id="event_auth".
-```
-
-```text
-@registry-analyst
-Analyze Registry, Amcache, Prefetch, ShimCache, and PCA handles for <case_id>. Confirm persistence, service installs, Run keys, execution inventory, suspicious hashes, and missing-artifact gaps. Return the Specialist Contract with lane_id="disk_execution_persistence".
-```
-
-```text
-@amcache-analyst
-Analyze the Amcache handle for <case_id>. Corroborate execution inventory, renamed binaries, first-run timestamps, SHA-1s, and missing binary gaps. Return the Specialist Contract with lane_id="disk_execution_persistence".
-```
-
-```text
-@prefetch-analyst
-Analyze Prefetch/PCA handles for <case_id>. Corroborate execution count, run times, multi-path execution, orphaned PF files, and deleted binaries. Return the Specialist Contract with lane_id="disk_execution_persistence".
-```
-
-```text
-@srum-analyst
-Analyze SRUM handles for <case_id>. Quantify network usage by application, spot deleted or unresolved executables, and support exfiltration/lateral-movement hypotheses. Return the Specialist Contract with lane_id="timeline_correlation".
-```
-
-```text
-@browser-analyst
-Analyze browser artifacts only when collected or relevant to the hypothesis. Look for download/referrer history, suspicious extensions, sync artifacts, and initial-access pivots. Return the Specialist Contract with lane_id="disk_execution_persistence".
-```
+- **MFT** (lane `timeline_correlation`): timestomping, M-before-C copies, sequence anomalies, deletion bursts, staging directories, suspicious ADS.
+- **EVTX** (lane `event_auth`): 1102/104 log clearing, 4648 -> 5140/5145 lateral movement, RDP reconnects, Defender 1116/1117, Sysmon process/network chains, event-log gaps.
+- **Registry / Amcache / Prefetch / ShimCache / PCA** (lane `disk_execution_persistence`): persistence, service installs, Run keys, execution inventory + run counts, multi-path execution, renamed binaries, SHA-1s, missing-artifact gaps.
+- **SRUM** (lane `timeline_correlation`): per-application network volume, deleted/unresolved executables, exfiltration/lateral-movement support.
+- **Browser** (when collected; FK-only, no heuristic slice): download/referrer history, suspicious extensions, sync artifacts, initial-access pivots.
 
 Gate: major artifact lanes are either specialist-owned or explicitly recorded by the parent with a data gap.
 
@@ -233,18 +199,8 @@ Gate: major artifact lanes are either specialist-owned or explicitly recorded by
 1. `sigma_scan(case_id)` and/or `sigma_hunt(...)`
 2. Review CRITICAL/HIGH hits first and follow `pivot_suggestion`
 3. `compare_disk_and_memory(case_id)`
-4. Delegate Sigma results to `@sigma-analyst` when there are hits, log/data gaps, or anti-forensics context to adjudicate
-5. Delegate to `@corroboration-analyst`
-
-```text
-@sigma-analyst
-Analyze Sigma results for <case_id>. Triage false positives, explain zero-hit limitations when evidence was wiped, map confirmed detections to ATT&CK, and return the Specialist Contract with lane_id="timeline_correlation".
-```
-
-```text
-@corroboration-analyst
-Stress-test confirmed and active findings across disk, memory, event, and timeline evidence. Downgrade weak claims, flag contradictions with flag_discrepancy, and return the Specialist Contract with lane_id="timeline_correlation".
-```
+4. Analyze Sigma results **inline** (sigma heuristics): triage false positives, explain zero-hit limitations when evidence was wiped, map confirmed detections to ATT&CK (lane `timeline_correlation`).
+5. Corroborate **inline**: stress-test confirmed/active findings across disk, memory, event, and timeline evidence; downgrade weak claims; `flag_discrepancy` on contradictions. (`@corroboration-analyst` Task spawn is opt-in only.)
 
 Gate: critical/high anomalies are investigated, and contradictions are resolved or documented as open leads.
 
