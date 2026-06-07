@@ -5864,6 +5864,65 @@ def _useractivity_zero_row_response(
     }
 
 
+def _useractivity_tool_incompatible_response(
+    *,
+    tool: str,
+    exec_id: str,
+    raw_command: str,
+    started_at: float,
+    profiles_checked: list[str],
+    reason: str,
+    artifact_label: str,
+    detail: str,
+) -> dict[str, Any]:
+    """Tool-incompatible response for a user-activity tool (4-way taxonomy).
+
+    The artifact IS present on the volume but this parser cannot read its
+    format (e.g. legacy INFO2 vs the modern $I parser). This is NOT proven
+    absence - emitting ``artifact_absent`` here would be a false negative.
+    ``tool_incompatible`` is an absence-equivalent token that SATISFIES the
+    file-access coverage gate (documented non-applicability), so a host that
+    only has an unsupported store does not brick a required lane.
+    """
+    status = "tool_incompatible"
+    exit_code = 0
+    summary = f"status=tool_incompatible reason={reason}: {detail}"
+    if _audit is not None:
+        _ti_duration = time.monotonic() - started_at
+        _ti_completed = _audit.log_result(
+            execution_id=exec_id,
+            exit_code=exit_code,
+            duration=_ti_duration,
+            outputs_summary=summary,
+            finding_ids=[],
+            tool_name=tool,
+            command_line=raw_command,
+            parameters={"profiles_checked": profiles_checked},
+        )
+        _mirror_useractivity_execution_to_state(
+            exec_id=exec_id, tool=tool, raw_command=raw_command,
+            parameters={"profiles_checked": profiles_checked}, exit_code=exit_code,
+            duration=_ti_duration, outputs_summary=summary, completed_entry=_ti_completed,
+        )
+    return {
+        "tool_name": tool,
+        "status": status,
+        "reason": reason,
+        "execution_id": exec_id,
+        "raw_command": raw_command,
+        "csv_path": None,
+        "records_count": 0,
+        "total_rows": 0,
+        "truncated": False,
+        "profiles_checked": profiles_checked,
+        "profiles_with_data": [],
+        "parser_failures": [],
+        "findings_created": [],
+        "preview": [],
+        "note": summary,
+    }
+
+
 def _finalize_useractivity_response(
     *,
     tool: str,
@@ -7301,6 +7360,22 @@ def extract_recycle_bin(
         )
 
     if not discovered:
+        # Legacy INFO2-only volume (XP/RECYCLER, no modern $Recycle.Bin/$I): the
+        # artifact IS present but this native $I parser cannot read INFO2. That is
+        # tool incompatibility, NOT proven absence - returning artifact_absent
+        # would be a false negative on INFO2-only hosts. tool_incompatible still
+        # satisfies the file-access coverage gate (documented non-applicability).
+        if legacy_seen:
+            return _useractivity_tool_incompatible_response(
+                tool=tool, exec_id=exec_id, raw_command=raw_command,
+                started_at=started_at, profiles_checked=profiles_checked,
+                reason="legacy_info2_unsupported",
+                artifact_label="Recycle Bin $I metadata files",
+                detail=(
+                    "legacy RECYCLER/INFO2 store present but the native $I parser "
+                    "does not support the INFO2 format; absence is NOT proven."
+                ),
+            )
         return _useractivity_zero_row_response(
             tool=tool, exec_id=exec_id, raw_command=raw_command,
             started_at=started_at, profiles_checked=profiles_checked,

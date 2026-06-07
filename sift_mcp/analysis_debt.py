@@ -74,10 +74,14 @@ EXTRACTION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("extract_jump_lists", "disk_execution_persistence", "file_access", report_block_when_required=True),
     CatalogEntry("extract_browser_history", "disk_execution_persistence", "file_access", report_block_when_required=True),
     CatalogEntry("extract_registry_fileaccess", "disk_execution_persistence", "file_access", report_block_when_required=True),
-    # --- new FK-only OPTIONAL extractors (extended group; never report-block) -
-    CatalogEntry("extract_recycle_bin", "disk_execution_persistence", "extended", report_block_when_required=False),
-    CatalogEntry("extract_powershell_history", "disk_execution_persistence", "extended", report_block_when_required=False),
-    CatalogEntry("extract_scheduled_tasks", "disk_execution_persistence", "extended", report_block_when_required=False),
+    # --- taxonomy-conditional-REQUIRED file-access extractors (review
+    # 2026-06-07 AMEND-THEN-APPROVE): promoted from extended/OPTIONAL to the
+    # file_access group so the coverage gate enforces them on file-centric
+    # Windows cases. Documented-absence (incl. tool_incompatible) still satisfies
+    # the gate, so non-Windows/mount-less hosts do not brick.
+    CatalogEntry("extract_recycle_bin", "disk_execution_persistence", "file_access", report_block_when_required=True),
+    CatalogEntry("extract_powershell_history", "disk_execution_persistence", "file_access", report_block_when_required=True),
+    CatalogEntry("extract_scheduled_tasks", "disk_execution_persistence", "file_access", report_block_when_required=True),
 )
 
 _CATALOG_BY_SUFFIX: dict[str, CatalogEntry] = {e.tool_suffix: e for e in EXTRACTION_CATALOG}

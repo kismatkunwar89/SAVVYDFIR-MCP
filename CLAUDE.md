@@ -47,6 +47,9 @@ extract_lnk_files(image_path, case_id)        ← per-profile Recent LNK shortcu
 extract_jump_lists(image_path, case_id)       ← per-profile Jump Lists / AppId-to-file (JLECmd)
 extract_browser_history(image_path, case_id)  ← Chrome/Edge/Firefox visits+downloads (native sqlite3)
 extract_registry_fileaccess(image_path, case_id) ← UserAssist/RecentDocs/OpenSavePidlMRU/TypedPaths (hybrid RECmd)
+extract_recycle_bin(image_path, case_id)      ← per-SID $Recycle.Bin/$I deleted-file metadata (native $I parser)
+extract_powershell_history(image_path, case_id) ← per-profile ConsoleHost_history.txt PowerShell commands
+extract_scheduled_tasks(image_path, case_id)  ← Windows\System32\Tasks scheduled-task XML (persistence)
 extract_windows_artifacts(case_id) ← stage raw artifacts first when mount_image reports SleuthKit-direct access, OR when a parser returns needs_extract_windows_artifacts=true
 ```
 
@@ -61,9 +64,10 @@ failure**:
 **Do NOT `record_analysis_lane(status='COMPLETE_WITH_GAPS', "extraction failed")` on the retryable
 signal** - stage + retry first; only record gaps if the retry itself genuinely fails.
 
-**Note - new file-access / browser artifacts are FK-only.** The five
+**Note - new file-access / browser artifacts are FK-only.** The eight
 user-activity extractors above (`extract_shellbags`, `extract_lnk_files`,
-`extract_jump_lists`, `extract_browser_history`, `extract_registry_fileaccess`)
+`extract_jump_lists`, `extract_browser_history`, `extract_registry_fileaccess`,
+`extract_recycle_bin`, `extract_powershell_history`, `extract_scheduled_tasks`)
 are **taxonomy-conditionally REQUIRED**: when `investigative_taxonomy.dispute_type`
 is file-centric (intrusion_response / data_exfiltration / insider_threat /
 financial_fraud / policy_violation / ransomware) AND Windows is in scope, the

@@ -41,7 +41,7 @@ def _file_access_missing(result):
 _REQUIRED = build_file_access_selector_snapshot(
     {"dispute_type": "intrusion_response", "os_in_scope": ["Windows 10/11"]}
 )
-_ALL5 = {f"disk.{s}" for s in FILE_ACCESS_TOOL_SUFFIXES}
+_ALL8 = {f"disk.{s}" for s in FILE_ACCESS_TOOL_SUFFIXES}
 
 
 class SelectorTest(unittest.TestCase):
@@ -77,19 +77,46 @@ class GateOverlayTest(unittest.TestCase):
 
     def test_required_all_missing_when_none_ran(self):
         res = self._gate([])
-        self.assertEqual(_file_access_missing(res), _ALL5)
+        self.assertEqual(_file_access_missing(res), _ALL8)
+        self.assertEqual(len(_ALL8), 8)
 
     def test_documented_absence_satisfies(self):
-        # each of the 3 documented-absence tokens satisfies (escape A -> no brick)
+        # each documented-absence token satisfies (escape A -> no brick), incl.
+        # the 3 newly-promoted tools and recycle-bin tool_incompatible (legacy INFO2)
         execs = [
             _exec("extract_shellbags", exit_code=1, summary="status=error reason=no_windows_volume_at_image_path: ..."),
             _exec("extract_lnk_files", exit_code=0, summary="status=artifact_absent: nothing discovered"),
             _exec("extract_jump_lists", exit_code=0, summary="status=no_data: parsed clean, zero rows"),
             _exec("extract_browser_history", exit_code=0, summary="status=success merged 12 rows"),
             _exec("extract_registry_fileaccess", exit_code=0, summary="status=success merged 511 rows"),
+            _exec("extract_recycle_bin", exit_code=0, summary="status=tool_incompatible reason=legacy_info2_unsupported: legacy RECYCLER/INFO2 present"),
+            _exec("extract_powershell_history", exit_code=0, summary="status=artifact_absent: nothing discovered"),
+            _exec("extract_scheduled_tasks", exit_code=0, summary="status=success merged 7 rows"),
         ]
         res = self._gate(execs)
         self.assertEqual(_file_access_missing(res), set())
+
+    def test_promoted_tools_in_required_set(self):
+        # review 2026-06-07: the 3 promoted tools are now in file_access
+        for s in ("extract_recycle_bin", "extract_powershell_history", "extract_scheduled_tasks"):
+            self.assertIn(s, FILE_ACCESS_TOOL_SUFFIXES)
+        self.assertEqual(len(FILE_ACCESS_TOOL_SUFFIXES), 8)
+
+    def test_recycle_bin_tool_incompatible_satisfies_gate(self):
+        # INFO2-only host: tool_incompatible (NOT artifact_absent) satisfies the gate
+        self.assertIn("tool_incompatible", reporting._FILE_ACCESS_ABSENCE_TOKENS)
+        execs = [
+            _exec("extract_shellbags", exit_code=0, summary="status=no_data: zero rows"),
+            _exec("extract_lnk_files", exit_code=0, summary="status=no_data: zero rows"),
+            _exec("extract_jump_lists", exit_code=0, summary="status=no_data: zero rows"),
+            _exec("extract_browser_history", exit_code=0, summary="status=no_data: zero rows"),
+            _exec("extract_registry_fileaccess", exit_code=0, summary="status=no_data: zero rows"),
+            _exec("extract_recycle_bin", exit_code=0, summary="status=tool_incompatible reason=legacy_info2_unsupported: legacy RECYCLER/INFO2 present"),
+            _exec("extract_powershell_history", exit_code=0, summary="status=no_data: zero rows"),
+            _exec("extract_scheduled_tasks", exit_code=0, summary="status=no_data: zero rows"),
+        ]
+        res = self._gate(execs)
+        self.assertNotIn("disk.extract_recycle_bin", _file_access_missing(res))
 
     def test_real_gaps_still_block(self):
         # collection_failed / partial_collection are NOT documented-absence -> block

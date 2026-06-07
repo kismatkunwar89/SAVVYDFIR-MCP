@@ -150,6 +150,24 @@ class ArtifactAbsentTests(_Base):
             self.assertEqual(r["status"], "artifact_absent")
             self.assertIsNone(r["csv_path"])
 
+    def test_recycle_bin_legacy_info2_tool_incompatible(self):
+        # Legacy XP RECYCLER/INFO2 store present but no modern $Recycle.Bin/$I:
+        # the artifact EXISTS but the native $I parser cannot read INFO2. Must be
+        # tool_incompatible (NOT artifact_absent) so it is not a false negative,
+        # and the token satisfies the file-access gate.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            root = self._root(tmp)
+            (root / "RECYCLER").mkdir(parents=True, exist_ok=True)
+            with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_recycle_bin(image_path=str(root), case_id="CASE-NEW")
+            self.assertEqual(r["status"], "tool_incompatible")
+            self.assertEqual(r["reason"], "legacy_info2_unsupported")
+            self.assertIsNone(r["csv_path"])
+            # token satisfies the file-access coverage gate
+            from sift_mcp import reporting
+            self.assertIn("tool_incompatible", reporting._FILE_ACCESS_ABSENCE_TOKENS)
+
     def test_powershell_history_absent(self):
         with tempfile.TemporaryDirectory() as tmp:
             self._init(tmp)
@@ -367,8 +385,10 @@ class StateMirrorTests(_Base):
             # the catalog entry exists and is an extraction that accrues debt
             entry = analysis_debt._CATALOG_BY_SUFFIX.get("extract_recycle_bin")
             self.assertIsNotNone(entry)
-            self.assertEqual(entry.taxonomy_group, "extended")
-            self.assertFalse(entry.report_block_when_required)
+            # review 2026-06-07: promoted from extended -> file_access,
+            # now report-blocking when taxonomy-required.
+            self.assertEqual(entry.taxonomy_group, "file_access")
+            self.assertTrue(entry.report_block_when_required)
 
 
 # ---------------------------------------------------------------------------

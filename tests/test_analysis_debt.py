@@ -206,6 +206,8 @@ def test_file_access_suffixes_derived_from_catalog():
     assert set(FILE_ACCESS_TOOL_SUFFIXES) == {
         "extract_shellbags", "extract_lnk_files", "extract_jump_lists",
         "extract_browser_history", "extract_registry_fileaccess",
+        "extract_recycle_bin", "extract_powershell_history",
+        "extract_scheduled_tasks",
     }
 
 

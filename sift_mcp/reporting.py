@@ -1248,6 +1248,8 @@ def _infer_lane_from_tool_name(tool_name: Any) -> str | None:
         "disk.extract_pca",
         "disk.extract_srum",
         "disk.extract_scheduled_tasks",
+        "disk.extract_recycle_bin",
+        "disk.extract_powershell_history",
     }:
         return "disk_execution_persistence"
     if canonical in {
@@ -1348,7 +1350,7 @@ MANDATORY_MEMORY_TOOL_SUFFIXES = frozenset({
 # ---------------------------------------------------------------------------
 # Taxonomy-conditional file-access bundle (review 2026-06-03, signed).
 #
-# The 5 file-access / navigation extractors are NOT unconditional baseline (they
+# The 8 file-access / navigation extractors are NOT unconditional baseline (they
 # stay OUT of MANDATORY_DISK_TOOL_SUFFIXES). They become REQUIRED as a CONDITIONAL
 # OVERLAY when the case taxonomy says "which files/folders did the subject access"
 # is a core question -- keyed on investigative_taxonomy.dispute_type (+ Windows in
@@ -1372,6 +1374,10 @@ _FILE_ACCESS_ABSENCE_TOKENS = (
     "no_windows_volume_at_image_path",
     "artifact_absent",
     "no_data",
+    # tool_incompatible: the artifact is present but this parser cannot read its
+    # format (e.g. legacy INFO2 recycle bin vs the modern $I parser). A documented
+    # non-applicability -> satisfies the gate (already in analysis_debt._ABSENCE_TOKENS).
+    "tool_incompatible",
     # F-B (review 2026-06-04): a genuine timeout is an honest attempt with
     # a documented gap -> do not hard-block the report; surface it as a data gap.
     "collection_timeout",
@@ -1720,7 +1726,7 @@ def evaluate_ir_coverage_gate(
 
     *selector* is the frozen file-access selector snapshot persisted at
     start_investigation (``build_file_access_selector_snapshot``). When it sets
-    ``file_access_bundle_required``, the 5 file-access extractors are enforced as
+    ``file_access_bundle_required``, the 8 file-access extractors are enforced as
     a CONDITIONAL OVERLAY (escape A: satisfied by successful run OR documented
     absence). When absent/false (legacy state, non-Windows, unknown dispute_type)
     the overlay is off, so old cases never brick.

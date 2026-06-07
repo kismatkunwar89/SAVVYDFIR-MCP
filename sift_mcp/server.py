@@ -7393,7 +7393,7 @@ def start_investigation(manifest_path: str) -> dict[str, Any]:
             result["known_iocs"] = known_iocs
 
         # SEAM 1 (review 2026-06-03): when the taxonomy selector requires the
-        # file-access bundle, name the 5 extractors in the two fields the agent obeys
+        # file-access bundle, name the 8 extractors in the two fields the agent obeys
         # at runtime - next_required_tools (recommended, per disk image) AND
         # mandatory_tools_for_report_gate (the report-block teeth). This is the trigger
         # that re-asserts in the loop, replacing the inert manifest tools_ordered array.
