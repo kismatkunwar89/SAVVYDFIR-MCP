@@ -88,7 +88,9 @@ Loading is **registry-driven, not directory auto-discovery**: a brand-new artifa
 **already-mapped** YAML needs no code. Either way the server loads YAML at startup, so **restart the
 MCP server** to pick up changes. Keep YAML case-agnostic (no case-specific IPs, names, or hashes) and
 follow the field shape of an existing file such as
-`data/forensic-knowledge/artifacts/windows/mft.yaml`.
+`data/forensic-knowledge/artifacts/windows/mft.yaml`. Run
+`pytest tests/test_fk_yaml_schema.py` after any FK YAML change - it fails loudly on malformed YAML or
+an `artifact:`/filename mismatch (which would otherwise load as an empty `{}` at runtime).
 
 Only **8** artifacts carry an inline `applicable_heuristics` slice (mft, evtx, prefetch, amcache,
 registry, srum, sigma, memory - see `scripts/extract_heuristic_slice.py:ARTIFACT_FILE_MAP`). FK YAML
