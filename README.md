@@ -206,6 +206,14 @@ source venv/bin/activate
 python -c "import sift_mcp.server; print('OK')"
 ```
 
+> **venv vs `claude` — what runs what (no confusion):** `claude` is a **standalone binary**
+> (`~/.local/bin/claude`); it does **not** live in the venv. Launched from the repo, it
+> **auto-starts the MCP server** declared in `.mcp.json` using the project `venv` — so you do
+> **not** need to `source venv/bin/activate` to run an investigation. Activate the venv only to run
+> Python **directly** (the import check above, or the `scripts/`). The one thing that matters:
+> **launch `claude` from inside the repo dir** so `.claude/settings.json` (hooks) + `.mcp.json`
+> (MCP server) are picked up. The `(venv)` prefix on your prompt is harmless either way.
+
 > **Why no `~/.claude/settings.json`?** Earlier versions of this installer deployed a global
 > settings file that could fall out of sync with the Claude Code schema (e.g. `claude login` would
 > error on `hooks.PostToolUse[0].hooks: Expected array, but received undefined`). The project-local
@@ -221,9 +229,8 @@ sudo chown -R $USER:$USER /opt/SAVVYDFIR-MCP/
 
 Notes:
 
-- Anthropic now recommends the native Claude Code installer on macOS, Linux, and WSL. It auto-updates in the background.
-- `npm install -g @anthropic-ai/claude-code` still exists, but Anthropic documents it as deprecated in favor of the native installer.
-- For interactive use, run `claude` and complete the browser login. `ANTHROPIC_API_KEY` is useful for API-key automation but is no longer the best default for humans.
+- `install.sh` uses the native Claude Code installer (Anthropic's recommended path; auto-updates).
+- For interactive use, run `claude` and complete the one-time browser login.
 
 ---
 
