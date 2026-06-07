@@ -8,6 +8,17 @@
 
 ---
 
+> **📌 Judged submission = tag [`v1.1.1`](https://github.com/kismatkunwar89/SAVVYDFIR-MCP/releases/tag/v1.1.1) (commit `f1770df`).**
+> To reproduce the hackathon evaluation exactly, check out that tag:
+> ```bash
+> git clone https://github.com/kismatkunwar89/SAVVYDFIR-MCP.git
+> cd SAVVYDFIR-MCP && git checkout v1.1.1
+> ```
+> Commits on `master` after `v1.1.1` are backward-compatible **maintenance** (multi-host graph-pipeline
+> fixes) and are **not** part of the judged submission.
+
+---
+
 ## FIND-EVIL Hackathon Submission Checklist
 
 Every required turn-in is listed below with its exact location, so judges can verify completeness at a glance. All paths are relative to the repository root.

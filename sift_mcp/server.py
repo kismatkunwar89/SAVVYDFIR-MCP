@@ -3407,7 +3407,9 @@ def merge_host_graphs(
         "status": "ok",
         "output_html_path": str(resolved_output),
         "output_json_path": str(resolved_output.with_name("graph.json")),
-        "hosts_merged": len(available),
+        # accurate count of hosts ACTUALLY merged (scoped by cases= when given);
+        # parsed from the merger's stdout. Falls back to the pre-scope glob count.
+        "hosts_merged": meta.get("host_count", len(available)),
         **meta,
         "stdout": proc.stdout[-1000:],
     }
