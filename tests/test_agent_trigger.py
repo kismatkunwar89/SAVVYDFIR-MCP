@@ -83,9 +83,13 @@ class AgentTriggerTests(unittest.TestCase):
 
             self.assertIsNotNone(result)
             self.assertEqual(result["decision"], "block")
-            self.assertIn("@evtx-analyst", result["reason"])
-            self.assertIn("Task SYNCHRONOUSLY", result["reason"])
-            self.assertIn("PATH B", result["reason"])
+            # W1.7 inline-primary: the block reason is an analysis checkpoint
+            # nudging the MAIN agent to analyze inline (no Task spawn). The
+            # delegate is still queued, but the reason text no longer names
+            # a specialist; it references the artifact KB as a last resort.
+            self.assertIn("ANALYSIS REQUIRED for lane_id=", result["reason"])
+            self.assertIn("analysis checkpoint, NOT a tool failure", result["reason"])
+            self.assertIn(".claude/agents/evtx-analyst.md", result["reason"])
             self.assertIn("main-agent", result["reason"])
             self.assertIn("record_analysis_lane", result["reason"])
             payload = self._read_queue_delegate(trigger_path, "event_auth")
@@ -114,7 +118,8 @@ class AgentTriggerTests(unittest.TestCase):
 
             self.assertIsNotNone(result)
             self.assertEqual(result["decision"], "block")
-            self.assertIn("@evtx-analyst", result["reason"])
+            self.assertIn("ANALYSIS REQUIRED for lane_id=", result["reason"])
+            self.assertIn(".claude/agents/evtx-analyst.md", result["reason"])
             payload = self._read_queue_delegate(trigger_path, "event_auth")
             self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertEqual(payload["subagent_type"], "evtx-analyst")
@@ -163,7 +168,8 @@ class AgentTriggerTests(unittest.TestCase):
             payload = self._read_queue_delegate(trigger_path)
             self.assertIsNotNone(payload, "Delegate should be queued")
             self.assertEqual(payload["agent"], "@timeline-analyst")
-            self.assertIn("@timeline-analyst", result["reason"])
+            self.assertIn("ANALYSIS REQUIRED for lane_id=", result["reason"])
+            self.assertIn(".claude/agents/timeline-analyst.md", result["reason"])
             self.assertIn("storage handle", payload["instruction"])
             self.assertIn("Summary:", payload["instruction"])
 
@@ -219,7 +225,9 @@ class AgentTriggerTests(unittest.TestCase):
                     )
                     self.assertIsNotNone(result)
                     self.assertEqual(result["decision"], "block")
-                    self.assertIn(f"@{subagent_type}", result["reason"])
+                    self.assertIn("ANALYSIS REQUIRED for lane_id=", result["reason"])
+                    self.assertIn(f".claude/agents/{subagent_type}.md", result["reason"])
+                    self.assertIn("main-agent", result["reason"])
                     self.assertIn("record_analysis_lane", result["reason"])
                     payload = self._read_queue_delegate(trigger_path)
                     self.assertIsNotNone(payload, "Delegate should be queued")
@@ -263,10 +271,16 @@ class AgentTriggerTests(unittest.TestCase):
                 ),
                 trigger_path=str(trigger_path),
             )
-            self.assertIsNone(lane_record)
-            payload = self._read_queue_delegate(trigger_path)
-            self.assertIsNotNone(payload, "Delegate should be queued")
-            self.assertTrue(payload["processed"])
+            # W1.7: recording a PREREQ lane (event_auth) clears its matching
+            # delegate (popped from the queue) AND emits a non-blocking SYNTHESIS
+            # NUDGE hookSpecificOutput. It is no longer None, but it must NOT be a
+            # decision=block (the lane writeback is allowed to proceed).
+            self.assertIsNotNone(lane_record)
+            self.assertNotEqual(lane_record.get("decision"), "block")
+            self.assertIn("hookSpecificOutput", lane_record)
+            # The matching delegate was processed -> popped from the lane queue.
+            payload = self._read_queue_delegate(trigger_path, "event_auth")
+            self.assertIsNone(payload, "Matching lane record should pop the delegate")
 
     def test_pending_delegation_blocks_report_generation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -294,7 +308,8 @@ class AgentTriggerTests(unittest.TestCase):
             )
             self.assertIsNotNone(blocked)
             self.assertEqual(blocked["decision"], "block")
-            self.assertIn("@evtx-analyst", blocked["reason"])
+            self.assertIn("ANALYSIS REQUIRED for lane_id=", blocked["reason"])
+            self.assertIn(".claude/agents/evtx-analyst.md", blocked["reason"])
 
     def test_pending_delegation_does_not_block_unrelated_tools(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -348,24 +363,39 @@ class AgentTriggerTests(unittest.TestCase):
                 ),
                 trigger_path=str(trigger_path),
             )
-            self.assertIsNone(unrelated_lane)
-            payload = self._read_queue_delegate(trigger_path)
-            self.assertIsNotNone(payload, "Delegate should be queued")
-            self.assertEqual(payload["lane_id"], "event_auth")
-            self.assertFalse(payload["processed"])
+            # W1.7 / H.1: a tool in a DIFFERENT lane is NOT blocked by the
+            # pending event_auth delegate - it gets its OWN inline-analysis
+            # checkpoint block and queues its own (memory) delegate. The key
+            # invariant is that the original event_auth delegate is NOT
+            # overwritten and remains pending.
+            self.assertIsNotNone(unrelated_lane)
+            self.assertEqual(unrelated_lane["decision"], "block")
+            self.assertIn("ANALYSIS REQUIRED for lane_id=", unrelated_lane["reason"])
+            event_auth_payload = self._read_queue_delegate(trigger_path, "event_auth")
+            self.assertIsNotNone(event_auth_payload, "Original event_auth delegate must survive")
+            self.assertFalse(event_auth_payload["processed"])
+            memory_payload = self._read_queue_delegate(trigger_path, "memory")
+            self.assertIsNotNone(memory_payload, "memory delegate should be queued concurrently")
+            self.assertEqual(memory_payload["lane_id"], "memory")
+            self.assertFalse(memory_payload["processed"])
 
     def test_pending_delegation_case_mismatch_marks_trigger_processed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             trigger_path = Path(tmp_dir) / "delegate.json"
+            # Seed the lane-keyed queue (W1.7 format) with a CASE-A delegate.
             trigger_path.write_text(
                 json.dumps(
                     {
-                        "processed": False,
-                        "lane_id": "event_auth",
-                        "subagent_type": "evtx-analyst",
-                        "case_id": "CASE-A",
-                        "session_id": "SESSION-A",
-                        "created_at": "2099-01-01T00:00:00+00:00",
+                        "event_auth": [
+                            {
+                                "processed": False,
+                                "lane_id": "event_auth",
+                                "subagent_type": "evtx-analyst",
+                                "case_id": "CASE-A",
+                                "session_id": "SESSION-A",
+                                "created_at": "2099-01-01T00:00:00+00:00",
+                            }
+                        ]
                     }
                 ),
                 encoding="utf-8",
@@ -378,20 +408,27 @@ class AgentTriggerTests(unittest.TestCase):
                 ),
                 trigger_path=str(trigger_path),
             )
+            # Context (case) mismatch -> the stale pending delegate is cleared
+            # (popped) and the unrelated tool is NOT blocked.
             self.assertIsNone(result)
-            payload = self._read_queue_delegate(trigger_path)
-            self.assertIsNotNone(payload, "Delegate should be queued")
-            self.assertTrue(payload["processed"])
+            payload = self._read_queue_delegate(trigger_path, "event_auth")
+            self.assertIsNone(payload, "Case-mismatched delegate should be cleared")
 
     def test_legacy_stale_trigger_without_created_at_is_processed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             trigger_path = Path(tmp_dir) / "delegate.json"
+            # Lane-keyed queue (W1.7) with a legacy delegate that has no
+            # created_at and no case_id -> stale / context-unmatched.
             trigger_path.write_text(
                 json.dumps(
                     {
-                        "processed": False,
-                        "lane_id": "event_auth",
-                        "subagent_type": "evtx-analyst",
+                        "event_auth": [
+                            {
+                                "processed": False,
+                                "lane_id": "event_auth",
+                                "subagent_type": "evtx-analyst",
+                            }
+                        ]
                     }
                 ),
                 encoding="utf-8",
@@ -407,10 +444,11 @@ class AgentTriggerTests(unittest.TestCase):
                 trigger_path=str(trigger_path),
             )
 
+            # The stale / context-unmatched delegate is cleared and the
+            # unrelated tool is NOT blocked.
             self.assertIsNone(result)
-            payload = self._read_queue_delegate(trigger_path)
-            self.assertIsNotNone(payload, "Delegate should be queued")
-            self.assertTrue(payload["processed"])
+            payload = self._read_queue_delegate(trigger_path, "event_auth")
+            self.assertIsNone(payload, "Stale delegate should be cleared")
 
     def test_lane_match_strict_clears_trigger_when_lane_matches(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -434,9 +472,9 @@ class AgentTriggerTests(unittest.TestCase):
                 ),
                 trigger_path=str(trigger_path),
             )
-            payload = self._read_queue_delegate(trigger_path)
-            self.assertIsNotNone(payload, "Delegate should be queued")
-            self.assertTrue(payload["processed"])
+            # W1.7: a matching lane record pops the delegate off the lane queue.
+            payload = self._read_queue_delegate(trigger_path, "event_auth")
+            self.assertIsNone(payload, "Matching lane record should clear the delegate")
 
     def test_lane_match_uses_nested_lane_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -462,9 +500,9 @@ class AgentTriggerTests(unittest.TestCase):
                 ),
                 trigger_path=str(trigger_path),
             )
-            payload = self._read_queue_delegate(trigger_path)
-            self.assertIsNotNone(payload, "Delegate should be queued")
-            self.assertTrue(payload["processed"])
+            # W1.7: nested lane payload also matches -> delegate popped.
+            payload = self._read_queue_delegate(trigger_path, "event_auth")
+            self.assertIsNone(payload, "Matching lane record should clear the delegate")
 
     def test_lane_match_parses_string_content_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -492,9 +530,9 @@ class AgentTriggerTests(unittest.TestCase):
 
             agent_trigger.process_event(event, trigger_path=str(trigger_path))
 
-            payload = self._read_queue_delegate(trigger_path)
-            self.assertIsNotNone(payload, "Delegate should be queued")
-            self.assertTrue(payload["processed"])
+            # W1.7: string-content payload parsed, memory lane matched -> popped.
+            payload = self._read_queue_delegate(trigger_path, "memory")
+            self.assertIsNone(payload, "Matching lane record should clear the delegate")
 
     def test_lane_match_strict_blocks_wrong_lane(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -609,7 +647,7 @@ class AgentTriggerTests(unittest.TestCase):
                 )
                 self.assertIsNotNone(result1)
                 self.assertEqual(result1["decision"], "block")
-                self.assertIn("@mft-analyst", result1["reason"])
+                self.assertIn(".claude/agents/mft-analyst.md", result1["reason"])
 
                 # Second tool in SAME lane: sigma_hunt
                 # OLD: would block because lane_id == "timeline_correlation"
@@ -629,7 +667,7 @@ class AgentTriggerTests(unittest.TestCase):
                 # Should NOT be None (specialist should be queued)
                 self.assertIsNotNone(result2, "Same-lane different tools should queue concurrently")
                 self.assertEqual(result2["decision"], "block")
-                self.assertIn("@sigma-analyst", result2["reason"])
+                self.assertIn(".claude/agents/sigma-analyst.md", result2["reason"])
 
                 # Verify queue has both delegates
                 with open(queue_path) as f:
@@ -681,7 +719,7 @@ class AgentTriggerTests(unittest.TestCase):
                 # Should block with delegation reason
                 self.assertIsNotNone(result2)
                 self.assertEqual(result2["decision"], "block")
-                self.assertIn("@sigma-analyst", result2["reason"])
+                self.assertIn(".claude/agents/sigma-analyst.md", result2["reason"])
 
                 # Verify queue has only ONE sigma_hunt delegate (no duplicate)
                 with open(queue_path) as f:

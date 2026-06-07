@@ -985,22 +985,24 @@ def _record_execution_parity(
     outputs_summary: str,
     started_entry: dict[str, Any],
     completed_entry: dict[str, Any],
+    retry_state: Optional[dict[str, Any]] = None,
 ) -> None:
-    _state_manager.add_execution(
-        {
-            "execution_id": execution_id,
-            "tool_name": tool_name,
-            "command_line": command_line,
-            "parameters": parameters,
-            "duration_seconds": round(duration_seconds, 4),
-            "exit_code": exit_code,
-            "outputs_summary": outputs_summary,
-            "iteration": _audit_logger.current_iteration,
-            "audit_started_entry_hash": started_entry.get("entry_hash"),
-            "audit_completed_entry_hash": completed_entry.get("entry_hash"),
-            "finding_ids_generated": [],
-        }
-    )
+    record: dict[str, Any] = {
+        "execution_id": execution_id,
+        "tool_name": tool_name,
+        "command_line": command_line,
+        "parameters": parameters,
+        "duration_seconds": round(duration_seconds, 4),
+        "exit_code": exit_code,
+        "outputs_summary": outputs_summary,
+        "iteration": _audit_logger.current_iteration,
+        "audit_started_entry_hash": started_entry.get("entry_hash"),
+        "audit_completed_entry_hash": completed_entry.get("entry_hash"),
+        "finding_ids_generated": [],
+    }
+    if retry_state is not None:
+        record["retry_state"] = retry_state
+    _state_manager.add_execution(record)
 
 
 def _windows_volume_resolves(image_path: str) -> bool:
@@ -1132,6 +1134,96 @@ def _record_artifact_absent_audit(
         "execution_id": eid,
         "findings_created": [finding_id] if finding_id else [],
     }
+
+
+def _persist_parser_retry_execution(
+    *,
+    tool_name: str,
+    artifact_family: str,
+    case_id: str,
+    error_response: dict[str, Any],
+) -> Optional[str]:
+    """Wave 3 (3a.1): persist a retryable parser-staging failure as a real
+    execution row carrying ``retry_state.retry_required=True``.
+
+    Genuine parser staging failures (status=error + needs_extract_windows_artifacts)
+    early-return from the disk-tool backend with ``execution_id=None`` - the guard
+    in ``record_analysis_lane`` has nothing to query. This helper allocates an
+    execution_id, writes the audit started/result(exit!=0) entries, mirrors the
+    row into state.json via ``_record_execution_parity`` with the structured
+    ``retry_state`` payload, and returns the new execution_id (which the caller
+    attaches to the error response). It does NOT create a finding or claim
+    documented-absence - this is a retryable failure, not a terminal gap.
+
+    Only call this for genuine retryable parser failures (extract_mft_timeline,
+    summarize_evtx). Never call it for the prefetch/amcache wrappers that convert
+    needs_extract_windows_artifacts into a documented-absence success.
+    """
+    import time as _time
+
+    input_name = str(error_response.get("input_name") or "")
+    input_path = str(error_response.get("resolved_path") or error_response.get("image_path") or "")
+    parameters = {
+        "case_id": case_id,
+        "input_name": input_name,
+        "input_path": input_path,
+        "needs_extract_windows_artifacts": True,
+    }
+    command_line = (
+        f"{tool_name}(case_id={case_id!r}, input_name={input_name!r}) "
+        f"-> retry_required_parser_staging_failure"
+    )
+    retry_state = {
+        "retry_required": True,
+        "recovery_tool": "extract_windows_artifacts",
+        "required_tool_name": "disk.extract_windows_artifacts",
+        "artifact_family": artifact_family,
+        "parser_tool": tool_name,
+        "input_name": input_name,
+        "input_path": input_path,
+    }
+
+    eid = _audit_logger.next_execution_id()
+    t0 = _time.monotonic()
+
+    started = _audit_logger.log_execution(
+        execution_id=eid,
+        tool_name=tool_name,
+        parameters=parameters,
+        command_line=command_line,
+    )
+
+    outputs_summary = (
+        f"status=error retry_required=True artifact_family={artifact_family} "
+        f"recovery_tool=extract_windows_artifacts needs_extract_windows_artifacts=True"
+    )
+
+    completed = _audit_logger.log_result(
+        execution_id=eid,
+        exit_code=1,
+        duration=_time.monotonic() - t0,
+        outputs_summary=outputs_summary,
+        finding_ids=[],
+        tool_name=tool_name,
+        command_line=command_line,
+        parameters=parameters,
+    )
+
+    if isinstance(completed, dict):
+        _record_execution_parity(
+            execution_id=eid,
+            tool_name=tool_name,
+            command_line=command_line,
+            parameters=parameters,
+            duration_seconds=_time.monotonic() - t0,
+            exit_code=1,
+            outputs_summary=outputs_summary,
+            started_entry=started,
+            completed_entry=completed,
+            retry_state=retry_state,
+        )
+
+    return eid
 
 
 def _strip_data_for_summary(response: Any, response_format: str = "summary",
@@ -1669,6 +1761,26 @@ def extract_mft_timeline(
         )
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.extract_mft_timeline"))
+        # Wave 3 (3a.1): a genuine retryable parser staging failure must persist
+        # a retry_state execution so record_analysis_lane can block the lane from
+        # being falsely closed COMPLETE_WITH_GAPS. Attach the new execution_id.
+        if (
+            isinstance(_r, dict)
+            and _r.get("status") == "error"
+            and _r.get("needs_extract_windows_artifacts")
+            and not _r.get("execution_id")
+        ):
+            try:
+                _eid = _persist_parser_retry_execution(
+                    tool_name="disk.extract_mft_timeline",
+                    artifact_family="mft",
+                    case_id=case_id,
+                    error_response=_r,
+                )
+                if _eid:
+                    _r["execution_id"] = _eid
+            except Exception:
+                pass
         return _finalize_tool_response("disk.extract_mft_timeline", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "extract_mft_timeline"}
@@ -1855,6 +1967,25 @@ def summarize_evtx(
         )
         if isinstance(_r, dict) and _r.get("status") != "error":
             _r.update(_forensic_envelope("disk.summarize_evtx"))
+        # Wave 3 (3a.1): retryable EVTX parser staging failure -> persist a
+        # retry_state execution and attach its execution_id (see MFT path above).
+        if (
+            isinstance(_r, dict)
+            and _r.get("status") == "error"
+            and _r.get("needs_extract_windows_artifacts")
+            and not _r.get("execution_id")
+        ):
+            try:
+                _eid = _persist_parser_retry_execution(
+                    tool_name="disk.summarize_evtx",
+                    artifact_family="evtx",
+                    case_id=case_id,
+                    error_response=_r,
+                )
+                if _eid:
+                    _r["execution_id"] = _eid
+            except Exception:
+                pass
         return _finalize_tool_response("disk.summarize_evtx", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "summarize_evtx"}
@@ -8016,6 +8147,130 @@ def _event_auth_evidence_exists(
     return False
 
 
+# Wave 3 (3a.2): which retryable parser-staging artifact families belong to a
+# lane. timeline_correlation owns MFT/USN; event_auth owns EVTX. Used to sweep
+# lane-tool executions so omitting the bad E-id from execution_ids cannot bypass
+# the retry guard. Scoped to MFT + EVTX (the only families that currently emit
+# retry_state.retry_required).
+_LANE_RETRY_FAMILIES: dict[str, set[str]] = {
+    "timeline_correlation": {"mft"},
+    "event_auth": {"evtx"},
+}
+# Parser tools that produce retryable staging failures, by family.
+_RETRY_PARSER_TOOLS_BY_FAMILY: dict[str, set[str]] = {
+    "mft": {
+        "disk.extract_mft_timeline",
+        "mcp__savvydfir__extract_mft_timeline",
+        "extract_mft_timeline",
+        "disk.extract_usn_journal",
+        "mcp__savvydfir__extract_usn_journal",
+        "extract_usn_journal",
+    },
+    "evtx": {
+        "disk.summarize_evtx",
+        "mcp__savvydfir__summarize_evtx",
+        "summarize_evtx",
+    },
+}
+
+
+def _execution_sort_key(execution: dict[str, Any]) -> tuple[int, str]:
+    """Order executions by E-NNN numeric suffix, falling back to recorded_at."""
+    eid = str(execution.get("execution_id") or "").strip()
+    suffix = -1
+    if eid.startswith("E-"):
+        try:
+            suffix = int(eid.split("-", 1)[1])
+        except (ValueError, IndexError):
+            suffix = -1
+    return (suffix, str(execution.get("recorded_at") or ""))
+
+
+def _unresolved_retry_executions(
+    case_id: str,
+    execution_ids: Optional[list[str]],
+    lane_id: str,
+) -> list[dict[str, Any]]:
+    """Wave 3 (3a.2): return executions whose retry_state.retry_required is True
+    and which have NOT been superseded by a later successful re-run of the same
+    parser tool.
+
+    An execution E (retry_state.retry_required True, parser_tool P) is RESOLVED
+    when a later execution (greater E-NNN suffix / later recorded_at) exists with
+    ``tool_name == P``, ``exit_code == 0``, and no active retry_state. Otherwise
+    it is unresolved and blocks lane completion.
+
+    Scope: the executions explicitly referenced in ``execution_ids`` PLUS a sweep
+    of all executions whose parser_tool belongs to this lane's artifact families
+    (timeline_correlation -> MFT/USN, event_auth -> EVTX). The sweep stops an
+    agent from bypassing the guard by simply omitting the failed E-id from the
+    lane's ``execution_ids``.
+    """
+    try:
+        all_executions = _state_manager.get_executions()
+    except Exception:
+        return []
+    if not isinstance(all_executions, list):
+        return []
+
+    ordered = sorted(
+        (e for e in all_executions if isinstance(e, dict)),
+        key=_execution_sort_key,
+    )
+
+    def _is_active_retry(execution: dict[str, Any]) -> bool:
+        rs = execution.get("retry_state")
+        return isinstance(rs, dict) and rs.get("retry_required") is True
+
+    def _resolves(later: dict[str, Any], parser_tool: str, fail_key: tuple) -> bool:
+        if _execution_sort_key(later) <= fail_key:
+            return False
+        if str(later.get("tool_name") or "").strip() != parser_tool:
+            return False
+        if later.get("exit_code") != 0:
+            return False
+        # A later run that itself carries an active retry_state is a re-failure,
+        # not a resolution.
+        if _is_active_retry(later):
+            return False
+        return True
+
+    requested_ids = {str(x).strip() for x in (execution_ids or []) if str(x).strip()}
+    lane_families = _LANE_RETRY_FAMILIES.get(lane_id, set())
+    lane_parser_tools: set[str] = set()
+    for fam in lane_families:
+        lane_parser_tools |= _RETRY_PARSER_TOOLS_BY_FAMILY.get(fam, set())
+
+    unresolved: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for execution in ordered:
+        if not _is_active_retry(execution):
+            continue
+        eid = str(execution.get("execution_id") or "").strip()
+        rs = execution.get("retry_state") or {}
+        parser_tool = str(rs.get("parser_tool") or execution.get("tool_name") or "").strip()
+        family = str(rs.get("artifact_family") or "").strip().lower()
+
+        # Only consider executions in scope: explicitly referenced, OR part of
+        # this lane's artifact families (sweep to defeat omission-bypass).
+        in_scope = eid in requested_ids
+        if not in_scope and lane_parser_tools:
+            if parser_tool in lane_parser_tools or family in lane_families:
+                in_scope = True
+        if not in_scope:
+            continue
+
+        fail_key = _execution_sort_key(execution)
+        resolved = any(
+            _resolves(later, parser_tool, fail_key) for later in ordered
+        )
+        if not resolved and eid not in seen_ids:
+            seen_ids.add(eid)
+            unresolved.append(execution)
+
+    return unresolved
+
+
 def _mark_state_updated_after_report(case_id: str) -> None:
     report_json = Path(os.environ.get("OUTPUT_BASE", "./reports")) / case_id / "report.json"
     if not report_json.exists():
@@ -8437,6 +8692,61 @@ def record_analysis_lane(
                 "missing_execution_ids": missing_execution_ids,
                 "missing_finding_ids": missing_finding_ids,
             }
+
+        # Wave 3 (3a.2): retry-required guard. Runs FIRST (before the event_auth
+        # guard and the analysis-debt guard). A parser staging failure that
+        # persisted retry_state.retry_required=True cannot be falsely closed as
+        # COMPLETE or COMPLETE_WITH_GAPS until the parser is actually re-run
+        # against a staged durable path (a later exit-0 run of the same parser).
+        # CORE-FLOW-SAFETY: ONLY an explicitly persisted retry_state.retry_required
+        # blocks here - terminal gaps (USN rollover, documented absence,
+        # post-successful-extraction analysis debt, ordinary failures without
+        # needs_extract_windows_artifacts) carry NO retry_state and pass through.
+        # Leave the lane UNCHANGED on reject (do not upsert).
+        if normalized_status in {"COMPLETE", "COMPLETE_WITH_GAPS"}:
+            _unresolved_retries = _unresolved_retry_executions(
+                case_id, normalized_execution_ids, normalized_lane
+            )
+            if _unresolved_retries:
+                _blocking_ids = sorted(
+                    {
+                        str(e.get("execution_id") or "").strip()
+                        for e in _unresolved_retries
+                        if str(e.get("execution_id") or "").strip()
+                    }
+                )
+                _families = sorted(
+                    {
+                        str((e.get("retry_state") or {}).get("artifact_family") or "").strip()
+                        for e in _unresolved_retries
+                        if str((e.get("retry_state") or {}).get("artifact_family") or "").strip()
+                    }
+                )
+                _parser_tools = sorted(
+                    {
+                        str((e.get("retry_state") or {}).get("parser_tool") or e.get("tool_name") or "").strip()
+                        for e in _unresolved_retries
+                        if str((e.get("retry_state") or {}).get("parser_tool") or e.get("tool_name") or "").strip()
+                    }
+                )
+                return {
+                    "status": "error",
+                    "tool": "record_analysis_lane",
+                    "error": "retry_required_execution_unresolved",
+                    "lane_completion_blocked": True,
+                    "retry_required": True,
+                    "blocking_execution_ids": _blocking_ids,
+                    "artifact_families": _families,
+                    "next_required_tool": "extract_windows_artifacts",
+                    "required_tool_name": "disk.extract_windows_artifacts",
+                    "retry_parser_tools": _parser_tools,
+                    "agent_instruction": (
+                        "Call extract_windows_artifacts, rerun the parser on the "
+                        "staged durable path, analyze the handle, then resubmit "
+                        "record_analysis_lane."
+                    ),
+                }
+
         if (
             normalized_lane == "event_auth"
             and normalized_status in {"COMPLETE", "COMPLETE_WITH_GAPS"}

@@ -42,16 +42,20 @@ def test_workflow_contract_includes_analysis_contract():
     block = src[idx:end] if end > 0 else src[idx:idx + 3000]
     assert '"analysis_contract"' in block, (
         "workflow_contract MUST include analysis_contract. Without explicit "
-        "instructions to use run_analysis() / specialist subagents after each "
-        "extraction, the agent runs all tools but never drills into the CSVs "
-        "— Run-9 produced 552 ACTIVE / 2 CONFIRMED for exactly this reason."
+        "instructions to use run_analysis() after each extraction, the agent "
+        "runs all tools but never drills into the CSVs — Run-9 produced 552 "
+        "ACTIVE / 2 CONFIRMED for exactly this reason."
     )
-    # Critical keywords must be present in the contract
-    for keyword in ("run_analysis", "specialist_routing", "@mft-analyst",
-                    "@evtx-analyst", "fallback_if_agent_unavailable"):
+    # W1.7 inline-primary keywords: run_analysis remains the mandate, but the
+    # routing is now to the artifact KNOWLEDGE BASES (.claude/agents/<artifact>-
+    # analyst.md), with opt-in Task spawn — not delegate-first specialist routing.
+    for keyword in ("run_analysis", "heuristic_reference_routing",
+                    ".claude/agents/mft-analyst.md",
+                    ".claude/agents/evtx-analyst.md",
+                    "opt_in_specialist_task_spawn"):
         assert keyword in block, (
             f"analysis_contract missing '{keyword}' — that's part of the "
-            f"explicit guidance that tells the agent how to drill in."
+            f"explicit guidance that tells the agent how to drill in inline."
         )
 
 
@@ -102,13 +106,18 @@ def test_post_hook_emits_analysis_directive_for_extract_mft():
     assert r.stdout.strip(), "PostToolUse hook must emit directive"
     out = json.loads(r.stdout)
     ctx = out.get("hookSpecificOutput", {}).get("additionalContext", "")
-    # Must mention both options: run_analysis OR specialist
+    # W1.7 inline-primary: the directive nudges main-agent inline analysis via
+    # run_analysis and references the artifact KB (.claude/agents/<artifact>.md)
+    # as a last-resort reference, NOT an @specialist Task spawn.
     assert "run_analysis" in ctx, f"directive must mention run_analysis. Got: {ctx[:200]}"
-    assert "@mft-analyst" in ctx, f"directive must mention @mft-analyst. Got: {ctx[:200]}"
-    # Must explain the consequence
-    assert "ACTIVE" in ctx or "CONFIRMED" in ctx or "stacking" in ctx, (
-        f"directive must explain WHY (extraction-without-analysis leaves "
-        f"findings as ACTIVE observations). Got: {ctx[:300]}"
+    assert ".claude/agents/mft-analyst.md" in ctx, (
+        f"directive must reference the mft-analyst knowledge base. Got: {ctx[:200]}"
+    )
+    assert "main-agent" in ctx, f"directive must direct main-agent inline. Got: {ctx[:200]}"
+    # Must explain the consequence / forcing function.
+    assert "ANALYZE IT NOW" in ctx or "submit_finding" in ctx, (
+        f"directive must explain WHY (extraction-without-analysis is half a run). "
+        f"Got: {ctx[:300]}"
     )
 
 
@@ -135,8 +144,10 @@ def test_post_hook_emits_directive_for_sigma_hunt():
     assert r.stdout.strip()
     out = json.loads(r.stdout)
     ctx = out.get("hookSpecificOutput", {}).get("additionalContext", "")
-    assert "@sigma-analyst" in ctx
+    # W1.7: references the sigma-analyst KB + inline run_analysis (no Task spawn).
+    assert ".claude/agents/sigma-analyst.md" in ctx
     assert "run_analysis" in ctx
+    assert "main-agent" in ctx
 
 
 def test_post_hook_silent_when_no_csv_in_response():

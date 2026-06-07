@@ -272,6 +272,16 @@ class Execution(BaseModel):
             "instead of storage_path for backwards compatibility."
         ),
     )
+    retry_state: Optional[dict] = Field(
+        None,
+        description=(
+            "Populated on a retryable parser staging failure (status=error + "
+            "needs_extract_windows_artifacts=true). Carries retry_required, "
+            "recovery_tool, required_tool_name, artifact_family, parser_tool, "
+            "input_name, input_path so record_analysis_lane can block lane "
+            "completion until the parser is re-run against a staged durable path."
+        ),
+    )
 
     @field_validator("execution_id", mode="before")
     @classmethod
