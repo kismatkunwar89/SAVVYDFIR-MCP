@@ -72,7 +72,7 @@ decision flow below) is on the roadmap, not current scope.
                                                                 │  Agent Loop  │
                                                                 │              │
                                                                 │  Skill:      │
-                                                                │ .agents/     │
+                                                                │ .claude/     │
                                                                 │ skills/      │
                                                                 │ workflow     │
                                                                 └──────┬───────┘
