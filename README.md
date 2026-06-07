@@ -44,7 +44,7 @@ Every required turn-in is listed below with its exact location, so judges can ve
 
 ## What It Does
 
-SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It exposes 56 typed forensic tools over stdio transport (see `describe_tool_catalog`), supports cross-artifact correlation between disk and memory evidence via 10 anti-forensics detection checks, and keeps findings traceable through persisted artifacts, state, and a hash-chained audit log, with structured provenance (every CONFIRMED finding cites a resolvable `execution_id`; heuristics carry CTX-NNN references).
+SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It exposes **60+** typed forensic tools over stdio transport (61 at this writing — call `describe_tool_catalog` for the live count, don't hardcode it), supports cross-artifact correlation between disk and memory evidence via 10 anti-forensics detection checks, and keeps findings traceable through persisted artifacts, state, and a hash-chained audit log, with structured provenance (every CONFIRMED finding cites a resolvable `execution_id`; heuristics carry CTX-NNN references).
 
 **Design: autonomous-first.** You point it at a case `manifest.json` and it
 investigates with minimal interaction — the 7-phase workflow is enforced by **hooks
@@ -448,14 +448,14 @@ Evidence directories are READ-ONLY. By default output goes to `analysis/` and `r
 
 ---
 
-## MCP Tools (41)
+## MCP Tools (60+)
 
 | Namespace | Tools | Description |
 |---|---|---|
 | evidence | `verify_integrity`, `get_provenance` | Hash verification and finding traceability |
 | disk | `extract_prefetch`, `get_amcache`, `extract_mft_timeline`, `list_deleted_files`, `summarize_evtx`, `extract_registry_run_keys` | Windows disk artifact analysis |
 | memory | `detect_profile`, `list_processes`, `scan_processes`, `scan_network`, `detect_injection`, `list_dlls` | Volatility 3 memory analysis |
-| timeline | `build_timeline`, `query_timeline` | Plaso super timeline |
+| timeline | `build_timeline`, `query_timeline` | Plaso super timeline — **optional**, not gate-enforced, not used in the validated single-host flow |
 | yara | `scan_files`, `scan_memory` | YARA signature scanning |
 | correlation | `compare_disk_and_memory`, `flag_discrepancy`, `find_temporal_clusters` | Cross-artifact correlation (10 anti-forensics checks) + temporal clustering for synthesis |
 | state | `read_state`, `get_finding`, `get_findings`, `export_trace`, `describe_tool_catalog` | Case state summary, retrieval, trace export, and catalog metadata |
@@ -485,7 +485,7 @@ When evaluating against ground truth:
 - **False Positive (FP):** Finding flagged as suspicious but is benign per ground truth
 - **False Negative (FN):** Known-bad artifact in ground truth not detected by agent
 
-The `compare_disk_and_memory()` correlation engine runs 6 specific checks:
+The `compare_disk_and_memory()` correlation engine runs **10** anti-forensics checks — the 6 core checks below, plus 4 extended (USN-journal timestamp validation, ShimCache vs Amcache, EID 1102 log-clearing, SRUM exfiltration):
 1. Process in memory with no disk binary (fileless)
 2. Execution evidence for deleted binary (cleanup)
 3. VAD anomaly on legitimate process path (injection)
@@ -518,13 +518,16 @@ SAVVYDFIR-MCP/
 ├── .claude/
 │   ├── settings.json                  # Claude Code MCP + hook config
 │   ├── hooks/
-│   │   ├── post-tool-use.py           # Non-blocking dispatcher + tool follow-up context
+│   │   ├── session-start.py           # Session bootstrap
+│   │   ├── workflow-enforce-pre.py     # PreToolUse gate (report/lane coverage)
+│   │   ├── workflow-enforce-post.py    # PostToolUse gate (phase transitions)
 │   │   └── stop.py                    # Completion verification from state.json + audit.jsonl
 │   ├── agents/                        # Specialist analysts (MFT, EVTX, registry, memory, etc.)
 │   └── skills/
 │       ├── investigation-workflow/    # Primary investigation sequencing guidance
 │       ├── artifact-routing/          # Artifact-to-specialist routing
 │       ├── pivot-methodology/         # Cross-artifact pivoting patterns
+│       ├── sigma-detection/           # Sigma detection + ATT&CK mapping
 │       └── tools-reference/           # Tool contract reference
 ├── case-templates/
 │   └── manifest.json                  # Example case manifest
