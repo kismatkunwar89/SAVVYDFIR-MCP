@@ -8,16 +8,10 @@
 
 ---
 
-> **📌 Judged submission = tag [`v1.1.1`](https://github.com/kismatkunwar89/SAVVYDFIR-MCP/releases/tag/v1.1.1) (commit `f1770df`).**
-> To reproduce the hackathon evaluation exactly, check out that tag:
-> ```bash
-> git clone https://github.com/kismatkunwar89/SAVVYDFIR-MCP.git
-> cd SAVVYDFIR-MCP && git checkout v1.1.1
-> ```
-> Commits on `master` after `v1.1.1` are post-submission **maintenance** — multi-host graph-pipeline
-> fixes. Default behavior is unchanged for existing callers, with one intentional change: cross-host
-> **account correlation now requires prefixed `account:` indicators** (raw description text is no longer
-> scraped, which previously produced false edges). Not part of the judged submission.
+> **📌 Judged submission = tag [`v1.1.1`](https://github.com/kismatkunwar89/SAVVYDFIR-MCP/releases/tag/v1.1.1).**
+> `master` tracks the latest code; commits after `v1.1.1` are post-submission maintenance (graph-pipeline
+> fixes, backward-compatible defaults). To reproduce the hackathon evaluation exactly:
+> `git checkout v1.1.1`.
 
 ---
 
@@ -274,13 +268,26 @@ claude --allowedTools "mcp__savvydfir__*" --dangerously-skip-permissions \
 > unattended autonomous runs, but it bypasses every confirmation, so use it only inside a **trusted,
 > isolated DFIR VM** (the intended deployment).
 
-> **Note:** `sigma_hunt` (Chainsaw, 2,278 Sigma rules) is the mandatory detection
-> tool the report coverage gate checks for - do not confuse it with `sigma_scan`
-> (a separate anomaly-detector tool). Naming `sigma_hunt` explicitly avoids the
-> report blocking on a missing-coverage gate.
+> **Note — `sigma_hunt` is mandatory for a *strict* report, and it takes time.**
+> It runs Chainsaw across the configured Windows Sigma corpus (~2,278 rules in the validated setup;
+> the exact count varies with an unpinned SigmaHQ clone). It is a **hard-success requirement for
+> strict report generation** — one successful run with durable Chainsaw JSON (`exit_code=0`,
+> `duration_seconds>0`); a *failed* attempt does **not** satisfy the gate. `sigma_scan` is a separate
+> internal anomaly detector and does **not** count toward it. **Runtime is volume-dependent:** observed
+> runs ranged from a few seconds on small single-host EVTX to ~6 minutes on high-volume enterprise logs
+> (each directory attempt times out at 300s, then may retry prioritized channels). **There is no casual
+> per-run switch to turn it off** — to deliberately skip it, call `generate_report(case_id,
+> allow_partial=true)`, which produces a non-strict report marked `COMPLETE_WITH_GAPS` and records the
+> omission in `data_gaps`. (`SAVVYDFIR_SKIP_PHASE3_GATE=1` only relaxes the *ordering* gate; it does
+> **not** waive `sigma_hunt` coverage.)
 
 Claude calls MCP tools → accumulates findings → writes `analysis/state.json` + `analysis/audit.jsonl` → calls `generate_report(case_id)` and `generate_graph(case_id)`.
 Output: `reports/{case_id}/report.html` and `reports/{case_id}/graph.html`.
+
+> **PDF export (optional).** The report HTML is self-contained (no JS, no external assets), so any
+> Chromium-family browser can print it faithfully. `scripts/render_report_pdf.sh <report.html> [out.pdf]`
+> wraps headless Chromium to write `report.pdf` alongside the HTML — there is **no** PDF dependency in
+> the MCP server itself.
 
 ### Multi-host Enterprise Investigation
 
