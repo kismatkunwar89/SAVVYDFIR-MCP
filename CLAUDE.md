@@ -183,6 +183,29 @@ match on **semantic prefixes** - emit these so the right check fires:
 One indicator per line, `prefix: value`. Timestamps must be ISO-8601 UTC
 (`YYYY-MM-DDTHH:MM:SS`), the form every detector and the report layer expect.
 
+### PHASE 5.5: Gap Reconciliation (once, before synthesis)
+
+Before Phase 6, revisit lanes recorded `COMPLETE_WITH_GAPS` to see if Phase 5's
+cross-artifact IOCs / temporal clusters now resolve any gap. This is a **bounded
+re-query, not a re-extraction**:
+- Select ONLY **context-dependent** gaps where a durable handle (`csv_path`) still
+  exists - the artifact data is present but the lane could not conclude without a
+  sibling artifact's output (e.g. an MFT file-drop unattributed until Prefetch/EVTX
+  named the actor).
+- Require **new** pivot input from Phase 5 (an IOC, process name, or timestamp
+  cluster). Re-query via `run_analysis(data_path=<existing csv_path>, query=...)`,
+  `submit_finding(...)` any new evidence-backed conclusion, then re-record the lane
+  with merged `execution_ids` / `finding_ids`.
+- Do NOT revisit **terminal-absence** gaps - data physically absent (USN journal
+  rollover, Amcache time-cap, EID 1102 log-cleared with no VSS, artifact not present).
+  Re-querying cannot manufacture records that were never retained. Confirm via the
+  handle's min/max timestamp bounds before classifying a gap terminal.
+- Do NOT re-run extractors: one re-query attempt per gap. Extraction is only for an
+  **alternate-recovery** pivot (e.g. EID 1102 -> `analyze_vss`, missing hive -> staged
+  re-extract).
+- Keep the lane `COMPLETE_WITH_GAPS` if any terminal gap remains; upgrade to
+  `COMPLETE` only when no context-dependent gap is left open.
+
 ### PHASE 6: Cross-Artifact Synthesis (5 min)
 
 **MANDATORY - main-agent inline. Delegate synthesis is opt-in.** Run 2
