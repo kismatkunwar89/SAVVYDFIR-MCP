@@ -265,6 +265,179 @@ def try_durable_reuse(
     }
 
 
+# ===========================================================================
+# Durable-reuse v2: source-set + parameter + parser-signature fingerprint.
+#
+# v1 (above) keys on a SINGLE source path (size+mtime) and IGNORES tool
+# parameters - so an EVTX reuse can return a CSV parsed under a different
+# channel filter (the parameter-staleness bug). v2 fixes this with:
+#   - a multi-file/dir SOURCE-SET manifest fingerprint (path+size+mtime ->
+#     manifest_sha256), so file-access tools that read N hives/dirs/DBs
+#     invalidate when ANY material input changes;
+#   - a PARAMETER fingerprint (canonical-JSON sha256) so a channel/EID/date
+#     change invalidates reuse;
+#   - a PARSER_SIGNATURE so a parser-version bump invalidates reuse.
+# Correctness > reuse: ANY mismatch (source-set OR params OR parser_signature),
+# or a missing/invalid v2 sidecar (incl. a v1 sidecar) -> NO reuse, re-parse.
+# ===========================================================================
+_SIDECAR_SCHEMA_V2 = 2
+
+
+def build_source_set_fingerprint(paths: Iterable[str]) -> dict[str, Any]:
+    """Build a deterministic manifest fingerprint over a set of material inputs.
+
+    Each path may be a file OR a directory. For a directory, every contained
+    file (recursive) contributes (relpath, size, mtime_ns); for a file, its
+    own (path, size, mtime_ns). The manifest is sorted+hashed so adding,
+    removing, resizing, or re-timestamping ANY input changes manifest_sha256.
+    Missing paths contribute a ``missing`` entry (so a vanished input also
+    invalidates). Returns ``{entries:[...], manifest_sha256, source_count}``.
+    """
+    entries: list[dict[str, Any]] = []
+    lines: list[str] = []
+    for raw in sorted({str(p) for p in paths if p}):
+        p = Path(raw)
+        try:
+            if p.is_dir():
+                files: list[str] = []
+                total = 0
+                fcount = 0
+                for f in sorted(p.rglob("*")):
+                    if f.is_file():
+                        st = f.stat()
+                        files.append(f"{f.relative_to(p)}|{st.st_size}|{st.st_mtime_ns}")
+                        total += st.st_size
+                        fcount += 1
+                dir_manifest = hashlib.sha256("\n".join(files).encode("utf-8")).hexdigest()
+                entries.append({"path": str(p.resolve()), "kind": "dir",
+                                "file_count": fcount, "total_bytes": total,
+                                "manifest_sha256": dir_manifest})
+                lines.append(f"dir|{p.resolve()}|{fcount}|{total}|{dir_manifest}")
+            elif p.is_file():
+                st = p.stat()
+                entries.append({"path": str(p.resolve()), "kind": "file",
+                                "size": st.st_size, "mtime_ns": st.st_mtime_ns})
+                lines.append(f"file|{p.resolve()}|{st.st_size}|{st.st_mtime_ns}")
+            else:
+                entries.append({"path": raw, "kind": "missing"})
+                lines.append(f"missing|{raw}")
+        except OSError:
+            entries.append({"path": raw, "kind": "error"})
+            lines.append(f"error|{raw}")
+    manifest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+    return {"entries": entries, "manifest_sha256": manifest, "source_count": len(entries)}
+
+
+def build_parameter_fingerprint(params: dict[str, Any]) -> str:
+    """Canonical-JSON sha256 of the tool parameters that affect the output.
+
+    Sort keys, normalize separators, ``default=str`` for non-JSON types. A
+    channel-filter / EID / date-range change therefore changes the digest and
+    invalidates reuse (fixes the v1 EVTX parameter-staleness bug).
+    """
+    payload = json.dumps(params or {}, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def write_reuse_sidecar_v2(
+    csv_path: str,
+    *,
+    tool_name: str,
+    parser_signature: str,
+    source_paths: Iterable[str],
+    parameters: dict[str, Any],
+) -> None:
+    """Persist a v2 sidecar next to a freshly-parsed CSV. Best-effort; never raises.
+
+    Caller MUST only invoke this on a SUCCESSFUL parse with a durable CSV (never
+    on partial_collection / collection_failed / tool_incompatible / zero rows) -
+    no-poisoned-cache invariant.
+    """
+    try:
+        sidecar = {
+            "schema": _SIDECAR_SCHEMA_V2,
+            "tool": tool_name,
+            "parser_signature": parser_signature,
+            "parameter_fingerprint": build_parameter_fingerprint(parameters),
+            "source_set_fingerprint": build_source_set_fingerprint(source_paths),
+            "csv_path": str(csv_path),
+        }
+        _sidecar_path(csv_path).write_text(json.dumps(sidecar), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def try_durable_reuse_v2(
+    audit_logger: AuditLogger,
+    state_manager: CaseStateManager,
+    *,
+    tool_name: str,
+    parser_signature: str,
+    source_paths: Iterable[str],
+    parameters: dict[str, Any],
+    output_base: str,
+    case_id: str,
+    subtype: str,
+    canonical_filename: str,
+    force_reparse: bool = False,
+) -> Optional[dict[str, Any]]:
+    """Probe the durable output CSV; reuse ONLY when a valid v2 sidecar exists
+    AND ALL of {source-set, parameters, parser_signature} match. Else return
+    None so the caller re-parses (correctness > reuse). v1 sidecars are ignored.
+
+    On a verified match: record_cache_hit -> auditable success execution under
+    the CANONICAL tool name -> returns reuse metadata (csv_path, execution_id,
+    raw_command). The caller MUST recreate its extraction observation finding
+    with the FRESH execution_id (findings-on-reuse, NOT a silent skip).
+    """
+    source_paths = list(source_paths or [])
+    if force_reparse:
+        try:
+            probe = probe_durable_output_csv(output_base, case_id, subtype, filename=canonical_filename)
+            if probe:
+                _sidecar_path(probe["csv_path"]).unlink(missing_ok=True)
+        except (OSError, TypeError):
+            pass
+        return None
+
+    probe = probe_durable_output_csv(output_base, case_id, subtype, filename=canonical_filename)
+    if not probe:
+        return None
+    csv_path = probe["csv_path"]
+
+    sidecar = _read_reuse_sidecar(csv_path)
+    # Strict: require a v2 sidecar. No sidecar, or a v1 sidecar -> no reuse.
+    if not isinstance(sidecar, dict) or sidecar.get("schema") != _SIDECAR_SCHEMA_V2:
+        return None
+    if sidecar.get("parser_signature") != parser_signature:
+        return None
+    if sidecar.get("parameter_fingerprint") != build_parameter_fingerprint(parameters):
+        return None
+    current_sources = build_source_set_fingerprint(source_paths)
+    prior_sources = sidecar.get("source_set_fingerprint")
+    if (not isinstance(prior_sources, dict)
+            or prior_sources.get("manifest_sha256") != current_sources.get("manifest_sha256")):
+        return None
+
+    meta = record_cache_hit(
+        audit_logger, state_manager,
+        tool_name=tool_name, parameters=parameters,
+        cache_key=build_cache_key(tool_name, parameters),
+        artifact_path=csv_path, cache_source_execution_id=None,
+    )
+    return {
+        "csv_path": csv_path,
+        "reused_output": True,
+        "reuse_confidence": "fingerprint_verified",
+        "reuse_note": (
+            "Durable output CSV reused (v2: source-set + parameters + parser "
+            "signature verified). Parse skipped; pass force_reparse=True to regenerate."
+        ),
+        "execution_id": meta["execution_id"],
+        "raw_command": meta["raw_command"],
+    }
+
+
 def record_cache_hit(
     audit_logger: AuditLogger,
     state_manager: CaseStateManager,

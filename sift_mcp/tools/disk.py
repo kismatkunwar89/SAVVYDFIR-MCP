@@ -54,8 +54,8 @@ from sift_mcp.tools._cache import (
     build_cache_key,
     get_valid_cached_artifact,
     record_cache_hit,
-    try_durable_reuse,
-    write_reuse_sidecar,
+    try_durable_reuse_v2,
+    write_reuse_sidecar_v2,
 )
 from sift_mcp.tools._contracts import (
     build_contract_response,
@@ -138,6 +138,25 @@ def init_tools(
             audit_logger=audit_logger,
             state_manager=state_manager,
         )
+
+
+# ---------------------------------------------------------------------------
+# Durable-reuse v2 parser signatures (bump to invalidate reuse on parser change)
+# ---------------------------------------------------------------------------
+#: Heavy 3.
+_PARSER_SIG_MFT = "MFTECmd/mft_timeline_v1"
+_PARSER_SIG_USN = "MFTECmd/usn_journal_v1"
+_PARSER_SIG_EVTX = "EvtxECmd/evtx_timeline_v1"
+#: File-access 5.
+_PARSER_SIG_SHELLBAGS = "SBECmd/shellbags_v1"
+_PARSER_SIG_LNK = "LECmd/lnk_files_v1"
+_PARSER_SIG_JUMPLISTS = "JLECmd/jump_lists_v1"
+_PARSER_SIG_BROWSER = "sqlite3/browser_history_v1"
+_PARSER_SIG_REGFILEACCESS = "RECmd-DFIRBatch/registry_fileaccess_v1"
+#: Native 3.
+_PARSER_SIG_RECYCLE = "native_recycle_i_v1"
+_PARSER_SIG_PSREADLINE = "native_psreadline_v1"
+_PARSER_SIG_SCHEDTASKS = "native_task_xml_v1"
 
 
 # ---------------------------------------------------------------------------
@@ -3346,15 +3365,16 @@ def extract_mft_timeline(
     # state may have been cleared (cache index gone), the prior findings are gone
     # too -> this is a SEPARATE branch from the state-cache hit: create_findings
     # =True with the reuse execution_id so the fresh investigation gets findings.
-    reuse = try_durable_reuse(
+    reuse = try_durable_reuse_v2(
         _audit, _state,
         tool_name=tool,
+        parser_signature=_PARSER_SIG_MFT,
+        source_paths=[resolved_mft_path],
         parameters={"mft_path": resolved_mft_path},
         output_base=os.environ.get("OUTPUT_BASE", "/cases"),
         case_id=_case_id(),
         subtype="mft",
         canonical_filename="mft_timeline.csv",
-        source_path=resolved_mft_path,
         force_reparse=force_reparse,
     )
     if reuse is not None:
@@ -3467,7 +3487,10 @@ def extract_mft_timeline(
         # F-A: stamp a source-fingerprint sidecar next to the durable CSV so a
         # later run (after state clear) can verify-and-reuse instead of re-parsing.
         if durable_csv:
-            write_reuse_sidecar(durable_csv, tool_name=tool, source_path=resolved_mft_path)
+            write_reuse_sidecar_v2(
+                durable_csv, tool_name=tool, parser_signature=_PARSER_SIG_MFT,
+                source_paths=[resolved_mft_path], parameters={"mft_path": resolved_mft_path},
+            )
         # Stream from the durable CSV if persisted (so findings cite the durable
         # path), else from the temp CSV while still inside the temp dir.
         stream = _stream_mft_summary(
@@ -3705,15 +3728,16 @@ def extract_usn_journal(
     # parse. If present + source $J unchanged, reuse it, recreate the summary
     # finding with the reuse execution_id, and skip the parse. This is what breaks
     # the cleared-state -> reparse -> timeout -> stop-hook re-demand loop for USN.
-    reuse = try_durable_reuse(
+    reuse = try_durable_reuse_v2(
         _audit, _state,
         tool_name=tool,
+        parser_signature=_PARSER_SIG_USN,
+        source_paths=[resolved_usn],
         parameters={"usn_path": resolved_usn},
         output_base=os.environ.get("OUTPUT_BASE", "/cases"),
         case_id=_case_id(),
         subtype="usn",
         canonical_filename="usn_journal.csv",
-        source_path=resolved_usn,
         force_reparse=force_reparse,
     )
     if reuse is not None:
@@ -3839,7 +3863,10 @@ def extract_usn_journal(
         )
         # F-A: stamp source-fingerprint sidecar for verify-and-reuse next run.
         if durable_csv:
-            write_reuse_sidecar(durable_csv, tool_name=tool, source_path=resolved_usn)
+            write_reuse_sidecar_v2(
+                durable_csv, tool_name=tool, parser_signature=_PARSER_SIG_USN,
+                source_paths=[resolved_usn], parameters={"usn_path": resolved_usn},
+            )
 
     # Build a small preview when detailed is requested (capped at 25 rows)
     preview: list[dict[str, Any]] = []
@@ -4551,21 +4578,23 @@ def summarize_evtx(
     # SEPARATE branch from the state-cache hit: recreate findings via
     # _evtx_summary_finding_ids with the reuse execution_id (cleared state -> the
     # cached findings are gone, so a fresh investigation needs them recreated).
-    reuse = try_durable_reuse(
+    _evtx_reuse_params = {
+        "evtx_dir": _resolved_path_str(evtx_dir),
+        "channel": channel,
+        "start_date": start_date,
+        "end_date": end_date,
+        "event_ids": list(effective_eids) if effective_eids else [],
+    }
+    reuse = try_durable_reuse_v2(
         _audit, _state,
         tool_name=tool,
-        parameters={
-            "evtx_dir": _resolved_path_str(evtx_dir),
-            "channel": channel,
-            "start_date": start_date,
-            "end_date": end_date,
-            "event_ids": list(effective_eids) if effective_eids else [],
-        },
+        parser_signature=_PARSER_SIG_EVTX,
+        source_paths=[resolved_evtx_dir],
+        parameters=_evtx_reuse_params,
         output_base=os.environ.get("OUTPUT_BASE", "/cases"),
         case_id=_case_id(),
         subtype="evtx",
         canonical_filename="evtx_timeline.csv",
-        source_path=resolved_evtx_dir,
         force_reparse=force_reparse,
     )
     if reuse is not None:
@@ -4801,7 +4830,10 @@ def summarize_evtx(
         # F-A: stamp a corpus-manifest fingerprint sidecar so a later run (after
         # state clear) verify-and-reuses this 2.5GB CSV instead of re-parsing
         # 420 EVTX files (the parse that timed out + looped on the prior run).
-        write_reuse_sidecar(durable_csv, tool_name=tool, source_path=resolved_evtx_dir)
+        write_reuse_sidecar_v2(
+            durable_csv, tool_name=tool, parser_signature=_PARSER_SIG_EVTX,
+            source_paths=[resolved_evtx_dir], parameters=_evtx_reuse_params,
+        )
     promote_corroborated_findings(
         _state,
         "evtx_process_creation",
@@ -5923,6 +5955,123 @@ def _useractivity_tool_incompatible_response(
     }
 
 
+def _hive_source_set(hives: list[tuple[str, Path, str]]) -> list[str]:
+    """Material inputs for a hive-backed tool: each hive + its .LOG1/.LOG2.
+
+    Transaction logs are replayed before parsing, so a changed log changes the
+    parsed output - include them in the source-set fingerprint.
+    """
+    out: list[str] = []
+    for _profile, hive_path, _rel in hives:
+        out.append(str(hive_path))
+        for suffix in (".LOG1", ".LOG2"):
+            log = hive_path.parent / (hive_path.name + suffix)
+            if log.exists():
+                out.append(str(log))
+    return out
+
+
+def _dir_source_set(dirs: list[tuple[str, Path, str]]) -> list[str]:
+    """Material inputs for a directory-backed tool: each discovered artifact dir."""
+    return [str(d) for _profile, d, _rel in dirs]
+
+
+def _try_useractivity_durable_reuse(
+    *,
+    tool: str,
+    source_paths: list[str],
+    parameters: dict[str, Any],
+    parser_signature: str,
+    subtype: str,
+    csv_filename: str,
+    finding_factory,
+    profiles_checked: list[str],
+    raw_command: str,
+    max_entries: int,
+    preview_cap: int = 10,
+    force_reparse: bool = False,
+) -> Optional[dict[str, Any]]:
+    """Shared durable-reuse for the user-activity / native extractors.
+
+    Probes the durable CSV under ``OUTPUT_BASE/<case>/artifacts/<subtype>/`` and,
+    when a valid v2 sidecar matches the discovered source-set + params + parser
+    signature, records a cache-hit execution under the CANONICAL tool name,
+    recreates the extraction OBSERVATION finding via ``finding_factory`` with the
+    FRESH execution_id, and returns a success response (parse SKIPPED). Returns
+    None -> the caller MUST parse normally. ``source_paths`` are the discovered
+    material inputs (so any change invalidates reuse); an empty list -> None.
+    """
+    if _state is None or _audit is None or not source_paths:
+        return None
+    reuse = try_durable_reuse_v2(
+        _audit, _state,
+        tool_name=tool,
+        parser_signature=parser_signature,
+        source_paths=source_paths,
+        parameters=parameters,
+        output_base=os.environ.get("OUTPUT_BASE", "/cases"),
+        case_id=_case_id(),
+        subtype=subtype,
+        canonical_filename=csv_filename,
+        force_reparse=force_reparse,
+    )
+    if reuse is None:
+        return None
+
+    reuse_csv = reuse["csv_path"]
+    reuse_exec_id = reuse["execution_id"]
+    rows = _read_csv(reuse_csv)
+    total_rows = len(rows)
+    truncated = bool(max_entries and max_entries > 0 and total_rows > max_entries)
+    profiles_with_data = sorted({
+        str(r.get("source_profile") or "")
+        for r in rows if r.get("source_profile")
+    })
+
+    finding_ids: list[str] = []
+    if total_rows and finding_factory is not None:
+        try:
+            finding = finding_factory(reuse_csv, total_rows, reuse_exec_id, profiles_with_data)
+            if finding is not None:
+                finding_ids.append(_state.add_finding(finding.model_dump(mode="json")))
+        except Exception:
+            pass
+
+    preview_limit = min(preview_cap, max_entries) if (max_entries and max_entries > 0) else preview_cap
+    preview = rows[:preview_limit]
+
+    return {
+        "tool_name": tool,
+        "status": "success",
+        "execution_id": reuse_exec_id,
+        "raw_command": reuse["raw_command"],
+        "csv_path": reuse_csv,
+        "records_count": total_rows,
+        "total_rows": total_rows,
+        "truncated": truncated,
+        "profiles_checked": profiles_checked,
+        "profiles_with_data": profiles_with_data,
+        "parser_failures": [],
+        "partial_failure_count": 0,
+        "findings_created": finding_ids,
+        "preview": preview,
+        "reused_output": True,
+        "reuse_confidence": reuse["reuse_confidence"],
+        "cache_hit": True,
+        "artifact_persistence": {
+            "status": "durable",
+            "persisted_path": reuse_csv,
+            "reason": f"Reused durable {subtype} CSV (v2 fingerprint verified); parse skipped.",
+            "fix_hint": None,
+        },
+        "note": (
+            f"Reused durable {subtype} CSV ({total_rows} rows at {reuse_csv}); "
+            f"{parser_signature} parse skipped, finding recreated. "
+            + reuse.get("reuse_note", "")
+        ),
+    }
+
+
 def _finalize_useractivity_response(
     *,
     tool: str,
@@ -5938,12 +6087,21 @@ def _finalize_useractivity_response(
     finding_factory,
     max_entries: int,
     preview_cap: int = 10,
+    reuse_source_paths: Optional[list[str]] = None,
+    reuse_parameters: Optional[dict[str, Any]] = None,
+    reuse_parser_signature: Optional[str] = None,
 ) -> dict[str, Any]:
     """Persist rows + build the standard user-activity response contract.
 
-    ``finding_factory`` is a callable ``(durable_csv, total_rows) -> Finding``
-    invoked only when rows are present, so each tool words its own defensible
-    OBSERVATION finding.
+    ``finding_factory`` is a callable
+    ``(durable_csv, total_rows, exec_id, profiles_with_data) -> Finding`` invoked
+    only when rows are present, so each tool words its own defensible OBSERVATION
+    finding using the FRESH execution_id (so the reuse path recreates it too).
+
+    When ``reuse_*`` are supplied AND the outcome is a clean success (durable CSV,
+    no parser failures), a v2 reuse sidecar is written next to the durable CSV so
+    a later run can verify-and-reuse instead of re-parsing (no-poisoned-cache:
+    never written on partial_collection / persistence failure).
     """
     total_rows = len(rows)
     truncated = bool(max_entries and max_entries > 0 and total_rows > max_entries)
@@ -5962,7 +6120,7 @@ def _finalize_useractivity_response(
     finding_ids: list[str] = []
     if rows and finding_factory is not None and _state is not None:
         try:
-            finding = finding_factory(durable_csv, total_rows)
+            finding = finding_factory(durable_csv, total_rows, exec_id, profiles_with_data)
             if finding is not None:
                 finding_ids.append(_state.add_finding(finding.model_dump(mode="json")))
         except Exception:
@@ -5995,6 +6153,19 @@ def _finalize_useractivity_response(
     else:
         status = "success"
         audit_exit = 0
+
+    # No-poisoned-cache: write the v2 reuse sidecar ONLY on a clean success
+    # (durable CSV present, zero parser failures, rows > 0). A partial_collection
+    # / persistence-failure / zero-row outcome NEVER writes a sidecar, so the
+    # next run re-parses.
+    if (status == "success" and durable_csv and total_rows > 0
+            and reuse_source_paths and reuse_parser_signature is not None):
+        write_reuse_sidecar_v2(
+            durable_csv, tool_name=tool,
+            parser_signature=reuse_parser_signature,
+            source_paths=reuse_source_paths,
+            parameters=reuse_parameters or {},
+        )
 
     if parser_failures and not durable_csv:
         note = (
@@ -6158,6 +6329,36 @@ def extract_shellbags(
             discovered=False,
         )
 
+    def _finding(durable_csv, total_rows, exec_id_, profiles_with_data):
+        return Finding(
+            case_id=_case_id(),
+            finding_type="other",
+            artifact_type="disk",
+            artifact_path=durable_csv or str(hives[0][1]),
+            tool_name=tool,
+            execution_id=exec_id_,
+            iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION,
+            finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"ShellBags: parsed {total_rows} BagMRU entries across "
+                f"{len(profiles_with_data)} profile(s). A ShellBag indicates Explorer "
+                "RENDERED the folder, NOT that files inside were opened or read; "
+                "corroborate with LNK files / Jump Lists / RecentDocs."
+            ),
+            supporting_indicators=sorted(profiles_with_data)[:20],
+        )
+
+    _sb_reuse = _try_useractivity_durable_reuse(
+        tool=tool, source_paths=_hive_source_set(hives), parameters={},
+        parser_signature=_PARSER_SIG_SHELLBAGS, subtype="shellbags",
+        csv_filename="shellbags.csv", finding_factory=_finding,
+        profiles_checked=profiles_checked, raw_command=raw_command, max_entries=max_entries,
+    )
+    if _sb_reuse is not None:
+        return _sb_reuse
+
     merged_rows: list[dict[str, Any]] = []
     profiles_with_data: set[str] = set()
     parser_failures: list[dict[str, Any]] = []
@@ -6267,33 +6468,14 @@ def extract_shellbags(
             discovered=True,
         )
 
-    def _finding(durable_csv, total_rows):
-        return Finding(
-            case_id=_case_id(),
-            finding_type="other",
-            artifact_type="disk",
-            artifact_path=durable_csv or str(hives[0][1]),
-            tool_name=tool,
-            execution_id=exec_id,
-            iteration=_current_iteration(),
-            evidence_kind=EvidenceKind.OBSERVATION,
-            finding_status=FindingStatus.ACTIVE,
-            confidence=0.70,
-            description=(
-                f"ShellBags: parsed {total_rows} BagMRU entries across "
-                f"{len(profiles_with_data)} profile(s). A ShellBag indicates Explorer "
-                "RENDERED the folder, NOT that files inside were opened or read; "
-                "corroborate with LNK files / Jump Lists / RecentDocs."
-            ),
-            supporting_indicators=sorted(profiles_with_data)[:20],
-        )
-
     return _finalize_useractivity_response(
         tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
         rows=merged_rows, profiles_checked=profiles_checked,
         profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
         tool_short_name="shellbags", csv_filename="shellbags.csv",
         finding_factory=_finding, max_entries=max_entries,
+        reuse_source_paths=_hive_source_set(hives), reuse_parameters={},
+        reuse_parser_signature=_PARSER_SIG_SHELLBAGS,
     )
 
 
@@ -6351,6 +6533,31 @@ def extract_lnk_files(
             discovered=False,
         )
 
+    def _finding(durable_csv, total_rows, exec_id_, profiles_with_data):
+        return Finding(
+            case_id=_case_id(), finding_type="other", artifact_type="disk",
+            artifact_path=durable_csv or str(dirs[0][1]), tool_name=tool,
+            execution_id=exec_id_, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"LNK files: parsed {total_rows} shortcuts across "
+                f"{len(profiles_with_data)} profile(s). A LNK records that a target "
+                "path was referenced, NOT that a human clicked it; corroborate with "
+                "ShellBags + RecentDocs + Prefetch for open/execution intent."
+            ),
+            supporting_indicators=sorted(profiles_with_data)[:20],
+        )
+
+    _lnk_reuse = _try_useractivity_durable_reuse(
+        tool=tool, source_paths=_dir_source_set(dirs), parameters={},
+        parser_signature=_PARSER_SIG_LNK, subtype="lnk_files",
+        csv_filename="lnk_files.csv", finding_factory=_finding,
+        profiles_checked=profiles_checked, raw_command=raw_command, max_entries=max_entries,
+    )
+    if _lnk_reuse is not None:
+        return _lnk_reuse
+
     merged_rows: list[dict[str, Any]] = []
     profiles_with_data: set[str] = set()
     parser_failures: list[dict[str, Any]] = []
@@ -6404,28 +6611,14 @@ def extract_lnk_files(
             discovered=True,
         )
 
-    def _finding(durable_csv, total_rows):
-        return Finding(
-            case_id=_case_id(), finding_type="other", artifact_type="disk",
-            artifact_path=durable_csv or str(dirs[0][1]), tool_name=tool,
-            execution_id=exec_id, iteration=_current_iteration(),
-            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
-            confidence=0.70,
-            description=(
-                f"LNK files: parsed {total_rows} shortcuts across "
-                f"{len(profiles_with_data)} profile(s). A LNK records that a target "
-                "path was referenced, NOT that a human clicked it; corroborate with "
-                "ShellBags + RecentDocs + Prefetch for open/execution intent."
-            ),
-            supporting_indicators=sorted(profiles_with_data)[:20],
-        )
-
     return _finalize_useractivity_response(
         tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
         rows=merged_rows, profiles_checked=profiles_checked,
         profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
         tool_short_name="lnk_files", csv_filename="lnk_files.csv",
         finding_factory=_finding, max_entries=max_entries,
+        reuse_source_paths=_dir_source_set(dirs), reuse_parameters={},
+        reuse_parser_signature=_PARSER_SIG_LNK,
     )
 
 
@@ -6486,6 +6679,31 @@ def extract_jump_lists(
             discovered=False,
         )
 
+    def _finding(durable_csv, total_rows, exec_id_, profiles_with_data):
+        return Finding(
+            case_id=_case_id(), finding_type="other", artifact_type="disk",
+            artifact_path=durable_csv or str(dirs[0][1]), tool_name=tool,
+            execution_id=exec_id_, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"Jump Lists: parsed {total_rows} destination entries across "
+                f"{len(profiles_with_data)} profile(s). A Jump List ties a target "
+                "file to the application (AppId) that referenced it; corroborate with "
+                "LNK + ShellBags before asserting a human opened the file."
+            ),
+            supporting_indicators=sorted(profiles_with_data)[:20],
+        )
+
+    _jl_reuse = _try_useractivity_durable_reuse(
+        tool=tool, source_paths=_dir_source_set(dirs), parameters={},
+        parser_signature=_PARSER_SIG_JUMPLISTS, subtype="jump_lists",
+        csv_filename="jump_lists.csv", finding_factory=_finding,
+        profiles_checked=profiles_checked, raw_command=raw_command, max_entries=max_entries,
+    )
+    if _jl_reuse is not None:
+        return _jl_reuse
+
     merged_rows: list[dict[str, Any]] = []
     profiles_with_data: set[str] = set()
     parser_failures: list[dict[str, Any]] = []
@@ -6539,28 +6757,14 @@ def extract_jump_lists(
             discovered=True,
         )
 
-    def _finding(durable_csv, total_rows):
-        return Finding(
-            case_id=_case_id(), finding_type="other", artifact_type="disk",
-            artifact_path=durable_csv or str(dirs[0][1]), tool_name=tool,
-            execution_id=exec_id, iteration=_current_iteration(),
-            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
-            confidence=0.70,
-            description=(
-                f"Jump Lists: parsed {total_rows} destination entries across "
-                f"{len(profiles_with_data)} profile(s). A Jump List ties a target "
-                "file to the application (AppId) that referenced it; corroborate with "
-                "LNK + ShellBags before asserting a human opened the file."
-            ),
-            supporting_indicators=sorted(profiles_with_data)[:20],
-        )
-
     return _finalize_useractivity_response(
         tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
         rows=merged_rows, profiles_checked=profiles_checked,
         profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
         tool_short_name="jump_lists", csv_filename="jump_lists.csv",
         finding_factory=_finding, max_entries=max_entries,
+        reuse_source_paths=_dir_source_set(dirs), reuse_parameters={},
+        reuse_parser_signature=_PARSER_SIG_JUMPLISTS,
     )
 
 
@@ -6822,6 +7026,42 @@ def extract_browser_history(
             discovered=False,
         )
 
+    def _browser_source_set() -> list[str]:
+        out: list[str] = []
+        for _profile, _browser, db_path in discovered:
+            out.append(str(db_path))
+            for suffix in ("-wal", "-shm"):
+                sidecar = db_path.parent / (db_path.name + suffix)
+                if _path_exists(sidecar):
+                    out.append(str(sidecar))
+        return out
+
+    def _finding(durable_csv, total_rows, exec_id_, profiles_with_data):
+        return Finding(
+            case_id=_case_id(), finding_type="other", artifact_type="disk",
+            artifact_path=durable_csv or str(discovered[0][2]), tool_name=tool,
+            execution_id=exec_id_, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"Browser history: parsed {total_rows} visit/download records across "
+                f"{len(profiles_with_data)} profile(s). A record proves the browser "
+                "PROCESS logged the event, NOT that a specific human initiated it; "
+                "synced history may originate on another device. Normalize to UTC and "
+                "corroborate downloads with $MFT / Prefetch before asserting execution."
+            ),
+            supporting_indicators=sorted(profiles_with_data)[:20],
+        )
+
+    _br_reuse = _try_useractivity_durable_reuse(
+        tool=tool, source_paths=_browser_source_set(), parameters={},
+        parser_signature=_PARSER_SIG_BROWSER, subtype="browser",
+        csv_filename="browser_history.csv", finding_factory=_finding,
+        profiles_checked=profiles_checked, raw_command=raw_command, max_entries=max_entries,
+    )
+    if _br_reuse is not None:
+        return _br_reuse
+
     merged_rows: list[dict[str, Any]] = []
     profiles_with_data: set[str] = set()
     parser_failures: list[dict[str, Any]] = []
@@ -6892,29 +7132,14 @@ def extract_browser_history(
             discovered=True,
         )
 
-    def _finding(durable_csv, total_rows):
-        return Finding(
-            case_id=_case_id(), finding_type="other", artifact_type="disk",
-            artifact_path=durable_csv or str(discovered[0][2]), tool_name=tool,
-            execution_id=exec_id, iteration=_current_iteration(),
-            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
-            confidence=0.70,
-            description=(
-                f"Browser history: parsed {total_rows} visit/download records across "
-                f"{len(profiles_with_data)} profile(s). A record proves the browser "
-                "PROCESS logged the event, NOT that a specific human initiated it; "
-                "synced history may originate on another device. Normalize to UTC and "
-                "corroborate downloads with $MFT / Prefetch before asserting execution."
-            ),
-            supporting_indicators=sorted(profiles_with_data)[:20],
-        )
-
     return _finalize_useractivity_response(
         tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
         rows=merged_rows, profiles_checked=profiles_checked,
         profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
         tool_short_name="browser", csv_filename="browser_history.csv",
         finding_factory=_finding, max_entries=max_entries,
+        reuse_source_paths=_browser_source_set(), reuse_parameters={},
+        reuse_parser_signature=_PARSER_SIG_BROWSER,
     )
 
 
@@ -7050,6 +7275,33 @@ def extract_registry_fileaccess(
     discovered = bool(ntuser_hives)
     # Absence matrix: ALWAYS list every discovered profile (see shellbags note).
     profiles_checked = sorted({name for name, _ in _iter_user_profile_dirs(image_path)})
+
+    if ntuser_hives:
+        def _refa_finding(durable_csv, total_rows, exec_id_, profiles_with_data):
+            return Finding(
+                case_id=_case_id(), finding_type="other", artifact_type="disk",
+                artifact_path=durable_csv or image_path, tool_name=tool,
+                execution_id=exec_id_, iteration=_current_iteration(),
+                evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+                confidence=0.70,
+                description=(
+                    f"Registry file-access: surfaced {total_rows} entries. A file-access "
+                    "key proves a path was WRITTEN to a user-activity list, NOT that a "
+                    "human clicked it (background tasks populate UserAssist). "
+                    "LastWriteTimestamp = when the KEY changed, not when a value changed; "
+                    "corroborate with LNK / Jump Lists / ShellBags."
+                ),
+                supporting_indicators=sorted(profiles_with_data)[:20],
+            )
+
+        _refa_reuse = _try_useractivity_durable_reuse(
+            tool=tool, source_paths=_hive_source_set(ntuser_hives), parameters={},
+            parser_signature=_PARSER_SIG_REGFILEACCESS, subtype="registry_fileaccess",
+            csv_filename="registry_fileaccess.csv", finding_factory=_refa_finding,
+            profiles_checked=profiles_checked, raw_command=raw_command, max_entries=max_entries,
+        )
+        if _refa_reuse is not None:
+            return _refa_reuse
     try:
         for idx, (profile_name, hive_path, rel) in enumerate(ntuser_hives, start=1):
             replay_in: Optional[Path] = None
@@ -7201,11 +7453,11 @@ def extract_registry_fileaccess(
         resp["fragment_counts"] = fragment_counts
         return resp
 
-    def _finding(durable_csv, total_rows):
+    def _finding(durable_csv, total_rows, exec_id_, profiles_with_data):
         return Finding(
             case_id=_case_id(), finding_type="other", artifact_type="disk",
             artifact_path=durable_csv or source_artifact or image_path, tool_name=tool,
-            execution_id=exec_id, iteration=_current_iteration(),
+            execution_id=exec_id_, iteration=_current_iteration(),
             evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
             confidence=0.70,
             description=(
@@ -7225,6 +7477,8 @@ def extract_registry_fileaccess(
         profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
         tool_short_name="registry_fileaccess", csv_filename="registry_fileaccess.csv",
         finding_factory=_finding, max_entries=max_entries,
+        reuse_source_paths=_hive_source_set(ntuser_hives), reuse_parameters={},
+        reuse_parser_signature=_PARSER_SIG_REGFILEACCESS,
     )
     response["fragment_counts"] = fragment_counts
     return response
@@ -7383,6 +7637,35 @@ def extract_recycle_bin(
             discovered=False,
         )
 
+    def _finding(durable_csv, total_rows, exec_id_, profiles_with_data):
+        return Finding(
+            case_id=_case_id(), finding_type="other", artifact_type="disk",
+            artifact_path=durable_csv or str(discovered[0][1]), tool_name=tool,
+            execution_id=exec_id_, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"Recycle Bin: parsed {total_rows} $I deletion record(s) across "
+                f"{len(profiles_with_data)} SID(s). An entry proves a file was sent "
+                "to the bin under a SID via the Explorer shell, NOT that a specific "
+                "human deleted/opened/ran it. Corroborate with $UsnJrnl rename + "
+                "$MFT + session (EID 4624); resolve SID via ProfileList before "
+                "attributing WHO."
+            ),
+            supporting_indicators=sorted(profiles_with_data)[:20],
+        )
+
+    _rb_reuse = _try_useractivity_durable_reuse(
+        tool=tool, source_paths=[str(i) for _sid, i, _r in discovered], parameters={},
+        parser_signature=_PARSER_SIG_RECYCLE, subtype="recycle_bin",
+        csv_filename="recycle_bin.csv", finding_factory=_finding,
+        profiles_checked=profiles_checked, raw_command=raw_command, max_entries=max_entries,
+    )
+    if _rb_reuse is not None:
+        if legacy_seen:
+            _rb_reuse["legacy_info2_not_parsed"] = True
+        return _rb_reuse
+
     merged_rows: list[dict[str, Any]] = []
     profiles_with_data: set[str] = set()
     parser_failures: list[dict[str, Any]] = []
@@ -7427,30 +7710,14 @@ def extract_recycle_bin(
             artifact_label="Recycle Bin $I records", discovered=True,
         )
 
-    def _finding(durable_csv, total_rows):
-        return Finding(
-            case_id=_case_id(), finding_type="other", artifact_type="disk",
-            artifact_path=durable_csv or str(discovered[0][1]), tool_name=tool,
-            execution_id=exec_id, iteration=_current_iteration(),
-            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
-            confidence=0.70,
-            description=(
-                f"Recycle Bin: parsed {total_rows} $I deletion record(s) across "
-                f"{len(profiles_with_data)} SID(s). An entry proves a file was sent "
-                "to the bin under a SID via the Explorer shell, NOT that a specific "
-                "human deleted/opened/ran it. Corroborate with $UsnJrnl rename + "
-                "$MFT + session (EID 4624); resolve SID via ProfileList before "
-                "attributing WHO."
-            ),
-            supporting_indicators=sorted(profiles_with_data)[:20],
-        )
-
     response = _finalize_useractivity_response(
         tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
         rows=merged_rows, profiles_checked=profiles_checked,
         profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
         tool_short_name="recycle_bin", csv_filename="recycle_bin.csv",
         finding_factory=_finding, max_entries=max_entries,
+        reuse_source_paths=[str(i) for _sid, i, _r in discovered], reuse_parameters={},
+        reuse_parser_signature=_PARSER_SIG_RECYCLE,
     )
     if legacy_seen:
         response["legacy_info2_not_parsed"] = True
@@ -7529,6 +7796,33 @@ def extract_powershell_history(
             discovered=False,
         )
 
+    def _finding(durable_csv, total_rows, exec_id_, profiles_with_data):
+        return Finding(
+            case_id=_case_id(), finding_type="execution", artifact_type="disk",
+            artifact_path=durable_csv or str(discovered[0][1]), tool_name=tool,
+            execution_id=exec_id_, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"PowerShell history: parsed {total_rows} command line(s) across "
+                f"{len(profiles_with_data)} profile(s). PSReadline proves commands "
+                "were ENTERED in an interactive console host under that user, NOT "
+                "that they executed or that a human typed them; the file is "
+                "attacker-editable and capped (~4096 lines) so early absence may be "
+                "rotation. Corroborate with EVTX 4104 + Prefetch + EID 4688."
+            ),
+            supporting_indicators=sorted(profiles_with_data)[:20],
+        )
+
+    _ps_reuse = _try_useractivity_durable_reuse(
+        tool=tool, source_paths=[str(h) for _p, h in discovered], parameters={},
+        parser_signature=_PARSER_SIG_PSREADLINE, subtype="powershell_history",
+        csv_filename="powershell_history.csv", finding_factory=_finding,
+        profiles_checked=profiles_checked, raw_command=raw_command, max_entries=max_entries,
+    )
+    if _ps_reuse is not None:
+        return _ps_reuse
+
     merged_rows: list[dict[str, Any]] = []
     profiles_with_data: set[str] = set()
     parser_failures: list[dict[str, Any]] = []
@@ -7572,30 +7866,14 @@ def extract_powershell_history(
             artifact_label="PSReadline command lines", discovered=True,
         )
 
-    def _finding(durable_csv, total_rows):
-        return Finding(
-            case_id=_case_id(), finding_type="execution", artifact_type="disk",
-            artifact_path=durable_csv or str(discovered[0][1]), tool_name=tool,
-            execution_id=exec_id, iteration=_current_iteration(),
-            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
-            confidence=0.70,
-            description=(
-                f"PowerShell history: parsed {total_rows} command line(s) across "
-                f"{len(profiles_with_data)} profile(s). PSReadline proves commands "
-                "were ENTERED in an interactive console host under that user, NOT "
-                "that they executed or that a human typed them; the file is "
-                "attacker-editable and capped (~4096 lines) so early absence may be "
-                "rotation. Corroborate with EVTX 4104 + Prefetch + EID 4688."
-            ),
-            supporting_indicators=sorted(profiles_with_data)[:20],
-        )
-
     return _finalize_useractivity_response(
         tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
         rows=merged_rows, profiles_checked=profiles_checked,
         profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
         tool_short_name="powershell_history", csv_filename="powershell_history.csv",
         finding_factory=_finding, max_entries=max_entries,
+        reuse_source_paths=[str(h) for _p, h in discovered], reuse_parameters={},
+        reuse_parser_signature=_PARSER_SIG_PSREADLINE,
     )
 
 
@@ -7739,6 +8017,33 @@ def extract_scheduled_tasks(
             discovered=False,
         )
 
+    def _finding(durable_csv, total_rows, exec_id_, profiles_with_data):
+        return Finding(
+            case_id=_case_id(), finding_type="persistence", artifact_type="disk",
+            artifact_path=durable_csv or str(discovered[0][0]), tool_name=tool,
+            execution_id=exec_id_, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"Scheduled tasks: parsed {total_rows} on-disk task definition(s). "
+                "A definition proves a task was REGISTERED with a given command/"
+                "principal as of the registration date, NOT that it ever FIRED. "
+                "Built-in \\Microsoft\\Windows\\ tasks are flagged builtin_baseline; "
+                "review off_path_command rows. Corroborate with EVTX 4698/4702 + "
+                "200/201, Prefetch, and registry TaskCache LastRunTime."
+            ),
+            supporting_indicators=["system"],
+        )
+
+    _st_reuse = _try_useractivity_durable_reuse(
+        tool=tool, source_paths=[str(x) for x, _rel in discovered], parameters={},
+        parser_signature=_PARSER_SIG_SCHEDTASKS, subtype="scheduled_tasks",
+        csv_filename="scheduled_tasks.csv", finding_factory=_finding,
+        profiles_checked=profiles_checked, raw_command=raw_command, max_entries=max_entries,
+    )
+    if _st_reuse is not None:
+        return _st_reuse
+
     merged_rows: list[dict[str, Any]] = []
     parser_failures: list[dict[str, Any]] = []
     for xml_path, rel in discovered:
@@ -7769,28 +8074,12 @@ def extract_scheduled_tasks(
 
     profiles_with_data = ["system"]
 
-    def _finding(durable_csv, total_rows):
-        return Finding(
-            case_id=_case_id(), finding_type="persistence", artifact_type="disk",
-            artifact_path=durable_csv or str(discovered[0][0]), tool_name=tool,
-            execution_id=exec_id, iteration=_current_iteration(),
-            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
-            confidence=0.70,
-            description=(
-                f"Scheduled tasks: parsed {total_rows} on-disk task definition(s). "
-                "A definition proves a task was REGISTERED with a given command/"
-                "principal as of the registration date, NOT that it ever FIRED. "
-                "Built-in \\Microsoft\\Windows\\ tasks are flagged builtin_baseline; "
-                "review off_path_command rows. Corroborate with EVTX 4698/4702 + "
-                "200/201, Prefetch, and registry TaskCache LastRunTime."
-            ),
-            supporting_indicators=["system"],
-        )
-
     return _finalize_useractivity_response(
         tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
         rows=merged_rows, profiles_checked=profiles_checked,
         profiles_with_data=profiles_with_data, parser_failures=parser_failures,
         tool_short_name="scheduled_tasks", csv_filename="scheduled_tasks.csv",
         finding_factory=_finding, max_entries=max_entries,
+        reuse_source_paths=[str(x) for x, _rel in discovered], reuse_parameters={},
+        reuse_parser_signature=_PARSER_SIG_SCHEDTASKS,
     )
