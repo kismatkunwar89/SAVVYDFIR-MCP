@@ -8361,12 +8361,17 @@ def _detect_triage_layout(path: str, drive: Optional[str] = None) -> dict[str, A
                 f"drive {sel}: file/registry artifacts under the 'auto' accessor "
                 "root; raw NTFS ($MFT/$UsnJrnl) under 'ntfs'. Only the drive "
                 "component is URL-encoded - the dir name is literally e.g. 'C%3A'.",
-                "DETECT-ONLY: running extractors directly on this tree is not yet "
-                "wired (auto/ntfs accessor split); reported for recognition.",
+                "Extractors CAN run on these roots directly (the encoded parent "
+                "dirname is not a blocker): use the accessor=auto (or ntfs-only) "
+                "root as image_path for file/registry/user-activity tools, and "
+                "artifact_paths.mft_path/usn_path for $MFT/$UsnJrnl. No single "
+                "merged root is auto-built (auto/ntfs split); that convenience is "
+                "deferred. This tool itself only detects - it runs nothing.",
             ],
             "recommended_next": (
-                "use volume_roots[].path (accessor=auto for file/registry, "
-                "ntfs for $MFT) - extraction wiring is a later increment."),
+                "image_path=volume_roots[accessor=auto].path for file/registry/"
+                "user-activity tools; mft_path=artifact_paths.mft_path for "
+                "extract_mft_timeline (ntfs accessor holds $MFT)."),
         }
 
     # Raw mount: Windows/ at the path root.
