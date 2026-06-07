@@ -385,7 +385,7 @@ class StateMirrorTests(_Base):
             # the catalog entry exists and is an extraction that accrues debt
             entry = analysis_debt._CATALOG_BY_SUFFIX.get("extract_recycle_bin")
             self.assertIsNotNone(entry)
-            # review 2026-06-07: promoted from extended -> file_access,
+            # design review 2026-06-07: promoted from extended -> file_access,
             # now report-blocking when taxonomy-required.
             self.assertEqual(entry.taxonomy_group, "file_access")
             self.assertTrue(entry.report_block_when_required)

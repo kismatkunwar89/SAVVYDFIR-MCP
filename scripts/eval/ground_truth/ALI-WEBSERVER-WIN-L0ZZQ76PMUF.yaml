@@ -6,7 +6,7 @@
 #
 # SOURCE OF TRUTH / PROVENANCE CAVEAT: Ali Hadi's OFFICIAL answers are
 # instructor-gated (no public answer key). This GT is built from the official
-# 8-question set (-> eval_targets) + the CONSENSUS of two independent, detailed
+# 8-question set (-> eval_targets) + the cross-corroborated agreement between two independent, detailed
 # community walkthroughs, cross-corroborated:
 #   [W1] Syed Hasan (Medium) — syedhasan010.medium.com/...340f6d919f9c
 #   [W2] Between Two DFIRns  — betweentwodfirns.blogspot.com/2017/03/...
@@ -201,7 +201,7 @@ findings:
       history via consoles/cmdscan/strings on httpd.exe (PIDs 2796/2880). Two
       cmd.exe consoles exist: PID 612 (2015-08-23 10:30:44, NOT case-relevant) and
       PID 1972 (2015-09-02 09:28:30, webshell-spawned, the relevant one). netscan
-      shows a connection from 192.168.56.1. [W1][W2][medium1][medium2]
+      shows a connection from 192.168.56.1. [W1][W2][medium1][medium2][corroborated]
     corroborates_with: [memory_consoles, memory_cmdscan, memory_strings, MFT]
     image_extractable: true
 
@@ -267,7 +267,7 @@ known_negatives:
     reason: >
       Exactly TWO accounts were created (user1 RID 1005, hacker RID 1006). A
       "third user" in some writeups is a miscount of the built-in Administrator
-      (RID 500). Do not claim a third attacker account. 
+      (RID 500). Do not claim a third attacker account. [corroborated]
   - artifact_type: EVTX
     value: "Security EVTX 4720/4732 account-creation events for user1/hacker"
     reason: >
@@ -309,9 +309,9 @@ provenance:
     - "[W2] Between Two DFIRns walkthrough (betweentwodfirns.blogspot.com 2017/03)"
     - "[medium1] Bilyaminu Umar Shehu walkthrough (Feb 2026) - VistaSP1x86 profile, cmd PID 612 vs 1972, netscan 192.168.56.1, webshell.zip=c99.php+webshell.php, brute-force"
     - "[medium2] DDFAN 'Web Server Case #3' walkthrough (Apr 2026) - EVTX 4720 ABSENT, PHP reverse shell ->192.168.56.102:4545, phpshell2.php, shells DELETED (files-added=None), no exfil/lateral movement"
-    - "independent cross-review 2026-06-05 (corrections: Q5 wording, zip=c99.php+webshell.php, 2nd sqlmap dropper pair, profile, Administrator RID-500 miscount)"
+    - "[review] independent research round 2026-06-05 (corrections: Q5 wording, zip=c99.php+webshell.php, 2nd sqlmap dropper pair, profile, Administrator RID-500 miscount)"
   reference_notebook: "REDACTED (Ali Hadi Web Server Case GT; sources: medium1.md + medium2.md)"
-  authority: "community-sourced + cross-corroborated across 2 walkthroughs AND an independent multi-model consensus research round; still LOWER authority than official answer keys (NIST) or forensic reports (LoneWolf) - patched to consensus where sources disagreed"
+  authority: "community-sourced + cross-corroborated across 2 walkthroughs AND an independent source reconciliation review; still LOWER authority than official answer keys (NIST) or forensic reports (LoneWolf) - reconciled across sources where sources disagreed"
   unresolved_open_items:
     - "exact user1 password state at compromise (Root@psut vs earlier attempts)"
     - "definitive webshells.zip member list if instructor key differs from community (webshell.php vs phpshell.php)"

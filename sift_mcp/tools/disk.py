@@ -8152,7 +8152,7 @@ def extract_scheduled_tasks(
 # root (plus explicit MFT/USN artifact paths) the EXISTING extractors consume
 # unchanged. Does NOT modify the case-isolation-critical volume-root resolvers
 # (_user_activity_volume_roots / _candidate_windows_volume_roots), emits no
-# findings, and is not part of any coverage gate. (Consensus 2026-06-07: v1a.)
+# findings, and is not part of any coverage gate. (Design review 2026-06-07: v1a.)
 #
 # Verified layouts:
 #  - raw_mount       : Windows/ + Users/ at the path root.

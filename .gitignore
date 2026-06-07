@@ -18,8 +18,6 @@ Recentruns/
 referencemdfiles/
 
 # IDE and editor config files
-.cursor/
-.cursorrules
 .opencode.json
 .windsurfrules
 
@@ -96,14 +94,11 @@ docs/research-additions.md
 docs/PLAN-RUN-DEBRIEF-FIXES-2026-05-29.md
 research/RESEARCH_INDEX.md
 external-review/
-scratch.md
-review-*.md
 DECISION-*.md
 RUN*.md
 *handoff*.md
 *HANDOFF*.md
 paperplanhandoff.md
-
 docs/novel-contribution.md
 Jaswanthreview/
 *.bak

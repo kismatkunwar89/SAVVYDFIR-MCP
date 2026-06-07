@@ -74,7 +74,7 @@ EXTRACTION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("extract_jump_lists", "disk_execution_persistence", "file_access", report_block_when_required=True),
     CatalogEntry("extract_browser_history", "disk_execution_persistence", "file_access", report_block_when_required=True),
     CatalogEntry("extract_registry_fileaccess", "disk_execution_persistence", "file_access", report_block_when_required=True),
-    # --- taxonomy-conditional-REQUIRED file-access extractors (review
+    # --- taxonomy-conditional-REQUIRED file-access extractors (design review
     # 2026-06-07 AMEND-THEN-APPROVE): promoted from extended/OPTIONAL to the
     # file_access group so the coverage gate enforces them on file-centric
     # Windows cases. Documented-absence (incl. tool_incompatible) still satisfies

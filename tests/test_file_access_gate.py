@@ -97,7 +97,7 @@ class GateOverlayTest(unittest.TestCase):
         self.assertEqual(_file_access_missing(res), set())
 
     def test_promoted_tools_in_required_set(self):
-        # review 2026-06-07: the 3 promoted tools are now in file_access
+        # design review 2026-06-07: the 3 promoted tools are now in file_access
         for s in ("extract_recycle_bin", "extract_powershell_history", "extract_scheduled_tasks"):
             self.assertIn(s, FILE_ACCESS_TOOL_SUFFIXES)
         self.assertEqual(len(FILE_ACCESS_TOOL_SUFFIXES), 8)

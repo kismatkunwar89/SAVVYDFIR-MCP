@@ -38,7 +38,7 @@ Every required turn-in is listed below with its exact location, so judges can ve
 
 ## What It Does
 
-SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It exposes **60+** typed forensic tools over stdio transport (61 at this writing - call `describe_tool_catalog` for the live count, don't hardcode it), supports cross-artifact correlation between disk and memory evidence via 10 anti-forensics detection checks, and keeps findings traceable through persisted artifacts, state, and a hash-chained audit log, with structured provenance (every CONFIRMED finding cites a resolvable `execution_id`; heuristics carry CTX-NNN references).
+SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It exposes **60+** typed forensic tools over stdio transport (65 at this writing - call `describe_tool_catalog` for the live count, don't hardcode it), supports cross-artifact correlation between disk and memory evidence via 10 anti-forensics detection checks, and keeps findings traceable through persisted artifacts, state, and a hash-chained audit log, with structured provenance (every CONFIRMED finding cites a resolvable `execution_id`; heuristics carry CTX-NNN references).
 
 **Design: autonomous-first.** You point it at a case `manifest.json` and it
 investigates with minimal interaction - the 7-phase workflow is enforced by **hooks
@@ -98,7 +98,7 @@ gates; these layers (the reference the "brain" reads) say what each artifact mea
 | Layer | Where | Fed to the agent | Carries |
 |-------|-------|------------------|---------|
 | **1. Case manifest** | `case-templates/manifest.json` | `start_investigation()` - the primary structured input | Disk/memory paths + `investigative_taxonomy` (dispute_type, OS, keywords). `dispute_type` drives which extractors are *required* (file-centric disputes pull in the file-access bundle). |
-| **2. Forensic-knowledge YAML** | `data/forensic-knowledge/artifacts/{windows,analysis_outputs}/*.yaml` (17 files; 15 Windows OS artifacts + 2 analysis-tool outputs) | Injected into **mapped** tool responses at interpretation time | `forensic_caveat` (what the artifact does NOT prove), `corroborate_with` (what to check next), `discipline_reminder`. |
+| **2. Forensic-knowledge YAML** | `data/forensic-knowledge/artifacts/{windows,analysis_outputs}/*.yaml` (19 files; 17 Windows OS artifacts + 2 analysis-tool outputs) | Injected into **mapped** tool responses at interpretation time | `forensic_caveat` (what the artifact does NOT prove), `corroborate_with` (what to check next), `discipline_reminder`. |
 | **3. Injected artifact heuristic KBs** | 8 mapped `.claude/agents/*-analyst.md` files (`mft`, `evtx`, `prefetch`, `amcache`, `registry`, `srum`, `sigma`, `memory`) | Bounded, CTX-cited slices injected as `applicable_heuristics` on mapped tools; deeper sections via `get_heuristic(artifact, topic)` (same 8 artifacts) | Artifact-specific query + interpretation guidance for inline main-agent analysis. |
 
 Layers 2 and 3 are **two different injection paths**: the YAML supplies the caveat/corroboration
@@ -131,7 +131,7 @@ playbooks for optional Task delegation or the optional `build_timeline` - not he
 | Edit one of the 8 mapped artifact KBs | `.claude/agents/{mft,evtx,prefetch,amcache,registry,srum,sigma,memory}-analyst.md` | Deeper inline heuristics on mapped extractors (`applicable_heuristics` / `get_heuristic`) | No (restart) |
 | Add a **new** artifact's FK YAML | YAML + `_FK_MAP` entry + tool wrapper | Enriches a newly mapped tool | Yes (registry entry - not drop-in) |
 | Extend manifest taxonomy | `case-templates/manifest.json` | Per-case coverage policy | No |
-| Add a correlation check | `sift_mcp/correlation.py` | New deterministic cross-artifact reasoning | Yes |
+| Add a correlation check | `sift_mcp/tools/correlation.py` | New deterministic cross-artifact reasoning | Yes |
 | Add an extractor (MCP tool) | `sift_mcp/server.py` | New evidence acquisition | Yes |
 
 FK YAML loading is **registry-driven** (`_FK_MAP`), not directory auto-discovery: editing an
@@ -574,7 +574,9 @@ not yet implemented.** Extraction-skip / audited triage import is a later increm
 
 ---
 
-## MCP Tools (60+)
+## MCP Tools (65)
+
+> Representative subset below; call `describe_tool_catalog` for the complete live list - including the full file-access bundle, `submit_finding` / `record_analysis_lane`, `hayabusa_hunt`, and `detect_triage_layout`.
 
 | Namespace | Tools | Description |
 |---|---|---|
