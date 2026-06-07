@@ -8142,3 +8142,302 @@ def extract_scheduled_tasks(
         reuse_source_paths=[str(x) for x, _rel in discovered], reuse_parameters={},
         reuse_parser_signature=_PARSER_SIG_SCHEDTASKS,
     )
+
+
+# ===========================================================================
+# Triage-layout recognition (v1a) - read-only, additive, case-isolated.
+#
+# Given a triage package path (CyLR / KAPE / Velociraptor offline collection)
+# OR a raw mounted volume, classify the layout and return ONE clean volume
+# root (plus explicit MFT/USN artifact paths) the EXISTING extractors consume
+# unchanged. Does NOT modify the case-isolation-critical volume-root resolvers
+# (_user_activity_volume_roots / _candidate_windows_volume_roots), emits no
+# findings, and is not part of any coverage gate. (Consensus 2026-06-07: v1a.)
+#
+# Verified layouts:
+#  - raw_mount       : Windows/ + Users/ at the path root.
+#  - cylr            : <name>.CYLR/<DRIVE>/Windows|Users/... (DRIVE = source
+#                      letter, NOT always C - VANKO's is G). Marker: CyLR.log.
+#  - kape            : <machine>/<DRIVE>/Windows|Users/... Marker: *_kape.cli.
+#  - velociraptor    : collection_context.json + uploads/{auto,ntfs}/. ONLY the
+#                      drive component is URL-encoded (C%3A ; %5C%5C.%5CC%3A for
+#                      the \\.\C: device form); separators are normal '/'. Raw
+#                      NTFS ($MFT/$UsnJrnl/$Boot) live under the ntfs accessor.
+#  - archive         : .7z/.zip - detect + instruct extract (never auto-extract).
+# ===========================================================================
+
+_TRIAGE_ARCHIVE_SUFFIXES = (".7z", ".zip", ".tar", ".gz", ".tgz")
+
+
+def _triage_is_windows_root(p: Path) -> bool:
+    """A directory that looks like a Windows volume root (has Windows/, and a
+    user container). Case-insensitive (triage trees vary in casing)."""
+    if _ci_resolve(p, "Windows") is None:
+        return False
+    return (
+        _ci_resolve(p, "Users") is not None
+        or _ci_resolve(p, "Documents and Settings") is not None
+        or _ci_resolve(p, "ProgramData") is not None
+    )
+
+
+def _triage_find_drive_roots(base: Path, max_depth: int = 2) -> list[Path]:
+    """Find single-letter drive dirs (e.g. C/, G/) containing a Windows root,
+    at depth 1 (direct drive tree) or 2 (under a <name>.CYLR / <machine> wrapper).
+    Never hardcodes 'C' - enumerates whatever drive letter the collector used."""
+    found: list[Path] = []
+    seen: set[str] = set()
+
+    def _scan(d: Path, depth: int) -> None:
+        if depth > max_depth:
+            return
+        try:
+            children = [c for c in d.iterdir() if _path_is_dir(c)]
+        except OSError:
+            return
+        for c in children:
+            name = c.name
+            if len(name) == 1 and name.isalpha() and _triage_is_windows_root(c):
+                key = str(c)
+                if key not in seen:
+                    seen.add(key)
+                    found.append(c)
+            elif depth < max_depth:
+                _scan(c, depth + 1)
+
+    _scan(base, 0)
+    return found
+
+
+def _triage_locate_mft_usn(volume_root: Path) -> dict[str, Optional[str]]:
+    """Locate loose $MFT / $UsnJrnl:$J under a triage volume root (CyLR/KAPE
+    drop NTFS metafiles at the drive root or under $Extend). Returns explicit
+    paths or None - the MFT/USN extractors accept mft_path/usn_path directly."""
+    out: dict[str, Optional[str]] = {"mft_path": None, "usn_path": None}
+    mft = _ci_resolve(volume_root, "$MFT")
+    if mft is not None and _path_is_file(mft):
+        out["mft_path"] = str(mft)
+    # $UsnJrnl:$J commonly staged as $Extend/$UsnJrnl%3A$J or $Extend/$J
+    extend = _ci_resolve(volume_root, "$Extend")
+    if extend is not None and _path_is_dir(extend):
+        try:
+            for c in extend.iterdir():
+                nl = c.name.lower()
+                if "usnjrnl" in nl or nl.endswith("$j") or nl.endswith("%3a$j"):
+                    if _path_is_file(c):
+                        out["usn_path"] = str(c)
+                        break
+        except OSError:
+            pass
+    return out
+
+
+def _triage_velociraptor_roots(uploads: Path) -> dict[str, Any]:
+    """Map a Velociraptor uploads/ tree to per-drive auto/ntfs roots. Only the
+    drive component is URL-encoded; unquote it to recover the drive letter."""
+    import urllib.parse
+    drives: dict[str, dict[str, Optional[str]]] = {}
+
+    def _drive_letter(name: str) -> Optional[str]:
+        dec = urllib.parse.unquote(name)  # 'C%3A' -> 'C:' ; '%5C%5C.%5CC%3A' -> '\\.\C:'
+        m = re.search(r"([A-Za-z]):", dec)
+        return m.group(1).upper() if m else None
+
+    for accessor in ("auto", "ntfs"):
+        acc = _ci_resolve(uploads, accessor)
+        if acc is None or not _path_is_dir(acc):
+            continue
+        try:
+            children = [c for c in acc.iterdir() if _path_is_dir(c)]
+        except OSError:
+            children = []
+        for c in children:
+            letter = _drive_letter(c.name)
+            if letter is None:
+                continue
+            drives.setdefault(letter, {"auto": None, "ntfs": None})[accessor] = str(c)
+    return drives
+
+
+def _detect_triage_layout(path: str, drive: Optional[str] = None) -> dict[str, Any]:
+    """Classify a triage/evidence path. Read-only; no findings; no gate.
+
+    Returns: status, format, confidence, source_root, volume_roots[],
+    artifact_paths{windows_root,users_root,mft_path,usn_path}, drive_candidates[],
+    requires_drive_selection, requires_normalization, markers{}, notes[],
+    recommended_next.
+    """
+    base = Path(path)
+    if not _path_exists(base):
+        return {
+            "status": "error", "format": "unknown", "reason": "path_not_found",
+            "source_root": str(base), "volume_roots": [], "artifact_paths": {},
+            "notes": [f"path does not exist: {base}"], "recommended_next": None,
+        }
+
+    # Archive: detect + instruct (NEVER auto-extract - heavy I/O stays in Bash).
+    if _path_is_file(base) and base.suffix.lower() in _TRIAGE_ARCHIVE_SUFFIXES:
+        return {
+            "status": "ok", "format": "archive_unextracted", "confidence": "high",
+            "source_root": str(base), "volume_roots": [], "artifact_paths": {},
+            "drive_candidates": [], "requires_drive_selection": False,
+            "requires_normalization": False,
+            "markers": {"archive_suffix": base.suffix.lower()},
+            "notes": [
+                f"{base.suffix} archive - this tool does not extract archives "
+                "(collection_unresolved, NOT artifact_absent)."],
+            "recommended_next": (
+                f"Extract first (e.g. 7z x / unzip) to a working dir under "
+                "/cases or /tmp, then re-run detect_triage_layout on that dir."),
+        }
+
+    if not _path_is_dir(base):
+        return {
+            "status": "error", "format": "unknown", "reason": "not_a_directory",
+            "source_root": str(base), "volume_roots": [], "artifact_paths": {},
+            "notes": [f"not a directory: {base}"], "recommended_next": None,
+        }
+
+    # Velociraptor: uploads/{auto,ntfs}/ + a Velociraptor collector marker.
+    # NOTE: the official docs describe a server-import container with
+    # collection_context.json, but a RAW collector tar (verified on the
+    # hunt_lab DFIR-RansomHub real sample) instead carries
+    # upload_transactions.json / uploads.json / task.db / stats.json / logs.json
+    # and may have ONLY the ntfs accessor (no auto). Match any of these markers.
+    uploads = _ci_resolve(base, "uploads")
+    _velo_markers = [
+        m for m in (
+            "collection_context.json", "upload_transactions.json", "uploads.json",
+            "task.db", "stats.json.db", "stats.json", "logs.json", "velo_collections.json",
+        ) if _ci_resolve(base, m) is not None
+    ]
+    if uploads is not None and _path_is_dir(uploads) and _velo_markers:
+        vdrives = _triage_velociraptor_roots(uploads)
+        cands = sorted(vdrives.keys())
+        notes = [f"Velociraptor offline collection (uploads/ + markers: "
+                 f"{', '.join(_velo_markers[:4])})."]
+        if not cands:
+            return {
+                "status": "ok", "format": "velociraptor", "confidence": "medium",
+                "source_root": str(base), "volume_roots": [], "artifact_paths": {},
+                "drive_candidates": [], "requires_drive_selection": False,
+                "requires_normalization": True,
+                "markers": {"collection_context": True, "uploads": True},
+                "notes": notes + ["uploads/ present but no decodable drive under auto/ntfs."],
+                "recommended_next": "inspect uploads/ accessor subfolders manually.",
+            }
+        sel = (drive or "").upper() or (cands[0] if len(cands) == 1 else None)
+        if sel is None:
+            return {
+                "status": "ok", "format": "velociraptor", "confidence": "high",
+                "source_root": str(base), "volume_roots": [], "artifact_paths": {},
+                "drive_candidates": cands, "requires_drive_selection": True,
+                "requires_normalization": True,
+                "markers": {"collection_context": True, "uploads": True},
+                "notes": notes + [f"multiple drives {cands} - pass drive= to select."],
+                "recommended_next": f"re-run with drive=<one of {cands}>.",
+            }
+        vmap = vdrives.get(sel, {})
+        auto, ntfs = vmap.get("auto"), vmap.get("ntfs")
+        vols: list[dict[str, Any]] = []
+        if auto:
+            vols.append({"path": auto, "drive": sel, "accessor": "auto"})
+        if ntfs:
+            vols.append({"path": ntfs, "drive": sel, "accessor": "ntfs"})
+        ap: dict[str, Any] = {}
+        file_root = Path(auto) if auto else (Path(ntfs) if ntfs else None)
+        if file_root is not None:
+            ap["windows_root"] = str(_ci_resolve(file_root, "Windows") or "") or None
+            ap["users_root"] = str(_ci_resolve(file_root, "Users") or "") or None
+        if ntfs:
+            ap.update(_triage_locate_mft_usn(Path(ntfs)))
+        return {
+            "status": "ok", "format": "velociraptor", "confidence": "high",
+            "source_root": str(base), "drive_candidates": cands,
+            "requires_drive_selection": False, "requires_normalization": True,
+            "volume_roots": vols, "artifact_paths": ap,
+            "markers": {"collection_context": True, "uploads": True},
+            "notes": notes + [
+                f"drive {sel}: file/registry artifacts under the 'auto' accessor "
+                "root; raw NTFS ($MFT/$UsnJrnl) under 'ntfs'. Only the drive "
+                "component is URL-encoded - the dir name is literally e.g. 'C%3A'.",
+                "DETECT-ONLY: running extractors directly on this tree is not yet "
+                "wired (auto/ntfs accessor split); reported for recognition.",
+            ],
+            "recommended_next": (
+                "use volume_roots[].path (accessor=auto for file/registry, "
+                "ntfs for $MFT) - extraction wiring is a later increment."),
+        }
+
+    # Raw mount: Windows/ at the path root.
+    if _triage_is_windows_root(base):
+        ap = {"windows_root": str(_ci_resolve(base, "Windows")),
+              "users_root": str(_ci_resolve(base, "Users") or "") or None}
+        ap.update(_triage_locate_mft_usn(base))
+        return {
+            "status": "ok", "format": "raw_mount", "confidence": "high",
+            "source_root": str(base),
+            "volume_roots": [{"path": str(base), "drive": None, "accessor": "direct"}],
+            "artifact_paths": ap, "drive_candidates": [],
+            "requires_drive_selection": False, "requires_normalization": False,
+            "markers": {"windows_at_root": True},
+            "notes": ["Windows/ at root - already a usable volume root."],
+            "recommended_next": f"pass image_path={base} to the disk extractors.",
+        }
+
+    # Drive-tree formats (cylr / kape / generic): single-letter drive dir(s).
+    drive_roots = _triage_find_drive_roots(base)
+    if drive_roots:
+        # Markers distinguish the collector label (handling is identical).
+        markers: dict[str, Any] = {}
+        fmt = "windows_drive_tree"
+        try:
+            names = " ".join(p.name.lower() for p in base.rglob("*"))[:50000]
+        except OSError:
+            names = ""
+        has_cylr = ".cylr" in names or "cylr.log" in names or "cylr" in str(base).lower()
+        has_kape = "_kape.cli" in names or "kape" in str(base).lower()
+        if has_kape:
+            fmt, markers["kape_cli"] = "kape", True
+        elif has_cylr:
+            fmt, markers["cylr_log"] = "cylr", True
+        vols, cands = [], []
+        for dr in drive_roots:
+            letter = dr.name.upper()
+            cands.append(letter)
+            vols.append({"path": str(dr), "drive": letter, "accessor": "direct"})
+        sel_path = None
+        if drive:
+            for v in vols:
+                if v["drive"] == drive.upper():
+                    sel_path = Path(v["path"])
+        elif len(drive_roots) == 1:
+            sel_path = drive_roots[0]
+        ap: dict[str, Any] = {}
+        if sel_path is not None:
+            ap = {"windows_root": str(_ci_resolve(sel_path, "Windows")),
+                  "users_root": str(_ci_resolve(sel_path, "Users") or "") or None}
+            ap.update(_triage_locate_mft_usn(sel_path))
+        return {
+            "status": "ok", "format": fmt,
+            "confidence": "high" if (has_cylr or has_kape) else "medium",
+            "source_root": str(base), "volume_roots": vols, "artifact_paths": ap,
+            "drive_candidates": cands,
+            "requires_drive_selection": (sel_path is None and len(drive_roots) > 1),
+            "requires_normalization": False, "markers": markers,
+            "notes": [f"{fmt}: drive root(s) {cands} (drive letter is the SOURCE "
+                      "drive, not assumed C)."],
+            "recommended_next": (
+                f"pass image_path=<volume_roots[].path> to the disk extractors"
+                + ("" if sel_path is not None else f"; multiple drives {cands} - pass drive=.")),
+        }
+
+    return {
+        "status": "ok", "format": "unknown", "confidence": "low",
+        "source_root": str(base), "volume_roots": [], "artifact_paths": {},
+        "drive_candidates": [], "requires_drive_selection": False,
+        "requires_normalization": False, "markers": {},
+        "notes": ["no recognized triage/raw-mount layout (no Windows root, no "
+                  "uploads/, no drive-letter tree)."],
+        "recommended_next": "verify the path, or extract the archive first.",
+    }

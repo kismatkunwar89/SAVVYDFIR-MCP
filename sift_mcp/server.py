@@ -64,6 +64,7 @@ from sift_mcp.tools.disk import summarize_evtx as _summarize_evtx
 from sift_mcp.tools.disk import list_deleted_files as _list_deleted_files
 from sift_mcp.tools.disk import extract_mft_timeline as _extract_mft_timeline
 from sift_mcp.tools.disk import extract_usn_journal as _extract_usn_journal
+from sift_mcp.tools.disk import _detect_triage_layout
 from sift_mcp.tools.disk import get_amcache as _get_amcache
 from sift_mcp.tools.disk import extract_prefetch as _extract_prefetch
 from sift_mcp.tools.disk import extract_shellbags as _extract_shellbags
@@ -1837,6 +1838,63 @@ def extract_usn_journal(
         return _finalize_tool_response("disk.extract_usn_journal", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "extract_usn_journal"}
+
+
+@mcp.tool()
+def detect_triage_layout(
+    path: str,
+    case_id: str = "default",
+    drive: Optional[str] = None,
+) -> dict[str, Any]:
+    """EXPERIMENTAL (detect-only, still under testing). Recognize a triage-package
+    or evidence layout and REPORT what it is - it does NOT extract anything.
+
+    READ-ONLY. Emits no findings and is not part of any coverage gate. Idea: when
+    the evidence is a triage collection (CyLR / KAPE / Velociraptor offline
+    collector) rather than a mounted disk image, this classifies the layout and
+    reports the volume root(s) it found. Wiring the existing extractors to run on
+    a recognized triage tree (the Velociraptor accessor split + a normalized view)
+    is a SEPARATE, not-yet-shipped increment - so for now treat the output as
+    informational recognition, not an extraction shortcut.
+
+    Recognizes:
+      - ``raw_mount``        - Windows/ + Users/ at the path root.
+      - ``cylr`` / ``kape``  - ``<wrapper>/<DRIVE>/Windows|Users/...`` (the drive
+                               letter is the SOURCE drive, e.g. ``G`` - never
+                               assumed ``C``).
+      - ``velociraptor``     - ``collection_context.json`` + ``uploads/{auto,ntfs}/``;
+                               only the drive component is URL-encoded. Reports the
+                               per-accessor roots; full extraction wiring deferred.
+      - ``archive_unextracted`` - ``.7z``/``.zip`` - instructs you to extract first
+                               (``collection_unresolved``, never ``artifact_absent``);
+                               does NOT auto-extract.
+      - ``unknown``          - no recognized layout (documented gap).
+
+    Parameters
+    ----------
+    path:
+        Directory of an extracted triage package or a mounted volume, or an
+        archive file (to get extraction guidance).
+    case_id:
+        Case identifier (accepted for interface consistency; detection is read-only).
+    drive:
+        Optional drive letter to select when a collection spans multiple drives.
+
+    Returns
+    -------
+    dict
+        status, format, confidence, volume_roots[], artifact_paths{}, drive_candidates[],
+        requires_drive_selection, requires_normalization, markers{}, notes[], recommended_next.
+    """
+    try:
+        det = _detect_triage_layout(path, drive=drive)
+        if isinstance(det, dict):
+            # Internal keys reserved for the (not-yet-shipped) normalizer.
+            det.pop("_velo_drive", None)
+            det.pop("_velo_map", None)
+        return det
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "detect_triage_layout"}
 
 
 @mcp.tool()

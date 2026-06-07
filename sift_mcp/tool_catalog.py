@@ -93,6 +93,9 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "evidence.get_provenance": _entry(
         "evidence.get_provenance", "evidence", ("state", "reporting"), "integrity"
     ),
+    "disk.detect_triage_layout": _entry(
+        "disk.detect_triage_layout", "disk", ("disk", "file_system"), "analysis"
+    ),
     "disk.extract_prefetch": _entry(
         "disk.extract_prefetch", "disk", ("disk", "file_system"), "artifact"
     ),

@@ -511,6 +511,29 @@ required** (ShellBags, LNK, Jump Lists, browser history, registry file-access, R
 PowerShell history, scheduled tasks) before a report can be
 generated - so a wrong or blank `dispute_type` changes what the investigation must cover.
 
+### Triage layout detection (v1a - detect-only, experimental)
+
+`detect_triage_layout(path)` recognizes raw mounts and extracted **CyLR**, **KAPE**, and
+**Velociraptor** offline-collection layouts (including the real ntfs-only collector-tar
+shape, where only the drive component is URL-encoded, e.g. `%5C%5C.%5CC%3A`) and reports
+the usable volume root(s) and artifact paths. The drive letter is read from the
+collection (e.g. CyLR's source drive may be `G`, not `C`) - never assumed.
+
+It is **read-only and detect-only**: it does **not** import pre-parsed collector output,
+skip the canonical extractors, or change report coverage requirements. You point the
+existing disk extractors at the reported volume root yourself. Validated against a real
+public Velociraptor collection (the hunt_lab DFIR-RansomHub sample), not just our own data.
+
+**Partial triage collections (honest current limitation).** When a collector delivers
+only a subset of artifacts, the standard extractors still run, but a tool that finds
+nothing at the probed root returns `artifact_absent` - which means *"not found at the
+supplied root,"* **not** *"absent on the victim"* or *"out of collector scope."* Tools that
+discover inputs but fail to parse (`collection_failed`/`warning`) can still block report
+generation. **Scope-aware triage coverage** - an explicit manifest
+`evidence_scope.mode = triage_partial` that records un-collected artifacts as a
+non-blocking `collection_gap` (distinct from victim-level absence) - is **planned (v1b-a),
+not yet implemented.** Extraction-skip / audited triage import is a later increment (v1b-b).
+
 ```json
 {
   "case_id": "VANKO-ZEBRAFISH-2016",
