@@ -114,13 +114,13 @@ def init_tools(
 
 
 def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
-    """Run all 6 cross-artifact correlation checks against the case state.
+    """Run all 10 cross-artifact correlation checks (6 core + 4 extended) against the case state.
 
     Reads the authoritative case state managed by the
     :class:`~sift_mcp.state.CaseStateManager` and compares disk and memory
     findings for forensically significant discrepancies.
 
-    The 6 checks are:
+    The 10 checks are (6 core + 4 extended):
 
     1. **process_no_disk_binary** (HIGH) - Process in memory whose executable
        path is absent from all disk execution artefacts.
@@ -134,6 +134,13 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
        binary path that does not exist in the disk artefacts.
     6. **timestomping_detected** (HIGH) - SI timestamps differ from FN
        timestamps by more than 1 hour, indicating timestomping.
+    7. **usn_journal_timestomp** (HIGH) - MFT $SI vs USN Journal timestamp
+       mismatch (authoritative-source contradiction).
+    8. **shimcache_amcache_presence** (MEDIUM) - ShimCache entry without a
+       matching Amcache record (possible selective cache clearing).
+    9. **event_log_clearing** (CRITICAL) - EID 1102 security-log clear.
+    10. **srum_exfiltration** (HIGH/MEDIUM) - high-volume SRUM bytes_sent
+       indicating potential exfiltration.
 
     For each discrepancy, this function also updates the ``contradicted_by``
     lists of the affected findings (if the state manager is loaded for the
@@ -170,7 +177,7 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
               "memory_findings_count": 8,
               "confirmed_consistencies": 5,
               "checked_at": "2026-05-01T14:23:11.000Z",
-              "summary": "1 discrepancy found across 6 correlation checks."
+              "summary": "1 discrepancy found across 10 correlation checks."
             }
     """
     if _state_mgr is None:
@@ -526,7 +533,7 @@ def compare_disk_and_memory(case_id: str) -> dict[str, Any]:
         sev_str = ", ".join(f"{v} {k}" for k, v in severity_counts.items())
         summary = (
             f"{n} discrepanc{'y' if n == 1 else 'ies'} found ({sev_str}) "
-            f"across {total_checks} total correlation checks. "
+            f"across 10 correlation checks ({total_checks} candidate comparisons). "
             f"Examined {len(disk_findings)} disk and {len(memory_findings)} memory findings. "
             f"{confirmed_consistencies} cross-artifact pairs are consistent."
         )

@@ -3,8 +3,9 @@
 **SAVVYDFIR-MCP - Evaluation datasets**
 
 SAVVYDFIR-MCP was evaluated on five independent DFIR cases. Evidence images are
-**not** committed to this repository; ground-truth answer keys are kept analyst-side
-(`scripts/eval/ground_truth/`, gitignored - never on the workstation). This document
+**not** committed to this repository; ground-truth answer keys **are published** at
+`scripts/eval/ground_truth/` for verifiability (the investigation engine never reads
+them - they are applied post-hoc by the scorer). This document
 records each dataset's provenance, scope, and source. Results are in
 [`accuracy-report.md`](accuracy-report.md); full run artifacts in
 [`agent-execution-logs/`](agent-execution-logs/).

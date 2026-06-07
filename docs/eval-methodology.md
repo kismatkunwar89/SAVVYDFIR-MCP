@@ -15,9 +15,9 @@ are in [`accuracy-report.md`](accuracy-report.md); datasets in
    + taxonomy) on the SANS SIFT workstation. Minimal human interaction.
 2. The **ground-truth answer key** is authored without LLM involvement (from the
    dataset's official answer key, published walkthroughs, or forensic report) and
-   stored **analyst-side only** at `scripts/eval/ground_truth/<case>.yaml`. This
-   directory is gitignored and is **never present on the workstation** - the run is
-   blind.
+   stored at `scripts/eval/ground_truth/<case>.yaml`. These keys are **published in
+   this repo** for verifiability; the run is **blind** because the investigation engine
+   never reads them - they are applied post-hoc by the scorer only.
 3. After the run, the produced `report.json` is scored against the answer key by
    `scripts/eval/gt_match_scorer.py`.
 

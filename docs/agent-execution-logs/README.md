@@ -8,7 +8,7 @@ trail and outputs without running the tool themselves.
 
 The five independent blind cases used to validate the framework each have their full run
 artifacts under `docs/agent-execution-logs/<case>/`. All five were run **blind**
-(ground truth never on the workstation) with **zero hallucinations**.
+(the investigation engine never reads ground truth; keys are published for re-scoring) with **zero scored hallucinations**.
 
 | Case | Scenario / OS | Recall | Findings | CONFIRMED | Artifacts |
 |------|---------------|--------|----------|-----------|-----------|
@@ -18,7 +18,19 @@ artifacts under `docs/agent-execution-logs/<case>/`. All five were run **blind**
 | `ALI-WEBSERVER-WIN-L0ZZQ76PMUF` | web-server breach (Win Server 2008) | 92.3% | 427 | 2 | + audit.jsonl + trace |
 | `NIST-HACKINGCASE-2004-MREVIL` | war-driving / credential theft (Win XP) | 86.7% | 304 | 3 | + audit.jsonl + trace |
 
-Recall = granular ground-truth coverage (see `docs/accuracy-report.md`).
+Recall = granular ground-truth coverage (see `docs/accuracy-report.md`). Per-run scores
+are in `scripts/eval/baselines/*.json` (the ground-truth answer keys are published under
+`scripts/eval/ground_truth/`; the investigation engine never reads them).
+
+## Multi-host capstone
+
+| Case | Scenario | Hosts | Artifacts |
+|------|----------|-------|-----------|
+| [`CRIMSON-OSPREY-ENTERPRISE`](CRIMSON-OSPREY-ENTERPRISE/) | SRL-2018 enterprise intrusion (lead-driven cross-host pivot) | 5 (DMZ-FTP → WKSTN-01 → RD-01 → FILE → DC) | per-host report·graph·trace·audit + **unified cross-host graph** |
+
+A showcase of the multi-host pipeline (IOC pivot host→host + unified correlation graph),
+not a GT-scored eval. See its [README](CRIMSON-OSPREY-ENTERPRISE/README.md) for the attack
+chain and the unified graph. Methodology: `docs/multihost-pivot-methodology.md`.
 
 ## What each file is
 

@@ -49,7 +49,7 @@ licensing/attribution.
 ## Evaluation datasets
 
 Used only to measure accuracy; evidence images are **not** committed (ground-truth
-answer keys are gitignored).
+answer keys are published under `scripts/eval/ground_truth/` for verifiability).
 
 | Case | Source |
 |------|--------|
