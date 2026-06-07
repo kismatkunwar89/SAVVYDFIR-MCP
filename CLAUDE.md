@@ -86,14 +86,14 @@ analyze_vss(disk_image_path, case_id)  ← only if sigma finds EID 1102
 
 ### PHASE 4: AI Hypothesis Formation - Main-Agent Inline (5-10 min)
 
-**W1.7 architecture (main-agent inline primary, opt-in specialist spawn):**
+**Main-agent inline primary, opt-in specialist spawn:**
 the missing brain step between detection anchors and the pivot loop. Main-agent
 inline analysis is the **primary path**; specialist Task spawn remains opt-in
 for cross-artifact isolation (synthesis/corroboration). Task subagents hit the
 hardcoded 32K output-token ceiling (anthropics/claude-code#25569) - don't use
 them for artifact-level analysis.
 
-**Heuristic delivery is now deterministic via MCP injection (W1.7):**
+**Heuristic delivery is deterministic via MCP injection:**
 - Every extraction tool returns `applicable_heuristics` in its payload -
   the relevant slice of `.claude/agents/<artifact>-analyst.md` (your
   forensic-heuristic knowledge base) travels WITH the data. Each slice
@@ -105,9 +105,9 @@ For each artifact whose extraction returned `csv_path`:
 1. **Read the `applicable_heuristics` block** in the extraction response.
    The relevant patterns are inline. Note the `ctx_id`.
 2. **Run targeted queries** via `run_analysis(data_path=csv_path, query=...)`.
-   Each call gets an `execution_id` and audit row (W1.5).
+   Each call gets an `execution_id` and audit row.
 3. **Persist evidence-backed conclusions** via `submit_finding(...)` with
-   Section 3-lite schema (W1.3). Cite the heuristic CTX(s) used via
+   the typed finding schema. Cite the heuristic CTX(s) used via
    `heuristic_context_refs=["CTX-003"]` for court-grade provenance.
 4. **Close the lane** via `record_analysis_lane(assigned_agent='main-agent',
    lane_id=..., status='COMPLETE' or 'COMPLETE_WITH_GAPS', execution_ids=[...],
@@ -162,8 +162,7 @@ find_temporal_clusters(case_id, window_seconds=300, min_sources=2, min_events=3)
 ```
 
 Discrepancies detected here trigger **`CorrectionEvent`** writes to
-`audit.jsonl` (W1.5) - the structural self-correction proof for hackathon
-criterion #1 (Autonomous Execution Quality, the tiebreaker).
+`audit.jsonl` - the structural record of autonomous self-correction.
 
 **Supporting-indicator prefix contract (so the correlation engine can read your
 findings).** `compare_disk_and_memory` and `find_temporal_clusters` mine
@@ -208,13 +207,11 @@ re-query, not a re-extraction**:
 
 ### PHASE 6: Cross-Artifact Synthesis (5 min)
 
-**MANDATORY - main-agent inline. Delegate synthesis is opt-in.** Run 2
-demonstrated the failure mode of waiting for `@synthesis-analyst`: the
-specialist Task subagent never recorded its lane, `synthesis_corroboration`
-was missing from state, `generate_report` blocked on `needs_delegate`, the
-operator forced `allow_partial=True`, and the report shipped with 0 CONFIRMED
-(no 3+ source stacking happened). Per W1.7 (Run 2 review 2026-05-24,
-+signed): **do not rely on delegate synthesis as the only path.**
+**MANDATORY - main-agent inline. Delegate synthesis is opt-in.** Do NOT rely on
+delegate synthesis (`@synthesis-analyst`) as the only path: a specialist Task that
+never records its lane leaves `synthesis_corroboration` missing from state, blocks
+`generate_report` on `needs_delegate`, and ships 0 CONFIRMED (no 3+ source stacking).
+Run synthesis inline.
 
 **Main-agent inline synthesis SOP (run BEFORE generate_report once all 4
 prereq lanes are COMPLETE / COMPLETE_WITH_GAPS):**
@@ -416,7 +413,7 @@ timeline reconstruction, and writing the forensic narrative.
 4. Write Python/Pandas code, pass it to `run_analysis` to execute locally, and read ONLY the filtered anomalies back into your context.
 5. After every finding, write one follow-up `run_analysis` query targeting that finding's artifact before moving to the next phase.
 
-**ANALYSIS-DEBT GATE (PART B - enforced by code, review 2026-06-03):**
+**ANALYSIS-DEBT GATE (enforced by code):**
 Extraction is NOT analysis. Every extraction that writes a durable CSV/JSON handle
 (MFT, EVTX, Prefetch, Amcache, SRUM, ShellBags, LNK, JumpLists, browser history,
 registry file-access, sigma) accrues **analysis debt** until you mine it. Debt is
@@ -468,7 +465,7 @@ Always standardise to UTC across all artifacts.
 
 **Targeted corroboration** - ask the next logical question, not a general pile of data:
 - Finding → What would I expect to see if this finding is real? → Look for that specific artifact.
-- Stacking threshold: 1 source = UNCONFIRMED. 2+ independent sources = CONFIRMED.
+- Stacking threshold: 1 source = lead only. CONFIRMED status requires 2+ independent corroborating sources + a ruled-out alternative (confidence rises with each added source: ~0.70 / 0.85 / 1.00).
 
 **Defensible language** in findings:
 - Write: "shell state indicates the directory was rendered through Explorer"
@@ -548,7 +545,7 @@ These tools must run in every investigation before `generate_report`. The covera
 |------|---------------|-----------------|----------|
 | `sigma_hunt(evtx_path, case_id)` | 2,278 community Sigma rules provide deterministic ATT&CK-mapped detection. Validates LLM interpretations against review. Rule-based detection catches patterns LLMs miss. | Lateral movement (PsExec, WinRM), credential theft (Mimikatz, LSASS dumps), persistence (scheduled tasks, services), defense evasion (log clearing, AV tampering). | ✅ YES |
 | `hayabusa_hunt(evtx_path, case_id)` | 3,700+ Sigma rules (superset of Chainsaw). Emits MITRE ATT&CK matrix HTML. Critical for comprehensive threat hunting beyond Chainsaw's coverage. | Additional C2 patterns, rare LOLBin abuse, Windows Defender event correlation, timeline-aware threat scoring. | ❌ NO |
-| `compare_disk_and_memory(case_id)` | 6 forensic contradiction checks. Detects anti-forensics: code injection, process hiding (DKOM), prefetch deletion, timestamp manipulation. Cross-artifact validation LLMs cannot perform. | Hidden processes (in memory but no disk artifact), injected code (memory-only malware), deleted Prefetch (anti-forensics), orphaned network connections (no matching process). | ✅ YES |
+| `compare_disk_and_memory(case_id)` | 10 forensic contradiction checks (6 core + 4 extended). Detects anti-forensics: code injection, process hiding (DKOM), prefetch deletion, timestamp manipulation. Cross-artifact validation LLMs cannot perform. | Hidden processes (in memory but no disk artifact), injected code (memory-only malware), deleted Prefetch (anti-forensics), orphaned network connections (no matching process). | ✅ YES |
 | `build_timeline(case_id)` | Plaso super-timeline reconstructs attacker activity across all artifact types simultaneously. Temporal proximity analysis reveals staged attacks that single-artifact analysis misses. **OPTIONAL** - specialists work from individual CSV extracts; comprehensive timeline enhances but is not required. | Multi-stage intrusions (reconnaissance → credential theft → lateral movement), dwell time quantification, exfiltration staging windows, cleanup activity timestamps. | ❌ NO (optional) |
 | `detect_injection(case_id)` | Memory-only malware detection. Reflective PE injection and shellcode are invisible to disk forensics. Required for fileless attacks. | Cobalt Strike beacons, Metasploit payloads, process hollowing, thread injection, reflective DLL loading. | ✅ YES |
 | `list_dlls(case_id, pid)` | Per-PID DLL enumeration for suspicious network processes. Unsigned DLLs, out-of-place paths, and missing-on-disk DLLs indicate compromise. | Malicious DLLs loaded into legitimate processes (svchost.exe, explorer.exe), DLL side-loading, missing DLLs (memory-only injection). | ✅ YES |
@@ -641,20 +638,20 @@ The correlation engine runs **10 automated checks** (6 original + 4 new professi
 
 ### Stacked Evidence Principle
 
-**1 source = POSSIBLE (0.70)** - insufficient for defensible conclusion
-- Example: Only ShellBag shows folder navigation → observation, not proof of file access
+Confidence calibration is a **separate layer** from the CONFIRMED status gate:
 
-**2 sources = PROBABLE (0.85)** - strong indicator, needs one more
-- Example: Prefetch + MFT → probable execution, need EVTX 4688 or memory confirmation
+**1 source ~0.70** - lead only, insufficient for a defensible conclusion
+- Example: only a ShellBag shows folder navigation → observation, not proof of file access
 
-**3+ sources = CONFIRMED (1.00)** - defensible in court
-- Example: LNK + ShellBag + RecentDocs → confirmed file access
+**2 sources ~0.85** - strong; meets the CONFIRMED-status minimum when paired with a valid `source_execution_id` + a ruled-out alternative
+- Example: Prefetch + MFT → probable execution; EVTX 4688 or a memory process strengthens it
+
+**3+ sources ~1.00** - court-grade stack
+- Example: LNK + ShellBag + RecentDocs → file access
 - Example: Prefetch + EVTX 4688 + MFT + Memory process → definitive execution
 
 **Framework Application**:
-- Corroboration-analyst applies stacking during final review
-- Confidence automatically adjusted based on `corroborated_by` list length
-- Findings promoted to CONFIRMED status when corroboration requirements met
+- Confidence scales with `corroborated_by` length; the CONFIRMED *status* gate requires ≥2 independent `corroborated_by` IDs + a valid `source_execution_id` + an alternative-hypothesis disposition.
 
 ### Reliability Hierarchy (What Each Artifact Proves)
 
@@ -676,20 +673,6 @@ The correlation engine runs **10 automated checks** (6 original + 4 new professi
 - Registry Run key = persistence attempt, need execution proof
 - LNK file = user navigation, need ShellBag/RecentDocs for file access
 - Zone.Identifier = internet download, need Prefetch for execution
-
-### Defensible Forensic Language
-
-**Write**:
-- "Shell state indicates the directory was rendered through Explorer"
-- "Prefetch and EVTX 4688 corroborate execution at 03:01:58 UTC"
-- "3 independent sources confirm file access: LNK + ShellBag + RecentDocs"
-- "USN Journal (authoritative) contradicts MFT $SI timestamp - timestomping confirmed"
-
-**NOT**:
-- "The user accessed the directory" (ShellBag alone doesn't prove user action)
-- "The attacker ran the binary" (avoid attribution without 3+ sources)
-- "Malware executed" (single source = not defensible in court)
-- "File was modified" (specify $SI or $FN and acknowledge manipulation potential)
 
 ### Professional Correlation Patterns (Agnostic)
 
