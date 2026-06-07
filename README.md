@@ -30,7 +30,7 @@ Every required turn-in is listed below with its exact location, so judges can ve
 | 7 | Architecture diagram | This file, [Architecture](#architecture), plus [`docs/architecture.md`](docs/architecture.md) | DONE |
 | 8 | Evidence dataset documentation | [`docs/dataset-documentation.md`](docs/dataset-documentation.md) | DONE |
 | 9 | Accuracy report | [`docs/accuracy-report.md`](docs/accuracy-report.md) | DONE |
-| 10 | Agent execution logs | [`docs/agent-execution-logs/`](docs/agent-execution-logs/) — rendered `report.html` + `graph.html` for all 5 cases; hash-chained `audit.jsonl` for 4/5 (ROCBA predates audit retention, disclosed) | DONE |
+| 10 | Agent execution logs | [`docs/agent-execution-logs/`](docs/agent-execution-logs/) - rendered `report.html` + `graph.html` for all 5 cases; hash-chained `audit.jsonl` for 4/5 (ROCBA predates audit retention, disclosed) | DONE |
 
 > **ACTION REQUIRED before submitting:** replace the requirement #6 placeholder above with the live demonstration video URL. This is the only component that cannot be completed from the repository alone.
 
@@ -38,10 +38,10 @@ Every required turn-in is listed below with its exact location, so judges can ve
 
 ## What It Does
 
-SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It exposes **60+** typed forensic tools over stdio transport (61 at this writing — call `describe_tool_catalog` for the live count, don't hardcode it), supports cross-artifact correlation between disk and memory evidence via 10 anti-forensics detection checks, and keeps findings traceable through persisted artifacts, state, and a hash-chained audit log, with structured provenance (every CONFIRMED finding cites a resolvable `execution_id`; heuristics carry CTX-NNN references).
+SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It exposes **60+** typed forensic tools over stdio transport (61 at this writing - call `describe_tool_catalog` for the live count, don't hardcode it), supports cross-artifact correlation between disk and memory evidence via 10 anti-forensics detection checks, and keeps findings traceable through persisted artifacts, state, and a hash-chained audit log, with structured provenance (every CONFIRMED finding cites a resolvable `execution_id`; heuristics carry CTX-NNN references).
 
 **Design: autonomous-first.** You point it at a case `manifest.json` and it
-investigates with minimal interaction — the 7-phase workflow is enforced by **hooks
+investigates with minimal interaction - the 7-phase workflow is enforced by **hooks
 and a coverage gate in code**, not by a human driving each step. The
 `CONFIRMED / ACTIVE / REJECTED` states are the agent's own evidence-graded output
 lifecycle (a human reviews the final `report.html` + hash-chained audit trail); this
@@ -90,7 +90,7 @@ decision flow below) is on the roadmap, not current scope.
 
 ### Investigation & Decision Flow
 
-The agent does not free-associate over evidence — it runs a **documented** 7-phase
+The agent does not free-associate over evidence - it runs a **documented** 7-phase
 workflow (the sequence below is the intended order; the agent may reorder steps within a
 case) where **detection anchors seed hypotheses**, hypotheses drive **targeted
 queries**, and every conclusion must **earn** its confidence by stacking
@@ -116,17 +116,17 @@ flowchart TD
 
 **How a verdict is decided (the finding lifecycle).** Every finding starts as an
 `OBSERVATION` / `INFERENCE` / `HYPOTHESIS` and is **promoted to `CONFIRMED` only
-when it clears three code-enforced invariants** — not by the model's say-so:
+when it clears three code-enforced invariants** - not by the model's say-so:
 
-1. **Provenance** — its `execution_id` must resolve to a real `audit.jsonl` row
+1. **Provenance** - its `execution_id` must resolve to a real `audit.jsonl` row
    (no inherited claims, no placeholder IDs).
-2. **Corroboration** — ≥ 2 independent artifact sources agree (1 source = `ACTIVE`
+2. **Corroboration** - ≥ 2 independent artifact sources agree (1 source = `ACTIVE`
    lead, never confirmed; "stacking defeats anti-forensics").
-3. **Alternative ruled out** — the strongest benign explanation is recorded with a
+3. **Alternative ruled out** - the strongest benign explanation is recorded with a
    specific observation that refutes it; unresolved alternatives force a downgrade.
 
 These are the agent's **autonomously-assigned, evidence-graded** output states
-(`CONFIRMED` / `ACTIVE` / `REJECTED`) — defensible, reviewable conclusions in the
+(`CONFIRMED` / `ACTIVE` / `REJECTED`) - defensible, reviewable conclusions in the
 final report, not raw detector noise. A human reviews the finished report + audit
 trail; the agent is not driven click-by-click. The coverage gate blocks **strict**
 report generation until configured coverage requirements are satisfied (e.g.
@@ -200,16 +200,16 @@ source venv/bin/activate
 python -c "import sift_mcp.server; print('OK')"
 ```
 
-> **venv vs `claude` — what runs what (no confusion):** `claude` is a **standalone binary**
+> **venv vs `claude` - what runs what (no confusion):** `claude` is a **standalone binary**
 > (`~/.local/bin/claude`); it does **not** live in the venv. Launched from the repo, it
-> **auto-starts the MCP server** declared in `.mcp.json` using the project `venv` — so you do
+> **auto-starts the MCP server** declared in `.mcp.json` using the project `venv` - so you do
 > **not** need to `source venv/bin/activate` to run an investigation. Activate the venv only to run
 > Python **directly** (the import check above, or the `scripts/`). The one thing that matters:
 > **launch `claude` from inside the repo dir** so `.claude/settings.json` (hooks) + `.mcp.json`
 > (MCP server) are picked up. The `(venv)` prefix on your prompt is harmless either way.
 
 > Settings are **project-local**: `.claude/settings.json` lives in the repo (committed alongside the
-> code), so there is no global `~/.claude/settings.json` — launching from the repo dir is all you need.
+> code), so there is no global `~/.claude/settings.json` - launching from the repo dir is all you need.
 
 For a production deployment to `/opt/SAVVYDFIR-MCP/` (so any user on the box can run investigations), copy after the local install verifies:
 
@@ -236,20 +236,20 @@ Notes:
 ### Execution model
 
 Investigations run **autonomously**. When you launch `claude` from the repo root, the project-local
-`.claude/settings.json` **hooks load automatically** and enforce the workflow — a PreToolUse gate
+`.claude/settings.json` **hooks load automatically** and enforce the workflow - a PreToolUse gate
 (`.claude/hooks/workflow-enforce-pre.py`) and a PostToolUse gate (`workflow-enforce-post.py`) that block
 `generate_report` until the mandatory detectors have run. These hooks are **always-on enforcement, not a
 toggle**: launching from *outside* the repo means `settings.json` isn't picked up and the coverage gate
-is silently disabled — so always `cd` into the repo first. There is **no per-tool approval/checkpoint
-UI** today — you review the finished `report.html` + hash-chained audit trail; an interactive
+is silently disabled - so always `cd` into the repo first. There is **no per-tool approval/checkpoint
+UI** today - you review the finished `report.html` + hash-chained audit trail; an interactive
 Approve/Reject review canvas is roadmap, not current scope.
 
 > **Model used for evaluation.** Most of the validated eval runs were executed on **Claude Sonnet 4.6**
 > (the `.claude/settings.json` default), not the flagship Opus tier. The accuracy numbers in this README
-> were therefore achieved on a mid-tier model — the framework's gates and correlation logic carry the
+> were therefore achieved on a mid-tier model - the framework's gates and correlation logic carry the
 > rigor, so results do not depend on running the most expensive model.
 
-### Run a single host — two equivalent styles
+### Run a single host - two equivalent styles
 
 Both are autonomous and hook-enforced; choose by whether you want to watch the session.
 
@@ -269,19 +269,19 @@ claude --allowedTools "mcp__savvydfir__*" --dangerously-skip-permissions \
 ```
 
 > **Permissions:** `--allowedTools "mcp__savvydfir__*"` pre-allows the forensic tools (narrows tool
-> access). `--dangerously-skip-permissions` skips **all** per-tool confirmation prompts — required for
+> access). `--dangerously-skip-permissions` skips **all** per-tool confirmation prompts - required for
 > unattended autonomous runs, but it bypasses every confirmation, so use it only inside a **trusted,
 > isolated DFIR VM** (the intended deployment).
 
-> **Note — `sigma_hunt` is mandatory for a *strict* report, and it takes time.**
+> **Note - `sigma_hunt` is mandatory for a *strict* report, and it takes time.**
 > It runs Chainsaw across the configured Windows Sigma corpus (~2,278 rules in the validated setup;
 > the exact count varies with an unpinned SigmaHQ clone). It is a **hard-success requirement for
-> strict report generation** — one successful run with durable Chainsaw JSON (`exit_code=0`,
+> strict report generation** - one successful run with durable Chainsaw JSON (`exit_code=0`,
 > `duration_seconds>0`); a *failed* attempt does **not** satisfy the gate. `sigma_scan` is a separate
 > internal anomaly detector and does **not** count toward it. **Runtime is volume-dependent:** observed
 > runs ranged from a few seconds on small single-host EVTX to ~6 minutes on high-volume enterprise logs
 > (each directory attempt times out at 300s, then may retry prioritized channels). **There is no casual
-> per-run switch to turn it off** — to deliberately skip it, call `generate_report(case_id,
+> per-run switch to turn it off** - to deliberately skip it, call `generate_report(case_id,
 > allow_partial=true)`, which produces a non-strict report marked `COMPLETE_WITH_GAPS` and records the
 > omission in `data_gaps`. (`SAVVYDFIR_SKIP_PHASE3_GATE=1` only relaxes the *ordering* gate; it does
 > **not** waive `sigma_hunt` coverage.)
@@ -291,7 +291,7 @@ Output: `reports/{case_id}/report.html` and `reports/{case_id}/graph.html`.
 
 > **PDF export (optional).** The report HTML is self-contained (no JS, no external assets), so any
 > Chromium-family browser can print it faithfully. `scripts/render_report_pdf.sh <report.html> [out.pdf]`
-> wraps headless Chromium to write `report.pdf` alongside the HTML — there is **no** PDF dependency in
+> wraps headless Chromium to write `report.pdf` alongside the HTML - there is **no** PDF dependency in
 > the MCP server itself.
 
 ### Multi-host Enterprise Investigation
@@ -377,25 +377,25 @@ the bucket/redaction regression fixture is `tests/fixtures/graph_bucket_syntheti
 
 ## Validation Status
 
-Validated **blind** end-to-end on five independent blind cases — **0 *scored* hallucinations across all** (no reported finding asserted an artifact/event absent from the evidence, measured against ground truth; the investigation reads only `manifest.json` and never the answer key). The ground-truth keys are **published** under [`scripts/eval/ground_truth/`](scripts/eval/ground_truth/) so anyone can re-score with `gt_match_scorer.py`. Full results in [`docs/accuracy-report.md`](docs/accuracy-report.md); per-case artifacts in [`docs/agent-execution-logs/`](docs/agent-execution-logs/):
+Validated **blind** end-to-end on five independent blind cases - **0 *scored* hallucinations across all** (no reported finding asserted an artifact/event absent from the evidence, measured against ground truth; the investigation reads only `manifest.json` and never the answer key). The ground-truth keys are **published** under [`scripts/eval/ground_truth/`](scripts/eval/ground_truth/) so anyone can re-score with `gt_match_scorer.py`. Full results in [`docs/accuracy-report.md`](docs/accuracy-report.md); per-case artifacts in [`docs/agent-execution-logs/`](docs/agent-execution-logs/):
 
-- **ROCBA-2020-FREDS-LAPTOP** — insider IP theft (Windows) — 90% recall, 107 findings, 3 CONFIRMED.
-- **LONEWOLF-2018-DESKTOP-PM6C56D** — mass-shooting plot (Windows) — 91.7% recall, 88 findings, 2 CONFIRMED.
-- **NIST-DATALEAK-2015-PC** — insider data leak (Windows, disk-only) — 60% recall, 503 findings, 4 CONFIRMED.
-- **ALI-WEBSERVER-WIN-L0ZZQ76PMUF** — web-server breach (Win Server 2008) — 92.3% recall, 427 findings, 2 CONFIRMED.
-- **NIST-HACKINGCASE-2004-MREVIL** — war-driving / credential theft (Win XP) — 86.7% recall, 304 findings, 3 CONFIRMED.
+- **ROCBA-2020-FREDS-LAPTOP** - insider IP theft (Windows) - 90% recall, 107 findings, 3 CONFIRMED.
+- **LONEWOLF-2018-DESKTOP-PM6C56D** - mass-shooting plot (Windows) - 91.7% recall, 88 findings, 2 CONFIRMED.
+- **NIST-DATALEAK-2015-PC** - insider data leak (Windows, disk-only) - 60% recall, 503 findings, 4 CONFIRMED.
+- **ALI-WEBSERVER-WIN-L0ZZQ76PMUF** - web-server breach (Win Server 2008) - 92.3% recall, 427 findings, 2 CONFIRMED.
+- **NIST-HACKINGCASE-2004-MREVIL** - war-driving / credential theft (Win XP) - 86.7% recall, 304 findings, 3 CONFIRMED.
 
-> **Reading the numbers — "findings" vs "CONFIRMED findings" are not the same thing.**
-> A **finding** is *anything the agent recorded* — an observation or investigative **lead**. Most
+> **Reading the numbers - "findings" vs "CONFIRMED findings" are not the same thing.**
+> A **finding** is *anything the agent recorded* - an observation or investigative **lead**. Most
 > findings are **ACTIVE**: single-source leads (e.g. "ShimCache shows this binary existed"), reported
 > **as leads, not as facts**. A **CONFIRMED finding** is the small, court-defensible subset that cleared
 > the evidence-provenance gate: a resolvable `execution_id` (real `audit.jsonl` row) **+ ≥2 independent
 > corroborating sources + a ruled-out benign alternative**. So "503 findings, 4 CONFIRMED" means the
 > agent surfaced 503 leads/observations and **4** of them were independently corroborated to the
-> defensible bar — *not* that 499 were wrong. (Recall is scored against ground truth over **all**
+> defensible bar - *not* that 499 were wrong. (Recall is scored against ground truth over **all**
 > findings, not just CONFIRMED; CONFIRMED measures evidentiary strength, recall measures coverage.)
 
-Each case is a different attack class and OS era (2004–2020); the framework adapted with no cross-case contamination.
+Each case is a different attack class and OS era (2004-2020); the framework adapted with no cross-case contamination.
 
 Framework operational properties:
 
@@ -452,12 +452,12 @@ Evidence directories are READ-ONLY. By default output goes to `analysis/` and `r
 
 The manifest is the **single human input that drives the whole autonomous run.** The analyst
 fills [`case-templates/manifest.json`](case-templates/manifest.json); `start_investigation` reads
-it (the [Usage](#usage) commands point Claude at this file). It is intentionally rich — the
+it (the [Usage](#usage) commands point Claude at this file). It is intentionally rich - the
 `investigative_taxonomy` block is **load-bearing**: `dispute_type` decides what the coverage gate
 enforces. For file-centric disputes (`intrusion_response` / `data_exfiltration` / `insider_threat` /
 `ransomware` / `financial_fraud` / `policy_violation`) the gate makes the **file-access extractors
 required** (ShellBags, LNK, Jump Lists, browser history, registry file-access) before a report can be
-generated — so a wrong or blank `dispute_type` changes what the investigation must cover.
+generated - so a wrong or blank `dispute_type` changes what the investigation must cover.
 
 ```json
 {
@@ -486,16 +486,16 @@ generated — so a wrong or blank `dispute_type` changes what the investigation 
 | `case_id` | ✅ | Unique case identifier (no spaces) |
 | `investigation_goal` | ✅ | What the agent should determine (the case questions) |
 | `investigative_taxonomy.side` | ✅ | `victim` / `attacker` / `neutral` |
-| `investigative_taxonomy.dispute_type` | ✅ | **Load-bearing** — drives the coverage gate (file-centric types require the file-access extractors) |
+| `investigative_taxonomy.dispute_type` | ✅ | **Load-bearing** - drives the coverage gate (file-centric types require the file-access extractors) |
 | `investigative_taxonomy.os_in_scope` | ✅ | OS list, e.g. `["Windows 10"]` |
 | `disk_images` | ◑ | `{path, host, image_type}`; EWF auto-spans `.E02+` from `.E01`. At least one of disk/memory required |
 | `memory_dumps` | ◑ | `{path, host}`; **`[]` = disk-only** (the memory triage gate auto-relaxes) |
-| `mode` | — | `"blind"` (no IOC hints) or `"seeded"` (IOCs provided to agent) |
-| `investigative_taxonomy.expected_attack_class` | — | Best guess, or `"unknown"` |
-| `investigative_taxonomy.initial_keywords` | — | Case leads to seed the hunt (names, hostnames, paths) |
-| `known_iocs` | — | IOC array (returned to the agent only when `mode="seeded"`) |
-| `max_iterations` | — | Max triage iterations before forced completion (default 4) |
-| `incident_date` | — | Annotates the timeline; never filters rows |
+| `mode` | - | `"blind"` (no IOC hints) or `"seeded"` (IOCs provided to agent) |
+| `investigative_taxonomy.expected_attack_class` | - | Best guess, or `"unknown"` |
+| `investigative_taxonomy.initial_keywords` | - | Case leads to seed the hunt (names, hostnames, paths) |
+| `known_iocs` | - | IOC array (returned to the agent only when `mode="seeded"`) |
+| `max_iterations` | - | Max triage iterations before forced completion (default 4) |
+| `incident_date` | - | Annotates the timeline; never filters rows |
 
 ---
 
@@ -506,7 +506,7 @@ generated — so a wrong or blank `dispute_type` changes what the investigation 
 | evidence | `verify_integrity`, `get_provenance` | Hash verification and finding traceability |
 | disk | `extract_prefetch`, `get_amcache`, `extract_mft_timeline`, `list_deleted_files`, `summarize_evtx`, `extract_registry_run_keys` | Windows disk artifact analysis |
 | memory | `detect_profile`, `list_processes`, `scan_processes`, `scan_network`, `detect_injection`, `list_dlls` | Volatility 3 memory analysis |
-| timeline | `build_timeline`, `query_timeline` | Plaso super timeline — **optional**, not gate-enforced, not used in the validated single-host flow |
+| timeline | `build_timeline`, `query_timeline` | Plaso super timeline - **optional**, not gate-enforced, not used in the validated single-host flow |
 | yara | `scan_files`, `scan_memory` | YARA signature scanning |
 | correlation | `compare_disk_and_memory`, `flag_discrepancy`, `find_temporal_clusters` | Cross-artifact correlation (10 anti-forensics checks) + temporal clustering for synthesis |
 | state | `read_state`, `get_finding`, `get_findings`, `export_trace`, `describe_tool_catalog` | Case state summary, retrieval, trace export, and catalog metadata |
@@ -536,7 +536,7 @@ When evaluating against ground truth:
 - **False Positive (FP):** Finding flagged as suspicious but is benign per ground truth
 - **False Negative (FN):** Known-bad artifact in ground truth not detected by agent
 
-The `compare_disk_and_memory()` correlation engine runs **10** anti-forensics checks — the 6 core checks below, plus 4 extended (USN-journal timestamp validation, ShimCache vs Amcache, EID 1102 log-clearing, SRUM exfiltration):
+The `compare_disk_and_memory()` correlation engine runs **10** anti-forensics checks - the 6 core checks below, plus 4 extended (USN-journal timestamp validation, ShimCache vs Amcache, EID 1102 log-clearing, SRUM exfiltration):
 1. Process in memory with no disk binary (fileless)
 2. Execution evidence for deleted binary (cleanup)
 3. VAD anomaly on legitimate process path (injection)
@@ -556,12 +556,12 @@ lifecycle is:
 3. Run follow-up tools from the alert's `recommended_followup`
 4. Re-promote or reject based on new evidence
 
-It is evidence-triggered — it fires when disk and memory contradict, not when the LLM
-second-guesses itself. **Honesty caveat from the captured traces:** steps 1–2 were
+It is evidence-triggered - it fires when disk and memory contradict, not when the LLM
+second-guesses itself. **Honesty caveat from the captured traces:** steps 1-2 were
 observed in **3 of 8 runs (16 correction events total)**, where step 2 was a confidence
 demotion (not necessarily a status change to `HYPOTHESIS`). Automated follow-up and
-re-adjudication (steps 3–4) were **not demonstrated** in those traces (`revised_finding_id`
-was always null) — treat them as designed-but-unproven.
+re-adjudication (steps 3-4) were **not demonstrated** in those traces (`revised_finding_id`
+was always null) - treat them as designed-but-unproven.
 
 ---
 
@@ -624,11 +624,11 @@ SAVVYDFIR-MCP/
 
 ## Acknowledgements & Third-Party Attribution
 
-SAVVYDFIR-MCP is an **orchestration layer** — it does not reimplement forensic
+SAVVYDFIR-MCP is an **orchestration layer** - it does not reimplement forensic
 parsers; it drives best-in-class open-source DFIR tools (Sigma, Chainsaw,
 Hayabusa, Eric Zimmerman's EZ Tools, Volatility 3, Plaso, The Sleuth Kit, YARA,
 libyal) and adds cross-artifact correlation + an evidence-provenance gate on top.
-One file is vendored verbatim — Chainsaw's official Sigma→EVTX mapping
+One file is vendored verbatim - Chainsaw's official Sigma→EVTX mapping
 (`rules/chainsaw-sigma-mapping.yml`, **GPL-3.0**, © WithSecure Labs).
 
 Full credits, sources, and licenses for every third-party tool, vendored file,

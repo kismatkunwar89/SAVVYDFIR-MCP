@@ -178,13 +178,13 @@ Group B - run one at a time or in small safe batches:
 8. `get_amcache(image_path)` -> delegate to `@amcache-analyst`
 9. `extract_prefetch(image_path)` -> delegate to `@prefetch-analyst`
 10. `extract_srum(image_path)` when SRUM exists or exfil volume matters -> delegate to `@srum-analyst`
-11. **File-access bundle — REQUIRED when `investigative_taxonomy.dispute_type` ∈
+11. **File-access bundle - REQUIRED when `investigative_taxonomy.dispute_type` ∈
     {intrusion_response, data_exfiltration, insider_threat, financial_fraud,
     policy_violation, ransomware} AND Windows is in scope** (the coverage gate
     enforces this; `start_investigation` lists them in `next_required_tools` +
     `mandatory_tools_for_report_gate`): `extract_shellbags`, `extract_lnk_files`,
     `extract_jump_lists`, `extract_browser_history`, `extract_registry_fileaccess`.
-    Do NOT stop at extraction — `run_analysis` + `submit_finding` per CSV (stack
+    Do NOT stop at extraction - `run_analysis` + `submit_finding` per CSV (stack
     LNK + ShellBag + RecentDocs for file ACCESS; browser downloads for an
     initial-access vector). On non-Windows/mount-less images they record a
     documented-absence result (the gate accepts that); they are sequential dotnet

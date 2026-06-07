@@ -1,10 +1,10 @@
 # Dataset Documentation
 
-**SAVVYDFIR-MCP — Evaluation datasets**
+**SAVVYDFIR-MCP - Evaluation datasets**
 
 SAVVYDFIR-MCP was evaluated on five independent DFIR cases. Evidence images are
 **not** committed to this repository; ground-truth answer keys are kept analyst-side
-(`scripts/eval/ground_truth/`, gitignored — never on the workstation). This document
+(`scripts/eval/ground_truth/`, gitignored - never on the workstation). This document
 records each dataset's provenance, scope, and source. Results are in
 [`accuracy-report.md`](accuracy-report.md); full run artifacts in
 [`agent-execution-logs/`](agent-execution-logs/).
@@ -21,9 +21,9 @@ records each dataset's provenance, scope, and source. Results are in
 
 ## Ground-truth methodology
 
-Ground truth for each case was established **without LLM involvement** — from the
+Ground truth for each case was established **without LLM involvement** - from the
 dataset's official answer key (NIST cases), cross-corroborated public walkthroughs
-(Ali Hadi), or the case's forensic report (SANS cases) — and encoded as an answer-key
+(Ali Hadi), or the case's forensic report (SANS cases) - and encoded as an answer-key
 YAML with distinctive anchors and known-negatives. The scorer
 (`scripts/eval/gt_match_scorer.py`) matches the agent's findings against it. See
 [`eval-methodology.md`](eval-methodology.md).
@@ -41,5 +41,5 @@ YAML with distinctive anchors and known-negatives. The scorer
 
 A multi-host enterprise corpus (SANS Realistic Lab, SRL-2018) is supported by the
 framework's multi-host pipeline (`merge_host_graphs`, `build_reports_index`) but was
-**not** run for this submission — it is deferred future work, not part of the
+**not** run for this submission - it is deferred future work, not part of the
 reported results above.
