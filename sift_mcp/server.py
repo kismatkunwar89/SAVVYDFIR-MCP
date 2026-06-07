@@ -305,7 +305,11 @@ def _load_fk(artifact: str) -> dict:
     copy, so caveats are present even when the external package is absent.
     """
     for base in _FK_BASES:
-        for platform in ("windows", "linux"):
+        # FK artifact namespaces (keep in sync with corroboration.py load_fk_slice()):
+        # windows/macos/linux = real OS artifacts; analysis_outputs = tool outputs that
+        # are not OS artifacts (hayabusa alerts, volatility memory). "linux"/"macos" stay
+        # in the search list for future OS coverage + legacy external knowledge packs.
+        for platform in ("windows", "analysis_outputs", "linux", "macos"):
             p = base / "artifacts" / platform / f"{artifact}.yaml"
             if p.exists():
                 import yaml as _yaml

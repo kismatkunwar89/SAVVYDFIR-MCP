@@ -1,6 +1,7 @@
 # Forensic-knowledge: Windows memory forensics (Volatility 3 / MemProcFS / RAM analysis).
-# Generic memory-forensics discipline - no case specifics. Filed under linux/
-# because the SIFT analysis host is Linux; the analyzed image may be any OS.
+# Generic memory-forensics discipline - no case specifics. Filed under analysis_outputs/
+# because this is analysis-tool output (run on the SIFT host), not a Linux OS artifact;
+# the analyzed image may be any OS.
 artifact: volatility_memory
 aka:
   - "RAM analysis"

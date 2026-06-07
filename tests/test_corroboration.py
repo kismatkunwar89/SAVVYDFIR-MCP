@@ -24,7 +24,7 @@ from sift_mcp.corroboration import (
 )
 
 FK_DIR = Path(__file__).resolve().parent.parent / "data" / "forensic-knowledge" / "artifacts"
-ALL_YAMLS = sorted(FK_DIR.glob("windows/*.yaml")) + sorted(FK_DIR.glob("linux/*.yaml"))
+ALL_YAMLS = sorted(FK_DIR.glob("windows/*.yaml")) + sorted(FK_DIR.glob("analysis_outputs/*.yaml"))
 
 
 # --- non-disruption: import graph -----------------------------------------

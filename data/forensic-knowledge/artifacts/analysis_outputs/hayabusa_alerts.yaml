@@ -1,6 +1,7 @@
 # Forensic-knowledge: Sigma / Hayabusa / Chainsaw rule-based EVTX alerts.
-# Generic detection-engine discipline - no case specifics. Filed under linux/
-# because the detection host is Linux; the analyzed logs may be any Windows host.
+# Generic detection-engine discipline - no case specifics. Filed under analysis_outputs/
+# because this is detection-tool output (run on the SIFT host), not a Linux OS artifact;
+# the analyzed logs may be any Windows host.
 artifact: hayabusa_alerts
 does_not_prove:
   - "A rule hit proves a pattern MATCHED the logs, NOT that the activity was malicious - community rules carry false positives that require triage."

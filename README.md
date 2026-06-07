@@ -98,7 +98,7 @@ gates; these layers (the reference the "brain" reads) say what each artifact mea
 | Layer | Where | Fed to the agent | Carries |
 |-------|-------|------------------|---------|
 | **1. Case manifest** | `case-templates/manifest.json` | `start_investigation()` - the primary structured input | Disk/memory paths + `investigative_taxonomy` (dispute_type, OS, keywords). `dispute_type` drives which extractors are *required* (file-centric disputes pull in the file-access bundle). |
-| **2. Forensic-knowledge YAML** | `data/forensic-knowledge/artifacts/{windows,linux}/*.yaml` (17 files) | Injected into **mapped** tool responses at interpretation time | `forensic_caveat` (what the artifact does NOT prove), `corroborate_with` (what to check next), `discipline_reminder`. |
+| **2. Forensic-knowledge YAML** | `data/forensic-knowledge/artifacts/{windows,analysis_outputs}/*.yaml` (17 files; 15 Windows OS artifacts + 2 analysis-tool outputs) | Injected into **mapped** tool responses at interpretation time | `forensic_caveat` (what the artifact does NOT prove), `corroborate_with` (what to check next), `discipline_reminder`. |
 | **3. Analyst Markdown KBs** | `.claude/agents/*-analyst.md` (12 files) | The relevant slice rides into the response as `applicable_heuristics`; more via `get_heuristic()` | Per-artifact heuristics (e.g. `mft-analyst.md` = timestomping, sequential entries). Read inline by the main agent; synthesis/corroboration/timeline `.md` are opt-in orchestration roles. |
 
 Layers 2 and 3 are **two different injection paths**: the YAML supplies the caveat/corroboration

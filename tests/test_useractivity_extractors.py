@@ -182,7 +182,7 @@ class FkFallbackTests(unittest.TestCase):
         external = Path("/opt/savvydfir-knowledge/packages/forensic-knowledge/data")
         vendored = Path(__file__).resolve().parent.parent / "data" / "forensic-knowledge"
         for base in (external, vendored):
-            for platform in ("windows", "linux"):
+            for platform in ("windows", "analysis_outputs", "linux", "macos"):
                 p = base / "artifacts" / platform / f"{artifact}.yaml"
                 if p.exists():
                     return yaml.safe_load(p.read_text(encoding="utf-8")) or {}

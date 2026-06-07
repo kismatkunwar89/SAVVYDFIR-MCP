@@ -615,7 +615,8 @@ def load_fk_slice(artifact: str) -> dict[str, Any]:
     if not name:
         return {}
     for base in _fk_bases():
-        for platform in ("windows", "linux"):
+        # FK artifact namespaces (keep in sync with server.py _load_fk()).
+        for platform in ("windows", "analysis_outputs", "linux", "macos"):
             p = base / "artifacts" / platform / f"{name}.yaml"
             if p.exists():
                 try:
