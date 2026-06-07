@@ -231,13 +231,40 @@ Notes:
 > Always launch `claude` from inside the repo so the project-local
 > `.claude/settings.json` (hooks + MCP server) is picked up.
 
-### Single Host
+### Execution model
 
+Investigations run **autonomously**. When you launch `claude` from the repo root, the project-local
+`.claude/settings.json` **hooks load automatically** and enforce the workflow — a PreToolUse gate
+(`.claude/hooks/workflow-enforce-pre.py`) and a PostToolUse gate (`workflow-enforce-post.py`) that block
+`generate_report` until the mandatory detectors have run. These hooks are **always-on enforcement, not a
+toggle**: launching from *outside* the repo means `settings.json` isn't picked up and the coverage gate
+is silently disabled — so always `cd` into the repo first. There is **no per-tool approval/checkpoint
+UI** today — you review the finished `report.html` + hash-chained audit trail; an interactive
+Approve/Reject review canvas is roadmap, not current scope.
+
+### Run a single host — two equivalent styles
+
+Both are autonomous and hook-enforced; choose by whether you want to watch the session.
+
+**Interactive** (analyst-initiated, watch it run live):
 ```bash
-cd SAVVYDFIR-MCP   # your clone, or /opt/SAVVYDFIR-MCP if you deployed to production
-claude --allowedTools "mcp__savvydfir__*" \
+cd SAVVYDFIR-MCP                       # or /opt/SAVVYDFIR-MCP if deployed to production
+claude --dangerously-skip-permissions --allowedTools "mcp__savvydfir__*"
+# then type at the prompt:
+#   Read case-templates/manifest.json and investigate fully following the 7-phase workflow.
+```
+
+**Headless one-shot** (unattended / scripted / CI):
+```bash
+cd SAVVYDFIR-MCP
+claude --allowedTools "mcp__savvydfir__*" --dangerously-skip-permissions \
   -p "Read case-templates/manifest.json and start the investigation. Investigate fully following the 7-phase workflow, run the mandatory tools detect_injection(case_id), compare_disk_and_memory(case_id), and sigma_hunt(case_id), then call generate_report(case_id) and generate_graph(case_id), and stop only after both report outputs are written."
 ```
+
+> **Permissions:** `--allowedTools "mcp__savvydfir__*"` pre-allows the forensic tools (narrows tool
+> access). `--dangerously-skip-permissions` skips **all** per-tool confirmation prompts — required for
+> unattended autonomous runs, but it bypasses every confirmation, so use it only inside a **trusted,
+> isolated DFIR VM** (the intended deployment).
 
 > **Note:** `sigma_hunt` (Chainsaw, 2,278 Sigma rules) is the mandatory detection
 > tool the report coverage gate checks for - do not confuse it with `sigma_scan`
