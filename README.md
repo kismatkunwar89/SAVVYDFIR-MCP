@@ -99,11 +99,17 @@ gates; these layers (the reference the "brain" reads) say what each artifact mea
 |-------|-------|------------------|---------|
 | **1. Case manifest** | `case-templates/manifest.json` | `start_investigation()` - the primary structured input | Disk/memory paths + `investigative_taxonomy` (dispute_type, OS, keywords). `dispute_type` drives which extractors are *required* (file-centric disputes pull in the file-access bundle). |
 | **2. Forensic-knowledge YAML** | `data/forensic-knowledge/artifacts/{windows,analysis_outputs}/*.yaml` (17 files; 15 Windows OS artifacts + 2 analysis-tool outputs) | Injected into **mapped** tool responses at interpretation time | `forensic_caveat` (what the artifact does NOT prove), `corroborate_with` (what to check next), `discipline_reminder`. |
-| **3. Analyst Markdown KBs** | `.claude/agents/*-analyst.md` (12 files) | The relevant slice rides into the response as `applicable_heuristics`; more via `get_heuristic()` | Per-artifact heuristics (e.g. `mft-analyst.md` = timestomping, sequential entries). Read inline by the main agent; synthesis/corroboration/timeline `.md` are opt-in orchestration roles. |
+| **3. Injected artifact heuristic KBs** | 8 mapped `.claude/agents/*-analyst.md` files (`mft`, `evtx`, `prefetch`, `amcache`, `registry`, `srum`, `sigma`, `memory`) | Bounded, CTX-cited slices injected as `applicable_heuristics` on mapped tools; deeper sections via `get_heuristic(artifact, topic)` (same 8 artifacts) | Artifact-specific query + interpretation guidance for inline main-agent analysis. |
 
 Layers 2 and 3 are **two different injection paths**: the YAML supplies the caveat/corroboration
 envelope; the analyst `.md` supplies the `applicable_heuristics` slice. Unmapped tools (and
 file-access-only tools) carry the envelope but **no** `applicable_heuristics` slice.
+
+**Not in the injection layer:** four other `*-analyst.md` files remain in the repo but are **not**
+sliced into tool responses - `browser-analyst.md` is currently unwired (browser extraction uses FK
+YAML only; the post-tool hook routes browser analysis to `registry-analyst`), and
+`synthesis-analyst.md` / `corroboration-analyst.md` / `timeline-analyst.md` are orchestration
+playbooks for optional Task delegation or the optional `build_timeline` - not heuristic injection.
 
 **Confidence vs. CONFIRMED status - three separate mechanisms (often conflated; they are not the same):**
 1. **Base artifact weights** (`semantics.py`) - a per-source confidence *multiplier*: ShimCache 0.70,
@@ -122,7 +128,7 @@ file-access-only tools) carry the envelope but **no** `applicable_heuristics` sl
 | Change | Touches | Effect | Code? |
 |--------|---------|--------|-------|
 | Edit a mapped FK YAML | `data/forensic-knowledge/` | Refines caveat/corroboration guidance on an existing artifact | No (restart MCP server to pick up) |
-| Edit an analyst `.md` KB | `.claude/agents/*-analyst.md` | Deeper inline heuristics (`applicable_heuristics`) | No (restart) |
+| Edit one of the 8 mapped artifact KBs | `.claude/agents/{mft,evtx,prefetch,amcache,registry,srum,sigma,memory}-analyst.md` | Deeper inline heuristics on mapped extractors (`applicable_heuristics` / `get_heuristic`) | No (restart) |
 | Add a **new** artifact's FK YAML | YAML + `_FK_MAP` entry + tool wrapper | Enriches a newly mapped tool | Yes (registry entry - not drop-in) |
 | Extend manifest taxonomy | `case-templates/manifest.json` | Per-case coverage policy | No |
 | Add a correlation check | `sift_mcp/correlation.py` | New deterministic cross-artifact reasoning | Yes |
