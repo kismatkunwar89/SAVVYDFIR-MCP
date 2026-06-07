@@ -1,0 +1,323 @@
+# Ground-Truth Answer Key — ALI-WEBSERVER-WIN-L0ZZQ76PMUF
+# ===================================================================
+# Ali Hadi (ashemery.com) DFIR Challenge #1 — "Web Server Case".
+# A company Windows web server (XAMPP/DVWA) breached through the website; disk
+# (E01) + memory captured live. HAS MEMORY -> full Forensic-Trinity run.
+#
+# SOURCE OF TRUTH / PROVENANCE CAVEAT: Ali Hadi's OFFICIAL answers are
+# instructor-gated (no public answer key). This GT is built from the official
+# 8-question set (-> eval_targets) + the CONSENSUS of two independent, detailed
+# community walkthroughs, cross-corroborated:
+#   [W1] Syed Hasan (Medium) — syedhasan010.medium.com/...340f6d919f9c
+#   [W2] Between Two DFIRns  — betweentwodfirns.blogspot.com/2017/03/...
+# This is LOWER-AUTHORITY than the NIST (official key) / LoneWolf (forensic
+# report) GTs — community-sourced, not vendor-authoritative. Facts retained here
+# agree across BOTH writeups; single-source items are marked.
+#
+# TIMEZONE: host TZ = PDT (UTC-7); walkthroughs mix local + UTC and disagree on
+# a few exact times. Timestamps below are approximate, kept in the source form
+# with a TZ note. Matching is by distinctive anchors (sqlmap, net user user1
+# Root@psut, hacker, webshells.zip, C99, DVWA, tmpbiwuc.php, RID 1005/1006), NOT
+# exact times.
+#
+# SCHEMA: aligned to ROCBA / LONEWOLF / NIST GTs + scripts/eval/gt_match_scorer.py.
+# OS: Windows Server 2008 -> EVTX, SAM (added accounts), MFT, Prefetch, memory
+# (Volatility) all in play; web evidence = Apache/XAMPP access logs on disk.
+# ===================================================================
+
+case_id: ALI-WEBSERVER-WIN-L0ZZQ76PMUF
+host: WIN-L0ZZQ76PMUF
+host_ip: "192.168.56.101"
+os: "Windows Server 2008 Standard"
+scenario: "Web server breach via vulnerable web app — Ali Hadi DFIR Challenge #1"
+web_stack: "XAMPP (Apache httpd.exe + MySQL mysqld.exe), DVWA app, ports 80/443"
+attacker_ip: "192.168.56.102"            # Kali Linux (Iceweasel UA, sqlmap)
+incident_date_utc: "2015-09-02"
+acquisition_date_utc: "2020-02-14"        # image (re)acquired (E01 metadata)
+image_md5: "59c66fa4437123f020b91da5f15595b4"
+image_sha1: "ecb4e3c50e94deca6b6811248cea2f0cbc0c81ba"
+intent: >
+  External attacker (192.168.56.102, Kali) exploited the DVWA web application on
+  a XAMPP Windows server through multiple web attack classes, created local
+  accounts with RDP access, enabled RDP via the firewall, and dropped PHP web
+  shells (C99) for continued access.
+
+findings:
+
+  - id: GT-001
+    finding_type: attribution
+    artifact_type: Registry
+    artifact_source: "SYSTEM/SOFTWARE hives + network config — WIN-L0ZZQ76PMUF"
+    location_key: "victim host WIN-L0ZZQ76PMUF"
+    expected_status: OBSERVATION
+    value: "Victim = WIN-L0ZZQ76PMUF (192.168.56.101), Windows Server 2008 Standard running XAMPP (Apache+MySQL) hosting DVWA (Q-host)"
+    description: >
+      The breached host is WIN-L0ZZQ76PMUF (192.168.56.101), Windows Server 2008
+      Standard, running the XAMPP stack (Apache httpd.exe + MySQL mysqld.exe) and
+      the deliberately-vulnerable DVWA web application on ports 80/443.
+    corroborates_with: [Registry, EVTX, memory_netscan]
+    image_extractable: true
+
+  - id: GT-002
+    finding_type: initial_access            # SQL injection via sqlmap
+    artifact_type: WebLog
+    artifact_source: "Apache/XAMPP access.log — /dvwa/vulnerabilities/sqli/"
+    location_key: "SQLi via sqlmap"
+    expected_status: OBSERVATION
+    value: "SQL injection with sqlmap (User-Agent 'sqlmap/1.0-dev-nongit-20150902') against /dvwa/vulnerabilities/sqli/ from 192.168.56.102; DVWA security=LOW (Q1)"
+    description: >
+      Apache access logs (C:\xampp\apache\logs\access.log + error.log) show
+      automated SQL injection from 192.168.56.102 using sqlmap
+      (UA sqlmap/1.0-dev-nongit-20150902) against /dvwa/vulnerabilities/sqli/.
+      DVWA security level was LOW. ~2015-09-02 11:15:40.
+    timestamp_utc: "2015-09-02T11:15:40Z"
+    corroborates_with: [Apache_access_log, memory_strings]
+    image_extractable: true
+
+  - id: GT-003
+    finding_type: execution                 # command injection
+    artifact_type: WebLog
+    artifact_source: "Apache access.log — /dvwa/vulnerabilities/exec/ (POST, %26%26 = &&)"
+    location_key: "command injection via exec endpoint"
+    expected_status: OBSERVATION
+    value: "OS command injection via /dvwa/vulnerabilities/exec/ using %26%26 (&&) chaining ~2015-09-02 09:04-09:05 — vector for account creation (Q1)"
+    description: >
+      POST requests to /dvwa/vulnerabilities/exec/ with %26%26 (URL-encoded &&)
+      command chaining were used to run Windows commands, including the net user
+      account creation, ~2015-09-02 09:04-09:05.
+    timestamp_utc: "2015-09-02T09:04:00Z"
+    corroborates_with: [Apache_access_log, memory_consoles, SAM]
+    image_extractable: true
+
+  - id: GT-004
+    finding_type: account                   # account 1: user1
+    artifact_type: Account
+    artifact_source: "SAM hive (RID 1005) + memory (Volatility consoles)"
+    location_key: "added account user1"
+    expected_status: OBSERVATION
+    value: "Attacker created local account 'user1' (RID 1005) via 'net user user1 Root@psut /add' + 'net localgroup \"Remote Desktop Users\" user1 /add' ~2015-09-02 09:05:06 (Q2)"
+    description: >
+      Local account user1 (RID 1005) created via command injection:
+      `net user user1 Root@psut /add` then `net localgroup "Remote Desktop Users"
+      user1 /add` (granting RDP). Recovered from the SAM hive + Volatility
+      consoles/cmdscan. NOTE: NO Security EVTX 4720/4732 event exists for this
+      account (audit logging was minimal) - it is visible ONLY in SAM + memory.
+      (Password Root@psut seen in successful console/memory strings; earlier
+      attempts also documented.)
+    timestamp_utc: "2015-09-02T09:05:06Z"
+    corroborates_with: [SAM, memory_consoles, memory_cmdscan]
+    image_extractable: true
+
+  - id: GT-005
+    finding_type: account                   # account 2: hacker
+    artifact_type: Account
+    artifact_source: "SAM hive (RID 1006) + httpd.exe memory strings"
+    location_key: "added account hacker"
+    expected_status: OBSERVATION
+    value: "Attacker created local account 'hacker' (RID 1006) via SQLi/command injection ('...&& net user hacker hacker /add'), found in httpd.exe memory; NOT in EVTX 4720 ~2015-09-02 09:05:25 (Q2)"
+    description: >
+      Second local account hacker (RID 1006). Unlike user1 (added at an interactive
+      console), hacker was injected through the web app: httpd.exe (PIDs 2796/2880)
+      memory strings contain the decoded command "...192.168.56.102 %26%26 net user
+      hacker hacker /add" (%26%26 = &&). Visible in SAM + httpd.exe memory; NO EVTX
+      4720 event (minimal logging). TOTAL attacker accounts = 2 (a "third" in some
+      writeups is a miscount of built-in Administrator, RID 500).
+    timestamp_utc: "2015-09-02T09:05:25Z"
+    corroborates_with: [SAM, memory_strings, httpd_memory]
+    image_extractable: true
+
+  - id: GT-006
+    finding_type: defense_evasion           # RDP enabled via firewall
+    artifact_type: Execution
+    artifact_source: "netsh firewall command (memory / command history)"
+    location_key: "RDP firewall enable"
+    expected_status: INFERENCE
+    value: "Attacker enabled Remote Desktop through the firewall: 'netsh firewall set service type=remotedesktop mode=enable scope=subnet' (Q2/Q3)"
+    description: >
+      To enable RDP access for the new accounts, the attacker ran
+      `netsh firewall set service type=remotedesktop mode=enable scope=subnet`,
+      opening RDP to the local subnet. [W1]
+    corroborates_with: [memory_consoles, Registry_firewall]
+    image_extractable: true
+
+  - id: GT-007
+    finding_type: persistence               # PHP droppers / web shells
+    artifact_type: WebShell
+    artifact_source: "XAMPP/DVWA web root — tmpukudk.php, tmpbiwuc.php"
+    location_key: "PHP dropper web shells"
+    expected_status: OBSERVATION
+    value: "sqlmap dropped PHP web shells: pair #1 tmpbiwuc.php + tmpukudk.php (~2015-09-02 11:25:52) and pair #2 tmpudvfh.php + tmpbrjvl.php (~2015-09-03 06:52-06:59) into the DVWA web root (Q3/bonus)"
+    description: >
+      sqlmap wrote two PHP dropper/web-shell pairs into the web root: tmpbiwuc.php
+      + tmpukudk.php (~2015-09-02 11:25:52-53), then tmpudvfh.php (~2015-09-03
+      06:52:24) + tmpbrjvl.php (~06:59:38). Files also appear under
+      ...\dvwa\hackable\uploads\.
+    timestamp_utc: "2015-09-02T11:25:52Z"
+    corroborates_with: [MFT, Apache_access_log]
+    image_extractable: true
+
+  - id: GT-008
+    finding_type: persistence               # webshells.zip / C99
+    artifact_type: WebShell
+    artifact_source: "DVWA directory — webshells.zip (C99 + phpshell.php)"
+    location_key: "webshells.zip C99 shell"
+    expected_status: OBSERVATION
+    value: "webshell(s).zip (C:\\xampp\\htdocs\\DVWA\\) containing c99.php + webshell.php ~2015-09-03 07:14:48; phpshell.php + phpshell2.php uploaded SEPARATELY (Q3/Q5/bonus)"
+    description: >
+      Archive webshell.zip / webshells.zip under C:\xampp\htdocs\DVWA\ containing
+      c99.php + webshell.php (~2015-09-03 07:14:48). c99.php = the primary remote-
+      admin web shell; webshell.php used for command injection. SEPARATE uploads:
+      phpshell.php (~09-03 00:15:58, dir enumeration) and phpshell2.php (~00:31:54).
+      Interactive web-shell cmd use ~07:16-07:21 (cmd.exe PID 1972 spawned).
+    timestamp_utc: "2015-09-03T07:14:48Z"
+    corroborates_with: [MFT, Apache_access_log, memory_strings]
+    image_extractable: true
+
+  - id: GT-009
+    finding_type: execution                 # LFI
+    artifact_type: WebLog
+    artifact_source: "Apache access.log — /dvwa/vulnerabilities/fi/"
+    location_key: "Local File Inclusion"
+    expected_status: OBSERVATION
+    value: "LFI via /dvwa/vulnerabilities/fi/ targeting the Windows hosts file + phpmyadmin config, and attacker files data.txt / abc.txt (Q1/Q3)"
+    description: >
+      GET requests to /dvwa/vulnerabilities/fi/ performed Local File Inclusion
+      against the Windows hosts file and phpmyadmin configuration, and included
+      attacker-written files data.txt and abc.txt. [W2]
+    corroborates_with: [Apache_access_log, MFT]
+    image_extractable: true
+
+  - id: GT-010
+    finding_type: defense_evasion           # memory: PHP web shell + cmd strings (NOT binary shellcode)
+    artifact_type: Memory
+    artifact_source: "Volatility (profile Win2008SP2x86) — httpd.exe PIDs 2796/2880; consoles/cmdscan/strings"
+    location_key: "web-shell + command strings in httpd.exe memory"
+    expected_status: INFERENCE
+    value: "Memory forensics (Volatility, Win2008SP2x86): PHP web shells (C99 family) + attacker command strings (net user/netsh) recovered from httpd.exe (PIDs 2796/2880); NOT injected binary shellcode (Q5)"
+    description: >
+      Q5 is a wording trap: there is NO injected binary shellcode. Volatility
+      (profile VistaSP1x86 per walkthroughs; Win2008SP2x86 equivalent - same Vista
+      kernel) recovered the PHP web-shell payload (C99 family) and attacker command
+      history via consoles/cmdscan/strings on httpd.exe (PIDs 2796/2880). Two
+      cmd.exe consoles exist: PID 612 (2015-08-23 10:30:44, NOT case-relevant) and
+      PID 1972 (2015-09-02 09:28:30, webshell-spawned, the relevant one). netscan
+      shows a connection from 192.168.56.1. [W1][W2][medium1][medium2]
+    corroborates_with: [memory_consoles, memory_cmdscan, memory_strings, MFT]
+    image_extractable: true
+
+  - id: GT-011
+    finding_type: initial_access            # attacker origin / recon
+    artifact_type: WebLog
+    artifact_source: "Apache access.log — 192.168.56.102 (Kali / Iceweasel)"
+    location_key: "attacker recon origin"
+    expected_status: OBSERVATION
+    value: "Attack originated from 192.168.56.102 (Kali Linux; Iceweasel User-Agent), reconnaissance ~2015-09-02 07:10:41 (Q1/Q6)"
+    description: >
+      All attack traffic originated from 192.168.56.102, a Kali Linux host
+      (Iceweasel browser UA on early recon ~2015-09-02 07:10:41, then sqlmap).
+    timestamp_utc: "2015-09-02T07:10:41Z"
+    corroborates_with: [Apache_access_log, memory_netscan]
+    image_extractable: true
+
+  - id: GT-012
+    finding_type: command_and_control       # PHP reverse shell
+    artifact_type: WebShell
+    artifact_source: "uploaded PHP reverse shell -> 192.168.56.102:4545"
+    location_key: "PHP reverse shell callback"
+    expected_status: OBSERVATION
+    value: "Attacker uploaded a PHP reverse shell calling back to 192.168.56.102 on TCP port 4545 (stream_socket_client/fsockopen, eval of received payload) (Q3/Q8)"
+    description: >
+      A PHP reverse shell was uploaded that connects back to 192.168.56.102:4545
+      (tcp), reading a length-prefixed payload and eval()-ing it - i.e. remote
+      command execution channel to the attacker. IOC: 192.168.56.102:4545. [medium2]
+    corroborates_with: [MFT, Apache_access_log, memory_netscan]
+    image_extractable: true
+
+  - id: GT-013
+    finding_type: defense_evasion           # dropped shells deleted (anti-forensics)
+    artifact_type: FileSystem
+    artifact_source: "$LogFile / $UsnJrnl — web shell creation + deletion"
+    location_key: "web shells deleted to hide activity"
+    expected_status: INFERENCE
+    value: "Dropped web shells were DELETED (del /F /Q) to hide activity — $LogFile/$UsnJrnl record create+rename+delete; this is why the official 'directories/files added by attacker' answer is effectively NONE persisted (Q8)"
+    description: >
+      RCE via web shell ran dir / mkdir / del /F /Q; the dropper/web-shell files
+      (tmp*.php) were subsequently deleted to conceal activity, recoverable from
+      $LogFile (LogFileParser) and $UsnJrnl. This reconciles the official bonus
+      answer ("files/dirs added = None"): they were added then removed, leaving
+      filesystem-journal traces rather than persistent files. [medium1][medium2]
+    corroborates_with: [USN, LogFile, MFT]
+    image_extractable: true
+
+# -------------------------------------------------------------------
+known_negatives:
+  - artifact_type: Software
+    value: "Attacker-installed software / new application packages"
+    reason: >
+      Per [W1], the attacker did NOT install any software; only XAMPP was
+      pre-installed (confirmed via setup logs). Do not claim the attacker
+      installed software (answer to Q4 = none installed).
+  - artifact_type: Timestamps
+    value: "Exact UTC times of every event"
+    reason: >
+      Host TZ is PDT (UTC-7) and the walkthroughs disagree on a few exact times.
+      Treat timestamps as approximate; anchor on the activity, not the second.
+  - artifact_type: Account
+    value: "A third attacker-created account"
+    reason: >
+      Exactly TWO accounts were created (user1 RID 1005, hacker RID 1006). A
+      "third user" in some writeups is a miscount of the built-in Administrator
+      (RID 500). Do not claim a third attacker account. 
+  - artifact_type: EVTX
+    value: "Security EVTX 4720/4732 account-creation events for user1/hacker"
+    reason: >
+      Audit logging was minimal — the two attacker accounts do NOT appear in
+      Security EVTX (no 4720/4732). They are visible ONLY in the SAM hive + memory
+      (Volatility cmdscan/strings). Do not expect/claim EVTX account-creation
+      events; their ABSENCE is the finding. [medium1][medium2]
+  - artifact_type: Exfiltration
+    value: "Data exfiltration or lateral movement beyond initial compromise"
+    reason: >
+      The walkthroughs conclude NO data exfiltration or lateral movement beyond
+      the initial web compromise (recon + web shells + accounts). Do not assert
+      exfiltration/lateral movement. [medium2]
+  - artifact_type: FilesAdded
+    value: "Persistent attacker files/directories left on disk"
+    reason: >
+      The official bonus answer to 'directories/files added by the attacker' is
+      effectively NONE persisted — dropped web shells were DELETED (del /F /Q).
+      Claim the create-then-delete sequence (journal traces), not persistent files.
+
+# -------------------------------------------------------------------
+# EVAL TARGETS = Ali Hadi's official 8 challenge questions
+# -------------------------------------------------------------------
+eval_targets:
+  - {id: "E-001", question: "What type(s) of attack were performed?", answer_anchor: "SQL injection (sqlmap brute-force) + OS command injection (exec/ &&) + LFI + XSS + CSRF + unrestricted file upload + web-shell RCE against DVWA (security=low)"}
+  - {id: "E-002", question: "How many users were added and how?", answer_anchor: "exactly two: user1 (RID 1005, net user user1 Root@psut /add) and hacker (RID 1006, net user hacker hacker /add), via command injection, both added to Remote Desktop Users; EVTX 4720/4732"}
+  - {id: "E-003", question: "What leftovers/artifacts did the attacker leave?", answer_anchor: "PHP droppers tmpbiwuc.php/tmpukudk.php/tmpudvfh.php/tmpbrjvl.php, webshell.zip (c99.php+webshell.php), phpshell.php+phpshell2.php, PHP reverse shell to 192.168.56.102:4545, LFI files data.txt/abc.txt + abc dir, RDP firewall rule, 2 local accounts (SAM, no EVTX 4720) - most shells later DELETED"}
+  - {id: "E-004", question: "What software was installed and by whom?", answer_anchor: "none installed by attacker; only XAMPP (Apache/MySQL) + DVWA pre-installed"}
+  - {id: "E-005", question: "What type of shellcode/payload was used (memory forensics)?", answer_anchor: "NOT binary shellcode — PHP web shells (C99 family) + net user/netsh command strings recovered from httpd.exe (PIDs 2796/2880) via Volatility (Win2008SP2x86, consoles/cmdscan)"}
+  - {id: "E-006", question: "Event timeline?", answer_anchor: "2015-09-02 recon 07:10 -> cmd-injection accounts 09:05 -> sqlmap 11:15 -> droppers 11:25; 2015-09-03 07:14 webshells.zip"}
+  - {id: "E-007", question: "Hypothesis and investigative approach?", answer_anchor: "external web-app exploitation chain (SQLi/cmd-injection) -> local account creation + RDP enable -> web-shell persistence"}
+  - {id: "E-008", question: "Additional observations / directories+files added (bonus)?", answer_anchor: "official answer = NONE persisted - attacker dropped tmp*.php/web shells into DVWA web root then DELETED them (del /F /Q; $LogFile/$UsnJrnl traces); reverse shell to 192.168.56.102:4545; no data exfil / lateral movement observed"}
+
+# -------------------------------------------------------------------
+provenance:
+  source_documents:
+    - "Ali Hadi official Challenge #1 question set (ashemery.com/dfir.html)"
+    - "[W1] Syed Hasan walkthrough (syedhasan010.medium.com .../340f6d919f9c)"
+    - "[W2] Between Two DFIRns walkthrough (betweentwodfirns.blogspot.com 2017/03)"
+    - "[medium1] Bilyaminu Umar Shehu walkthrough (Feb 2026) - VistaSP1x86 profile, cmd PID 612 vs 1972, netscan 192.168.56.1, webshell.zip=c99.php+webshell.php, brute-force"
+    - "[medium2] DDFAN 'Web Server Case #3' walkthrough (Apr 2026) - EVTX 4720 ABSENT, PHP reverse shell ->192.168.56.102:4545, phpshell2.php, shells DELETED (files-added=None), no exfil/lateral movement"
+    - "independent cross-review 2026-06-05 (corrections: Q5 wording, zip=c99.php+webshell.php, 2nd sqlmap dropper pair, profile, Administrator RID-500 miscount)"
+  reference_notebook: "REDACTED (Ali Hadi Web Server Case GT; sources: medium1.md + medium2.md)"
+  authority: "community-sourced + cross-corroborated across 2 walkthroughs AND an independent multi-model consensus research round; still LOWER authority than official answer keys (NIST) or forensic reports (LoneWolf) - patched to consensus where sources disagreed"
+  unresolved_open_items:
+    - "exact user1 password state at compromise (Root@psut vs earlier attempts)"
+    - "definitive webshells.zip member list if instructor key differs from community (webshell.php vs phpshell.php)"
+    - "sub-minute timestamp normalization (Apache log TZ vs EVTX UTC)"
+    - "C99 SHA-256 (cite only if reproduced from the image)"
+  extracted_utc: "2026-06-05"
+  image_source: "https://archive.org/details/dfir-case1 (mirror of ashemery.com MEGA links)"
+  timezone_note: "host TZ PDT (UTC-7); timestamps approximate, sources disagree on a few exact times"
+  exhaustive: false

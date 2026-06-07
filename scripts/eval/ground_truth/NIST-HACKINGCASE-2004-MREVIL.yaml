@@ -1,0 +1,279 @@
+# Ground-Truth Answer Key — NIST-HACKINGCASE-2004-MREVIL  (NIST CFReDS "Hacking Case")
+# ===================================================================
+# NIST CFReDS Hacking Case (cfreds-archive.nist.gov/Hacking_Case.html).
+# 09/20/04: abandoned Dell CPi laptop (serial VLQLW) + wireless gear, suspected
+# war-driving by Greg Schardt (alias "Mr. Evil") — parking near Wireless Access
+# Points to intercept traffic and steal credit-card numbers, usernames, passwords.
+# DISK-ONLY case (Windows XP, 2004; no memory image).
+#
+# SOURCE OF TRUTH: TestAnswers.pdf — the OFFICIAL NIST answer key (31 questions),
+# ingested into reference notebook REDACTED; facts extracted via RAG 2026-06-06.
+# AUTHORITATIVE (official key), like the NIST Data Leakage GT — every fact below
+# is image_extractable: true. Qn = the official question number.
+#
+# TIMEZONE: host TZ = Central Daylight Time (UTC-5). Answer-key timestamps are
+# local; kept as-given with a TZ note (matching is by distinctive anchors, not time).
+#
+# SCHEMA: aligned to the other GTs + scripts/eval/gt_match_scorer.py. Win XP era:
+# registry (SAM/SOFTWARE), Prefetch, $MFT, Recycle Bin (INFO2), installed-program
+# artifacts, Outlook Express/IRC/news client files, Ethereal capture file on disk.
+# ===================================================================
+
+case_id: NIST-HACKINGCASE-2004-MREVIL
+host: N-1A9ODN6ZXK4LQ
+os: "Windows XP"
+scenario: "War-driving credential theft — NIST CFReDS Hacking Case (Greg Schardt / Mr. Evil)"
+subject_name: "Greg Schardt"
+subject_alias: "Mr. Evil"
+primary_user: "Mr. Evil"
+computer_name: "N-1A9ODN6ZXK4LQ"
+primary_domain: "Evil"
+os_install_local: "2004-08-19 17:48:27 (CDT)"
+last_shutdown_local: "2004-08-27 10:46:33 (CDT)"
+image_md5: "AEE4FCD9301C03B3B054623CA261959A"
+intent: >
+  The suspect (Greg Schardt / Mr. Evil) used the laptop for war-driving: a suite
+  of wireless-discovery + packet-sniffing + password tools to intercept Wireless
+  Access Point traffic and harvest credit-card numbers, usernames and passwords.
+
+findings:
+
+  - id: GT-001
+    finding_type: attribution
+    artifact_type: Registry
+    artifact_source: "C:\\Program Files\\Look@LAN\\irunin.ini + SOFTWARE/SAM hives"
+    location_key: "Greg Schardt = Mr. Evil = admin"
+    expected_status: OBSERVATION
+    value: "Greg Schardt (registered owner) = alias 'Mr. Evil' = administrator; proven by C:\\Program Files\\Look@LAN\\irunin.ini (Look@LAN) (Q5/Q10/Q12)"
+    description: >
+      Registered owner Greg Schardt; primary/most-frequent user account 'Mr. Evil';
+      the Look@LAN config C:\Program Files\Look@LAN\irunin.ini links Greg Schardt to
+      Mr. Evil and to the administrator account. Computer name N-1A9ODN6ZXK4LQ,
+      primary domain 'Evil'.
+    corroborates_with: [Registry_SAM, Registry_SOFTWARE, irunin_ini]
+    image_extractable: true
+
+  - id: GT-002
+    finding_type: attribution
+    artifact_type: Registry
+    artifact_source: "SOFTWARE hive — OS / install / timezone; image hash"
+    location_key: "host profile"
+    expected_status: OBSERVATION
+    value: "Windows XP, install 2004-08-19 17:48:27, TZ Central Daylight Time (UTC-5); image MD5 AEE4FCD9301C03B3B054623CA261959A (Q1-4)"
+    description: >
+      OS Windows XP; install date 08/19/04 17:48:27 (local); timezone Central
+      Daylight Time (-5 GMT). Acquisition+verification MD5 AEE4FCD9301C03B3B054623CA261959A
+      (match confirmed).
+    corroborates_with: [Registry_SOFTWARE, image_hash]
+    image_extractable: true
+
+  - id: GT-003
+    finding_type: account
+    artifact_type: Account
+    artifact_source: "SAM hive — 5 accounts; primary + last logon = Mr. Evil"
+    location_key: "user accounts"
+    expected_status: OBSERVATION
+    value: "5 accounts total; most-used + last-logon = 'Mr. Evil'; last shutdown 2004-08-27 10:46:33 (Q9/Q10/Q11/Q8)"
+    description: >
+      SAM records 5 accounts; the account that mostly uses the computer and the
+      last user to log on is 'Mr. Evil'. Last recorded shutdown 08/27/04 10:46:33.
+    corroborates_with: [Registry_SAM, EVTX]
+    image_extractable: true
+
+  - id: GT-004
+    finding_type: discovery
+    artifact_type: Registry
+    artifact_source: "irunin.ini / network config — IP/MAC/NICs"
+    location_key: "network identity + wireless NIC"
+    expected_status: OBSERVATION
+    value: "IP 192.168.1.111, MAC 0010a4933e09 (vendor Xircom); NICs: Xircom CardBus Ethernet 100+Modem 56 + Compaq WL110 Wireless LAN PC Card (Q13/Q14/Q15)"
+    description: >
+      Network: IP 192.168.1.111, MAC 00:10:a4:93:3e:09 (first 3 hex 0010a4 = Xircom).
+      NICs: Xircom CardBus Ethernet 100 + Modem 56; Compaq WL110 Wireless LAN PC
+      Card (the wireless card enabling war-driving).
+    corroborates_with: [irunin_ini, Registry_SYSTEM]
+    image_extractable: true
+
+  - id: GT-005
+    finding_type: execution
+    artifact_type: InstalledProgram
+    artifact_source: "Program Files / Uninstall keys / Prefetch — hacking toolset"
+    location_key: "installed hacking tools"
+    expected_status: OBSERVATION
+    value: "6+ hacking tools: Cain & Abel v2.5 beta45, Ethereal, 123 Write All Stored Passwords, Anonymizer, CuteFTP, Look@LAN 1.0, NetStumbler (Q16)"
+    description: >
+      Installed hacking/security tools: Cain & Abel v2.5 beta45 (password sniffer/
+      cracker), Ethereal (packet sniffer), 123 Write All Stored Passwords (registry
+      password finder), Anonymizer (IP-track hiding), CuteFTP, Look@LAN 1.0 (network
+      discovery), NetStumbler (wireless AP discovery / war-driving).
+    corroborates_with: [Registry_Uninstall, Prefetch, MFT]
+    image_extractable: true
+
+  - id: GT-006
+    finding_type: discovery
+    artifact_type: Execution
+    artifact_source: "NetStumbler + Look@LAN — wireless/network recon"
+    location_key: "war-driving recon tools"
+    expected_status: OBSERVATION
+    value: "NetStumbler (wireless access-point discovery) + Look@LAN (network discovery) — the war-driving reconnaissance toolset (Q16)"
+    description: >
+      NetStumbler enumerates wireless access points (war-driving); Look@LAN maps
+      the local network. Together they are the recon stage of the war-driving op.
+    corroborates_with: [Prefetch, Registry_Uninstall]
+    image_extractable: true
+
+  - id: GT-007
+    finding_type: collection
+    artifact_type: NetworkCapture
+    artifact_source: "Ethereal capture file — \\My Documents\\interception"
+    location_key: "intercepted traffic file"
+    expected_status: OBSERVATION
+    value: "Ethereal-reassembled intercepted-traffic file named 'interception' in the user's My Documents (Q23)"
+    description: >
+      Ethereal's default save dir is the user's My Documents; the reassembled
+      intercepted-packet capture is the file named 'interception' — the harvested
+      wireless traffic.
+    corroborates_with: [MFT, Ethereal]
+    image_extractable: true
+
+  - id: GT-008
+    finding_type: collection
+    artifact_type: NetworkCapture
+    artifact_source: "'interception' capture contents — the victim"
+    location_key: "intercepted victim activity"
+    expected_status: INFERENCE
+    value: "Intercepted victim used a Windows CE (Pocket PC) accessing Mobile.msn.com + MSN (Hotmail) email (Q24/Q25)"
+    description: >
+      The 'interception' capture reveals the victim (whose surfing was recorded)
+      used a Windows CE Pocket PC, accessing Mobile.msn.com and MSN/Hotmail email.
+    corroborates_with: [Ethereal_capture]
+    image_extractable: true
+
+  - id: GT-009
+    finding_type: attribution
+    artifact_type: Email
+    artifact_source: "Outlook Express / Forte Agent + web mail"
+    location_key: "suspect email accounts"
+    expected_status: OBSERVATION
+    value: "SMTP whoknowsme@sbcglobal.net (Outlook Express); web mail mrevilrulez@yahoo.com (saved as Showletter[1].htm); NNTP News.dallas.sbcglobal.net (Q17/Q26/Q27/Q18/Q19)"
+    description: >
+      Suspect email: SMTP whoknowsme@sbcglobal.net (MS Outlook Express); web-based
+      mrevilrulez@yahoo.com (Yahoo mail saved as Showletter[1].htm). NNTP server
+      News.dallas.sbcglobal.net (Outlook Express + Forte Agent).
+    corroborates_with: [OutlookExpress, MFT, Registry]
+    image_extractable: true
+
+  - id: GT-010
+    finding_type: attribution
+    artifact_type: Chat
+    artifact_source: "mIRC config + chat logs"
+    location_key: "IRC identity + channels"
+    expected_status: OBSERVATION
+    value: "mIRC: user='Mini Me', nick='Mr', anick='mrevilrulez', email=none@of.ya; channels Ushells/Elite.hackers/Iso-warez/Evilfork (undernet/efnet) (Q21/Q22)"
+    description: >
+      mIRC installed; online user settings user='Mini Me', nick='Mr',
+      alt-nick='mrevilrulez', email=none@of.ya. Logged IRC channels include
+      Ushells.undernet, Elite.hackers.undernet, Iso-warez.efnet, Evilfork.efnet,
+      Chataholics.undernet, Thedarktower.afternet (hacker/warez channels).
+    corroborates_with: [mIRC_logs, MFT]
+    image_extractable: true
+
+  - id: GT-011
+    finding_type: discovery
+    artifact_type: Newsgroup
+    artifact_source: "Outlook Express / Forte Agent NNTP subscriptions"
+    location_key: "hacking newsgroups"
+    expected_status: OBSERVATION
+    value: "Subscribed to 20+ hacking newsgroups: alt.2600, alt.2600.cardz, alt.2600.crackz, alt.binaries.hacking.utilities, free.binaries.hacking.* etc. (Q20)"
+    description: >
+      Newsgroup subscriptions center on the alt.2600.* / *.binaries.hacking.* /
+      free.binaries.hacking.* hierarchies (cardz, crackz, codez, hacking utilities)
+      — credit-card/cracking/hacking content.
+    corroborates_with: [OutlookExpress, ForteAgent]
+    image_extractable: true
+
+  - id: GT-012
+    finding_type: defense_evasion
+    artifact_type: InstalledProgram
+    artifact_source: "Anonymizer install"
+    location_key: "anonymizer / track hiding"
+    expected_status: OBSERVATION
+    value: "Anonymizer installed — hides IP/browsing tracks (anti-attribution) (Q16)"
+    description: >
+      Anonymizer was installed to hide the suspect's IP and browsing tracks — an
+      operational-security / anti-attribution tool.
+    corroborates_with: [Registry_Uninstall, Prefetch]
+    image_extractable: true
+
+  - id: GT-013
+    finding_type: credential_access
+    artifact_type: InstalledProgram
+    artifact_source: "Cain & Abel + 123 Write All Stored Passwords + Ethereal"
+    location_key: "credential-theft toolset"
+    expected_status: INFERENCE
+    value: "Credential theft toolset: Cain & Abel (sniff/crack), 123 Write All Stored Passwords (registry pw dump), Ethereal (sniff) — to harvest credit cards/usernames/passwords (Q16/scenario)"
+    description: >
+      The combination of Cain & Abel, 123 Write All Stored Passwords, and Ethereal
+      packet capture is the credential-harvesting capability behind the war-driving
+      intent (credit cards, usernames, passwords).
+    corroborates_with: [Registry_Uninstall, Ethereal_capture]
+    image_extractable: true
+
+  - id: GT-014
+    finding_type: defense_evasion
+    artifact_type: RecycleBin
+    artifact_source: "Recycle Bin INFO2 / $MFT"
+    location_key: "recycle bin executables"
+    expected_status: OBSERVATION
+    value: "4 executables in the Recycle Bin; NOT really deleted; file system reports 3 as deleted (Q28/Q29/Q30)"
+    description: >
+      The Recycle Bin holds 4 executable files; they are recoverable (not truly
+      deleted); the file system reports 3 as deleted. Recoverable evidence.
+    corroborates_with: [RecycleBin_INFO2, MFT]
+    image_extractable: true
+
+  - id: GT-015
+    finding_type: other
+    artifact_type: Malware
+    artifact_source: "anti-virus scan of the image"
+    location_key: "malware present"
+    expected_status: OBSERVATION
+    value: "Anti-virus scan returns POSITIVE — viruses are present on the computer (Q31)"
+    description: >
+      An AV scan of the mounted image detects malware present on the system.
+    corroborates_with: [yara, AV_scan]
+    image_extractable: true
+
+# -------------------------------------------------------------------
+known_negatives:
+  - artifact_type: Memory
+    value: "Any memory-resident / volatile artifact"
+    reason: >
+      DISK-ONLY case (2004 Windows XP laptop; no memory image). Do not assert
+      process lists, injected code, or live sockets from memory.
+  - artifact_type: Timestamps
+    value: "Exact UTC times"
+    reason: >
+      Host TZ = Central Daylight Time (UTC-5); answer-key times are local. Treat
+      timestamps as approximate; anchor on the activity/identifiers, not the second.
+
+# -------------------------------------------------------------------
+# EVAL TARGETS (the case's core investigative questions)
+# -------------------------------------------------------------------
+eval_targets:
+  - {id: "E-001", question: "Who is the suspect?", answer_anchor: "Greg Schardt = alias Mr. Evil = administrator/registered owner; proven by Look@LAN irunin.ini"}
+  - {id: "E-002", question: "What was the criminal activity?", answer_anchor: "war-driving: intercepting Wireless Access Point traffic to steal credit-card numbers, usernames, passwords"}
+  - {id: "E-003", question: "What hacking tools were installed?", answer_anchor: "Cain & Abel, Ethereal, NetStumbler, Anonymizer, 123 Write All Stored Passwords, CuteFTP, Look@LAN"}
+  - {id: "E-004", question: "What data was intercepted and from whom?", answer_anchor: "'interception' Ethereal capture in My Documents; victim on a Windows CE Pocket PC accessing Mobile.msn.com / MSN Hotmail"}
+  - {id: "E-005", question: "What are the suspect's identifiers/accounts?", answer_anchor: "whoknowsme@sbcglobal.net, mrevilrulez@yahoo.com, mIRC nick Mr / mrevilrulez, IP 192.168.1.111, MAC 0010a4933e09"}
+  - {id: "E-006", question: "What is the host/system profile?", answer_anchor: "Windows XP, install 2004-08-19, CDT timezone, computer N-1A9ODN6ZXK4LQ, domain Evil, MD5 AEE4FCD9301C03B3B054623CA261959A"}
+
+# -------------------------------------------------------------------
+provenance:
+  source_document: "TestAnswers.pdf — official NIST CFReDS Hacking Case answer key (31 questions)"
+  authority: "AUTHORITATIVE (official NIST answer key), same tier as the NIST Data Leakage GT"
+  reference_notebook: "REDACTED (NIST Hacking Case (Mr Evil) GT)"
+  extracted_utc: "2026-06-06"
+  image_source: "https://cfreds-archive.nist.gov/Hacking_Case.html (EnCase: 4Dell Latitude CPi.E01+E02; DD: SCHARDT.001-.008) — DOWNLOAD DEFERRED"
+  timezone_note: "host TZ Central Daylight Time (UTC-5); answer-key times local"
+  exhaustive: false

@@ -12,12 +12,21 @@ hash-chained audit) are under [`agent-execution-logs/`](agent-execution-logs/).
 
 ## 1. Method (summary)
 
-- **Blind evaluation.** Each case is investigated autonomously from a
-  `manifest.json`. Ground-truth answer keys live only on the analyst side
-  (`scripts/eval/ground_truth/`, gitignored — never on the SIFT workstation).
-- **Scorer.** `scripts/eval/gt_match_scorer.py` matches the agent's findings to
-  the ground-truth answer key on distinctive anchors (rejecting generic tokens),
-  and reports recall, hallucinations, and investigative-question coverage.
+- **Blind evaluation — two inputs, two phases, they never touch.** Each case is
+  investigated autonomously from a single `manifest.json` (disk/memory paths, taxonomy,
+  keywords, incident date). `start_investigation(manifest_path)` (`server.py`) and every
+  forensic tool read **only** the case evidence and that manifest. The investigation is
+  *blind* because **the engine never reads any ground-truth file** — verified: `sift_mcp/`
+  loads `attack_routing.yaml`, artifact-FK, and `anti_patterns.yaml`, but **never**
+  `scripts/eval/ground_truth/`.
+- **Ground truth is applied post-hoc, by the scorer only.** The answer keys
+  (`scripts/eval/ground_truth/<CASE>.yaml`) are now **published in this repo for
+  verifiability** — they are *not* hidden; blindness comes from the engine not reading them,
+  not from concealment. Anyone can re-score a run:
+  `python scripts/eval/gt_match_scorer.py scripts/eval/ground_truth/<CASE>.yaml <report.json>`.
+- **Scorer.** `gt_match_scorer.py` matches the agent's findings to the answer key on
+  distinctive anchors (rejecting generic tokens), and reports recall, *scored* hallucinations,
+  and investigative-question coverage.
 - Definitions of TP / FP / FN / Hallucination are in `eval-methodology.md` §2.
 
 ---
@@ -32,9 +41,14 @@ hash-chained audit) are under [`agent-execution-logs/`](agent-execution-logs/).
 | ALI-WEBSERVER-WIN-L0ZZQ76PMUF | web-server breach (Win Server 2008) | **92.3%** (12/13) | 0 | 7/8 | 2 |
 | NIST-HACKINGCASE-2004-MREVIL | war-driving / credential theft (Win XP) | **86.7%** (13/15) | 0 | 5/6 | 3 |
 
-**Headline: ~84% mean recall, 0 hallucinations across all five cases.** Every
-CONFIRMED finding is backed by ≥2 independent corroborating sources and a ruled-out
-benign alternative (the evidence-provenance gate; see `eval-methodology.md` §3).
+**Headline: ~84% mean recall, 0 *scored* hallucinations across all five cases.** A *scored
+hallucination* is a reported finding that asserts an artifact or event with no support in the
+evidence; across every finding the scorer matched against ground truth, none were fabrications.
+This is measured on the **scored** output — it is **not** a claim that all of each case's hundreds of
+ACTIVE leads were independently artifact-verified. CONFIRMED is the gated subset: every CONFIRMED
+finding is backed by ≥2 independent corroborating sources and a ruled-out benign alternative (the
+evidence-provenance gate; see `eval-methodology.md` §3). ACTIVE findings are reported as *leads*,
+not assertions of fact.
 
 ---
 
@@ -56,9 +70,12 @@ benign alternative (the evidence-provenance gate; see `eval-methodology.md` §3)
 
 ## 4. Honesty properties
 
-- **Zero hallucinations** by construction: a finding cannot be CONFIRMED without a
-  resolvable `execution_id` (real `audit.jsonl` row) + ≥2 independent sources +
-  a ruled-out alternative. Single-source findings stay ACTIVE leads.
+- **Zero *scored* hallucinations.** Measured against ground truth, no reported finding
+  asserted an artifact/event absent from the evidence. This is a property of the *scored*
+  output, not an automatic guarantee for every ACTIVE lead. The CONFIRMED tier is what
+  carries the hard gate: a finding cannot be CONFIRMED without a resolvable `execution_id`
+  (real `audit.jsonl` row) + ≥2 independent sources + a ruled-out alternative. Single-source
+  findings stay ACTIVE leads (reported as leads, not facts).
 - **Gaps are documented, never faked.** Missing artifacts are recorded as
   documented-absence; the coverage gate blocks reporting until the mandatory
   detectors actually ran.

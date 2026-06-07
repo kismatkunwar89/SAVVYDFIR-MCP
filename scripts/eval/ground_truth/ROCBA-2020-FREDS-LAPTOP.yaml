@@ -1,0 +1,445 @@
+# Ground-Truth Answer Key — ROCBA-2020-FREDS-LAPTOP
+# ===================================================================
+# Insider intellectual-property theft at "Stark Research Labs".
+#
+# SOURCE OF TRUTH: docs/agent-execution-logs/case-reference.md (SANS DFIR
+# courseware, 6601 lines). ALL source_lines below cite THAT file. The
+# courseware is ~95% generic teaching theory; concrete case evidence survives
+# in a few textual zones: the `fredr` ShellBags exercise (~L2867-2941), the
+# capstone case-summary takeaways (~L5952-6099), the capstone questions
+# (~L6003-6024), and the Edge-downloads exercise (~L6502-6524). Everything
+# else with a "concrete look" is a teaching example / different image — see
+# `known_negatives` and `ambiguous` below.
+#
+# SCHEMA: aligned to docs/eval-methodology.md §1 (record fields) and §2
+# (TP/FP/FN match rule). A produced report.json finding is a TP when it
+# matches on (host, finding_type, artifact_type, approximate location) AND
+# carries expected status OBSERVATION or INFERENCE (not HYPOTHESIS/REJECTED).
+# Match is semantic, NOT exact-string (§2.1).
+#
+# SCOPE CAVEAT: the §1 nine finding-types are intrusion-oriented. This is an
+# insider-exfil case, so it maps cleanly only to data_exfil / defense_evasion
+# / post_exploitation_cleanup. `file_access` / `attribution` / `account` /
+# `content` records below fall OUTSIDE the strict 9-type scope and are
+# flagged; the methodology needs an insider-case extension to score them.
+# They are retained because they are court-defensible, courseware-stated facts.
+#
+# PATH NOTE: `registry_paths` are canonical Windows ASEP locations; fields
+# named `paths_to_verify` are EXPECTED locations to confirm against the real
+# image, NOT values asserted by the courseware text. Do not score them as
+# observations until confirmed on the image.
+# ===================================================================
+
+case_id: ROCBA-2020-FREDS-LAPTOP
+host: FREDS-LAPTOP                      # single-host case (user fredr's laptop)
+scenario: Insider IP theft — Stark Research Labs
+subject_user: fredr
+actor_handle: Rocba
+incident_date_utc: "2020-11-14"
+sensitive_asset: "project P.E.G.A.S.U.S"
+exfil_destination:
+  channel: Google Drive for Desktop
+  account: crimsonguard@cobracommandcenter.com
+  domain: cobracommandcenter.com
+
+# -------------------------------------------------------------------
+# CORE GROUND-TRUTH FINDINGS (what a correct investigation must surface)
+# -------------------------------------------------------------------
+findings:
+
+  - id: GT-001
+    finding_type: file_access            # OUT-OF-STRICT-SCOPE (see caveat)
+    artifact_type: ShellBag
+    artifact_source: "E:\\C\\Users\\fredr\\AppData\\Local\\Microsoft\\Windows\\UsrClass.dat"
+    location_key: "UsrClass.dat / BagMRU"
+    expected_status: OBSERVATION
+    value: "149 ShellBags parsed from user fredr's UsrClass.dat"
+    description: >
+      User fredr's UsrClass.dat yields 149 ShellBags evidencing Explorer
+      folder navigation. DEFENSIBLE LIMIT: ShellBag = the shell rendered the
+      folder, NOT that files inside were opened. Corroborate with LNK / Jump
+      Lists / RecentDocs before asserting file access.
+    source_lines: "2867-2941"
+    corroborates_with: [LNK, JumpList, RecentDocs]
+
+  - id: GT-002
+    finding_type: defense_evasion
+    artifact_type: Registry
+    artifact_source: "C:\\Users\\fredr\\NTUSER.DAT"
+    location_key: "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\OpenSavePidlMRU ; Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\TypedPaths"
+    expected_status: INFERENCE
+    value: "regedit interaction with OpenSavePidlMRU and TypedPaths (per last-write timestamps)"
+    description: >
+      Based on registry key last-write timestamps, regedit appears to have
+      been used to interact with the OpenSavePidlMRU and TypedPaths keys —
+      indicative of manual manipulation/clearing of file-open dialog history
+      and Explorer typed-path history (anti-forensic tampering with
+      file-access evidence).
+    registry_paths:
+      - "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\ComDlg32\\OpenSavePidlMRU"
+      - "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\TypedPaths"
+    paths_to_verify:
+      - "C:\\Users\\fredr\\NTUSER.DAT"
+      - "C:\\Windows\\Prefetch\\REGEDIT.EXE-*.pf"
+    source_lines: "5955"
+    corroborates_with: [Registry_lastwrite, UserAssist_regedit, Prefetch_regedit]
+
+  - id: GT-003
+    finding_type: defense_evasion          # also maps to post_exploitation_cleanup
+    secondary_finding_type: post_exploitation_cleanup
+    artifact_type: Execution               # Prefetch / Amcache / ShimCache + EVTX 4688
+    artifact_source: "sdelete.exe execution artifacts"
+    location_key: "sdelete (two distinct on-disk locations)"
+    expected_status: OBSERVATION
+    value: "sdelete run 7x from 2 locations within a 5-min span starting 2020-11-14 13:42:30 UTC"
+    description: >
+      The Sysinternals sdelete file-wiping tool was executed seven times from
+      two different locations within a five-minute span starting
+      2020-11-14 13:42:30 UTC — secure-deletion / anti-forensics activity.
+    timestamp_utc_start: "2020-11-14T13:42:30Z"
+    timestamp_utc_end: "2020-11-14T13:47:30Z"   # DERIVED: start + "five minute span" (not stated verbatim)
+    paths_to_verify:
+      - "C:\\Windows\\Prefetch\\SDELETE*.pf"
+      - "C:\\Users\\fredr\\AppData\\Roaming\\Microsoft\\Windows\\Recent\\"
+    source_lines: "5959-5960"
+    scorer_detector: sdelete_cipher_trace   # present in baseline_report_scorer.high_signal
+    corroborates_with: [Prefetch, Amcache, EVTX_4688, USN_DATA_OVERWRITE]
+
+  - id: GT-004
+    finding_type: data_exfil
+    artifact_type: Cloud
+    artifact_source: "Google Drive for Desktop (account crimsonguard@cobracommandcenter.com)"
+    location_key: "Google Drive for Desktop metadata / local cache"
+    expected_status: OBSERVATION
+    value: "75 files added/modified after 2020-11-14 03:58:00 UTC; 274 files cached locally; includes P.E.G.A.S.U.S"
+    description: >
+      A Google Drive for Desktop account tied to crimsonguard@cobracommandcenter.com
+      hosts a large body of apparent Stark Research Labs intellectual property.
+      75 files were added or modified in that cloud storage after
+      2020-11-14 03:58:00 UTC, including the known sensitive project
+      P.E.G.A.S.U.S. 274 files from the cloud instance are cached locally and
+      available for analysis. This is the primary exfiltration channel.
+    timestamp_threshold_utc: "2020-11-14T03:58:00Z"
+    paths_to_verify:
+      - "C:\\Users\\fredr\\AppData\\Local\\Google\\DriveFS\\<account_identifier>\\"
+    source_lines: "6088-6099"
+    corroborates_with: [SRUM_bytes_sent, Browser_history, EVTX_network, MFT_cloud_cache]
+
+  - id: GT-005
+    finding_type: attribution             # OUT-OF-STRICT-SCOPE (see caveat)
+    artifact_type: Correlation
+    artifact_source: "case correlation (account + exfil destination)"
+    location_key: "Rocba account ; cobracommandcenter.com"
+    expected_status: INFERENCE
+    value: "Activity attributed to the 'Rocba' account; exfil to cobracommandcenter.com"
+    description: >
+      Investigative attribution ties the activity to the "Rocba" account, with
+      the exfiltration destination domain cobracommandcenter.com
+      (crimsonguard@cobracommandcenter.com). Attribution is an INFERENCE built
+      on the GT-001..GT-004 stack, not a single-artifact observation.
+      NAMING UNIVERSE: case entities are Avengers (Stark Research Labs,
+      Steve.Rogers, Natasha Romanoff, "Rocba") vs. G.I. Joe Cobra adversary
+      (crimsonguard@cobracommandcenter.com) — one coherent scenario.
+    source_lines: "6009, 6088"
+    corroborates_with: [GT-001, GT-002, GT-003, GT-004]
+
+  - id: GT-006
+    finding_type: attribution             # OUT-OF-STRICT-SCOPE (see caveat)
+    artifact_type: Correlation
+    artifact_source: "capstone exercise answer (person/account of interest)"
+    location_key: "Natasha Romanoff"
+    expected_status: INFERENCE
+    value: "'Natasha Romanoff' surfaced as a named person/account of interest"
+    description: >
+      The name "Natasha Romanoff" appears as a filled capstone answer-blank,
+      identifying an additional person/account of interest in the case.
+      Context in the extracted text is thin (a bare name on an answer line);
+      the linking artifact/question was image-only and lost in extraction.
+      LOW CONFIDENCE on role — verify against the actual image.
+    source_lines: "6317"
+    # VERIFIED 2026-06-04 against the actual evidence image: "Natasha Romanoff"
+    # is ABSENT from SAM, SOFTWARE, SYSTEM, SECURITY, both NTUSER.DAT hives, the
+    # live-mount SAM, and all user profiles (only fredr + srl-h accounts exist).
+    # The name lives ONLY in the DFIR courseware (case-reference.md:6317) as a
+    # themed capstone persona ("Steve.Rogers, Natasha Romanoff, Rocba"). It is
+    # NOT image-extractable, so an evidence-bound investigation cannot surface it
+    # without fabricating. Excluded from image-recall; surfacing it would be a
+    # hallucination, not a win.
+    image_extractable: false
+    corroborates_with: []  # verified absent from SAM/ProfileList/EVTX on ROCBA image
+
+  - id: GT-007
+    finding_type: data_exfil             # download/ingress dimension of the case
+    artifact_type: Browser
+    artifact_source: "Microsoft Edge / Chromium downloads (user fredr)"
+    location_key: "Edge History -> downloads; incident date 11/14/2020"
+    expected_status: OBSERVATION
+    value: "Edge download activity exists for 11/14/2020 (counts/files are image-only — see eval_targets)"
+    description: >
+      The courseware directs the analyst to Edge/Chromium download records and
+      asks (a) which download is most important to the investigation, (b) how
+      many downloads completed on 11/14/2020, and (c) the largest download of
+      all time for this user. This confirms a BROWSER-DOWNLOADS evidence
+      dimension on the incident date, but the concrete answer values were
+      image-only and did not survive text extraction. The DIMENSION is
+      scoreable (agent should examine Edge downloads); the exact counts are not.
+    paths_to_verify:
+      - "C:\\Users\\fredr\\AppData\\Local\\Microsoft\\Edge\\User Data\\Default\\History"
+      - "C:\\Users\\fredr\\Downloads\\"
+    source_lines: "6502-6524"
+    corroborates_with: [MOTW_ZoneIdentifier, MFT, Prefetch]
+
+  - id: GT-008
+    finding_type: defense_evasion
+    secondary_finding_type: post_exploitation_cleanup
+    artifact_type: Cloud
+    artifact_source: "DropboxUninstaller execution / uninstall registry residue"
+    location_key: "DropboxUninstaller ; C:\\Users\\fredr\\AppData\\Local\\Dropbox\\instance<#>\\"
+    expected_status: OBSERVATION
+    value: "DropboxUninstaller artifact (cloud storage category) — Dropbox client removed"
+    description: >
+      Course takeaway identifies DropboxUninstaller in the cloud-storage evidence category,
+      indicating the Dropbox sync client was uninstalled or an uninstaller was executed on the
+      endpoint. Correlates with migration to Google Drive exfil (GT-004).
+    source_lines: "5952"
+    paths_to_verify:
+      - "C:\\Users\\fredr\\AppData\\Local\\Dropbox\\instance1\\"
+      - "NTUSER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
+      - "C:\\Windows\\Prefetch\\"
+    corroborates_with: [GT-004, Prefetch, Amcache, UserAssist]
+
+  - id: GT-009
+    finding_type: attribution
+    artifact_type: Account
+    artifact_source: "E:\\C\\Users\\fredr"
+    location_key: "user profile fredr"
+    expected_status: OBSERVATION
+    value: "Subject workstation local profile fredr (FREDS-LAPTOP)"
+    description: >
+      Capstone triage and ShellBags exercise anchor all user-hive artifacts to profile fredr.
+      All execution, registry, browser, and cloud findings must be attributed to this user context.
+    source_lines: "2867-2941"
+    paths_to_verify:
+      - "C:\\Users\\fredr\\"
+      - "C:\\Users\\fredr\\NTUSER.DAT"
+      - "C:\\Users\\fredr\\AppData\\Local\\Microsoft\\Windows\\UsrClass.dat"
+    corroborates_with: [GT-001, GT-002, GT-004, GT-007]
+
+  - id: GT-010
+    finding_type: data_exfil
+    artifact_type: Content
+    artifact_source: "Google Drive synced content / local cache"
+    location_key: "Stark Research Labs intellectual property"
+    expected_status: OBSERVATION
+    value: "Stolen content attributed to Stark Research Labs (victim organization)"
+    description: >
+      Exfiltrated Google Drive content is characterized in course takeaways as Stark Research Labs
+      intellectual property, establishing victim organization context for the insider theft matter.
+    source_lines: "6088-6090"
+    corroborates_with: [GT-004]
+
+  - id: GT-011
+    finding_type: data_exfil
+    artifact_type: Content
+    artifact_source: "Google Drive for Desktop synced files"
+    location_key: "project P.E.G.A.S.U.S"
+    expected_status: OBSERVATION
+    value: "Sensitive project P.E.G.A.S.U.S present in exfiltrated file set"
+    description: >
+      The known sensitive Stark Research Labs project P.E.G.A.S.U.S is explicitly identified in
+      capstone takeaways as part of the stolen IP synced to crimsonguard@cobracommandcenter.com.
+    source_lines: "6096"
+    corroborates_with: [GT-004, GT-010]
+
+
+# -------------------------------------------------------------------
+# MASTER TIMELINE (UTC) — confirmed + eval_target events
+# -------------------------------------------------------------------
+timeline:
+  - id: TL-001
+    utc: "2020-11-14T03:58:00Z"
+    phase: exfiltration
+    summary: "75 Google Drive files added/modified after this threshold"
+    finding_ids: [GT-004, GT-011]
+    confidence: confirmed
+    source_lines: "6093"
+
+  - id: TL-002
+    utc: null                              # NOTE: courseware poses this as a question; no timestamp value in source
+    phase: recon_or_access
+    summary: "Eval target: earliest known access to Rocba-related files"
+    finding_ids: []
+    confidence: eval_target
+    source_lines: "6003"
+
+  - id: TL-003
+    utc: "2020-11-14"
+    phase: exfiltration
+    summary: "Google Drive sync of Stark Research Labs IP to crimsonguard@cobracommandcenter.com"
+    finding_ids: [GT-004, GT-010, GT-011]
+    confidence: confirmed
+    source_lines: "6088-6096"
+
+  - id: TL-004
+    utc: "2020-11-14"
+    phase: staging
+    summary: "Eval target: Edge downloads completed on 2020-11-14"
+    finding_ids: [GT-007]
+    confidence: eval_target
+    source_lines: "6515"
+
+  - id: TL-005
+    utc: "2020-11-14T13:42:30Z"
+    end_utc: "2020-11-14T13:47:30Z"        # DERIVED end (start + 5-min span)
+    phase: cover_up
+    summary: "sdelete — 7 executions from 2 locations over ~5 minutes"
+    finding_ids: [GT-003]
+    confidence: confirmed
+    source_lines: "5959-5960"
+
+  - id: TL-006
+    utc: null                              # last-write date not stated in extracted text
+    phase: cover_up
+    summary: "regedit last-write on OpenSavePidlMRU and TypedPaths"
+    finding_ids: [GT-002]
+    confidence: confirmed
+    source_lines: "5955"
+
+  - id: TL-007
+    utc: null
+    phase: cloud_lifecycle
+    summary: "DropboxUninstaller — Dropbox client removal"
+    finding_ids: [GT-008]
+    confidence: confirmed
+    source_lines: "5952"
+
+  - id: TL-008
+    utc: null
+    phase: post_exfil
+    summary: "274 Google Drive cloud files cached locally"
+    finding_ids: [GT-004]
+    confidence: confirmed
+    source_lines: "6099"
+
+# -------------------------------------------------------------------
+# EVAL TARGETS — capstone questions WITHOUT values in the courseware text.
+# NOT scoreable as TP/FN (no ground-truth answer present). Answering requires
+# the actual ROCBA image. Do NOT fabricate values.
+# -------------------------------------------------------------------
+eval_targets:
+  - id: E-001
+    question: "What is the earliest known access to the files?"
+    account: Rocba
+    confidence: eval_target
+    source_lines: "6003"
+
+  - id: E-002
+    question: "What did the Rocba account do with the files?"
+    account: Rocba
+    confidence: eval_target
+    partial_ground_truth: "Upload/sync to crimsonguard@cobracommandcenter.com per GT-004"
+    source_lines: "6009"
+
+  - id: E-003
+    question: "What IP addresses are involved?"
+    account: Rocba
+    confidence: eval_target
+    note: "No IPs in courseware text — do not fabricate"
+    source_lines: "6024"
+
+  - id: E-004
+    question: "Which Edge download is most important to the investigation?"
+    confidence: eval_target
+    filter_date: "2020-11-14"
+    paths_to_verify:
+      - "C:\\Users\\fredr\\AppData\\Local\\Microsoft\\Edge\\User Data\\Default\\History"
+    source_lines: "6509"
+
+  - id: E-005
+    question: "How many total downloads completed on 11/14/2020?"
+    confidence: eval_target
+    filter_date: "2020-11-14"
+    source_lines: "6515"
+
+  - id: E-006
+    question: "What was the largest downloaded file of all time for user fredr?"
+    confidence: eval_target
+    source_lines: "6521"
+
+# -------------------------------------------------------------------
+# AMBIGUOUS — concrete values that MAY belong to the case but cannot be
+# confirmed from the text alone. Resolve against the real image before
+# scoring. Do NOT auto-score as TP or FP.
+# -------------------------------------------------------------------
+ambiguous:
+  - artifact_type: USB/USBSTOR
+    value: "HP v100w USB Device, iSerial AA951D0000007340, VID 03F0 / PID 3207, VSN 52BF6FD7, FriendlyName 'HP v100w USB Device', Volume 'SHARE', mount E:, Volume GUID 7560496c-3102-11e8-9eb7-9eb6d0dc1465, user Steve.Rogers"
+    connection_timeline:
+      first_connection_utc: "2021-11-22 04:09:15"
+      last_connection_utc: "2022-01-16 19:46:30"
+      last_removal_utc: "2022-01-16 20:51:35"
+    why_ambiguous: >
+      FOR the case: user 'Steve.Rogers' fits the Avengers naming universe
+      (alongside fredr / Natasha Romanoff / Stark Research Labs) and the block
+      sits in the same device-profiling exercise stream. AGAINST the case: the
+      connection dates are 2021-11 .. 2022-01, a year-plus AFTER the
+      2020-11-14 incident window. Cannot resolve from text. Originally
+      mis-filed as a known-negative; downgraded to AMBIGUOUS pending
+      verification against the actual ROCBA-2020-FREDS-LAPTOP image.
+    source_lines: "3070-3234"
+
+# -------------------------------------------------------------------
+# KNOWN NEGATIVES / DECOYS — concrete-LOOKING values that are SANS teaching
+# examples, NOT ROCBA-2020-FREDS-LAPTOP evidence.
+# An agent that reports any of these as a case finding => FALSE POSITIVE.
+# -------------------------------------------------------------------
+known_negatives:
+  # NOTE: the HP v100w USB block was previously listed here; moved to
+  # `ambiguous` after the Avengers naming-universe coherence was noticed.
+  - artifact_type: Email
+    value: "Received: smtp109.sbc.mail.re2.yahoo.com (68.142.229.96); header.from=outlook.com; X-Mailer iPhone Mail"
+    reason: "RFC/header teaching examples — no crimsonguard/cobra/fredr linkage."
+    source_lines: "3533-3679"
+  - artifact_type: Browser
+    value: "Firefox bookmark to asgardventurecapital.sharepoint.com (dateAdded 1382036882536000 ~2013)"
+    reason: "Unrelated 'Asgard Venture Capital' teaching scenario; not this case."
+    source_lines: "5118-5136"
+  - artifact_type: Windows.db
+    value: "Katy_letter.docx (WorkId 1392)"
+    reason: "Windows Search Index teaching demo file, not a Stark Labs document."
+    source_lines: "4148"
+  - artifact_type: Registry
+    value: "VSC timestamp 2023-03-13 12:01:00 UTC; UninstallString GUID 9BE0AC23-..."
+    reason: "Hypothetical illustration values in theory sections."
+    source_lines: "984, 1461"
+
+# -------------------------------------------------------------------
+# EXTRACTION PROVENANCE
+# -------------------------------------------------------------------
+provenance:
+  source_file: docs/agent-execution-logs/case-reference.md
+  source_total_lines: 6601
+  method: >
+    Full-file token grep + parallel chunk review across ALL 6601 lines of
+    case-reference.md. Case tokens (fredr|rocba|pegasus|crimsonguard|cobra|stark|
+    sdelete|2020-11-14|opensavepidl|typedpaths) plus a full timestamp/path
+    sweep localized concrete evidence to L2867-2941, L5952-6099, L6003-6024,
+    L6317, and L6502-6524. All other ranges verified as generic theory /
+    boilerplate / stripped image whitespace.
+  schema_alignment: "docs/eval-methodology.md §1 (record fields), §2 (match rule)"
+  extracted_on: "2026-06-01"
+  patched_on: "2026-06-01"
+  patch_notes: >
+    GT-008 DropboxUninstaller, GT-009 fredr, GT-010 Stark Research Labs,
+    GT-011 P.E.G.A.S.U.S, full registry paths on GT-002, and the timeline +
+    eval_targets sections were added by a second pass. ALL source_lines
+    citations corrected to reference case-reference.md (a prior pass had
+    mis-cited a non-existent 'case-reference-extract.txt'); every citation
+    re-verified against case-reference.md via grep.
+  notes: >
+    The courseware is a redacted/OCR'd PDF; many lab "Takeaway" slides were
+    image-only and did not survive text extraction, so concrete values are
+    sparser than the full DFIR case. Findings above are the court-defensible
+    subset stated in plain text. Treat as a STARTER answer key — enrich from
+    the actual ROCBA-2020-FREDS-LAPTOP image (precise paths, hashes, USN/MFT
+    timestamps, SRUM byte counts, IPs) when available.

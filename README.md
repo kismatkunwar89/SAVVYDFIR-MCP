@@ -377,7 +377,7 @@ the bucket/redaction regression fixture is `tests/fixtures/graph_bucket_syntheti
 
 ## Validation Status
 
-Validated **blind** end-to-end on five independent blind cases — **0 hallucinations across all** (full results in [`docs/accuracy-report.md`](docs/accuracy-report.md); per-case artifacts in [`docs/agent-execution-logs/`](docs/agent-execution-logs/)):
+Validated **blind** end-to-end on five independent blind cases — **0 *scored* hallucinations across all** (no reported finding asserted an artifact/event absent from the evidence, measured against ground truth; the investigation reads only `manifest.json` and never the answer key). The ground-truth keys are **published** under [`scripts/eval/ground_truth/`](scripts/eval/ground_truth/) so anyone can re-score with `gt_match_scorer.py`. Full results in [`docs/accuracy-report.md`](docs/accuracy-report.md); per-case artifacts in [`docs/agent-execution-logs/`](docs/agent-execution-logs/):
 
 - **ROCBA-2020-FREDS-LAPTOP** — insider IP theft (Windows) — 90% recall, 107 findings, 3 CONFIRMED.
 - **LONEWOLF-2018-DESKTOP-PM6C56D** — mass-shooting plot (Windows) — 91.7% recall, 88 findings, 2 CONFIRMED.

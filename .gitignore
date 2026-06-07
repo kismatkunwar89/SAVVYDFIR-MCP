@@ -76,8 +76,10 @@ report.png
 runreview
 paper/abstract-draft-*.md
 
-# Eval ground-truth answer keys (case-specific - local only)
-scripts/eval/ground_truth/
+# Eval ground-truth answer keys are now PUBLISHED for verifiability
+# (so judges can re-score any case with scripts/eval/gt_match_scorer.py).
+# The investigation engine never reads these — they are applied post-hoc by the
+# scorer only; see docs/accuracy-report.md "How the blind evaluation works".
 medium1.md
 medium2.md
 rules/chainsaw-sigma-mapping.yml.broken-run11.bak

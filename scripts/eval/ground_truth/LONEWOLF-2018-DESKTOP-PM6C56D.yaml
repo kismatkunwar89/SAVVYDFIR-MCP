@@ -1,0 +1,273 @@
+# Ground-Truth Answer Key — LONEWOLF-2018-DESKTOP-PM6C56D
+# ===================================================================
+# 2018 "Lone Wolf" scenario (digitalcorpora.org/corpora/scenarios/2018-lone-wolf-scenario).
+# A suspect ("JCloudy") planning a mass shooting; the laptop was seized 2018-04-06.
+#
+# SOURCE OF TRUTH: lab3.pdf — a FORENSIC REPORT of the actual LoneWolf disk+memory
+# image (ingested into reference notebook REDACTED; facts extracted via targeted
+# RAG queries 2026-06-05). UNLIKE the ROCBA GT (which was SANS courseware with
+# some image-only facts), every fact below was derived from analysis of the REAL
+# image, so all are image_extractable: true. Citations are reference reference
+# markers from lab3.pdf (page/line numbers not exposed by the RAG layer).
+#
+# SCHEMA: aligned to docs/eval-methodology.md §1/§2 + the ROCBA GT. A report.json
+# finding is a TP when it matches on (host, finding_type, artifact_type, approx
+# location) AND carries status OBSERVATION or INFERENCE. Match is semantic
+# (anchored token overlap via scripts/eval/gt_match_scorer.py), not exact-string.
+#
+# SCOPE CAVEAT: this is an insider / premeditated-violence case, not an intrusion.
+# It maps to data_exfil / defense_evasion + the insider-extension types
+# (file_access / attribution / account / content). Those extension types are
+# retained as court-defensible, report-stated facts.
+# ===================================================================
+
+case_id: LONEWOLF-2018-DESKTOP-PM6C56D
+host: DESKTOP-PM6C56D                   # single-host case (user jcloudy's laptop)
+os: "Windows 10 Education, Build 16299 (Release 1709)"
+scenario: "Premeditated mass-shooting plan — 2018 Lone Wolf"
+subject_user: jcloudy
+subject_name: "Jim Cloudy (JCloudy)"
+subject_accounts:
+  email: ["JimCloudy@outlook.com", "jimcloudy1@gmail.com"]
+  skype: "live:jimcloudy_1"
+os_install_utc: "2018-03-27T18:53:00Z"
+seizure_date_utc: "2018-04-06"
+intent: >
+  Planning a mass shooting targeting the "Town Hall For Our Lives" event at
+  Potomac Falls Library (21030 Whitfield Pl, Sterling VA), Sat 2018-04-07
+  12:30-14:00. Secondary target: Fairfax County Democratic Committee
+  (8500 Executive Park Ave, Fairfax VA).
+
+# -------------------------------------------------------------------
+# CORE GROUND-TRUTH FINDINGS (what a correct investigation must surface)
+# -------------------------------------------------------------------
+findings:
+
+  - id: GT-001
+    finding_type: content                  # the attack plan document
+    artifact_type: Document
+    artifact_source: "E:\\Users\\jcloudy\\Desktop\\Planning.docx"
+    location_key: "Planning.docx"
+    expected_status: OBSERVATION
+    value: "Planning.docx — the attack plan (weapon, ammo, black-market vendors, targets), created 2018-03-30 02:16:48 UTC"
+    description: >
+      Planning.docx is the operational attack plan: specifies a Kel-Tec Sub 2000
+      9mm ($400) + 9mm ammo ($360/1000), black-market gun sources (Northern VA
+      Gun Works, Springfield VA; NOVA, Falls Church VA), and the target events.
+      MFT $SI create 2018-03-30T02:16:48Z; WINWORD.EXE Prefetch correlates.
+    timestamp_utc: "2018-03-30T02:16:48Z"
+    corroborates_with: [MFT, Prefetch_WINWORD, ShellBag, LNK]
+    image_extractable: true
+
+  - id: GT-002
+    finding_type: content                  # the manifesto
+    artifact_type: Document
+    artifact_source: "E:\\Users\\jcloudy\\Desktop\\The Cloudy Manifesto.docx"
+    location_key: "The Cloudy Manifesto.docx"
+    expected_status: OBSERVATION
+    value: "'The Cloudy Manifesto.docx' — ideological manifesto, synced to Box/Google Drive/Dropbox"
+    description: >
+      The Cloudy Manifesto.docx on the Desktop, with synchronized copies under
+      Box Sync, Google Drive, and Dropbox (deliberate cloud redundancy to survive
+      device seizure).
+    corroborates_with: [MFT, cloud_sync, Prefetch_WINWORD]
+    image_extractable: true
+
+  - id: GT-003
+    finding_type: content                  # the journal / diary
+    artifact_type: Document
+    artifact_source: "E:\\Users\\jcloudy\\Desktop\\Cloudy thoughts (4apr).docx"
+    location_key: "Cloudy thoughts (4apr).docx"
+    expected_status: OBSERVATION
+    value: "'Cloudy thoughts (4apr).docx' — journal naming accomplice 'Paul' who held the cloud-storage keys"
+    description: >
+      Personal journal/diary documenting intent and naming an accomplice "Paul"
+      who held the keys to the suspect's cloud storage.
+    corroborates_with: [MFT, "Brother Chat.gdoc"]
+    image_extractable: true
+
+  - id: GT-004
+    finding_type: defense_evasion          # covert C2 / anti-forensic comms
+    artifact_type: Browser
+    artifact_source: "Google Docs — Brother Chat.gdoc (doc id 1GOv7MwOXM-7Vkoy4kjE3Q5bMDB5lWA0tB57a3u2hqeA)"
+    location_key: "Brother Chat.gdoc"
+    expected_status: INFERENCE
+    value: "Covert Google Docs chat 'Brother Chat.gdoc' accessed 865 times — anti-forensic comms channel with accomplice"
+    description: >
+      The suspect searched "how to use google docs as chat" and used a shared
+      Google Doc (Brother Chat.gdoc, 865 accesses) as a covert messaging channel —
+      chosen because message content lives on Google servers, minimizing local
+      artifacts. Local evidence = browser history / LevelDB access records.
+    corroborates_with: [Browser_history, LevelDB, "Cloudy thoughts (4apr).docx"]
+    image_extractable: true
+
+  - id: GT-005
+    finding_type: data_exfil               # cloud exfiltration quantified
+    artifact_type: SRUM
+    artifact_source: "SRUDB.dat — network usage table"
+    location_key: "SRUM bytes_sent per cloud app"
+    expected_status: OBSERVATION
+    value: "SRUM: GOOGLEDRIVESYNC 36.9MB, S3BROWSER 7.4MB (foreground), ONEDRIVE 5.5MB, DROPBOX 0.9MB sent"
+    description: >
+      SRUM network table quantifies multi-platform cloud exfiltration:
+      GOOGLEDRIVESYNC.EXE 36,942,021 B; S3BROWSER-WIN32.EXE 7,427,705 B (foreground
+      = active user interaction); ONEDRIVE.EXE 5,504,634 B; DROPBOX.EXE 936,816 B.
+    corroborates_with: [Prefetch, Browser_history, ADS_ZoneIdentifier]
+    image_extractable: true
+
+  - id: GT-006
+    finding_type: data_exfil               # AWS S3 credentials/exfil
+    artifact_type: ADS
+    artifact_source: "E:\\Users\\jcloudy\\Downloads\\rootkey.csv (Zone.Identifier)"
+    location_key: "rootkey.csv"
+    expected_status: OBSERVATION
+    value: "rootkey.csv — AWS IAM root creds (AWSAccessKeyId/AWSSecretKey); Zone.Identifier proves download from AWS console"
+    description: >
+      rootkey.csv in Downloads holds plaintext AWS IAM root credentials used to
+      authenticate to Amazon S3 (via S3 Browser). The Zone.Identifier ADS proves
+      it was downloaded directly from the AWS Management Console.
+    corroborates_with: [SRUM_S3Browser, Browser_history, ADS_ZoneIdentifier]
+    image_extractable: true
+
+  - id: GT-007
+    finding_type: content                  # weapon acquisition research
+    artifact_type: Browser
+    artifact_source: "Browser history / LevelDB — gunbroker.com"
+    location_key: "Kel-Tec Sub 2000 / GunBroker item 760609994"
+    expected_status: OBSERVATION
+    value: "Weapon research: 'keltec 2000 site:gunbroker.com' cached a Kel-Tec Sub2k Gen2 9mm listing (GunBroker #760609994)"
+    description: >
+      Browser history shows weapon-acquisition research: searches keltec sub 2000,
+      best tactical rifle, "just how easy is it to buy an illegal gun", and
+      "keltec 2000 site:gunbroker.com" — caching GunBroker item #760609994
+      (Kel-Tec Sub2k Gen2 Glk17 BLACK 9mm). Spans 2018-03-27 .. 03-31.
+    corroborates_with: [Browser_history, "Planning.docx"]
+    image_extractable: true
+
+  - id: GT-008
+    finding_type: content                  # target / location reconnaissance
+    artifact_type: Browser
+    artifact_source: "Browser history + OneDrive screenshots"
+    location_key: "Potomac Falls Library / Town Hall For Our Lives"
+    expected_status: OBSERVATION
+    value: "Target recon: Potomac Falls Library event, Google Street View + satellite escape routes + directions to Dulles (IAD), saved to OneDrive"
+    description: >
+      Reconnaissance of the target: searches for the venue, gun-free-zone maps,
+      "police response times by zip code"; OneDrive screenshots of Google Street
+      View of Potomac Falls Library, tactical satellite escape routes, and
+      turn-by-turn directions from the library to Dulles International Airport.
+    corroborates_with: [Browser_history, OneDrive, LNK]
+    image_extractable: true
+
+  - id: GT-009
+    finding_type: data_exfil               # escape / flight booking
+    artifact_type: Browser
+    artifact_source: "Browser history / LevelDB — expedia.com, kayak.com, aa.com"
+    location_key: "IAD -> DPS escape flight booking"
+    expected_status: OBSERVATION
+    value: "Escape plan: flight-booking sessions (Expedia/Kayak/AA) IAD->DPS, reached payment step; itinerary screenshot 2018-04-04 05:05 UTC"
+    description: >
+      Post-attack escape: flight-booking activity on Expedia/Kayak/aa.com from
+      Dulles (IAD) to Dipolog/abroad, reaching the Expedia payment step; finalized
+      itinerary screenshot 2018-04-04T05:05Z. Plus searches "how to smuggle cash
+      through airport" and "nonextradition country".
+    timestamp_utc: "2018-04-04T05:05:00Z"
+    corroborates_with: [Browser_history, OneDrive]
+    image_extractable: true
+
+  - id: GT-010
+    finding_type: execution                # program execution proof
+    artifact_type: Prefetch
+    artifact_source: "Prefetch (PECmd)"
+    location_key: "WINWORD.EXE / POWERPNT.EXE / CHROME.EXE execution"
+    expected_status: OBSERVATION
+    value: "Prefetch: Chrome 90 runs; WINWORD/POWERPNT executions correlate with attack-document modification times; cloud-sync apps active"
+    description: >
+      Prefetch establishes execution: CHROME.EXE 90 runs, WINWORD.EXE/POWERPNT.EXE
+      runs correlate with the planning-document modification times, and cloud-sync
+      executables ran actively — corroborating document authorship + exfiltration.
+    corroborates_with: [MFT, SRUM, "Planning.docx"]
+    image_extractable: true
+
+  - id: GT-011
+    finding_type: attribution              # account attribution
+    artifact_type: Registry
+    artifact_source: "SOFTWARE/SYSTEM hives + user profile E:\\Users\\jcloudy"
+    location_key: "user profile jcloudy ; DESKTOP-PM6C56D"
+    expected_status: OBSERVATION
+    value: "Attribution: local profile 'jcloudy' on DESKTOP-PM6C56D (Win10 Edu 1709); OS installed 2018-03-27, device on ~9 days to seizure"
+    description: >
+      Registry hives anchor identity + timeline: SOFTWARE hive = OS (Win10 Edu)
+      and install date 2018-03-27; SYSTEM hive = computer name DESKTOP-PM6C56D,
+      timezone, last shutdown — device continuously powered ~9 days to seizure.
+      All user-hive activity ties to profile jcloudy.
+    corroborates_with: [Registry, MFT, Prefetch]
+    image_extractable: true
+
+  - id: GT-012
+    finding_type: defense_evasion          # anti-forensics: cloud redundancy + deletion
+    artifact_type: MFT
+    artifact_source: "$MFT + cloud-sync directories"
+    location_key: "5,685 deleted records ; multi-cloud redundancy"
+    expected_status: INFERENCE
+    value: "Anti-forensics: deliberate multi-cloud backup (Dropbox/GoogleDrive/Box/S3) to survive seizure; 5,685 deleted MFT records"
+    description: >
+      Intentional anti-forensic posture: a multi-platform cloud backup strategy
+      (Dropbox, Google Drive, Box Sync, Amazon S3) to preserve files beyond device
+      seizure, plus 5,685 deleted file records in the MFT (routine deletion; no
+      secure-wipe tool identified). Covert Google Docs chat (GT-004) is part of
+      the same posture.
+    corroborates_with: [MFT, SRUM, "Brother Chat.gdoc"]
+    image_extractable: true
+
+# -------------------------------------------------------------------
+# TIMELINE (ordered, report-stated)
+# -------------------------------------------------------------------
+timeline:
+  - {utc: "2018-03-27T18:53:00Z", event: "Windows 10 installed (Day 1)"}
+  - {local: "2018-03-27 20:57 EDT", event: "First weapon search: 'keltec sub 2000'"}
+  - {local: "2018-03-29 19:12 EDT", event: "Recon: police response times, gun-free zones"}
+  - {utc: "2018-03-30T02:16:48Z", event: "Planning.docx created (attack plan)"}
+  - {date: "2018-03-31", event: "Black-market vendor search; GunBroker listing #760609994 cached"}
+  - {local: "2018-04-03 02:24 EDT", event: "Escape flight-booking searches (Expedia/Kayak)"}
+  - {utc: "2018-04-04T05:05:00Z", event: "Finalized itinerary screenshot (IAD->DPS)"}
+  - {date: "2018-04-06", event: "Law-enforcement seizure + live acquisition"}
+  - {date: "2018-04-07", event: "Planned attack date (Town Hall For Our Lives, Potomac Falls Library)"}
+
+# -------------------------------------------------------------------
+# KNOWN NEGATIVES (must NOT be reported as case evidence — hallucination controls)
+# -------------------------------------------------------------------
+known_negatives:
+  - artifact_type: Comms
+    value: "Human-to-human email or Skype messages proving the plot"
+    reason: >
+      Skype SQLite + Outlook Unistore showed NO human-to-human plotting comms
+      locally — the channel was the covert Brother Chat.gdoc (content on Google
+      servers). Do not assert local email/Skype plot messages.
+  - artifact_type: AntiForensics
+    value: "Use of secure-wipe / data-destruction software (SDelete, cipher, BCWipe)"
+    reason: >
+      The report explicitly notes routine deletion (5,685 MFT records) but does
+      NOT identify any secure-wiping/destruction tool. Do not claim secure wiping.
+  - artifact_type: S3
+    value: "A specific named S3 bucket"
+    reason: "The report does not state an S3 bucket name; rootkey.csv creds are confirmed but the bucket name is not."
+
+# -------------------------------------------------------------------
+# EVAL TARGETS (investigative questions a correct run should answer)
+# -------------------------------------------------------------------
+eval_targets:
+  - {id: "E-001", question: "Who is the suspect and what was being planned?", answer_anchor: "jcloudy / mass shooting at Town Hall For Our Lives, Potomac Falls Library 2018-04-07"}
+  - {id: "E-002", question: "What weapon was the suspect acquiring?", answer_anchor: "Kel-Tec Sub 2000 9mm (GunBroker #760609994) + black-market vendors"}
+  - {id: "E-003", question: "What were the target(s)?", answer_anchor: "Potomac Falls Library event; Fairfax County Democratic Committee"}
+  - {id: "E-004", question: "How did the suspect communicate covertly?", answer_anchor: "Brother Chat.gdoc Google-Docs-as-chat (865 accesses) with accomplice Paul"}
+  - {id: "E-005", question: "What data was exfiltrated and how?", answer_anchor: "manifesto/plan synced to Google Drive/Dropbox/Box/S3; SRUM byte counts; rootkey.csv AWS creds"}
+  - {id: "E-006", question: "What was the post-attack escape plan?", answer_anchor: "flight IAD->DPS (Expedia/Kayak/AA), cash-smuggling + non-extradition searches"}
+
+# -------------------------------------------------------------------
+provenance:
+  source_document: "lab3.pdf (forensic report of the LoneWolf image)"
+  reference_notebook: "REDACTED (Lone Wolf 2018 GT)"
+  extracted_utc: "2026-06-05"
+  image_source: "https://digitalcorpora.org/corpora/scenarios/2018-lone-wolf-scenario/"
+  exhaustive: false

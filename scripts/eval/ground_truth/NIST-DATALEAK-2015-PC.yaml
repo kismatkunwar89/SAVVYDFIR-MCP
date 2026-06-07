@@ -1,0 +1,319 @@
+# Ground-Truth Answer Key — NIST-DATALEAK-2015-PC
+# ===================================================================
+# NIST CFReDS "Data Leakage" case (cfreds-archive.nist.gov/data_leakage_case).
+# An insider ("Iaman Informant", user `informant`) at tech company "OOO" leaked
+# "Secret Project" data, then ran anti-forensics before a 2015-03-25 security
+# check ("D-Day"). DISK-ONLY case (no memory image).
+#
+# SOURCE OF TRUTH: leakage-answers.pdf v1.32 (the official 60-question answer key,
+# last updated 2018-07-23), ingested into reference notebook REDACTED; facts
+# extracted via targeted RAG queries 2026-06-05. The answer key is derived from
+# the real PC/RM images, so every fact below is image_extractable: true.
+# Citations [n] in the source are reference reference markers + the answer key's
+# own Question numbers (Qn).
+#
+# TIMEZONE: the answer key reports local time UTC-05. timestamp_utc fields below
+# are CONVERTED to UTC (+5h); the local UTC-05 wall time is noted in description.
+#
+# SCHEMA: aligned to the ROCBA / LONEWOLF GT + scripts/eval/gt_match_scorer.py.
+# A report.json finding is a TP when it matches on (host, finding_type,
+# artifact_type, approx location) with status OBSERVATION/INFERENCE; match is
+# semantic anchored-token overlap, NOT exact string. Distinctive anchors here are
+# the disguised filenames, the accounts, the device labels, and the AF tools.
+#
+# SCOPE: insider data_exfiltration / defense_evasion + insider-extension types
+# (content / attribution / account / file_access). Win7 era: Prefetch, LNK,
+# JumpLists, ShellBags, Recycle Bin ($I/$R), VSCs, OST recovery all in play.
+# ===================================================================
+
+case_id: NIST-DATALEAK-2015-PC
+host: INFORMANT-PC                       # single primary host; + RM#1/#2/#3 media
+os: "Windows 7 Ultimate"
+scenario: "Insider data leakage — NIST CFReDS Data Leakage (2015)"
+subject_user: informant
+subject_name: "Iaman Informant"
+organization: "OOO (technology development company)"
+subject_accounts:
+  company_email: "iaman.informant@nist.gov"
+  personal_email_gdrive: "iaman.informant.personal@gmail.com"
+co_conspirator_email: "spy.conspirator@nist.gov"
+os_install_utc: "2015-03-22"            # OS install + system prep (local UTC-05)
+seizure_date_utc: "2015-03-25"          # "D-Day" security check
+intent: >
+  An insider exfiltrated confidential "Secret Project" technology files
+  (proposals, market analysis, design concepts) out of company OOO to a
+  co-conspirator via four channels — webmail/Outlook, Google Drive, a suspect
+  USB (RM#2), and a UDF CD-R (RM#3) — disguising files by renaming extensions,
+  then deleting/formatting/wiping to conceal the activity before a security check.
+
+findings:
+
+  - id: GT-001
+    finding_type: attribution
+    artifact_type: Registry
+    artifact_source: "SAM / SOFTWARE / SYSTEM hives — user `informant`, host INFORMANT-PC"
+    location_key: "INFORMANT-PC / user informant"
+    expected_status: OBSERVATION
+    value: "Subject = Iaman Informant, Windows user `informant` on INFORMANT-PC (Windows 7 Ultimate), company OOO (Q5/Q6)"
+    description: >
+      The seized PC is INFORMANT-PC running Windows 7 Ultimate; the active user
+      account is `informant` (Iaman Informant), an employee of technology company
+      OOO. Company mailbox iaman.informant@nist.gov.
+    corroborates_with: [Registry_SAM, Registry_SOFTWARE, EVTX]
+    image_extractable: true
+
+  - id: GT-002
+    finding_type: content                  # the confidential source data
+    artifact_type: Document
+    artifact_source: "\\Desktop\\(secret_project) source files"
+    location_key: "Secret Project source documents"
+    expected_status: OBSERVATION
+    value: "Confidential 'Secret Project' files: (secret_project)_detailed_proposal.docx, _design_concept.ppt, (secret_project)_market_analysis.xlsx (Q8-10)"
+    description: >
+      The leaked confidential data is OOO's "Secret Project" technology material:
+      MS Office documents incl. (secret_project)_detailed_proposal.docx,
+      (secret_project)_design_concept.ppt, and (secret_project)_market_analysis.xlsx
+      (project proposals, market analyses, design concepts).
+    corroborates_with: [MFT, LNK, ShellBag, RecentDocs]
+    image_extractable: true
+
+  - id: GT-003
+    finding_type: defense_evasion          # disguise by extension renaming
+    artifact_type: FileSystem
+    artifact_source: "MFT / LNK / RecentDocs — renamed files in \\Desktop\\temp"
+    location_key: "extension-rename disguise"
+    expected_status: INFERENCE
+    value: "Files disguised by renaming extensions ~2015-03-23 19:41 UTC: _design_concept.ppt→space_and_earth.mp4; _market_analysis.xlsx→new_years_day.jpg; a 15.6MB PPTX→winter_whether_advisory.zip (Q49)"
+    description: >
+      The suspect concealed exfiltration by renaming confidential Office files to
+      innocuous media extensions (e.g. .ppt->.mp4, .xlsx->.jpg, .pptx->.zip).
+      Real-vs-fake extension mismatch is recoverable via file-signature/metadata
+      analysis. Local UTC-05 wall time ~2015-03-23 14:41.
+    timestamp_utc: "2015-03-23T19:41:00Z"
+    corroborates_with: [MFT, LNK, signature_analysis]
+    image_extractable: true
+
+  - id: GT-004
+    finding_type: data_exfil               # channel 1 — email/Outlook
+    artifact_type: Email
+    artifact_source: "MS Outlook OST — iaman.informant@nist.gov -> spy.conspirator@nist.gov"
+    location_key: "Outlook email exfiltration"
+    expected_status: OBSERVATION
+    value: "Emailed disguised file space_and_earth.mp4 (really _design_concept.ppt) to spy.conspirator@nist.gov ~2015-03-23 20:19 UTC (Q20)"
+    description: >
+      Via MS Outlook the suspect emailed co-conspirator spy.conspirator@nist.gov
+      an attachment space_and_earth.mp4 — actually the renamed
+      (secret_project)_design_concept.ppt. Local UTC-05 ~2015-03-23 15:19.
+    timestamp_utc: "2015-03-23T20:19:00Z"
+    corroborates_with: [OST, MFT]
+    image_extractable: true
+
+  - id: GT-005
+    finding_type: data_exfil               # channel 2 — Google Drive cloud
+    artifact_type: Browser
+    artifact_source: "Google Drive client (snapshot.db / sync_config.db) + browser; account iaman.informant.personal@gmail.com"
+    location_key: "Google Drive cloud exfiltration"
+    expected_status: OBSERVATION
+    value: "Uploaded disguised files happy_holiday.jpg + do_u_wanna_build_a_snow_man.mp3 to Google Drive (iaman.informant.personal@gmail.com), emailed share links ~2015-03-23 21:38 UTC (Q30/Q31)"
+    description: >
+      The suspect uploaded disguised confidential files (happy_holiday.jpg,
+      do_u_wanna_build_a_snow_man.mp3) to a personal Google Drive
+      (iaman.informant.personal@gmail.com) and emailed the sharing links to the
+      co-conspirator. Local UTC-05 ~2015-03-23 16:38.
+    timestamp_utc: "2015-03-23T21:38:00Z"
+    corroborates_with: [GoogleDrive_snapshot_db, Browser_history, OST, VSC]
+    image_extractable: true
+
+  - id: GT-006
+    finding_type: data_exfil               # channel 3 — suspect USB RM#2
+    artifact_type: USB
+    artifact_source: "RM#2 — SanDisk Cruzer Fit 4GB, volume label 'IAMAN $_@', FAT32 ('Authorized USB')"
+    location_key: "RM#2 suspect USB copy"
+    expected_status: OBSERVATION
+    value: "Copied disguised confidential files to suspect USB RM#2 (SanDisk Cruzer Fit, label 'IAMAN $_@', FAT32) ~2015-03-24 14:59 UTC (Q26)"
+    description: >
+      The suspect copied a directory of disguised confidential files (incl.
+      winter_whether_advisory.zip) to RM#2, a 4GB SanDisk Cruzer Fit USB labeled
+      'IAMAN $_@' (FAT32). USB device registry artifacts (USBSTOR / volume GUID)
+      tie it to INFORMANT-PC. Local UTC-05 ~2015-03-24 09:59.
+    timestamp_utc: "2015-03-24T14:59:00Z"
+    corroborates_with: [Registry_USBSTOR, setupapi, LNK, ShellBag]
+    image_extractable: true
+
+  - id: GT-007
+    finding_type: defense_evasion          # anti-forensics — quick format RM#2
+    artifact_type: USB
+    artifact_source: "RM#2 FAT32 — quick format + unallocated recovery"
+    location_key: "RM#2 quick format"
+    expected_status: INFERENCE
+    value: "Quick Format of RM#2 ~2015-03-24 22:02 UTC to destroy copied files before delivery; files recovered from FAT32 unallocated (Q53/Q57)"
+    description: >
+      After copying, the suspect performed a Quick Format on RM#2 as an
+      anti-forensic step to erase the copied files before physically handing the
+      device over. The directory entries + file data survived in the FAT32
+      unallocated area and were recovered. Local UTC-05 ~2015-03-24 17:02.
+    timestamp_utc: "2015-03-24T22:02:00Z"
+    corroborates_with: [FAT32_unallocated, carving]
+    image_extractable: true
+
+  - id: GT-008
+    finding_type: data_exfil               # channel 4 — UDF CD-R RM#3
+    artifact_type: OpticalMedia
+    artifact_source: "RM#3 — CD-R, UDF ('Like a USB flash drive' burn)"
+    location_key: "RM#3 CD-R burn"
+    expected_status: OBSERVATION
+    value: "Burned 17 confidential + 3 meaningless cover files to UDF CD-R RM#3 ~2015-03-24 21:54 UTC; cover files Koala.jpg/Penguins.jpg/Tulips.jpg (Q34)"
+    description: >
+      The suspect formatted a CD-R as UDF (Windows 'Like a USB flash drive') and
+      copied 17 confidential files (e.g. winter_storm.amr, winter_whether_advisory.zip,
+      my_favorite_cars.db) plus 3 meaningless cover files (Koala.jpg, Penguins.jpg,
+      Tulips.jpg). CD-R format 2015-03-24 21:53:17 UTC. Local UTC-05 ~2015-03-24 16:54.
+    timestamp_utc: "2015-03-24T21:54:00Z"
+    corroborates_with: [UDF_filesystem, carving, LNK]
+    image_extractable: true
+
+  - id: GT-009
+    finding_type: defense_evasion          # delete confidential files off CD-R
+    artifact_type: OpticalMedia
+    artifact_source: "RM#3 UDF unallocated — deleted confidential files"
+    location_key: "RM#3 file deletion / carving"
+    expected_status: INFERENCE
+    value: "Deleted the 17 confidential files from the UDF CD-R (~2015-03-24 21:54-21:58 UTC); UDF deletion only removed pointers, files carved from unallocated (Q56/Q57)"
+    description: >
+      Because the CD-R was UDF (USB-like), deleting the confidential files only
+      removed directory pointers; the file contents remained in unused space and
+      were recovered via signature/content-based carving. Local UTC-05 ~16:54-16:58.
+    timestamp_utc: "2015-03-24T21:54:00Z"
+    corroborates_with: [UDF_unallocated, carving, signature_analysis]
+    image_extractable: true
+
+  - id: GT-010
+    finding_type: defense_evasion          # secure-wipe tool: Eraser
+    artifact_type: Execution
+    artifact_source: "Eraser 6.2.0.2962 — Prefetch / installer 'Eraser 6.2.0.2962.exe'"
+    location_key: "Eraser secure-wipe"
+    expected_status: OBSERVATION
+    value: "Ran secure-wipe tool 'Eraser' ~2015-03-25 16:13 UTC to permanently delete files/dirs from the PC; installer later [Shift]+[Del]-deleted (Q57/Q59)"
+    description: >
+      The suspect used Eraser (v6.2.0.2962) to securely wipe files and directories
+      from INFORMANT-PC, then deleted the Eraser + CCleaner installers. Prefetch /
+      Amcache / registry record Eraser execution. Local UTC-05 ~2015-03-25 11:13.
+    timestamp_utc: "2015-03-25T16:13:00Z"
+    corroborates_with: [Prefetch, Amcache, MFT]
+    image_extractable: true
+
+  - id: GT-011
+    finding_type: defense_evasion          # CCleaner (no-op) + uninstall
+    artifact_type: Execution
+    artifact_source: "CCleaner (ccsetup504.exe) — Prefetch / Amcache / Uninstall key"
+    location_key: "CCleaner install-run-uninstall"
+    expected_status: OBSERVATION
+    value: "CCleaner installed 2015-03-25 15:57:56 UTC, run 16:15:50 (closed doing nothing), uninstalled 16:18:29 (Q?)"
+    description: >
+      The suspect installed CCleaner (ccsetup504.exe), launched it but performed
+      no cleaning, and uninstalled it minutes later — an attempted but unused
+      anti-forensic tool (its presence/execution is itself evidence). Local UTC-05
+      install 10:57:56, run 11:15:50, uninstall 11:18:29.
+    timestamp_utc: "2015-03-25T16:15:50Z"
+    corroborates_with: [Prefetch, Amcache, Registry_Uninstall]
+    image_extractable: true
+
+  - id: GT-012
+    finding_type: defense_evasion          # Outlook email deletion + OST recovery
+    artifact_type: Email
+    artifact_source: "MS Outlook OST — Deleted Items + OST unused area"
+    location_key: "Outlook email deletion"
+    expected_status: INFERENCE
+    value: "Deleted 9 conspiracy emails in Outlook ~2015-03-25 16:00 UTC; recovered from OST unused area / Deleted Items (Q21)"
+    description: >
+      The suspect manually deleted 9 emails in MS Outlook to hide the conspiracy;
+      4 remained in Deleted Items, the rest were recovered from the unused area of
+      the OST file. Local UTC-05 ~2015-03-25 11:00.
+    timestamp_utc: "2015-03-25T16:00:00Z"
+    corroborates_with: [OST, carving]
+    image_extractable: true
+
+  - id: GT-013
+    finding_type: defense_evasion          # Google Drive deletion + sign-out
+    artifact_type: Browser
+    artifact_source: "Google Drive snapshot.db / sync_config.db (deleted) + Volume Shadow Copies"
+    location_key: "Google Drive evidence destruction"
+    expected_status: INFERENCE
+    value: "Deleted happy_holiday.jpg + do_u_wanna_build_a_snow_man.mp3 from Google Drive 2015-03-23 21:42:17 UTC and signed out; recovered via SQLite unused area + VSCs (Q30/Q31/Q51)"
+    description: >
+      The suspect deleted the uploaded files from Google Drive and signed out,
+      which deleted the local snapshot.db / sync_config.db. Investigators recovered
+      the records from the unused area of the SQLite files and from Volume Shadow
+      Copies. Local UTC-05 2015-03-23 16:42:17.
+    timestamp_utc: "2015-03-23T21:42:17Z"
+    corroborates_with: [GoogleDrive_snapshot_db, VSC, SQLite_carving]
+    image_extractable: true
+
+  - id: GT-014
+    finding_type: data_exfil               # leakage conclusion / co-conspirator
+    artifact_type: Email
+    artifact_source: "MS Outlook OST — 'It's done. See you tomorrow.' to spy.conspirator@nist.gov"
+    location_key: "leakage conclusion email"
+    expected_status: OBSERVATION
+    value: "Concluding email 'It's done. See you tomorrow.' to co-conspirator ~2015-03-24 22:05 UTC, ending the active leakage phase (Q?)"
+    description: >
+      After exfiltrating via all channels the suspect emailed spy.conspirator@nist.gov
+      "It's done. See you tomorrow.", closing the active leakage phase the day
+      before the security check. Local UTC-05 ~2015-03-24 17:05.
+    timestamp_utc: "2015-03-24T22:05:00Z"
+    corroborates_with: [OST]
+    image_extractable: true
+
+  - id: GT-015
+    finding_type: defense_evasion          # local file deletion (Recycle Bin / Shift+Del)
+    artifact_type: FileSystem
+    artifact_source: "\\Desktop\\S data + \\Desktop\\temp — [Shift]+[Delete] + Recycle Bin empty"
+    location_key: "local source-file deletion"
+    expected_status: INFERENCE
+    value: "[Shift]+[Delete] of \\Desktop\\S data dir 2015-03-24 15:07 UTC; Recycle Bin emptied 2015-03-25 16:14 UTC (Q?)"
+    description: >
+      The suspect destroyed local copies: a [Shift]+[Delete] of the \\Desktop\\S data
+      directory (no Recycle Bin pass), and later emptied the Recycle Bin. MFT /
+      $I$R / USN record the deletions. Local UTC-05: 2015-03-24 10:07; 2015-03-25 11:14.
+    timestamp_utc: "2015-03-24T15:07:00Z"
+    corroborates_with: [MFT, USN, RecycleBin]
+    image_extractable: true
+
+# -------------------------------------------------------------------
+known_negatives:
+  - artifact_type: Printing
+    value: "Exfiltration via printing / spooler artifacts"
+    reason: >
+      The answer key (Q59) explicitly states printing was NOT used as an
+      exfiltration channel. Do not assert print-spooler exfiltration.
+  - artifact_type: AntiForensics
+    value: "Timestamp manipulation / timestomping"
+    reason: >
+      The answer key explicitly notes NO timestomping / intentional timestamp
+      manipulation; all dates reflect native Windows file operations. Do not
+      claim timestomping (CCleaner was a no-op; Eraser IS the real wipe tool).
+  - artifact_type: Memory
+    value: "Any memory-resident / volatile-only artifact"
+    reason: >
+      DISK-ONLY case — no memory image exists. Do not assert process lists,
+      injected code, or network sockets from memory.
+
+# -------------------------------------------------------------------
+# EVAL TARGETS (investigative questions a correct run should answer)
+# -------------------------------------------------------------------
+eval_targets:
+  - {id: "E-001", question: "Who is the suspect and on what host/account?", answer_anchor: "Iaman Informant / user `informant` / INFORMANT-PC Windows 7 / company OOO"}
+  - {id: "E-002", question: "What confidential data was leaked?", answer_anchor: "Secret Project files: detailed_proposal.docx, design_concept.ppt, market_analysis.xlsx"}
+  - {id: "E-003", question: "What exfiltration channels were used?", answer_anchor: "Outlook email + Google Drive + suspect USB RM#2 (SanDisk Cruzer Fit) + UDF CD-R RM#3; NOT printing"}
+  - {id: "E-004", question: "How did the suspect disguise the data?", answer_anchor: "extension renaming: design_concept.ppt->space_and_earth.mp4, market_analysis.xlsx->new_years_day.jpg, pptx->winter_whether_advisory.zip"}
+  - {id: "E-005", question: "What anti-forensic actions and tools were used?", answer_anchor: "Eraser secure-wipe, CCleaner (no-op), RM#2 quick format, Outlook email deletion, Google Drive deletion + sign-out, Recycle Bin empty"}
+  - {id: "E-006", question: "Who was the co-conspirator and how were they contacted?", answer_anchor: "spy.conspirator@nist.gov via Outlook + Google Drive share links; personal iaman.informant.personal@gmail.com"}
+
+# -------------------------------------------------------------------
+provenance:
+  source_document: "leakage-answers.pdf v1.32 (official 60-question answer key, 2018-07-23)"
+  reference_notebook: "REDACTED (NIST Data Leakage 2015 GT)"
+  extracted_utc: "2026-06-05"
+  image_source: "https://cfreds-archive.nist.gov/data_leakage_case/data-leakage-case.html"
+  timezone_note: "answer key is local UTC-05; timestamp_utc fields converted to UTC (+5h)"
+  exhaustive: false
