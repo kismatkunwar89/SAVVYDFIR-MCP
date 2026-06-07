@@ -385,6 +385,16 @@ Validated **blind** end-to-end on five independent blind cases — **0 *scored* 
 - **ALI-WEBSERVER-WIN-L0ZZQ76PMUF** — web-server breach (Win Server 2008) — 92.3% recall, 427 findings, 2 CONFIRMED.
 - **NIST-HACKINGCASE-2004-MREVIL** — war-driving / credential theft (Win XP) — 86.7% recall, 304 findings, 3 CONFIRMED.
 
+> **Reading the numbers — "findings" vs "CONFIRMED findings" are not the same thing.**
+> A **finding** is *anything the agent recorded* — an observation or investigative **lead**. Most
+> findings are **ACTIVE**: single-source leads (e.g. "ShimCache shows this binary existed"), reported
+> **as leads, not as facts**. A **CONFIRMED finding** is the small, court-defensible subset that cleared
+> the evidence-provenance gate: a resolvable `execution_id` (real `audit.jsonl` row) **+ ≥2 independent
+> corroborating sources + a ruled-out benign alternative**. So "503 findings, 4 CONFIRMED" means the
+> agent surfaced 503 leads/observations and **4** of them were independently corroborated to the
+> defensible bar — *not* that 499 were wrong. (Recall is scored against ground truth over **all**
+> findings, not just CONFIRMED; CONFIRMED measures evidentiary strength, recall measures coverage.)
+
 Each case is a different attack class and OS era (2004–2020); the framework adapted with no cross-case contamination.
 
 Framework operational properties:

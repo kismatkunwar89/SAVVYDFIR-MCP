@@ -33,6 +33,14 @@ hash-chained audit) are under [`agent-execution-logs/`](agent-execution-logs/).
 
 ## 2. Results — 5 independent blind cases
 
+> **Column legend.** **Recall** = ground-truth items the agent found ÷ total ground-truth items (coverage).
+> **Hallucinations** = *scored* fabrications (reported findings with no support in the evidence).
+> **CONFIRMED** = the gated subset of findings that cleared evidence-provenance (resolvable
+> `execution_id` + ≥2 independent sources + ruled-out alternative) — **not** the finding total. Each case
+> records hundreds of ACTIVE *leads*; CONFIRMED counts only the court-defensible conclusions, so a low
+> CONFIRMED count next to high recall is expected and correct — they measure different things
+> (evidentiary strength vs coverage).
+
 | Case | Scenario / OS | Recall (TP/GT) | Hallucinations | Eval-target coverage | CONFIRMED |
 |------|---------------|----------------|----------------|----------------------|-----------|
 | ROCBA-2020-FREDS-LAPTOP | insider IP theft (Windows) | **90%** | 0 | — | 3 |
