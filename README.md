@@ -244,6 +244,11 @@ is silently disabled — so always `cd` into the repo first. There is **no per-t
 UI** today — you review the finished `report.html` + hash-chained audit trail; an interactive
 Approve/Reject review canvas is roadmap, not current scope.
 
+> **Model used for evaluation.** Most of the validated eval runs were executed on **Claude Sonnet 4.6**
+> (the `.claude/settings.json` default), not the flagship Opus tier. The accuracy numbers in this README
+> were therefore achieved on a mid-tier model — the framework's gates and correlation logic carry the
+> rigor, so results do not depend on running the most expensive model.
+
 ### Run a single host — two equivalent styles
 
 Both are autonomous and hook-enforced; choose by whether you want to watch the session.
