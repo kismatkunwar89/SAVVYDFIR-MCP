@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SAVVYDFIR-MCP Report - VANKO-ZEBRAFISH-2016</title>
+<style>
+  :root {
+    --bg: #f4f6fb;
+    --surface: #ffffff;
+    --ink: #1a2230;
+    --muted: #5b6675;
+    --line: #e2e7f0;
+    --accent: #1d4ed8;
+    --good: #15803d; --good-bg: #dcfce7;
+    --warn: #b45309; --warn-bg: #fef3c7;
+    --danger: #b91c1c; --danger-bg: #fee2e2;
+    --info: #1e40af; --info-bg: #dbeafe;
+    --mono: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
+    --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); line-height: 1.5; }
+  main { max-width: 1080px; margin: 0 auto; padding: 0 1.5rem 3rem; }
+  a { color: var(--accent); }
+  h1 { margin: 0; font-size: 1.5rem; }
+  h2 { margin: 0 0 0.8rem; font-size: 1.15rem; border-bottom: 2px solid var(--line); padding-bottom: 0.4rem; }
+  h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+  p, li { color: var(--ink); }
+  .mono { font-family: var(--mono); font-size: 0.86em; }
+  .muted { color: var(--muted); }
+  .k { color: var(--muted); font-weight: 600; }
+  .banner { background: #0f172a; color: #e5e7eb; padding: 1.4rem 1.5rem; }
+  .banner .wrap { max-width: 1080px; margin: 0 auto; display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+  .banner .classification { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.12em; color: #fca5a5; text-transform: uppercase; }
+  .banner .case { font-family: var(--mono); color: #93c5fd; font-size: 0.85rem; margin-top: 0.3rem; }
+  .banner .statuspill { font-family: var(--mono); font-size: 0.8rem; padding: 0.3rem 0.7rem; border-radius: 6px; background: rgba(255,255,255,0.1); white-space: nowrap; }
+  section, .card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 1.1rem 1.25rem; margin: 1.1rem 0; box-shadow: 0 1px 2px rgba(16,24,40,0.04); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.8rem; }
+  .metric { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem 0.8rem; }
+  .metric-label { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
+  .metric-value { font-size: 1.5rem; font-weight: 700; margin-top: 0.2rem; }
+  .good { color: var(--good); } .warn { color: var(--warn); } .danger { color: var(--danger); } .accent { color: var(--accent); }
+  .tags { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .tag { display: inline-block; padding: 0.18rem 0.55rem; border-radius: 5px; font-size: 0.76rem; font-family: var(--mono); font-weight: 600; }
+  .tag.covered { background: var(--good-bg); color: var(--good); }
+  .tag.uncovered { background: var(--warn-bg); color: var(--warn); }
+  .tag.refuted { background: var(--danger-bg); color: var(--danger); }
+  .tag.info { background: var(--info-bg); color: var(--info); }
+  .tag.muted { background: #eef1f6; color: var(--muted); }
+  .killchain { display: flex; align-items: stretch; gap: 0.25rem; flex-wrap: wrap; margin: 0.4rem 0 0.2rem; }
+  .kc-phase { flex: 1 1 0; min-width: 108px; border-radius: 6px; padding: 0.6rem 0.5rem; text-align: center; border: 1px solid var(--line); }
+  .kc-name { font-size: 0.74rem; font-weight: 600; }
+  .kc-count { font-size: 1.3rem; font-weight: 700; margin-top: 0.2rem; }
+  .kc-covered { background: var(--good-bg); color: var(--good); border-color: #86efac; }
+  .kc-partial { background: var(--warn-bg); color: var(--warn); border-color: #fcd34d; }
+  .kc-gap { background: var(--danger-bg); color: var(--danger); border-color: #fca5a5; }
+  .kc-arrow { display: flex; align-items: center; color: var(--muted); font-size: 1.4rem; }
+  .finding { border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 6px; padding: 0.7rem 0.85rem; margin: 0.6rem 0; background: var(--bg); }
+  .finding-head { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+  .finding .fid { font-family: var(--mono); font-weight: 700; }
+  .finding-desc { margin: 0.45rem 0; }
+  .card-meta { font-size: 0.82rem; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.45rem; }
+  .chip { background: #eef1f6; border: 1px solid var(--line); border-radius: 4px; padding: 0.15rem 0.45rem; font-family: var(--mono); font-size: 0.72rem; color: #334155; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f8fafc; border: 1px solid var(--line); border-radius: 6px; padding: 0.8rem; font-family: var(--mono); font-size: 0.82rem; color: #334155; }
+  ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+  .appendix-divider { margin-top: 2rem; border-top: 3px double var(--line); padding-top: 0.5rem; color: var(--muted); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 700; }
+  @media print {
+    body { background: #fff; }
+    main { max-width: none; padding: 0 0.5rem; }
+    section, .card, .finding { box-shadow: none; break-inside: avoid; }
+    .banner { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .tag, .kc-phase, .chip { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    #executive-brief { break-after: page; }
+    a[href^="trace"] { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="banner">
+  <div class="wrap">
+    <div>
+      <div class="classification">INTERNAL - DFIR WORK PRODUCT</div>
+      <h1>SAVVYDFIR-MCP Investigation Report</h1>
+      <div class="case">VANKO-ZEBRAFISH-2016 &middot; Generated 2026-06-07T19:26:37.167061+00:00</div>
+    </div>
+    <div class="statuspill">COMPLETE / COMPLETE_WITH_GAPS</div>
+  </div>
+</header>
+<main>
+  <section id="executive-brief">
+    <h2>Executive Summary</h2>
+    <p>Investigation <strong>VANKO-ZEBRAFISH-2016</strong> reached triage status <strong>COMPLETE_WITH_GAPS</strong> with <strong>3</strong> structurally confirmed finding(s), 3 of which are corroborated by multiple independent artifact sources, and <strong>127</strong> active lead(s) pending validation.</p>
+<p class="muted" style="margin:.6rem 0.3rem;">Confirmed activity (full detail in Top Confirmed Findings below):</p><ul><li>Five independent artifact sources confirm that Anthony Vanko (PC User / MicrosoftAccount\anthony.vanko@gmail.com) exfiltrated StarkResearch Level 5-8 classified research on 2016-06-30 via a...</li><li>Four independent artifact sources (Amcache, browser history/disk, UserAssist registry, and ShellBags) converge within 135 seconds (2016-06-18T22:00:37-22:02:52Z) to confirm the covert...</li><li>Four independent artifact sources (disk/browser, file system/$Recycle.Bin, UserAssist registry, ShellBags) converge within 180 seconds (2016-06-18T22:19:09-22:22:09Z) confirming temp.zip was a...</li></ul>
+<p><span class="k">Hunt closed:</span> 2 confirmed (Dropbox cloud sync exfiltration; FTP exfiltration via SmallFTPd covert server); 1 refuted (Tor browser for anonymous communications); 2 suspended (VeraCrypt encrypted container for covert storage; Pre-attack removable media malware delivery).</p>
+<p><span class="k">Cross-artifact synthesis:</span> the confirmed activity is corroborated across multiple independent artifact sources.</p>
+<p><span class="k">Kill-chain coverage:</span> 5 of 6 phases evidenced, 1 blindspot(s).</p>
+<p class="muted"><span class="k">Caveats:</span> 0 critical / 1 high Sigma anomalies.</p>
+    <div class="grid" style="margin-top: 1rem;">
+      <div class="metric"><div class="metric-label">Case Status</div><div class="metric-value accent">COMPLETE</div></div><div class="metric"><div class="metric-label">Triage</div><div class="metric-value good">COMPLETE_WITH_GAPS</div></div><div class="metric"><div class="metric-label">Findings</div><div class="metric-value ">130</div></div><div class="metric"><div class="metric-label">Confirmed</div><div class="metric-value good">3</div></div><div class="metric"><div class="metric-label">Active Leads</div><div class="metric-value warn">127</div></div><div class="metric"><div class="metric-label">Correction Events</div><div class="metric-value accent">0</div></div><div class="metric"><div class="metric-label">Unresolved</div><div class="metric-value warn">0</div></div><div class="metric"><div class="metric-label">Sigma Hits</div><div class="metric-value danger">1</div></div><div class="metric"><div class="metric-label">ATT&amp;CK Coverage</div><div class="metric-value ">28.6%</div></div>
+    </div>
+  </section>
+
+  
+
+  
+  <div class="card">
+    <h2>Activity Thread - Cyber Kill Chain Coverage</h2>
+    <p style="color: var(--muted); font-size: 0.92em;">
+      Per Diamond Model Axiom 4, every malicious activity traverses a
+      succession of kill-chain phases. Empty phases below represent
+      <strong>blindspots</strong>: areas where evidence was either not
+      extracted, not retained, or actively destroyed by anti-forensics.
+      Phase color reflects the number of findings mapped to that phase.
+    </p>
+    <div class="killchain"><div class="kc-phase kc-gap"><div class="kc-name">Reconnaissance</div><div class="kc-count">0</div></div><div class="kc-arrow">&rsaquo;</div><div class="kc-phase kc-covered"><div class="kc-name">Delivery</div><div class="kc-count">3</div></div><div class="kc-arrow">&rsaquo;</div><div class="kc-phase kc-covered"><div class="kc-name">Exploitation</div><div class="kc-count">11</div></div><div class="kc-arrow">&rsaquo;</div><div class="kc-phase kc-covered"><div class="kc-name">Installation / Persistence</div><div class="kc-count">19</div></div><div class="kc-arrow">&rsaquo;</div><div class="kc-phase kc-covered"><div class="kc-name">Command and Control</div><div class="kc-count">4</div></div><div class="kc-arrow">&rsaquo;</div><div class="kc-phase kc-covered"><div class="kc-name">Actions on Objectives</div><div class="kc-count">18</div></div></div>
+    <div class="grid" style="margin-top: 1rem;">
+      <div class="metric">
+        <div class="metric-label">Phases with corroborated evidence</div>
+        <div class="metric-value good">5</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Single-source phases</div>
+        <div class="metric-value warn">0</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Blindspots (empty phases)</div>
+        <div class="metric-value danger">1</div>
+      </div>
+    </div>
+    <table>
+      <thead><tr><th>Kill-chain phase</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Reconnaissance</td><td><span class="tag uncovered">BLINDSPOT - no evidence</span></td></tr><tr><td>Delivery</td><td><span class="tag covered">3 findings</span></td></tr><tr><td>Exploitation</td><td><span class="tag covered">11 findings</span></td></tr><tr><td>Installation / Persistence</td><td><span class="tag covered">19 findings</span></td></tr><tr><td>Command and Control</td><td><span class="tag covered">4 findings</span></td></tr><tr><td>Actions on Objectives</td><td><span class="tag covered">18 findings</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+
+  <section>
+    <h2>ATT&amp;CK Coverage</h2>
+    <p class="muted">Tactic-level coverage (covered / gap) is authoritative. Technique and finding columns are inferred from the findings mapped to each tactic.</p>
+    <table>
+      <thead><tr><th>Tactic</th><th>Status</th><th>Techniques observed</th><th>Findings</th><th>Suggested next tools</th></tr></thead>
+      <tbody><tr><td><strong>TA0002</strong> Execution</td><td><span class="tag covered">covered</span></td><td>-</td><td class="mono">-</td><td></td></tr>
+<tr><td><strong>TA0003</strong> Persistence</td><td><span class="tag covered">covered</span></td><td>-</td><td class="mono">-</td><td></td></tr>
+<tr><td><strong>TA0005</strong> Defense Evasion</td><td><span class="tag covered">covered</span></td><td>-</td><td class="mono">-</td><td></td></tr>
+<tr><td><strong>TA0010</strong> Exfiltration</td><td><span class="tag covered">covered</span></td><td>T1041</td><td class="mono">F-040, F-046, F-047</td><td></td></tr>
+<tr><td><strong>TA0001</strong> Initial Access</td><td><span class="tag uncovered">gap</span></td><td>-</td><td class="mono">-</td><td>disk.summarize_evtx, memory.scan_network</td></tr>
+<tr><td><strong>TA0004</strong> Privilege Escalation</td><td><span class="tag uncovered">gap</span></td><td>-</td><td class="mono">-</td><td>disk.summarize_evtx, memory.scan_processes</td></tr>
+<tr><td><strong>TA0006</strong> Credential Access</td><td><span class="tag uncovered">gap</span></td><td>-</td><td class="mono">-</td><td>disk.extract_shimcache, disk.get_amcache, disk.summarize_evtx</td></tr>
+<tr><td><strong>TA0007</strong> Discovery</td><td><span class="tag uncovered">gap</span></td><td>-</td><td class="mono">-</td><td>memory.scan_processes, memory.list_dlls, timeline.query_timeline</td></tr>
+<tr><td><strong>TA0008</strong> Lateral Movement</td><td><span class="tag uncovered">gap</span></td><td>-</td><td class="mono">-</td><td>disk.summarize_evtx, memory.scan_network, timeline.query_timeline</td></tr>
+<tr><td><strong>TA0009</strong> Collection</td><td><span class="tag uncovered">gap</span></td><td>-</td><td class="mono">-</td><td>disk.extract_prefetch, disk.get_amcache, memory.scan_processes</td></tr>
+<tr><td><strong>TA0011</strong> Command and Control</td><td><span class="tag uncovered">gap</span></td><td>-</td><td class="mono">-</td><td>memory.scan_network, memory.detect_injection, detection.sigma_hunt</td></tr>
+<tr><td><strong>TA0040</strong> Impact</td><td><span class="tag uncovered">gap</span></td><td>-</td><td class="mono">-</td><td>disk.summarize_evtx, memory.detect_injection, timeline.query_timeline</td></tr>
+<tr><td><strong>TA0042</strong> Resource Development</td><td><span class="tag uncovered">gap</span></td><td>-</td><td class="mono">-</td><td>disk.get_amcache, disk.extract_prefetch, timeline.query_timeline</td></tr>
+<tr><td><strong>TA0043</strong> Reconnaissance</td><td><span class="tag uncovered">gap</span></td><td>-</td><td class="mono">-</td><td>disk.summarize_evtx, memory.scan_network, timeline.query_timeline</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Key Event Timeline</h2>
+    <table><thead><tr><th>Time (UTC)</th><th>Finding</th><th>Status</th><th>Event</th></tr></thead><tbody><tr><td class="mono">2016-04-30T17:09:39Z</td><td>F-001</td><td>ACTIVE</td><td>Multiple classified Stark Research documents (Level 7, 8, 12) found in Vanko&#x27;s OneDrive\Documents folder, all...</td></tr>
+<tr><td class="mono">2016-06-18T20:40:54Z</td><td>F-123</td><td>ACTIVE</td><td>Sigma rules &quot;User Added to Local Administrator Group&quot; (T1078/T1098, medium), &quot;Local User Creation&quot; (low), and &quot;A...</td></tr>
+<tr><td class="mono">2016-06-18T22:00:37Z</td><td>F-126</td><td>CONFIRMED</td><td>Four independent artifact sources (Amcache, browser history/disk, UserAssist registry, and ShellBags) converge...</td></tr>
+<tr><td class="mono">2016-06-18T22:00:37Z</td><td>F-057</td><td>ACTIVE</td><td>Browser history (defaultprinter Chrome profile) confirms a focused 28-second FTP server acquisition session: Google...</td></tr>
+<tr><td class="mono">2016-06-18T22:01:14Z</td><td>F-050</td><td>ACTIVE</td><td>ShellBags from the &#x27;defaultprinter&#x27; account show it navigated Explorer into C:\Users\PC User\Desktop...</td></tr>
+<tr><td class="mono">2016-06-18T22:02:05Z</td><td>F-060</td><td>ACTIVE</td><td>UserAssist registry key confirms smallftpd.exe was directly executed by the defaultprinter account at...</td></tr>
+<tr><td class="mono">2016-06-18T22:19:09Z</td><td>F-127</td><td>CONFIRMED</td><td>Four independent artifact sources (disk/browser, file system/$Recycle.Bin, UserAssist registry, ShellBags) converge...</td></tr>
+<tr><td class="mono">2016-06-18T22:19:13Z</td><td>F-061</td><td>ACTIVE</td><td>RecentDocs registry key for defaultprinter profile shows temp.zip was opened/accessed at 2016-06-18T22:19:13Z (LNK:...</td></tr>
+<tr><td class="mono">2016-06-18T22:22:09Z</td><td>F-064</td><td>ACTIVE</td><td>defaultprinter&#x27;s temp.zip (2,603,690 bytes ~2.5 MB) was deleted to the Recycle Bin at 2016-06-18T22:22:09Z — exactly...</td></tr>
+<tr><td class="mono">2016-06-19T01:34:02Z</td><td>F-015</td><td>ACTIVE</td><td>Amcache (SHA-1) confirms Tor Browser was installed and actively used on VANKO-SURFACE3. Two distinct firefox.exe...</td></tr>
+<tr><td class="mono">2016-06-29T15:08:40Z</td><td>F-007</td><td>ACTIVE</td><td>Active interactive user session confirmed on 2016-06-29 evening UTC: 72 LogonType 11 (cached Microsoft Account...</td></tr>
+<tr><td class="mono">2016-06-29T16:01:38Z</td><td>F-011</td><td>ACTIVE</td><td>Prefetch confirms Vanko installed and immediately used 7-Zip and VeraCrypt on 2016-06-29 afternoon UTC — a...</td></tr>
+<tr><td class="mono">2016-06-29T19:51:00Z</td><td>F-128</td><td>CONFIRMED</td><td>Five independent artifact sources confirm that Anthony Vanko (PC User / MicrosoftAccount\anthony.vanko@gmail.com)...</td></tr>
+<tr><td class="mono">2016-06-29T19:51:07Z</td><td>F-006</td><td>ACTIVE</td><td>STARKSURFACE\PC User (Anthony Vanko&#x27;s workstation account) used explicit credentials for STARKSURFACE\steve.rogers...</td></tr>
+<tr><td class="mono">2016-06-29T20:07:00Z</td><td>F-058</td><td>ACTIVE</td><td>PC User Chrome history contains only 16 entries spanning 2016-03-12 to 2016-08-08, with zero entries during the...</td></tr>
+<tr><td class="mono">2016-06-30T00:00:00Z</td><td>F-069</td><td>ACTIVE</td><td>Scheduled Tasks (174 tasks extracted) contains no attacker-planted persistence tasks. All off-path non-builtin tasks...</td></tr>
+<tr><td class="mono">2016-06-30T01:17:00Z</td><td>F-067</td><td>ACTIVE</td><td>PowerShell ConsoleHost_history.txt (file mtime 2016-07-07T01:38:22Z, 216 commands) proves PC User executed a...</td></tr>
+<tr><td class="mono">2016-06-30T01:17:50Z</td><td>F-012</td><td>ACTIVE</td><td>Prefetch confirms 7ZG.EXE (7-Zip command-line archiver) executed 7 times during the exfiltration window...</td></tr>
+<tr><td class="mono">2016-06-30T01:26:04Z</td><td>F-013</td><td>ACTIVE</td><td>Prefetch confirms SDELETE.EXE (Sysinternals Secure Delete — military-grade file wiping tool) executed 10 times in a...</td></tr>
+<tr><td class="mono">2016-06-30T01:45:48Z</td><td>F-002</td><td>ACTIVE</td><td>Recycle Bin contains two Dropbox-synced files deleted 2016-06-30 01:45-01:46 UTC: &quot;V-Photos&quot; (62,914,560 bytes,...</td></tr>
+<tr><td class="mono">2016-06-30T01:48:48Z</td><td>F-063</td><td>ACTIVE</td><td>PC User&#x27;s entire Dropbox folder (1,908,571,018 bytes ~1.9 GB) was deleted to the Recycle Bin at 2016-06-30T01:48:48Z...</td></tr>
+<tr><td class="mono">2026-06-07T19:25:55Z</td><td>F-130</td><td>ACTIVE</td><td>VSS analysis of surface_physical.E01 confirms zero Volume Shadow Copy snapshots exist on the VANKO-SURFACE3...</td></tr></tbody></table>
+  </section>
+
+  <section>
+    <h2>Top Confirmed Findings</h2>
+    <div class="finding"><div class="finding-head"><span class="fid">F-128</span><span class="tag covered">CONFIRMED</span><span class="tag info">conf 0.97 (high)</span><span class="tag muted"> / T1039</span></div><div class="finding-desc">Five independent artifact sources confirm that Anthony Vanko (PC User / MicrosoftAccount\anthony.vanko@gmail.com) exfiltrated StarkResearch Level 5-8 classified research on 2016-06-30 via a multi-stage operation: (1) EVTX EID 4648 — PC User used steve.rogers stolen...</div><div class="card-meta"><span class="k">Corroborated by</span> <span class="mono">F-004, F-067, F-012, F-063, F-003</span></div><div class="chips"><span class="chip">timestamp: 2016-06-29T19:51:00Z</span><span class="chip">timestamp: 2016-06-30T01:17:00Z</span><span class="chip">timestamp: 2016-06-30T01:48:48Z</span><span class="chip">executable: 7zg.exe</span><span class="chip">executable: sdelete.exe</span><span class="chip">file_path: .\Level 5 Classified\</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-126</span><span class="tag covered">CONFIRMED</span><span class="tag info">conf 0.97 (high)</span><span class="tag muted"> / T1071.002</span></div><div class="finding-desc">Four independent artifact sources (Amcache, browser history/disk, UserAssist registry, and ShellBags) converge within 135 seconds (2016-06-18T22:00:37-22:02:52Z) to confirm the covert defaultprinter account established an FTP exfiltration server: (1) Amcache records SmallFTPd...</div><div class="card-meta"><span class="k">Corroborated by</span> <span class="mono">F-057, F-055, F-060, F-016</span></div><div class="chips"><span class="chip">executable: C:\Users\defaultprinter\smallftpd.exe</span><span class="chip">timestamp: 2016-06-18T22:00:37Z</span><span class="chip">process: smallftpd.exe</span><span class="chip">timestamp: 2016-06-18T22:02:05Z</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-127</span><span class="tag covered">CONFIRMED</span><span class="tag info">conf 0.95 (high)</span><span class="tag muted"> / T1048.003</span></div><div class="finding-desc">Four independent artifact sources (disk/browser, file system/$Recycle.Bin, UserAssist registry, ShellBags) converge within 180 seconds (2016-06-18T22:19:09-22:22:09Z) confirming temp.zip was a staging archive created, FTP-transmitted, and then securely deleted: (1) LNK file...</div><div class="card-meta"><span class="k">Corroborated by</span> <span class="mono">F-053, F-061, F-051, F-064</span></div><div class="chips"><span class="chip">file_path: C:\Users\defaultprinter\Desktop\temp.zip</span><span class="chip">timestamp: 2016-06-18T22:19:09Z</span><span class="chip">timestamp: 2016-06-18T22:22:09Z</span><span class="chip">executable: smallftpd.exe</span></div></div>
+  </section>
+
+  <section>
+    <h2>Active Leads &amp; Recommended Pivots</h2>
+    <table>
+      <thead><tr><th>Severity</th><th>Detector</th><th>Confidence</th><th>Description</th><th>Recommended Next Pivot</th></tr></thead>
+      <tbody><tr><td>HIGH</td><td>sdelete_cipher_trace</td><td>0.85</td><td>Execution evidence indicates SDelete or cipher /w wiping activity.</td><td>Correlate wiping execution with deleted files, USN records, and VSS recovery.</td></tr></tbody>
+    </table>
+    <h3 style="margin-top: 1rem;">Active Finding Leads</h3>
+    <div class="finding"><div class="finding-head"><span class="fid">F-013</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.98 (high)</span><span class="tag muted"> / T1070.004</span></div><div class="finding-desc">Prefetch confirms SDELETE.EXE (Sysinternals Secure Delete — military-grade file wiping tool) executed 10 times in a rapid burst between 2016-06-30T01:26:04Z and 2016-06-30T01:30:52Z (26 minutes after the first 7ZG.EXE archiving run). SDELETE performs DOD-standard multi-pass...</div><div class="chips"><span class="chip">executable: SDELETE.EXE</span><span class="chip">timestamp: 2016-06-30T01:26:04Z</span><span class="chip">timestamp: 2016-06-30T01:26:14Z</span><span class="chip">timestamp: 2016-06-30T01:29:34Z</span><span class="chip">timestamp: 2016-06-30T01:29:55Z</span><span class="chip">timestamp: 2016-06-30T01:30:13Z</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-067</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.97 (high)</span><span class="tag muted"> / T1560.001</span></div><div class="finding-desc">PowerShell ConsoleHost_history.txt (file mtime 2016-07-07T01:38:22Z, 216 commands) proves PC User executed a systematic three-phase classified-data theft: (Phase 1) navigated into Downloads\vacation photos\ and renamed research files to research*.jpg as a cover; (Phase 2)...</div><div class="chips"><span class="chip">executable: sdelete.exe</span><span class="chip">executable: 7zg.exe</span><span class="chip">timestamp: 2016-06-30T01:17:00Z</span><span class="chip">file_path: .\Level 5 Classified\</span><span class="chip">file_path: .\Level 6 Classified\</span><span class="chip">file_path: .\Level 7 Classified\</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-011</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.97 (high)</span><span class="tag muted"> / T1560.001</span></div><div class="finding-desc">Prefetch confirms Vanko installed and immediately used 7-Zip and VeraCrypt on 2016-06-29 afternoon UTC — a preparation phase immediately preceding the classified data copy. 7Z1602-X64.EXE (7-Zip installer) ran once at 2016-06-29T16:01:38Z. VERACRYPT SETUP 1.17.EXE (VeraCrypt...</div><div class="chips"><span class="chip">executable: 7Z1602-X64.EXE</span><span class="chip">executable: VERACRYPT SETUP 1.17.EXE</span><span class="chip">executable: VERACRYPT FORMAT.EXE</span><span class="chip">executable: VERACRYPT.EXE</span><span class="chip">timestamp: 2016-06-29T16:01:38Z</span><span class="chip">timestamp: 2016-06-29T16:03:03Z</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-006</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.97 (high)</span><span class="tag muted"> / T1078</span></div><div class="finding-desc">STARKSURFACE\PC User (Anthony Vanko&#x27;s workstation account) used explicit credentials for STARKSURFACE\steve.rogers to repeatedly authenticate against STARK-FILESERVER between 2016-06-29T19:51:07Z and 2016-06-29T20:07:51Z (34+ EID 4648 events). Also attempted STARKSURFACE\lab...</div><div class="chips"><span class="chip">timestamp: 2016-06-29T19:51:07Z</span><span class="chip">timestamp: 2016-06-29T20:07:51Z</span><span class="chip">owner_process: STARKSURFACE\PC User</span><span class="chip">path: STARK-FILESERVER</span><span class="chip">executable: STARKSURFACE\steve.rogers (credential target)</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-060</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.95 (high)</span><span class="tag muted"> / T1071.002</span></div><div class="finding-desc">UserAssist registry key confirms smallftpd.exe was directly executed by the defaultprinter account at 2016-06-18T22:02:05Z (RunCount=1), located at C:\Users\defaultprinter\smallftpd.exe — exactly 84 seconds after downloading the installer via Chrome at 22:00:37Z. This is a...</div><div class="chips"><span class="chip">executable: C:\Users\defaultprinter\smallftpd.exe</span><span class="chip">timestamp: 2016-06-18T22:02:05Z</span><span class="chip">process: smallftpd.exe</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-057</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.95 (high)</span><span class="tag muted"> / T1105</span></div><div class="finding-desc">Browser history (defaultprinter Chrome profile) confirms a focused 28-second FTP server acquisition session: Google search for &#x27;smallftpd&#x27; at 2016-06-18T22:00:09Z → SourceForge page at 22:00:14Z → download initiated at 22:00:26Z → file written to...</div><div class="chips"><span class="chip">executable: smallftpd-1.0.3-fix.zip (67373 bytes, downloaded 2016-06-18T22:00:37Z)</span><span class="chip">timestamp: 2016-06-18T22:00:09Z (Google search: smallftpd)</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-012</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.95 (high)</span><span class="tag muted"> / T1560.001</span></div><div class="finding-desc">Prefetch confirms 7ZG.EXE (7-Zip command-line archiver) executed 7 times during the exfiltration window 2016-06-30T01:17:50Z through 01:58:22Z, with a preliminary run at 2016-06-29T20:30:36Z. Concurrently, VERACRYPT.EXE ran at 01:12:53Z, 01:40:51Z, and 01:56:46Z; VERACRYPT...</div><div class="chips"><span class="chip">executable: 7ZG.EXE</span><span class="chip">executable: VERACRYPT.EXE</span><span class="chip">executable: VERACRYPT FORMAT.EXE</span><span class="chip">timestamp: 2016-06-30T01:17:50Z</span><span class="chip">timestamp: 2016-06-30T01:26:53Z</span><span class="chip">timestamp: 2016-06-30T01:52:54Z</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-001</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.95 (high)</span><span class="tag muted"> / T1213</span></div><div class="finding-desc">Multiple classified Stark Research documents (Level 7, 8, 12) found in Vanko&#x27;s OneDrive\Documents folder, all flagged Copied=True (M-time older than B-time indicating SMB copy from StarkResearch server), then synced to OneDrive cloud. Includes STARK-TS-Level7-CryoDNA Storage...</div><div class="chips"><span class="chip">file_path:\Users\PC User\OneDrive\Documents\STARK-TS-Level7-CryoDNA Storage Inventory.docx</span><span class="chip">file_path:\Users\PC User\OneDrive\Documents\Level 7-formula 88percent ZF 0x17 close.docx</span><span class="chip">file_path:\Users\PC User\OneDrive\Documents\Level_8\Stark_TS-Level8A_CryoDNA.blacklight.docx</span><span class="chip">file_path:\Users\PC User\OneDrive\Documents\Level_12\Stark TS-Level 12_Project_Nehemiah 4.docx</span><span class="chip">timestamp:2016-04-30T17:09:39Z</span><span class="chip">timestamp:2016-06-15T11:18:17Z</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-123</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.93 (high)</span><span class="tag muted"> / T1136.001</span></div><div class="finding-desc">Sigma rules &quot;User Added to Local Administrator Group&quot; (T1078/T1098, medium), &quot;Local User Creation&quot; (low), and &quot;A Member Was Added to a Security-Enabled Global Group&quot; (low) all fired at 2016-06-18T20:40:54-20:40:55Z, confirming the defaultprinter covert account was created AND...</div><div class="chips"><span class="chip">timestamp: 2016-06-18T20:40:54Z</span><span class="chip">timestamp: 2016-06-18T20:40:55Z</span><span class="chip">process: defaultprinter account creation + local admin elevation</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-063</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.93 (high)</span><span class="tag muted"> / T1070.004</span></div><div class="finding-desc">PC User&#x27;s entire Dropbox folder (1,908,571,018 bytes ~1.9 GB) was deleted to the Recycle Bin at 2016-06-30T01:48:48Z — occurring immediately after MFT-confirmed Dropbox cache deletion events at 01:45-01:46Z. The $R content is not present (purged). This 1.9 GB deletion at...</div><div class="chips"><span class="chip">file_path: C:\Users\PC User\Dropbox</span><span class="chip">timestamp: 2016-06-30T01:48:48Z</span><span class="chip">si_modified: 2016-06-30T01:48:48Z</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-064</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.92 (high)</span><span class="tag muted"> / T1048.003</span></div><div class="finding-desc">defaultprinter&#x27;s temp.zip (2,603,690 bytes ~2.5 MB) was deleted to the Recycle Bin at 2016-06-18T22:22:09Z — exactly 20 minutes after smallftpd.exe ran (22:02:05Z per UserAssist). The $R content IS still present on disk and is potentially recoverable. This timing confirms...</div><div class="chips"><span class="chip">file_path: C:\Users\defaultprinter\Desktop\temp.zip</span><span class="chip">timestamp: 2016-06-18T22:22:09Z</span><span class="chip">executable: smallftpd.exe</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-040</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.92 (high)</span><span class="tag muted">TA0010 / T1041</span></div><div class="finding-desc">SRUM network usage table parsed via esedbexport. 272 application entries analysed (full dataset). Total outbound across all apps: 50.2 MB. 7 processes exceed 3× median (0.01 MB) outbound threshold. SRUM retains ~60 days of network data — entries for deleted applications...</div><div class="chips"><span class="chip">AppId:1 sent 12.94 MB</span><span class="chip">officeclicktorun.exe sent 8.32 MB</span><span class="chip">AppId:1 sent 8.28 MB</span><span class="chip">AppId:156 sent 2.23 MB</span><span class="chip">AppId:1 sent 1.6 MB</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-130</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.90 (high)</span><span class="tag muted"> / T1490</span></div><div class="finding-desc">VSS analysis of surface_physical.E01 confirms zero Volume Shadow Copy snapshots exist on the VANKO-SURFACE3 workstation. No pre-incident Security.evtx, MFT, or registry hive recovery is possible via VSS. This means either VSS was never scheduled (typical on Windows 10...</div><div class="chips"><span class="chip">file_path: /evidence/disk/vanko/surface_physical.E01</span><span class="chip">timestamp: 2026-06-07T19:25:55Z</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-007</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.90 (high)</span><span class="tag muted"> / T1078.003</span></div><div class="finding-desc">Active interactive user session confirmed on 2016-06-29 evening UTC: 72 LogonType 11 (cached Microsoft Account credential logon for MicrosoftAccount\anthony.vanko@gmail.com) events from 2016-06-28 through 2016-06-30, and 72 LogonType 7 (workstation unlock) events in the...</div><div class="chips"><span class="chip">timestamp: 2016-06-29T15:08:40Z</span><span class="chip">timestamp: 2016-06-29T19:48:05Z</span><span class="chip">owner_process: MicrosoftAccount\anthony.vanko@gmail.com</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-002</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.90 (high)</span><span class="tag muted"> / T1567.002</span></div><div class="finding-desc">Recycle Bin contains two Dropbox-synced files deleted 2016-06-30 01:45-01:46 UTC: &quot;V-Photos&quot; (62,914,560 bytes, Copied=True) and &quot;vacation photos.7z&quot; (35,008,256 bytes, Copied=True) from path $RECYCLE.BIN\S-1-5-21-3739107332-290452467-3466442662-1001\$RK7QVJQ, with Dropbox...</div><div class="chips"><span class="chip">file_path:\$RECYCLE.BIN\S-1-5-21-3739107332-290452467-3466442662-1001\$RK7QVJQ\V-Photos</span><span class="chip">file_path:\$RECYCLE.BIN\S-1-5-21-3739107332-290452467-3466442662-1001\$RK7QVJQ\vacation photos.7z</span><span class="chip">timestamp:2016-06-30T01:45:48Z</span><span class="chip">timestamp:2016-06-30T01:46:08Z</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-061</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.88 (high)</span><span class="tag muted"> / T1560.001</span></div><div class="finding-desc">RecentDocs registry key for defaultprinter profile shows temp.zip was opened/accessed at 2016-06-18T22:19:13Z (LNK: temp.lnk, Target: temp.zip), corroborating the ShellBag entry showing temp.zip on the Desktop at the same timestamp. This is consistent with creating or...</div><div class="chips"><span class="chip">file_path: C:\Users\defaultprinter\Desktop\temp.zip</span><span class="chip">timestamp: 2016-06-18T22:19:13Z</span><span class="chip">executable: smallftpd.exe</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-015</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.88 (high)</span><span class="tag muted"> / T1090.003</span></div><div class="finding-desc">Amcache (SHA-1) confirms Tor Browser was installed and actively used on VANKO-SURFACE3. Two distinct firefox.exe versions were recorded: SHA-1 4e477f5413ad65c41d0f60d09af142004d53a858 first seen 2016-05-31T18:30Z and SHA-1 d29808523297286b16ab13e2230e0f7c8a5152b6 (updated...</div><div class="chips"><span class="chip">executable: c:\users\pc user\tor\tor browser\browser\firefox.exe</span><span class="chip">path: c:\users\pc user\tor\tor browser\browser\firefox.exe</span><span class="chip">si_modified: 2016-06-19T01:34:02Z</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-069</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.85 (high)</span><span class="tag muted"> / T1053.005</span></div><div class="finding-desc">Scheduled Tasks (174 tasks extracted) contains no attacker-planted persistence tasks. All off-path non-builtin tasks are legitimate: Google Update per-user tasks, OneDrive Standalone Updater, Apple Software Update, and Dropbox Update tasks. OneDrive update task (version...</div><div class="chips"><span class="chip">executable: C:\Users\PC User\AppData\Local\Microsoft\OneDrive\17.3.6517.0809\OneDriveStandaloneUpdater.exe</span><span class="chip">executable: C:\Program Files (x86)\Dropbox\Update\DropboxUpdate.exe</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-058</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.85 (high)</span><span class="tag muted"> / T1070.003</span></div><div class="finding-desc">PC User Chrome history contains only 16 entries spanning 2016-03-12 to 2016-08-08, with zero entries during the primary incident window (June 29-30, 2016). Several entries have no timestamp (NaN), suggesting synced entries from another device. The near-total absence of...</div><div class="chips"><span class="chip">executable: netstumblerinstaller_0_4_0 (1).exe (1324940 bytes, downloaded 2016-05-08T16:31:34Z)</span><span class="chip">timestamp: 2016-06-28T01:18:22Z (Facebook profile photo downloads)</span><span class="chip">timestamp: 2016-08-08T16:37:00Z (localhost:5555 AccessData Network License Manager 3.4.1.0)</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-050</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.85 (high)</span><span class="tag muted"> / T1078.003</span></div><div class="finding-desc">ShellBags from the &#x27;defaultprinter&#x27; account show it navigated Explorer into C:\Users\PC User\Desktop (FirstInteracted 2016-06-18T22:01:14Z, HasExplored=True), C:\Users\PC User\Documents (22:01:23Z), and C:\Users\PC User\Downloads (22:22:25Z) during the same session that...</div><div class="chips"><span class="chip">file_path: C:\Users\PC User\Desktop (HasExplored=True, defaultprinter account)</span><span class="chip">file_path: C:\Users\PC User\Documents (HasExplored=True, defaultprinter account)</span><span class="chip">timestamp: 2016-06-18T22:01:14Z</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-047</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.85 (high)</span><span class="tag muted">TA0010 / T1041</span></div><div class="finding-desc">SRUM: AppId:168 sent 1.0 MB / received 1.2 MB (last record: Nov 03, 2016 11:06:59.231231180). Outbound volume is ≥3× the median for this endpoint (0.01 MB median). Candidate exfiltration — requires corroboration with EVTX network events and memory scan_network findings before...</div><div class="chips"><span class="chip">AppId:168</span><span class="chip">1.02 MB sent</span><span class="chip">Nov 03, 2016 11:06:59.231231180</span></div></div>
+<div class="finding"><div class="finding-head"><span class="fid">F-046</span><span class="tag uncovered">ACTIVE</span><span class="tag info">conf 0.85 (high)</span><span class="tag muted">TA0010 / T1041</span></div><div class="finding-desc">SRUM: AppId:1 sent 1.2 MB / received 27.4 MB (last record: Oct 15, 2016 01:00:59.231231218). Outbound volume is ≥3× the median for this endpoint (0.01 MB median). Candidate exfiltration — requires corroboration with EVTX network events and memory scan_network findings before...</div><div class="chips"><span class="chip">AppId:1</span><span class="chip">1.2 MB sent</span><span class="chip">Oct 15, 2016 01:00:59.231231218</span></div></div>
+  </section>
+
+  <section>
+    <h2>Corroboration &amp; Suggested Next Steps (advisory)</h2>
+    <p class='muted'>Advisory only - does not change finding_status or confidence. Distinct from ATT&amp;CK <em>Suggested Next Tools</em> (tactic blind-spots) and <em>Active Leads</em> (detector pivots): this is forensic-knowledge corroboration - what would raise each finding to the next evidentiary tier.</p><table><thead><tr><th>Finding</th><th>Artifact</th><th>Advisory Tier</th><th>TS Aligned</th><th>Gap</th><th>Suggested Tools</th><th>Rationale</th></tr></thead><tbody><tr><td>F-001</td><td>mft</td><td><span class='muted'>observation</span></td><td>unknown</td><td>mft ($SI/$FN)</td><td>disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. mft alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: mft ($SI/$FN).</td></tr><tr><td>F-002</td><td>mft</td><td><span class='muted'>observation</span></td><td>unknown</td><td>mft ($SI/$FN)</td><td>disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. mft alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: mft ($SI/$FN).</td></tr><tr><td>F-003</td><td>mft</td><td><span class='muted'>observation</span></td><td>unknown</td><td>mft ($SI/$FN)</td><td>disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. mft alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: mft ($SI/$FN).</td></tr><tr><td>F-004</td><td>mft</td><td><span class='muted'>observation</span></td><td>unknown</td><td>mft ($SI/$FN)</td><td>disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. mft alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: mft ($SI/$FN).</td></tr><tr><td>F-005</td><td>event_logs_security</td><td><span class='muted'>probable</span></td><td>unknown</td><td>EVTX 4624 Type 3, EVTX 4672, EVTX 5140 (IPC$/ADMIN$), EVTX 7045/4697 service install</td><td>disk.summarize_evtx</td><td>advisory only; does not reflect finding_status or promotion. evtx_process_creation corroborated by 2 source(s) (registry_run, sigma_corroborated) -&gt; probable. Tier capped at probable: required timestamp alignment is unknown. To strengthen, corroborate with: EVTX 4624 Type 3; EVTX 4672; EVTX 5140 (IPC$/ADMIN$); EVTX 7045/4697 service install.</td></tr><tr><td>F-006</td><td>event_logs_security</td><td><span class='muted'>observation</span></td><td>unknown</td><td>EVTX 4688 process creation, Prefetch execution</td><td>disk.summarize_evtx, disk.extract_prefetch</td><td>advisory only; does not reflect finding_status or promotion. evtx_process_creation alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: EVTX 4688 process creation; Prefetch execution.</td></tr><tr><td>F-007</td><td>event_logs_security</td><td><span class='muted'>observation</span></td><td>unknown</td><td>EVTX 4688 process creation, Prefetch execution</td><td>disk.summarize_evtx, disk.extract_prefetch</td><td>advisory only; does not reflect finding_status or promotion. evtx_process_creation alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: EVTX 4688 process creation; Prefetch execution.</td></tr><tr><td>F-008</td><td>usn_journal</td><td><span class='muted'>observation</span></td><td>unknown</td><td>usn_journal, mft</td><td>disk.extract_usn_journal, disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. usn_journal alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: usn_journal; mft.</td></tr><tr><td>F-009</td><td>-</td><td><span class='muted'>observation</span></td><td>unknown</td><td>-</td><td>-</td><td>advisory only; does not reflect finding_status or promotion. this artifact alone -&gt; observation (no corroborating source found).</td></tr><tr><td>F-010</td><td>prefetch</td><td><span class='muted'>probable</span></td><td>unknown</td><td>prefetch, evtx (EID 4688), mft</td><td>disk.extract_prefetch, disk.summarize_evtx, disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. prefetch alone -&gt; probable (no corroborating source found). To strengthen, corroborate with: prefetch; evtx (EID 4688); mft.</td></tr><tr><td>F-011</td><td>prefetch</td><td><span class='muted'>probable</span></td><td>unknown</td><td>prefetch, evtx (EID 4688), mft</td><td>disk.extract_prefetch, disk.summarize_evtx, disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. prefetch alone -&gt; probable (no corroborating source found). To strengthen, corroborate with: prefetch; evtx (EID 4688); mft.</td></tr><tr><td>F-012</td><td>prefetch</td><td><span class='muted'>probable</span></td><td>unknown</td><td>prefetch, evtx (EID 4688), mft</td><td>disk.extract_prefetch, disk.summarize_evtx, disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. prefetch alone -&gt; probable (no corroborating source found). To strengthen, corroborate with: prefetch; evtx (EID 4688); mft.</td></tr><tr><td>F-013</td><td>prefetch</td><td><span class='muted'>probable</span></td><td>unknown</td><td>prefetch, evtx (EID 4688), mft</td><td>disk.extract_prefetch, disk.summarize_evtx, disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. prefetch alone -&gt; probable (no corroborating source found). To strengthen, corroborate with: prefetch; evtx (EID 4688); mft.</td></tr><tr><td>F-014</td><td>amcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>amcache, prefetch</td><td>disk.get_amcache, disk.extract_prefetch</td><td>advisory only; does not reflect finding_status or promotion. amcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: amcache; prefetch.</td></tr><tr><td>F-015</td><td>amcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>amcache, prefetch</td><td>disk.get_amcache, disk.extract_prefetch</td><td>advisory only; does not reflect finding_status or promotion. amcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: amcache; prefetch.</td></tr><tr><td>F-016</td><td>amcache</td><td><span class='muted'>probable</span></td><td>false</td><td>amcache, prefetch, event_logs_security (EID 4688)</td><td>disk.get_amcache, disk.extract_prefetch, disk.summarize_evtx</td><td>advisory only; does not reflect finding_status or promotion. amcache corroborated by 1 source(s) (registry_run) -&gt; probable. To strengthen, corroborate with: amcache; prefetch; event_logs_security (EID 4688).</td></tr><tr><td>F-017</td><td>registry_run_keys</td><td><span class='muted'>observation</span></td><td>unknown</td><td>registry_run_keys, mft</td><td>disk.extract_registry_run_keys, disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. registry_run alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: registry_run_keys; mft.</td></tr><tr><td>F-018</td><td>registry_run_keys</td><td><span class='muted'>observation</span></td><td>unknown</td><td>registry_run_keys, mft</td><td>disk.extract_registry_run_keys, disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. registry_run alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: registry_run_keys; mft.</td></tr><tr><td>F-019</td><td>registry_run_keys</td><td><span class='muted'>observation</span></td><td>unknown</td><td>registry_run_keys, mft</td><td>disk.extract_registry_run_keys, disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. registry_run alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: registry_run_keys; mft.</td></tr><tr><td>F-020</td><td>registry_run_keys</td><td><span class='muted'>observation</span></td><td>unknown</td><td>registry_run_keys, mft</td><td>disk.extract_registry_run_keys, disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. registry_run alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: registry_run_keys; mft.</td></tr><tr><td>F-021</td><td>registry_run_keys</td><td><span class='muted'>observation</span></td><td>unknown</td><td>registry_run_keys, mft</td><td>disk.extract_registry_run_keys, disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. registry_run alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: registry_run_keys; mft.</td></tr><tr><td>F-022</td><td>registry_run_keys</td><td><span class='muted'>observation</span></td><td>unknown</td><td>registry_run_keys, mft</td><td>disk.extract_registry_run_keys, disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. registry_run alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: registry_run_keys; mft.</td></tr><tr><td>F-023</td><td>registry_run_keys</td><td><span class='muted'>observation</span></td><td>unknown</td><td>registry_run_keys, mft</td><td>disk.extract_registry_run_keys, disk.extract_mft_timeline</td><td>advisory only; does not reflect finding_status or promotion. registry_run alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: registry_run_keys; mft.</td></tr><tr><td>F-024</td><td>-</td><td><span class='muted'>observation</span></td><td>unknown</td><td>-</td><td>-</td><td>advisory only; does not reflect finding_status or promotion. this artifact alone -&gt; observation (no corroborating source found).</td></tr><tr><td>F-025</td><td>-</td><td><span class='muted'>observation</span></td><td>unknown</td><td>-</td><td>-</td><td>advisory only; does not reflect finding_status or promotion. this artifact alone -&gt; observation (no corroborating source found).</td></tr><tr><td>F-026</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-027</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-028</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-029</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-030</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-031</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-032</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-033</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-034</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-035</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-036</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-037</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-038</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-039</td><td>shimcache</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shimcache, amcache</td><td>disk.extract_shimcache, disk.get_amcache</td><td>advisory only; does not reflect finding_status or promotion. shimcache alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shimcache; amcache.</td></tr><tr><td>F-040</td><td>srum</td><td><span class='muted'>observation</span></td><td>unknown</td><td>srum</td><td>disk.extract_srum</td><td>advisory only; does not reflect finding_status or promotion. srum alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: srum.</td></tr><tr><td>F-041</td><td>srum</td><td><span class='muted'>observation</span></td><td>unknown</td><td>srum</td><td>disk.extract_srum</td><td>advisory only; does not reflect finding_status or promotion. srum alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: srum.</td></tr><tr><td>F-042</td><td>srum</td><td><span class='muted'>observation</span></td><td>unknown</td><td>srum</td><td>disk.extract_srum</td><td>advisory only; does not reflect finding_status or promotion. srum alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: srum.</td></tr><tr><td>F-043</td><td>srum</td><td><span class='muted'>observation</span></td><td>unknown</td><td>srum</td><td>disk.extract_srum</td><td>advisory only; does not reflect finding_status or promotion. srum alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: srum.</td></tr><tr><td>F-044</td><td>srum</td><td><span class='muted'>observation</span></td><td>unknown</td><td>srum</td><td>disk.extract_srum</td><td>advisory only; does not reflect finding_status or promotion. srum alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: srum.</td></tr><tr><td>F-045</td><td>srum</td><td><span class='muted'>observation</span></td><td>unknown</td><td>srum</td><td>disk.extract_srum</td><td>advisory only; does not reflect finding_status or promotion. srum alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: srum.</td></tr><tr><td>F-046</td><td>srum</td><td><span class='muted'>observation</span></td><td>unknown</td><td>srum</td><td>disk.extract_srum</td><td>advisory only; does not reflect finding_status or promotion. srum alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: srum.</td></tr><tr><td>F-047</td><td>srum</td><td><span class='muted'>observation</span></td><td>unknown</td><td>srum</td><td>disk.extract_srum</td><td>advisory only; does not reflect finding_status or promotion. srum alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: srum.</td></tr><tr><td>F-048</td><td>srum</td><td><span class='muted'>observation</span></td><td>unknown</td><td>srum</td><td>disk.extract_srum</td><td>advisory only; does not reflect finding_status or promotion. srum alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: srum.</td></tr><tr><td>F-049</td><td>shellbags</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shellbags, lnk_files</td><td>disk.extract_shellbags, disk.extract_lnk_files</td><td>advisory only; does not reflect finding_status or promotion. shellbag alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shellbags; lnk_files.</td></tr><tr><td>F-050</td><td>shellbags</td><td><span class='muted'>observation</span></td><td>unknown</td><td>shellbags, lnk_files</td><td>disk.extract_shellbags, disk.extract_lnk_files</td><td>advisory only; does not reflect finding_status or promotion. shellbag alone -&gt; observation (no corroborating source found). To strengthen, corroborate with: shellbags; lnk_files.</td></tr></tbody></table>
+  </section>
+
+  <section>
+    <h2>Indicators of Compromise</h2>
+    <table>
+      <thead><tr><th>Indicator</th><th>Type</th><th>Source Finding</th><th>Status</th><th>Technique</th></tr></thead>
+      <tbody><tr><td class="mono">timestamp: 2016-06-29T19:51:00Z</td><td><span class="tag info">indicator</span></td><td>F-128</td><td>CONFIRMED</td><td>T1039</td></tr>
+<tr><td class="mono">timestamp: 2016-06-30T01:17:00Z</td><td><span class="tag info">indicator</span></td><td>F-128</td><td>CONFIRMED</td><td>T1039</td></tr>
+<tr><td class="mono">timestamp: 2016-06-30T01:48:48Z</td><td><span class="tag info">indicator</span></td><td>F-128</td><td>CONFIRMED</td><td>T1039</td></tr>
+<tr><td class="mono">executable: 7zg.exe</td><td><span class="tag info">executable</span></td><td>F-128</td><td>CONFIRMED</td><td>T1039</td></tr>
+<tr><td class="mono">executable: sdelete.exe</td><td><span class="tag info">executable</span></td><td>F-128</td><td>CONFIRMED</td><td>T1039</td></tr>
+<tr><td class="mono">file_path: .\Level 5 Classified\</td><td><span class="tag info">account</span></td><td>F-128</td><td>CONFIRMED</td><td>T1039</td></tr>
+<tr><td class="mono">file_path: .\Level 8 Classified\</td><td><span class="tag info">account</span></td><td>F-128</td><td>CONFIRMED</td><td>T1039</td></tr>
+<tr><td class="mono">file_path: C:\Users\PC User\Dropbox</td><td><span class="tag info">path/file</span></td><td>F-128</td><td>CONFIRMED</td><td>T1039</td></tr>
+<tr><td class="mono">executable: C:\Users\defaultprinter\smallftpd.exe</td><td><span class="tag info">executable</span></td><td>F-126</td><td>CONFIRMED</td><td>T1071.002</td></tr>
+<tr><td class="mono">timestamp: 2016-06-18T22:00:37Z</td><td><span class="tag info">indicator</span></td><td>F-126</td><td>CONFIRMED</td><td>T1071.002</td></tr>
+<tr><td class="mono">process: smallftpd.exe</td><td><span class="tag info">process</span></td><td>F-126</td><td>CONFIRMED</td><td>T1071.002</td></tr>
+<tr><td class="mono">timestamp: 2016-06-18T22:02:05Z</td><td><span class="tag info">indicator</span></td><td>F-126</td><td>CONFIRMED</td><td>T1071.002</td></tr>
+<tr><td class="mono">file_path: C:\Users\defaultprinter\Desktop\temp.zip</td><td><span class="tag info">path/file</span></td><td>F-127</td><td>CONFIRMED</td><td>T1048.003</td></tr>
+<tr><td class="mono">timestamp: 2016-06-18T22:19:09Z</td><td><span class="tag info">indicator</span></td><td>F-127</td><td>CONFIRMED</td><td>T1048.003</td></tr>
+<tr><td class="mono">timestamp: 2016-06-18T22:22:09Z</td><td><span class="tag info">indicator</span></td><td>F-127</td><td>CONFIRMED</td><td>T1048.003</td></tr>
+<tr><td class="mono">executable: smallftpd.exe</td><td><span class="tag info">executable</span></td><td>F-127</td><td>CONFIRMED</td><td>T1048.003</td></tr>
+<tr><td class="mono">executable: SDELETE.EXE</td><td><span class="tag info">executable</span></td><td>F-013</td><td>ACTIVE</td><td>T1070.004</td></tr>
+<tr><td class="mono">timestamp: 2016-06-30T01:26:04Z</td><td><span class="tag info">indicator</span></td><td>F-013</td><td>ACTIVE</td><td>T1070.004</td></tr>
+<tr><td class="mono">timestamp: 2016-06-30T01:26:14Z</td><td><span class="tag info">indicator</span></td><td>F-013</td><td>ACTIVE</td><td>T1070.004</td></tr>
+<tr><td class="mono">timestamp: 2016-06-30T01:29:34Z</td><td><span class="tag info">indicator</span></td><td>F-013</td><td>ACTIVE</td><td>T1070.004</td></tr>
+<tr><td class="mono">timestamp: 2016-06-30T01:29:55Z</td><td><span class="tag info">indicator</span></td><td>F-013</td><td>ACTIVE</td><td>T1070.004</td></tr>
+<tr><td class="mono">timestamp: 2016-06-30T01:30:13Z</td><td><span class="tag info">indicator</span></td><td>F-013</td><td>ACTIVE</td><td>T1070.004</td></tr>
+<tr><td class="mono">timestamp: 2016-06-30T01:30:52Z</td><td><span class="tag info">indicator</span></td><td>F-013</td><td>ACTIVE</td><td>T1070.004</td></tr>
+<tr><td class="mono">file_path: .\Level 6 Classified\</td><td><span class="tag info">account</span></td><td>F-067</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">file_path: .\Level 7 Classified\</td><td><span class="tag info">account</span></td><td>F-067</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">file_path: vacation photos.7z</td><td><span class="tag info">indicator</span></td><td>F-067</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">executable: 7Z1602-X64.EXE</td><td><span class="tag info">executable</span></td><td>F-011</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">executable: VERACRYPT SETUP 1.17.EXE</td><td><span class="tag info">executable</span></td><td>F-011</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">executable: VERACRYPT FORMAT.EXE</td><td><span class="tag info">executable</span></td><td>F-011</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">executable: VERACRYPT.EXE</td><td><span class="tag info">executable</span></td><td>F-011</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">timestamp: 2016-06-29T16:01:38Z</td><td><span class="tag info">indicator</span></td><td>F-011</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">timestamp: 2016-06-29T16:03:03Z</td><td><span class="tag info">indicator</span></td><td>F-011</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">timestamp: 2016-06-29T16:12:23Z</td><td><span class="tag info">indicator</span></td><td>F-011</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">timestamp: 2016-06-29T19:51:07Z</td><td><span class="tag info">indicator</span></td><td>F-006</td><td>ACTIVE</td><td>T1078</td></tr>
+<tr><td class="mono">timestamp: 2016-06-29T20:07:51Z</td><td><span class="tag info">indicator</span></td><td>F-006</td><td>ACTIVE</td><td>T1078</td></tr>
+<tr><td class="mono">owner_process: STARKSURFACE\PC User</td><td><span class="tag info">process</span></td><td>F-006</td><td>ACTIVE</td><td>T1078</td></tr>
+<tr><td class="mono">path: STARK-FILESERVER</td><td><span class="tag info">indicator</span></td><td>F-006</td><td>ACTIVE</td><td>T1078</td></tr>
+<tr><td class="mono">executable: STARKSURFACE\steve.rogers (credential target)</td><td><span class="tag info">executable</span></td><td>F-006</td><td>ACTIVE</td><td>T1078</td></tr>
+<tr><td class="mono">executable: smallftpd-1.0.3-fix.zip (67373 bytes, downloaded 2016-06-18T22:00:37Z)</td><td><span class="tag info">executable</span></td><td>F-057</td><td>ACTIVE</td><td>T1105</td></tr>
+<tr><td class="mono">timestamp: 2016-06-18T22:00:09Z (Google search: smallftpd)</td><td><span class="tag info">indicator</span></td><td>F-057</td><td>ACTIVE</td><td>T1105</td></tr>
+<tr><td class="mono">executable: 7ZG.EXE</td><td><span class="tag info">executable</span></td><td>F-012</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">timestamp: 2016-06-30T01:17:50Z</td><td><span class="tag info">indicator</span></td><td>F-012</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">timestamp: 2016-06-30T01:26:53Z</td><td><span class="tag info">indicator</span></td><td>F-012</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">timestamp: 2016-06-30T01:52:54Z</td><td><span class="tag info">indicator</span></td><td>F-012</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">timestamp: 2016-06-30T01:58:22Z</td><td><span class="tag info">indicator</span></td><td>F-012</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">file_path:\Users\PC User\OneDrive\Documents\STARK-TS-Level7-CryoDNA Storage Inventory.docx</td><td><span class="tag info">path/file</span></td><td>F-001</td><td>ACTIVE</td><td>T1213</td></tr>
+<tr><td class="mono">file_path:\Users\PC User\OneDrive\Documents\Level 7-formula 88percent ZF 0x17 close.docx</td><td><span class="tag info">path/file</span></td><td>F-001</td><td>ACTIVE</td><td>T1213</td></tr>
+<tr><td class="mono">file_path:\Users\PC User\OneDrive\Documents\Level_8\Stark_TS-Level8A_CryoDNA.blacklight.docx</td><td><span class="tag info">path/file</span></td><td>F-001</td><td>ACTIVE</td><td>T1213</td></tr>
+<tr><td class="mono">file_path:\Users\PC User\OneDrive\Documents\Level_12\Stark TS-Level 12_Project_Nehemiah 4.docx</td><td><span class="tag info">path/file</span></td><td>F-001</td><td>ACTIVE</td><td>T1213</td></tr>
+<tr><td class="mono">timestamp:2016-04-30T17:09:39Z</td><td><span class="tag info">indicator</span></td><td>F-001</td><td>ACTIVE</td><td>T1213</td></tr>
+<tr><td class="mono">timestamp:2016-06-15T11:18:17Z</td><td><span class="tag info">indicator</span></td><td>F-001</td><td>ACTIVE</td><td>T1213</td></tr>
+<tr><td class="mono">timestamp: 2016-06-18T20:40:54Z</td><td><span class="tag info">indicator</span></td><td>F-123</td><td>ACTIVE</td><td>T1136.001</td></tr>
+<tr><td class="mono">timestamp: 2016-06-18T20:40:55Z</td><td><span class="tag info">indicator</span></td><td>F-123</td><td>ACTIVE</td><td>T1136.001</td></tr>
+<tr><td class="mono">process: defaultprinter account creation + local admin elevation</td><td><span class="tag info">process</span></td><td>F-123</td><td>ACTIVE</td><td>T1136.001</td></tr>
+<tr><td class="mono">si_modified: 2016-06-30T01:48:48Z</td><td><span class="tag info">indicator</span></td><td>F-063</td><td>ACTIVE</td><td>T1070.004</td></tr>
+<tr><td class="mono">AppId:1 sent 12.94 MB</td><td><span class="tag info">data-volume</span></td><td>F-040</td><td>ACTIVE</td><td>T1041</td></tr>
+<tr><td class="mono">officeclicktorun.exe sent 8.32 MB</td><td><span class="tag info">path/file</span></td><td>F-040</td><td>ACTIVE</td><td>T1041</td></tr>
+<tr><td class="mono">AppId:1 sent 8.28 MB</td><td><span class="tag info">data-volume</span></td><td>F-040</td><td>ACTIVE</td><td>T1041</td></tr>
+<tr><td class="mono">AppId:156 sent 2.23 MB</td><td><span class="tag info">data-volume</span></td><td>F-040</td><td>ACTIVE</td><td>T1041</td></tr>
+<tr><td class="mono">AppId:1 sent 1.6 MB</td><td><span class="tag info">data-volume</span></td><td>F-040</td><td>ACTIVE</td><td>T1041</td></tr>
+<tr><td class="mono">file_path: /evidence/disk/vanko/surface_physical.E01</td><td><span class="tag info">indicator</span></td><td>F-130</td><td>ACTIVE</td><td>T1490</td></tr>
+<tr><td class="mono">timestamp: 2026-06-07T19:25:55Z</td><td><span class="tag info">indicator</span></td><td>F-130</td><td>ACTIVE</td><td>T1490</td></tr>
+<tr><td class="mono">timestamp: 2016-06-29T15:08:40Z</td><td><span class="tag info">indicator</span></td><td>F-007</td><td>ACTIVE</td><td>T1078.003</td></tr>
+<tr><td class="mono">timestamp: 2016-06-29T19:48:05Z</td><td><span class="tag info">indicator</span></td><td>F-007</td><td>ACTIVE</td><td>T1078.003</td></tr>
+<tr><td class="mono">owner_process: MicrosoftAccount\anthony.vanko@gmail.com</td><td><span class="tag info">process</span></td><td>F-007</td><td>ACTIVE</td><td>T1078.003</td></tr>
+<tr><td class="mono">file_path:\$RECYCLE.BIN\S-1-5-21-3739107332-290452467-3466442662-1001\$RK7QVJQ\V-Photos</td><td><span class="tag info">path/file</span></td><td>F-002</td><td>ACTIVE</td><td>T1567.002</td></tr>
+<tr><td class="mono">file_path:\$RECYCLE.BIN\S-1-5-21-3739107332-290452467-3466442662-1001\$RK7QVJQ\vacation photos.7z</td><td><span class="tag info">path/file</span></td><td>F-002</td><td>ACTIVE</td><td>T1567.002</td></tr>
+<tr><td class="mono">timestamp:2016-06-30T01:45:48Z</td><td><span class="tag info">indicator</span></td><td>F-002</td><td>ACTIVE</td><td>T1567.002</td></tr>
+<tr><td class="mono">timestamp:2016-06-30T01:46:08Z</td><td><span class="tag info">indicator</span></td><td>F-002</td><td>ACTIVE</td><td>T1567.002</td></tr>
+<tr><td class="mono">timestamp: 2016-06-18T22:19:13Z</td><td><span class="tag info">indicator</span></td><td>F-061</td><td>ACTIVE</td><td>T1560.001</td></tr>
+<tr><td class="mono">executable: c:\users\pc user\tor\tor browser\browser\firefox.exe</td><td><span class="tag info">executable</span></td><td>F-015</td><td>ACTIVE</td><td>T1090.003</td></tr>
+<tr><td class="mono">path: c:\users\pc user\tor\tor browser\browser\firefox.exe</td><td><span class="tag info">path/file</span></td><td>F-015</td><td>ACTIVE</td><td>T1090.003</td></tr>
+<tr><td class="mono">si_modified: 2016-06-19T01:34:02Z</td><td><span class="tag info">indicator</span></td><td>F-015</td><td>ACTIVE</td><td>T1090.003</td></tr>
+<tr><td class="mono">executable: C:\Users\PC User\AppData\Local\Microsoft\OneDrive\17.3.6517.0809\OneDriveStandaloneUpdater.exe</td><td><span class="tag info">executable</span></td><td>F-069</td><td>ACTIVE</td><td>T1053.005</td></tr>
+<tr><td class="mono">executable: C:\Program Files (x86)\Dropbox\Update\DropboxUpdate.exe</td><td><span class="tag info">executable</span></td><td>F-069</td><td>ACTIVE</td><td>T1053.005</td></tr>
+<tr><td class="mono">executable: netstumblerinstaller_0_4_0 (1).exe (1324940 bytes, downloaded 2016-05-08T16:31:34Z)</td><td><span class="tag info">executable</span></td><td>F-058</td><td>ACTIVE</td><td>T1070.003</td></tr>
+<tr><td class="mono">timestamp: 2016-06-28T01:18:22Z (Facebook profile photo downloads)</td><td><span class="tag info">indicator</span></td><td>F-058</td><td>ACTIVE</td><td>T1070.003</td></tr>
+<tr><td class="mono">timestamp: 2016-08-08T16:37:00Z (localhost:5555 AccessData Network License Manager 3.4.1.0)</td><td><span class="tag info">ip</span></td><td>F-058</td><td>ACTIVE</td><td>T1070.003</td></tr>
+<tr><td class="mono">file_path: C:\Users\PC User\Desktop (HasExplored=True, defaultprinter account)</td><td><span class="tag info">path/file</span></td><td>F-050</td><td>ACTIVE</td><td>T1078.003</td></tr>
+<tr><td class="mono">file_path: C:\Users\PC User\Documents (HasExplored=True, defaultprinter account)</td><td><span class="tag info">path/file</span></td><td>F-050</td><td>ACTIVE</td><td>T1078.003</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Anti-Forensics Warnings</h2>
+    <ul><li><strong>sdelete_cipher_trace</strong>: Execution evidence indicates SDelete or cipher /w wiping activity.</li></ul>
+  </section>
+
+  <section>
+    <h2>Data Gaps</h2>
+    <ul><li><strong>extract_registry_run_keys</strong>: extract_registry_run_keys extracted /cases/VANKO-ZEBRAFISH-2016/artifacts/registry/registry_suppressed.csv but no analyst finding mined it (run_analysis alone does not clear). submit_finding citing execution E-067 or record a documented-absence result.</li></ul>
+  </section>
+
+  <div class="appendix-divider">Technical Appendix</div>
+
+  <section>
+    <h2>Sigma Anomaly Summary</h2>
+    <pre>| # | Severity | Detector | Description | ATT&amp;CK |
+|---|----------|----------|-------------|--------|
+| 1 | HIGH | sdelete_cipher_trace | Execution evidence indicates SDelete or cipher /w wiping activity. | T1070 |</pre>
+  </section>
+
+  <section>
+    <h2>Recorded Hunting Hypotheses</h2>
+    <p class="muted" style="font-size: 0.92em;">Each hypothesis formed during the hunt and its verdict after testing against the evidence: proven (CONFIRMED), disproven (REFUTED), or inconclusive (SUSPENDED). "Linked finding IDs" are the F-NNN that proved, refuted, or materially informed the verdict.</p>
+    
+    <table>
+      <thead><tr><th>Hypothesis ID</th><th>Attack Class</th><th>Verdict</th><th>Linked finding IDs</th><th>MITRE</th></tr></thead>
+      <tbody><tr><td style='font-family: var(--mono)' title='01KTHRCCQK0X1SXCYR4X0MZ52W'>01KTHRCCQK0X1SXCYR4X0MZ52W</td><td>Dropbox cloud sync exfiltration <span style='color: var(--muted)'>(rank 1)</span></td><td><span class='tag covered'>CONFIRMED - proven</span></td><td style='font-family: var(--mono)'>F-128, F-063, F-067, F-012, F-003, F-004</td><td>-</td></tr>
+<tr><td style='font-family: var(--mono)' title='01KTHRCCQKR35E4JPQTS28N3GX'>01KTHRCCQKR35E4JPQTS28N3GX</td><td>FTP exfiltration via SmallFTPd covert server <span style='color: var(--muted)'>(rank 2)</span></td><td><span class='tag covered'>CONFIRMED - proven</span></td><td style='font-family: var(--mono)'>F-126, F-127, F-055, F-057, F-060, F-016</td><td>-</td></tr>
+<tr><td style='font-family: var(--mono)' title='01KTHRCCQK2NSW1BSW6527F65T'>01KTHRCCQK2NSW1BSW6527F65T</td><td>VeraCrypt encrypted container for covert storage <span style='color: var(--muted)'>(rank 3)</span></td><td><span class='tag uncovered'>SUSPENDED - inconclusive</span></td><td style='font-family: var(--mono)'>-</td><td>-</td></tr>
+<tr><td style='font-family: var(--mono)' title='01KTHRCCQKM065E8R9352VFD45'>01KTHRCCQKM065E8R9352VFD45</td><td>Tor browser for anonymous communications <span style='color: var(--muted)'>(rank 4)</span></td><td><span class='tag refuted'>REFUTED - disproven</span></td><td style='font-family: var(--mono)'>F-065</td><td>-</td></tr>
+<tr><td style='font-family: var(--mono)' title='01KTHRCCQK9HEVJTDPAX70NFCM'>01KTHRCCQK9HEVJTDPAX70NFCM</td><td>Pre-attack removable media malware delivery <span style='color: var(--muted)'>(rank 5)</span></td><td><span class='tag uncovered'>SUSPENDED - inconclusive</span></td><td style='font-family: var(--mono)'>-</td><td>-</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Analysis Lanes</h2>
+    <table>
+      <thead><tr><th>Lane</th><th>Status</th><th>Required</th><th>Agents</th><th>Executions</th><th>Findings</th><th>Summary</th></tr></thead>
+      <tbody><tr><td>evidence_access</td><td>PENDING</td><td>no</td><td>unowned</td><td>0</td><td>0</td><td></td></tr>
+<tr><td>memory</td><td>COMPLETE_WITH_GAPS</td><td>yes</td><td>main-agent</td><td>0</td><td>0</td><td>No memory image available — all memory-analysis tools recorded as documented absence. Disk artifacts are the sole evidence source.</td></tr>
+<tr><td>disk_execution_persistence</td><td>COMPLETE_WITH_GAPS</td><td>yes</td><td>main-agent</td><td>44</td><td>55</td><td>All 8 user-activity extractors complete: no malicious scheduled task persistence detected; all disk execution artifacts analyzed; PowerShell history proves three-phase...</td></tr>
+<tr><td>event_auth</td><td>COMPLETE</td><td>yes</td><td>main-agent</td><td>19</td><td>56</td><td>EVTX analysis (Security/PowerShell/Application channels, 3,292 events, 2016-03-15 to 2016-11-04) confirmed: PC User used steve.rogers credentials to authenticate to...</td></tr>
+<tr><td>anti_forensics_recovery</td><td>COMPLETE_WITH_GAPS</td><td>yes</td><td>main-agent</td><td>5</td><td>7</td><td>Anti-forensics confirmed: SDelete wiped Level 5-8 Classified directories, Dropbox 1.9 GB deleted post-exfiltration, files renamed to obfuscate content before archiving, covert...</td></tr>
+<tr><td>timeline_correlation</td><td>COMPLETE_WITH_GAPS</td><td>yes</td><td>main-agent</td><td>22</td><td>10</td><td>Sigma hunt (2,284 rules, 532 hits): confirmed defaultprinter account creation + local admin elevation at 20:40:54Z (June 18), PowerShell Reflection.Assembly during June 29...</td></tr>
+<tr><td>synthesis_corroboration</td><td>COMPLETE</td><td>yes</td><td>main-agent</td><td>2</td><td>3</td><td>Cross-artifact synthesis confirms three CONFIRMED multi-source findings: FTP infrastructure setup (4 sources, 2016-06-18T22:00-22:02Z), temp.zip FTP staging and deletion (4...</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Orchestration Warnings</h2>
+    <ul><li>None recorded.</li></ul>
+  </section>
+
+  <section>
+    <h2>Open Questions</h2>
+    <ul>
+      <li>No open questions recorded.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Status Flags</h2>
+    <pre>{
+  &quot;open_leads&quot;: true,
+  &quot;anti_forensics_warning&quot;: true,
+  &quot;unresolved_discrepancy&quot;: false,
+  &quot;specialist_lanes_inferred&quot;: false,
+  &quot;hypotheses_unresolved&quot;: 0
+}</pre>
+  </section>
+
+  <section>
+    <h2>Findings Status Breakdown</h2>
+    <div class="grid">
+      <div class="metric"><div class="metric-label">ACTIVE</div><div class="metric-value">127</div></div><div class="metric"><div class="metric-label">CONFIRMED</div><div class="metric-value">3</div></div>
+    </div>
+  </section>
+</main>
+</body>
+</html>

@@ -5620,9 +5620,14 @@ def _iter_user_profile_dirs(image_path: str) -> list[tuple[str, Path]]:
     profiles: list[tuple[str, Path]] = []
     seen_profiles: set[str] = set()
     for volume_root in _user_activity_volume_roots(image_path):
+        # Case-insensitive resolve of the users container: a case-sensitive
+        # ntfs-3g/ewf mount may surface ``USERS`` / ``Documents and Settings``
+        # with non-canonical casing. Fall back to the literal join so a missing
+        # container is still skipped cleanly below.
         for users_root in (
-            volume_root / "Users",
-            volume_root / "Documents and Settings",
+            _ci_resolve(volume_root, "Users") or (volume_root / "Users"),
+            _ci_resolve(volume_root, "Documents and Settings")
+            or (volume_root / "Documents and Settings"),
         ):
             root_text = str(users_root)
             if root_text in seen_roots:
@@ -5679,8 +5684,10 @@ def _discover_user_hives(
     discovered: list[tuple[str, Path, str]] = []
     for profile_name, profile_dir in _iter_user_profile_dirs(image_path):
         for rel in hive_relpaths:
-            hive_path = profile_dir.joinpath(*rel.split("/"))
-            if _path_exists(hive_path) and _path_is_file(hive_path):
+            # Case-insensitive resolve: a case-sensitive mount may surface
+            # AppData/Local/... or the hive name with non-canonical casing.
+            hive_path = _ci_resolve(profile_dir, *rel.split("/"))
+            if hive_path is not None and _path_is_file(hive_path):
                 discovered.append((profile_name, hive_path, rel))
     return discovered
 
@@ -5693,8 +5700,10 @@ def _discover_user_dirs(
     discovered: list[tuple[str, Path, str]] = []
     for profile_name, profile_dir in _iter_user_profile_dirs(image_path):
         for rel in dir_relpaths:
-            target = profile_dir.joinpath(*rel.split("/"))
-            if _path_exists(target) and _path_is_dir(target):
+            # Case-insensitive resolve (handles PSReadline vs PSReadLine and any
+            # non-canonical AppData casing on a case-sensitive mount).
+            target = _ci_resolve(profile_dir, *rel.split("/"))
+            if target is not None and _path_is_dir(target):
                 discovered.append((profile_name, target, rel))
     return discovered
 
@@ -7571,29 +7580,36 @@ def extract_recycle_bin(
     discovered: list[tuple[str, Path, Optional[Path]]] = []  # (sid, i_file, r_file)
     legacy_seen = False
     for root in _user_activity_volume_roots(image_path):
-        for bin_name in ("$Recycle.Bin",):
-            bin_dir = root / bin_name
-            if not _path_is_dir(bin_dir):
-                continue
+        # Case-insensitive resolve: a case-sensitive mount surfaces the store as
+        # ``$RECYCLE.BIN`` (uppercase) on many Win10 images, so a literal
+        # ``$Recycle.Bin`` join misses every SID -> false artifact_absent.
+        bin_dir = _ci_resolve(root, "$Recycle.Bin")
+        if bin_dir is not None and _path_is_dir(bin_dir):
             try:
                 sid_dirs = [d for d in bin_dir.iterdir() if _path_is_dir(d)]
             except OSError:
                 sid_dirs = []
             for sid_dir in sid_dirs:
+                # Case-insensitive ``$I*`` prefix on iterdir (glob is
+                # case-sensitive); pair ``$R`` by case-insensitive sibling name.
                 try:
-                    i_files = sorted(sid_dir.glob("$I*"))
+                    children = list(sid_dir.iterdir())
                 except OSError:
-                    i_files = []
+                    children = []
+                by_lower = {c.name.lower(): c for c in children}
+                i_files = sorted(
+                    (c for c in children
+                     if c.name.lower().startswith("$i") and _path_is_file(c)),
+                    key=lambda p: p.name.lower(),
+                )
                 for i_file in i_files:
-                    if not _path_is_file(i_file):
-                        continue
-                    r_name = "$R" + i_file.name[2:]
-                    r_file = sid_dir / r_name
-                    discovered.append(
-                        (sid_dir.name, i_file, r_file if _path_is_file(r_file) else None)
-                    )
+                    r_lower = ("$r" + i_file.name[2:]).lower()
+                    r_match = by_lower.get(r_lower)
+                    r_file = r_match if (r_match is not None and _path_is_file(r_match)) else None
+                    discovered.append((sid_dir.name, i_file, r_file))
         # Legacy RECYCLER probe (v1.1 defer: record a gap, do not parse INFO2).
-        if _path_is_dir(root / "RECYCLER"):
+        legacy_dir = _ci_resolve(root, "RECYCLER")
+        if legacy_dir is not None and _path_is_dir(legacy_dir):
             legacy_seen = True
 
     profiles_checked = sorted({sid for sid, _, _ in discovered})
@@ -7763,13 +7779,19 @@ def extract_powershell_history(
     )
     discovered: list[tuple[str, Path]] = []  # (profile, history_file)
     for profile_name, psr_dir, _rel in dirs:
+        # Case-insensitive ``*_history.txt`` match on iterdir (glob is
+        # case-sensitive on a Linux mount; covers ConsoleHost/VSCode/ISE hosts
+        # regardless of casing).
         try:
-            hist_files = sorted(psr_dir.glob("*_history.txt"))
+            hist_files = sorted(
+                (c for c in psr_dir.iterdir()
+                 if c.name.lower().endswith("_history.txt") and _path_is_file(c)),
+                key=lambda p: p.name.lower(),
+            )
         except OSError:
             hist_files = []
         for hist in hist_files:
-            if _path_is_file(hist):
-                discovered.append((profile_name, hist))
+            discovered.append((profile_name, hist))
 
     profiles_checked = sorted({name for name, _ in _iter_user_profile_dirs(image_path)})
 
@@ -7885,10 +7907,43 @@ _TASK_OFF_PATH = re.compile(
 )
 
 
-def _parse_task_xml(xml_text: str, task_rel: str) -> dict[str, Any]:
-    """Parse a Task Scheduler XML definition into a flat row dict."""
+def _decode_task_xml(data: "bytes | str") -> str:
+    """Decode Task XML bytes to text, tolerant of encoding/BOM mismatches.
+
+    Windows Task XML is frequently UTF-16 LE with a BOM but declares
+    ``encoding="UTF-16"``; reading it as UTF-8 yields ``ParseError: not
+    well-formed`` (the VANKO false collection_failed). We detect the real
+    encoding from the BOM (then fall back to a declared-UTF-16 + NUL-byte
+    heuristic, else UTF-8) and STRIP the encoding declaration so ElementTree
+    accepts the decoded unicode string (it rejects an encoding decl on a str).
+    """
+    if isinstance(data, str):
+        text = data
+    elif data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = data.decode("utf-16", errors="replace")
+    elif data[:3] == b"\xef\xbb\xbf":
+        text = data.decode("utf-8-sig", errors="replace")
+    else:
+        head = data[:200].decode("ascii", errors="ignore").lower()
+        if "utf-16" in head and b"\x00" in data[:80]:
+            text = data.decode("utf-16", errors="replace")
+        else:
+            text = data.decode("utf-8", errors="replace")
+    # ElementTree raises on an encoding declaration in a unicode string.
+    return re.sub(
+        r'(<\?xml[^>]*?)\s+encoding=["\'][^"\']*["\']',
+        r"\1", text, count=1, flags=re.IGNORECASE,
+    )
+
+
+def _parse_task_xml(xml_data: "bytes | str", task_rel: str) -> dict[str, Any]:
+    """Parse a Task Scheduler XML definition into a flat row dict.
+
+    Accepts raw ``bytes`` (preferred). :func:`_decode_task_xml` self-detects the
+    real encoding (UTF-16/BOM vs UTF-8) so a UTF-16 file no longer false-fails.
+    """
     import xml.etree.ElementTree as ET
-    root = ET.fromstring(xml_text)
+    root = ET.fromstring(_decode_task_xml(xml_data))
 
     def _strip(tag: str) -> str:
         return tag.rsplit("}", 1)[-1]
@@ -7962,8 +8017,10 @@ def extract_scheduled_tasks(
     discovered: list[tuple[Path, str]] = []  # (xml_path, task_rel)
     seen_real: set[str] = set()
     for root in _user_activity_volume_roots(image_path):
-        tasks_root = root / "Windows" / "System32" / "Tasks"
-        if not _path_is_dir(tasks_root):
+        # Case-insensitive resolve (Windows/System32/Tasks may carry
+        # non-canonical casing on a case-sensitive mount).
+        tasks_root = _ci_resolve(root, "Windows", "System32", "Tasks")
+        if tasks_root is None or not _path_is_dir(tasks_root):
             continue
         try:
             candidates = sorted(tasks_root.rglob("*"))
@@ -8049,8 +8106,10 @@ def extract_scheduled_tasks(
     for xml_path, rel in discovered:
         status = "ok"
         try:
-            xml_text = xml_path.read_text(encoding="utf-8", errors="replace")
-            row = _parse_task_xml(xml_text, rel)
+            # Read raw bytes so ElementTree honors the XML encoding declaration /
+            # BOM (Windows Task XML is often UTF-16 LE + BOM).
+            xml_bytes = xml_path.read_bytes()
+            row = _parse_task_xml(xml_bytes, rel)
         except Exception as exc:
             status = f"parser_error:{type(exc).__name__}"
             parser_failures.append({

@@ -421,5 +421,67 @@ class FkCompletenessTests(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Regression: case-sensitive mount + UTF-16/BOM Task XML (VANKO 2026-06-07).
+# A case-sensitive ntfs-3g/ewf mount surfaces $RECYCLE.BIN (uppercase),
+# PSReadline (lowercase L), and UTF-16-LE-BOM Task XML; the native tools must
+# resolve/parse these or they return false artifact_absent / collection_failed.
+# ---------------------------------------------------------------------------
+
+class CaseSensitiveMountRegressionTests(_Base):
+    def test_recycle_bin_uppercase_store_and_mixedcase_pairs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            root = Path(tmp) / "mnt" / "C"
+            (root / "Windows").mkdir(parents=True, exist_ok=True)
+            # UPPERCASE store dir + mixed-case $I / $R names.
+            sid = root / "$RECYCLE.BIN" / "S-1-5-21-7-7-7-1001"
+            sid.mkdir(parents=True)
+            ft = _iso_to_filetime(2024, 5, 6, 7, 8, 9)
+            (sid / "$Iabc123.txt").write_bytes(
+                _make_i_v1("C:\\Users\\x\\loot.txt", 42, ft))
+            (sid / "$Rabc123.txt").write_bytes(b"content")  # mismatched-case sibling
+            with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_recycle_bin(image_path=str(root), case_id="CASE-CI")
+            self.assertEqual(r["status"], "success")
+            self.assertEqual(r["total_rows"], 1)
+            rows = disk._read_csv(r["csv_path"])
+            self.assertEqual(rows[0]["original_path"], "C:\\Users\\x\\loot.txt")
+            self.assertEqual(rows[0]["content_present"], "True")  # $R paired CI
+
+    def test_powershell_history_lowercase_psreadline_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            root = Path(tmp) / "mnt" / "C"
+            (root / "Windows").mkdir(parents=True, exist_ok=True)
+            # NOTE lowercase 'l' in PSReadline (the real Win10 on-disk casing).
+            psr = (root / "Users" / "PC User" / "AppData" / "Roaming"
+                   / "Microsoft" / "Windows" / "PowerShell" / "PSReadline")
+            psr.mkdir(parents=True)
+            (psr / "ConsoleHost_history.txt").write_text(
+                "whoami\nGet-Process\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_powershell_history(image_path=str(root), case_id="CASE-CI")
+            self.assertEqual(r["status"], "success")
+            self.assertEqual(r["total_rows"], 2)
+
+    def test_scheduled_tasks_utf16_bom_xml_parses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._init(tmp)
+            root = Path(tmp) / "mnt" / "C"
+            tasks = root / "Windows" / "System32" / "Tasks"
+            tasks.mkdir(parents=True)
+            # UTF-16 LE + BOM (Windows Task XML on disk) - byte-level parse path.
+            (tasks / "Win16Task").write_bytes(
+                b"\xff\xfe" + _TASK_XML.encode("utf-16-le"))
+            with mock.patch.dict(os.environ, {"OUTPUT_BASE": tmp}, clear=False):
+                r = disk.extract_scheduled_tasks(image_path=str(root), case_id="CASE-CI")
+            self.assertEqual(r["status"], "success")
+            self.assertEqual(r["total_rows"], 1)
+            self.assertFalse(r["parser_failures"])
+            rows = disk._read_csv(r["csv_path"])
+            self.assertEqual(rows[0]["command"], "C:\\Users\\Public\\evil.exe")
+
+
 if __name__ == "__main__":
     unittest.main()

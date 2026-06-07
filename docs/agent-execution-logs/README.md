@@ -32,6 +32,20 @@ A showcase of the multi-host pipeline (IOC pivot host→host + unified correlati
 not a GT-scored eval. See its [README](CRIMSON-OSPREY-ENTERPRISE/README.md) for the attack
 chain and the unified graph. Methodology: `docs/multihost-pivot-methodology.md`.
 
+## Integration / execution evidence (not GT-scored)
+
+| Case | Scenario / OS | Findings | CONFIRMED | Artifacts |
+|------|---------------|----------|-----------|-----------|
+| [`VANKO-ZEBRAFISH-2016`](VANKO-ZEBRAFISH-2016/) | data-exfiltration triage (Windows 10, disk-only) | 130 | 3 | report·graph·json |
+
+End-to-end execution evidence for the native file-access extractors
+(`extract_recycle_bin`, `extract_powershell_history`, `extract_scheduled_tasks`) plus
+`extract_registry_fileaccess`, run on a real Windows 10 image. This is an **integration
+run, not a ground-truth-scored benchmark** (no published GT key) — it demonstrates the
+new artifacts contributing live findings (Recycle Bin recovered deleted Dropbox-synced
+files corroborating the confirmed cloud-exfiltration hypothesis; PowerShell history 216
+commands; 174 scheduled-task definitions parsed). Completed in a single clean session.
+
 ## What each file is
 
 | File | What it shows |

@@ -507,7 +507,8 @@ it (the [Usage](#usage) commands point Claude at this file). It is intentionally
 `investigative_taxonomy` block is **load-bearing**: `dispute_type` decides what the coverage gate
 enforces. For file-centric disputes (`intrusion_response` / `data_exfiltration` / `insider_threat` /
 `ransomware` / `financial_fraud` / `policy_violation`) the gate makes the **file-access extractors
-required** (ShellBags, LNK, Jump Lists, browser history, registry file-access) before a report can be
+required** (ShellBags, LNK, Jump Lists, browser history, registry file-access, Recycle Bin,
+PowerShell history, scheduled tasks) before a report can be
 generated - so a wrong or blank `dispute_type` changes what the investigation must cover.
 
 ```json
