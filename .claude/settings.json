@@ -109,15 +109,6 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit|Write|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "if command -v code-review-graph >/dev/null 2>&1; then code-review-graph update --skip-flows; fi"
-          }
-        ]
-      },
-      {
         "matcher": "mcp__savvydfir__mount_image|mcp__savvydfir__extract_mft_timeline|mcp__savvydfir__extract_usn_journal|mcp__savvydfir__summarize_evtx|mcp__savvydfir__extract_prefetch|mcp__savvydfir__get_amcache|mcp__savvydfir__extract_shimcache|mcp__savvydfir__extract_registry_run_keys|mcp__savvydfir__extract_srum|mcp__savvydfir__sigma_hunt|mcp__savvydfir__compare_disk_and_memory",
         "hooks": [
           {
