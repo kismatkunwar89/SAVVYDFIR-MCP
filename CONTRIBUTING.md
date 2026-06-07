@@ -72,6 +72,50 @@ or any PII. Use redacted/synthesized examples.
 4. Keep the agent SOP case-agnostic - no hardcoded examples from past
    investigations.
 
+## Adding or editing forensic-knowledge YAML
+
+The `data/forensic-knowledge/artifacts/` YAMLs supply the runtime forensic envelope
+(`forensic_caveat` / `corroborate_with` / `discipline_reminder`) injected into mapped tool
+responses. Two namespaces are in use:
+
+- `windows/` - real Windows **OS artifacts** (MFT, Prefetch, Amcache, registry, SRUM, …).
+- `analysis_outputs/` - **analysis-tool outputs** not tied to one analyzed OS (e.g. Sigma/Hayabusa
+  EVTX alerts, Volatility memory). `linux/` and `macos/` are reserved in the loader search list for
+  future real Linux/macOS OS artifacts.
+
+Loading is **registry-driven, not directory auto-discovery**: a brand-new artifact needs an entry in
+`server.py:_FK_MAP` (tool -> artifact name) **in addition to** the YAML file; editing an
+**already-mapped** YAML needs no code. Either way the server loads YAML at startup, so **restart the
+MCP server** to pick up changes. Keep YAML case-agnostic (no case-specific IPs, names, or hashes) and
+follow the field shape of an existing file such as
+`data/forensic-knowledge/artifacts/windows/mft.yaml`.
+
+Only **8** artifacts carry an inline `applicable_heuristics` slice (mft, evtx, prefetch, amcache,
+registry, srum, sigma, memory - see `scripts/extract_heuristic_slice.py:ARTIFACT_FILE_MAP`). FK YAML
+guidance is independent of that slice; an artifact can have an FK YAML without a `*-analyst.md` KB.
+
+## Contributing evaluation cases
+
+Accuracy is measured by `python3 scripts/eval/gt_match_scorer.py <ground_truth>.yaml <report.json>`,
+which scores a committed `report.json` / `state.json` against a hand-authored answer key on
+distinctive anchors - **no live evidence image required**; it is deterministic and CI-friendly. To
+add a case:
+
+1. Author the answer key at `scripts/eval/ground_truth/<CASE>.yaml` (cite the source document; state
+   limitations; do **not** commit licensed/courseware text that cannot be redistributed).
+2. Commit a finalized `report.json` fixture, and optionally a baseline snapshot under
+   `scripts/eval/baselines/`.
+3. The scorer must run clean - do **not** stuff distinctive tokens into findings to inflate recall.
+
+## Extending detection routing
+
+- ATT&CK routing lives in `sift_mcp/routing/attack_routing.yaml`
+  (`technique_id -> {name, tactics, required_artifacts, corroboration_sources}`); guarded by
+  `tests/test_attack_routing.py` - every `required_artifacts` entry must be a valid MCP tool name.
+- Chainsaw/Sigma rule mapping lives in `rules/chainsaw-sigma-mapping.yml` (vendored from
+  WithSecureLabs/chainsaw, GPL-3.0); guarded by `tests/test_sigma_mapping_regression.py`. Run that
+  test after any mapping edit - a silent mapping no-op previously caused 0 rules to match.
+
 ## License
 
 By contributing, you agree your contributions will be licensed under the
