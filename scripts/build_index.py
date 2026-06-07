@@ -351,6 +351,16 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         metavar="PATH",
         help="Path to the reports directory. Default: ./reports",
     )
+    p.add_argument(
+        "--cases",
+        default=None,
+        metavar="CASE_ID[,CASE_ID...]",
+        help=(
+            "Comma-separated case_ids to include (scope the dashboard to ONE "
+            "scenario). Default: every case under <reports-dir> "
+            "(backward-compatible)."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -358,6 +368,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = _parse_args(argv)
     reports_dir = Path(args.reports_dir).resolve()
     reports_dir.mkdir(parents=True, exist_ok=True)
+    wanted = {c.strip() for c in args.cases.split(",") if c.strip()} if args.cases else None
 
     cards_html = ""
     host_count = 0
@@ -374,6 +385,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             continue
 
         meta = data.get("meta", {})
+        if wanted is not None and meta.get("case_id", dir_name) not in wanted:
+            continue  # out of scenario scope
         nodes = data.get("nodes", [])
         edges = data.get("edges", [])
 

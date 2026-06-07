@@ -36,14 +36,17 @@ Cross-host edge types
 
 IOC extraction
 --------------
-The algorithm is purely heuristic and case-agnostic.  It scans each
-finding's ``supporting_indicators`` list and ``description`` for:
+The algorithm is purely heuristic and case-agnostic.
 
-* IPv4 addresses     ``\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}``
-* MD5 hashes         32 hex characters
-* SHA1 hashes        40 hex characters
-* SHA256 hashes      64 hex characters
-* Windows accounts   ``DOMAIN\\\\user`` or bare usernames in indicators
+* IPv4 / MD5 / SHA1 / SHA256 are scraped from ``supporting_indicators`` +
+  ``description`` + ``embedding_text`` (these tokens are unambiguous).
+* Windows accounts (``DOMAIN\\user``) are extracted ONLY from
+  ``supporting_indicators`` whose prefix is account-type (``account:`` /
+  ``domain\\user:`` / ``user:``), NOT from path/value_data indicators or free
+  text - Windows path / registry-key fragments (``hklm\\system``,
+  ``controlset001\\services``) false-match ``DOMAIN\\user`` and would otherwise
+  flood the graph with bogus shared_account edges. A benign + path/registry-root
+  reject list is the backstop. See ``_finding_iocs`` / ``_is_noise_account``.
 
 Noise filters: RFC-1918 local broadcast (255.x, .255), loopback (127.x),
 all-zeros, and very short tokens are excluded.
@@ -82,6 +85,11 @@ ATTACK_TACTICS: dict[str, str] = {
 }
 
 LATERAL_MOVEMENT_TACTIC = "TA0008"
+
+# Above this many same-(host, artifact_subtype) low-signal OBSERVATION findings,
+# collapse them into one expandable group node so bulk enumeration (e.g. a
+# registry sweep emitting one finding per key) does not flood the unified graph.
+OBS_GROUP_THRESHOLD = 20
 
 # Node colours
 COLORS: dict[str, str] = {
@@ -125,11 +133,61 @@ def _is_noise_ip(ip: str) -> bool:
     return ip in _NOISE_IPS
 
 
-def _extract_iocs(text: str) -> set[str]:
+# The DOMAIN\user regex also matches Windows path / registry fragments
+# (e.g. "windows\system32", "appdata\local", "hklm\system", "users\administrator").
+# Without filtering, those create thousands of bogus shared_account edges that
+# flood the unified graph. Accounts are therefore extracted ONLY from
+# supporting_indicators carrying an account-type prefix, and filtered here.
+_ACCOUNT_PREFIXES = (
+    "account", "domain\\user", "domain\\\\user", "user", "logon_account", "owner_account",
+)
+_BENIGN_ACCOUNT_FULL = {
+    "nt authority\\system", "nt authority\\local service",
+    "nt authority\\network service", "nt authority\\anonymous logon",
+    "nt authority\\iusr", "nt service\\trustedinstaller",
+}
+# "domain" components that are really path / registry roots, not AD domains.
+_NOISE_ACCOUNT_DOMAINS = {
+    "authority", "nt authority", "nt service", "iis apppool", "font driver host",
+    "window manager", "windows", "system32", "syswow64", "appdata", "programdata",
+    "users", "user", "hklm", "hkcu", "hkey_local_machine", "hkey_current_user",
+    "controlset001", "controlset002", "currentcontrolset", "software", "system",
+    "drivers", "inetsrv", "tcpip", "services", "microsoft", "winsxs", "temp",
+    "downloads", "documents", "desktop", "roaming", "local", "sharedaccess",
+    "firewallpolicy", "parameters", "program files", "programfiles", "windows nt",
+}
+_NOISE_ACCOUNT_USERS = {
+    "system", "local", "network", "anonymous", "local service", "network service",
+    "parameters", "services", "system32", "local settings",
+}
+_NOISE_USER_EXT = (".exe", ".dll", ".sys", ".dat", ".txt", ".log", ".ps1", ".bat", ".rar", ".zip")
+
+
+def _is_noise_account(acct: str) -> bool:
+    low = acct.lower().strip()
+    if low in _BENIGN_ACCOUNT_FULL:
+        return True
+    if "\\" not in low:
+        return True
+    domain, _, user = low.partition("\\")
+    if domain in _NOISE_ACCOUNT_DOMAINS:
+        return True
+    if user in _NOISE_ACCOUNT_USERS:
+        return True
+    if user.startswith(("umfd-", "dwm-")):
+        return True
+    if user.endswith(_NOISE_USER_EXT):
+        return True
+    return False
+
+
+def _extract_iocs(text: str, accounts: bool = True) -> set[str]:
     """Return a set of IOC strings extracted from *text*.
 
-    The strings are normalised (lowercased for accounts, uppercased for
-    hashes) so duplicates from different letter cases collapse.
+    Hashes/IPs are always extracted (unambiguous). Accounts are extracted only
+    when *accounts* is True (i.e. from account-prefixed indicators) and pass the
+    noise filter, so Windows path/registry fragments do not become shared_account
+    edges. Strings are normalised (lowercased accounts, lowercased hashes).
     """
     iocs: set[str] = set()
     for m in _RE_SHA256.finditer(text):
@@ -142,23 +200,32 @@ def _extract_iocs(text: str) -> set[str]:
         ip = m.group(1)
         if not _is_noise_ip(ip):
             iocs.add(f"ip:{ip}")
-    for m in _RE_ACCOUNT.finditer(text):
-        iocs.add(f"account:{m.group(1).lower()}")
+    if accounts:
+        for m in _RE_ACCOUNT.finditer(text):
+            if not _is_noise_account(m.group(1)):
+                iocs.add(f"account:{m.group(1).lower()}")
     return iocs
 
 
+def _indicator_prefix(ind: str) -> str:
+    return ind.split(":", 1)[0].strip().lower() if ":" in ind else ""
+
+
 def _finding_iocs(finding: dict[str, Any]) -> set[str]:
-    """Extract IOCs from a finding node's details dict."""
+    """Extract IOCs from a finding node's details dict.
+
+    Accounts only from account-prefixed supporting_indicators; hashes/IPs from
+    all text. description/embedding_text are scraped for hashes/IPs but NOT
+    accounts (free text is full of paths that false-match DOMAIN\\user)."""
     iocs: set[str] = set()
     details = finding.get("details", {})
 
-    # supporting_indicators list
     for ind in details.get("supporting_indicators", []):
-        iocs |= _extract_iocs(str(ind))
+        s = str(ind)
+        iocs |= _extract_iocs(s, accounts=_indicator_prefix(s) in _ACCOUNT_PREFIXES)
 
-    # description and embedding_text
-    iocs |= _extract_iocs(details.get("description", ""))
-    iocs |= _extract_iocs(details.get("embedding_text", ""))
+    iocs |= _extract_iocs(details.get("description", ""), accounts=False)
+    iocs |= _extract_iocs(details.get("embedding_text", ""), accounts=False)
 
     return iocs
 
@@ -220,6 +287,7 @@ class UnifiedGraphBuilder:
         label: str,
         style: str = "solid",
         color: Optional[str] = None,
+        details: Optional[dict[str, Any]] = None,
     ) -> None:
         key = (source, target, edge_type)
         if key in self._edge_keys:
@@ -234,7 +302,83 @@ class UnifiedGraphBuilder:
         }
         if color:
             e["color"] = color
+        if details:
+            e["details"] = details
         self.edges.append(e)
+
+    def _condense_bulk_observations(self, threshold: int = OBS_GROUP_THRESHOLD) -> None:
+        """Collapse bulk same-(case_id, artifact_subtype) OBSERVATION findings into
+        one expandable group node so low-signal enumeration (e.g. a registry sweep
+        emitting one finding per key) doesn't flood the unified graph.
+
+        Data-preserving: member finding_ids are kept on the group node.
+        Protected (never collapsed): CONFIRMED, corroborated, or any finding that
+        participates in a cross-host IOC edge. Case-agnostic; runs on the unified
+        builder only (per-host graphs keep full detail)."""
+        from collections import defaultdict
+        # Protect any finding carrying a NON-structural relationship edge
+        # (ioc / lateral_movement / shared_ioc / related / contradicts /
+        # correction). produced + contains are the only structural lineage edges
+        # and do NOT protect - collapsing a finding with a real relationship edge
+        # would drop a visible relationship, so those are kept.
+        STRUCTURAL_EDGES = {"produced", "contains"}
+        protected_rel: set[str] = set()
+        for e in self.edges:
+            if e.get("type") not in STRUCTURAL_EDGES:
+                protected_rel.add(e["source"])
+                protected_rel.add(e["target"])
+
+        # group key is (case_id, artifact_subtype) - fully dynamic, case-agnostic
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for n in self.nodes:
+            if n["type"] != "finding":
+                continue
+            d = n.get("details") or {}
+            if str(d.get("evidence_kind", "")).upper() != "OBSERVATION":
+                continue
+            if str(d.get("finding_status", "")).upper() == "CONFIRMED":
+                continue
+            if d.get("corroborated_by"):
+                continue
+            if n["id"] in protected_rel:
+                continue
+            groups[(d.get("case_id") or "?", d.get("artifact_subtype") or "other")].append(n)
+
+        remove: set[str] = set()
+        new_nodes: list[dict[str, Any]] = []
+        new_edges: list[dict[str, Any]] = []
+        for (case, sub), members in groups.items():
+            if len(members) <= threshold:
+                continue
+            member_ids = [m["id"] for m in members]
+            remove.update(member_ids)
+            gid = f"group:{case}:{sub}"
+            new_nodes.append({
+                "id": gid, "type": "finding",
+                "label": f"{sub} ×{len(members)}",
+                "color": members[0].get("color"), "size": 34,
+                "details": {
+                    "grouped": True, "artifact_subtype": sub, "case_id": case,
+                    "evidence_kind": "OBSERVATION", "finding_status": "ACTIVE",
+                    "support_count": len(members), "member_ids": member_ids,
+                    "description": (f"{len(members)} {sub} OBSERVATION findings on {case} "
+                                    f"collapsed for readability (members in member_ids)."),
+                },
+            })
+            anchor = f"host:{case}" if f"host:{case}" in self._node_ids else case
+            new_edges.append({
+                "source": anchor, "target": gid, "type": "produced",
+                "label": f"produced ×{len(members)}", "style": "solid",
+            })
+
+        if not remove:
+            return
+        self.nodes = [n for n in self.nodes if n["id"] not in remove] + new_nodes
+        self.edges = [e for e in self.edges
+                      if e["source"] not in remove and e["target"] not in remove] + new_edges
+        # refresh builder internal state after mutation
+        self._node_ids = {n["id"] for n in self.nodes}
+        self._edge_keys = {(e["source"], e["target"], e["type"]) for e in self.edges}
 
     # ------------------------------------------------------------------
     # Main build
@@ -372,11 +516,19 @@ class UnifiedGraphBuilder:
                 size=22,
             )
 
-            # Connect each finding to the IOC hub with typed edge
+            # Connect each finding to the IOC hub (full detail) AND emit a
+            # host->hub AGGREGATE edge per host so the cross-host topology is
+            # visible even when finding-level detail is dense (the unified graph
+            # otherwise renders as disconnected per-host islands).
             for case_id, finding_tactics in by_case.items():
+                host_fids: list[str] = []
+                host_has_lateral = False
                 for finding_id, tactic in finding_tactics:
                     if finding_id not in self._node_ids:
                         continue
+                    host_fids.append(finding_id)
+                    if tactic == LATERAL_MOVEMENT_TACTIC:
+                        host_has_lateral = True
 
                     # Choose edge type based on MITRE tactic
                     if tactic == LATERAL_MOVEMENT_TACTIC:
@@ -402,6 +554,27 @@ class UnifiedGraphBuilder:
                         color=ecolor,
                     )
 
+                # host -> hub aggregate (derived/summary edge, provenance kept)
+                host_node_id = f"host:{case_id}"
+                if host_fids and host_node_id in self._node_ids:
+                    if host_has_lateral:
+                        h_type, h_label, h_color = "host_lateral_movement", "lateral movement", COLORS["lateral_movement"]
+                    elif ioc_type == "account":
+                        h_type, h_label, h_color = "host_shared_account", "shared account", COLORS["shared_account"]
+                    else:
+                        h_type, h_label, h_color = "host_shared_ioc", f"shared {ioc_type}", COLORS["shared_ioc"]
+                    self._add_edge(
+                        host_node_id, ioc_node_id, h_type, h_label,
+                        style="solid", color=h_color,
+                        details={"derived": True, "finding_count": len(host_fids),
+                                 "finding_ids": host_fids, "ioc": ioc},
+                    )
+
+        # ---- Condense bulk OBSERVATION enumeration (registry-noise collapse) --
+        # Unified multi-host graphs only; single-host merges keep full detail.
+        if len(host_graphs) > 1:
+            self._condense_bulk_observations()
+
         # ---- Meta -------------------------------------------------------
         ioc_count = sum(
             1 for n in self.nodes if n["type"] == "ioc"
@@ -426,10 +599,13 @@ class UnifiedGraphBuilder:
 
     @staticmethod
     def _host_from_case(case_id: str) -> str:
-        """Extract the host portion from a case_id (last hyphen-token)."""
-        parts = case_id.split("-")
-        # e.g. SRL-2018-WKSTN01 → WKSTN01
-        return parts[-1] if parts else case_id
+        """Host identifier for a case node.
+
+        Uses the FULL case_id to guarantee uniqueness. A last-hyphen-token
+        heuristic collapses distinct hosts that share a suffix - e.g.
+        ``...-WKSTN-01`` and ``...-RD-01`` both became ``01`` and collided into a
+        single ``host:01`` node (4 host nodes for 5 cases). Case-agnostic."""
+        return case_id or "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +663,17 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "Default: <script_dir>/../templates/graph.html"
         ),
     )
+    p.add_argument(
+        "--cases",
+        default=None,
+        metavar="CASE_ID[,CASE_ID...]",
+        help=(
+            "Comma-separated case_ids to merge (scope to ONE scenario). "
+            "Default: every case found under <reports-dir> (backward-compatible). "
+            "Use this so a multi-host scenario's unified graph does not pull in "
+            "unrelated cases sharing the reports dir."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -513,8 +700,14 @@ def main(argv: Optional[list[str]] = None) -> int:
         else project_root / "templates" / "graph.html"
     )
 
+    # Optional scenario scope (case-agnostic): merge only these case_ids.
+    wanted = None
+    if args.cases:
+        wanted = {c.strip() for c in args.cases.split(",") if c.strip()}
+
     # ---- Discover per-host graph.json files ---------------------------------
     host_graphs: list[tuple[str, dict[str, Any]]] = []
+    found_cases: set[str] = set()
 
     for graph_json_path in sorted(reports_dir.glob("*/graph.json")):
         # Skip the unified dir itself
@@ -530,10 +723,19 @@ def main(argv: Optional[list[str]] = None) -> int:
             continue
 
         case_id = graph.get("meta", {}).get("case_id", graph_json_path.parent.name)
+        found_cases.add(case_id)
+        if wanted is not None and case_id not in wanted:
+            continue  # out of scenario scope
         host_graphs.append((case_id, graph))
         print(f"  Loaded: {graph_json_path.parent.name}  "
               f"({len(graph.get('nodes', []))} nodes, "
               f"{len(graph.get('edges', []))} edges)")
+
+    if wanted is not None:
+        missing = sorted(wanted - found_cases)
+        if missing:
+            print(f"WARNING: requested cases with no graph.json (skipped): {missing}",
+                  file=sys.stderr)
 
     if not host_graphs:
         print(

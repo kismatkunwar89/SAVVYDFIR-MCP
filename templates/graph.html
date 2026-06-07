@@ -453,6 +453,13 @@ function showDetail(node) {
     if (d.artifact_path) html += field('Artifact Path', d.artifact_path, true);
     if (d.tool_name) html += field('Tool', d.tool_name);
 
+    // Grouped (collapsed bulk OBSERVATION findings) - list members so the
+    // collapse stays data-preserving / expandable in the panel.
+    if (d.grouped && Array.isArray(d.member_ids) && d.member_ids.length) {
+      html += '<div class="detail-section"><div class="detail-section-title">Grouped findings ('+d.member_ids.length+')</div>';
+      html += '<div style="max-height:160px;overflow:auto;font-family:monospace;font-size:12px;line-height:1.6;opacity:.85">'+d.member_ids.map(escHtml).join('<br>')+'</div></div>';
+    }
+
     // ATT&CK
     if (d.mitre_tactic || d.mitre_technique) {
       html += '<div class="detail-section"><div class="detail-section-title">MITRE ATT&CK</div>';
@@ -687,9 +694,12 @@ const state = {
   // Per-bucket filter: empty Set = no bucket filter active. When non-empty,
   // ONLY findings in selected buckets are visible.
   selectedBuckets: new Set(),
-  // Node roles — all four checked by default. Evidence Source visibility is
-  // what shows the disk/memory lineage edges; users want that on first load.
-  visibleRoles: new Set(['case','evidence_source','finding','correction']),
+  // Node roles visible by default. 'host' and 'ioc' MUST be included or the
+  // unified cross-host graph prunes every host/ioc-hub node here (line: role
+  // filter) and with them every lateral_movement / shared_ioc edge - which is
+  // why the multi-host graph rendered as disconnected islands. Harmless for
+  // single-host graphs (they contain no host/ioc nodes).
+  visibleRoles: new Set(['case','evidence_source','finding','correction','host','ioc']),
 };
 
 function getFilteredData() {

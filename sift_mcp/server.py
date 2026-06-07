@@ -3283,6 +3283,7 @@ def serve_graph(
 def merge_host_graphs(
     reports_dir: Optional[str] = None,
     output_path: Optional[str] = None,
+    cases: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Merge per-host investigation graphs into a unified cross-host graph.
 
@@ -3306,6 +3307,11 @@ def merge_host_graphs(
     output_path:
         Override path for ``unified/graph.html``.
         Defaults to ``./reports/unified/graph.html``.
+    cases:
+        Optional list of case_ids to scope the merge to ONE scenario
+        (case-agnostic). Default ``None`` merges every case in ``reports_dir``
+        (backward-compatible). Pass a multi-host scenario's case_ids so its
+        unified graph does not pull in unrelated cases sharing the reports dir.
 
     Returns
     -------
@@ -3354,6 +3360,8 @@ def merge_host_graphs(
         "--reports-dir", str(resolved_reports),
         "--output", str(resolved_output),
     ]
+    if cases:
+        cmd += ["--cases", ",".join(cases)]
 
     try:
         proc = subprocess.run(
@@ -3408,6 +3416,7 @@ def merge_host_graphs(
 @mcp.tool()
 def build_reports_index(
     reports_dir: Optional[str] = None,
+    cases: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Generate reports/index.html - a dashboard listing all investigations.
 
@@ -3427,6 +3436,10 @@ def build_reports_index(
     reports_dir:
         Directory containing per-host report subdirectories.
         Defaults to ``./reports``.
+    cases:
+        Optional list of case_ids to scope the dashboard to ONE scenario
+        (case-agnostic). Default ``None`` lists every case in ``reports_dir``
+        (backward-compatible).
 
     Returns
     -------
@@ -3457,6 +3470,8 @@ def build_reports_index(
         sys.executable, str(index_script),
         "--reports-dir", str(resolved_reports),
     ]
+    if cases:
+        cmd += ["--cases", ",".join(cases)]
 
     try:
         proc = subprocess.run(
