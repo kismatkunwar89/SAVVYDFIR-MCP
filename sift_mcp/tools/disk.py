@@ -7169,3 +7169,553 @@ def extract_registry_fileaccess(
     )
     response["fragment_counts"] = fragment_counts
     return response
+
+# ===========================================================================
+# New FK-only OPTIONAL extractors (native parsers - no EZ tool / dotnet dep):
+#   extract_recycle_bin       - native $I parser, per-SID under $Recycle.Bin
+#   extract_powershell_history- native plain-text PSReadline read, per-user
+#   extract_scheduled_tasks   - native XML parse of Windows\System32\Tasks
+# All mirror the user-activity extractor template (volume-root isolation,
+# documented-absence taxonomy, provenance columns, state mirror). Case-agnostic.
+# ===========================================================================
+
+#: FILETIME epoch delta: 100-ns intervals between 1601-01-01 and 1970-01-01.
+_FILETIME_EPOCH_DELTA = 116444736000000000
+
+
+def _filetime_to_iso_utc(filetime: int) -> Optional[str]:
+    """Convert a 64-bit Windows FILETIME to an ISO-8601 UTC string (or None)."""
+    try:
+        if filetime <= 0:
+            return None
+        seconds = (filetime - _FILETIME_EPOCH_DELTA) / 10_000_000.0
+        dt = datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=seconds)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S")
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _parse_recycle_i_file(data: bytes) -> dict[str, Any]:
+    """Parse a Recycle Bin ``$I`` metadata blob (v1 fixed-260 / v2 length-prefixed).
+
+    Returns a dict with ``original_path``, ``original_size_bytes``,
+    ``deletion_time_utc``, ``i_format_version``. Raises ValueError on a blob too
+    short or malformed to interpret so the caller records a parser_failure.
+    """
+    import struct
+    if len(data) < 0x18:
+        raise ValueError("i_file_too_short_for_header")
+    version = struct.unpack_from("<q", data, 0x00)[0]
+    size = struct.unpack_from("<q", data, 0x08)[0]
+    filetime = struct.unpack_from("<q", data, 0x10)[0]
+    if version == 1:
+        # v1: fixed 260 UTF-16LE chars (520 bytes) at offset 0x18, NUL-terminated.
+        raw = data[0x18:0x18 + 520]
+        path = raw.decode("utf-16-le", errors="replace").split("\x00", 1)[0]
+        fmt = 1
+    elif version == 2:
+        if len(data) < 0x1C:
+            raise ValueError("i_file_too_short_for_v2_length")
+        n_chars = struct.unpack_from("<I", data, 0x18)[0]
+        byte_len = n_chars * 2
+        raw = data[0x1C:0x1C + byte_len]
+        path = raw.decode("utf-16-le", errors="replace").split("\x00", 1)[0]
+        fmt = 2
+    else:
+        raise ValueError(f"unknown_i_format_version:{version}")
+    return {
+        "original_path": path,
+        "original_size_bytes": size,
+        "deletion_time_utc": _filetime_to_iso_utc(filetime) or "",
+        "i_format_version": fmt,
+    }
+
+
+def extract_recycle_bin(
+    image_path: str,
+    case_id: Optional[str] = None,
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract Windows Recycle Bin ($I/$R) metadata per SID via a native parser.
+
+    Discovers ``$Recycle.Bin/<SID>/$I*`` (+ matching ``$R*``) for every volume
+    root derived from image_path, parses the $I binary header (v1 fixed-260 /
+    v2 length-prefixed), and merges rows with provenance columns.
+
+    A Recycle Bin entry proves a file was sent to the bin under a SID via the
+    Explorer shell - NOT that a specific human deleted it, opened it, or ran it.
+    Corroborate with $UsnJrnl rename + $MFT + session attribution.
+
+    image_path MUST be a mounted Windows volume root; a path that is not a
+    Windows volume returns status=error rather than scanning an ambient mount.
+    """
+    tool = "disk.extract_recycle_bin"
+    if _state is None or _audit is None:
+        return _not_initialised(tool)
+
+    # Per-SID discovery across every volume root (Recycle Bin is per-SID, NOT
+    # per-user, so _iter_user_profile_dirs does not apply).
+    discovered: list[tuple[str, Path, Optional[Path]]] = []  # (sid, i_file, r_file)
+    legacy_seen = False
+    for root in _user_activity_volume_roots(image_path):
+        for bin_name in ("$Recycle.Bin",):
+            bin_dir = root / bin_name
+            if not _path_is_dir(bin_dir):
+                continue
+            try:
+                sid_dirs = [d for d in bin_dir.iterdir() if _path_is_dir(d)]
+            except OSError:
+                sid_dirs = []
+            for sid_dir in sid_dirs:
+                try:
+                    i_files = sorted(sid_dir.glob("$I*"))
+                except OSError:
+                    i_files = []
+                for i_file in i_files:
+                    if not _path_is_file(i_file):
+                        continue
+                    r_name = "$R" + i_file.name[2:]
+                    r_file = sid_dir / r_name
+                    discovered.append(
+                        (sid_dir.name, i_file, r_file if _path_is_file(r_file) else None)
+                    )
+        # Legacy RECYCLER probe (v1.1 defer: record a gap, do not parse INFO2).
+        if _path_is_dir(root / "RECYCLER"):
+            legacy_seen = True
+
+    profiles_checked = sorted({sid for sid, _, _ in discovered})
+
+    exec_id = _audit.next_execution_id()
+    started_at = time.monotonic()
+    raw_command = "native_i_parser <volume>/$Recycle.Bin/<SID>/$I*"
+    _audit.log_execution(
+        execution_id=exec_id, tool_name=tool,
+        parameters={"image_path": image_path, "profiles_checked": profiles_checked},
+        command_line=raw_command,
+    )
+
+    if not _user_activity_volume_roots(image_path):
+        return _useractivity_no_volume_error(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, image_path=image_path,
+        )
+
+    if not discovered:
+        return _useractivity_zero_row_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=[], artifact_label="Recycle Bin $I metadata files",
+            discovered=False,
+        )
+
+    merged_rows: list[dict[str, Any]] = []
+    profiles_with_data: set[str] = set()
+    parser_failures: list[dict[str, Any]] = []
+    for sid, i_file, r_file in discovered:
+        status = "ok"
+        try:
+            data = i_file.read_bytes()
+            parsed = _parse_recycle_i_file(data)
+        except Exception as exc:
+            status = f"parser_error:{type(exc).__name__}"
+            parser_failures.append({
+                "profile": sid, "artifact": str(i_file), "status": status,
+                "reason": str(exc), "recovered_rows": 0,
+            })
+            continue
+        ext = ""
+        if parsed.get("original_path"):
+            ext = Path(parsed["original_path"]).suffix.lstrip(".").lower()
+        row = {
+            "sid": sid,
+            "original_path": parsed.get("original_path", ""),
+            "original_size_bytes": parsed.get("original_size_bytes", 0),
+            "deletion_time_utc": parsed.get("deletion_time_utc", ""),
+            "i_file_name": i_file.name,
+            "r_file_name": r_file.name if r_file is not None else "",
+            "content_present": bool(r_file is not None),
+            "i_format_version": parsed.get("i_format_version", ""),
+            "original_extension": ext,
+        }
+        merged_rows.extend(_tag_provenance(
+            [row], source_profile=sid, source_hive="",
+            source_artifact_path=str(i_file),
+            parser_command="native_i_parser", parser_status=status,
+        ))
+        profiles_with_data.add(sid)
+
+    if not merged_rows:
+        return _useractivity_zero_row_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=parser_failures,
+            artifact_label="Recycle Bin $I records", discovered=True,
+        )
+
+    def _finding(durable_csv, total_rows):
+        return Finding(
+            case_id=_case_id(), finding_type="other", artifact_type="disk",
+            artifact_path=durable_csv or str(discovered[0][1]), tool_name=tool,
+            execution_id=exec_id, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"Recycle Bin: parsed {total_rows} $I deletion record(s) across "
+                f"{len(profiles_with_data)} SID(s). An entry proves a file was sent "
+                "to the bin under a SID via the Explorer shell, NOT that a specific "
+                "human deleted/opened/ran it. Corroborate with $UsnJrnl rename + "
+                "$MFT + session (EID 4624); resolve SID via ProfileList before "
+                "attributing WHO."
+            ),
+            supporting_indicators=sorted(profiles_with_data)[:20],
+        )
+
+    response = _finalize_useractivity_response(
+        tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
+        rows=merged_rows, profiles_checked=profiles_checked,
+        profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
+        tool_short_name="recycle_bin", csv_filename="recycle_bin.csv",
+        finding_factory=_finding, max_entries=max_entries,
+    )
+    if legacy_seen:
+        response["legacy_info2_not_parsed"] = True
+    return response
+
+
+#: Case-agnostic high-signal PowerShell command patterns (no hardcoded IOCs).
+_PS_HIGH_SIGNAL = re.compile(
+    r"(-enc(odedcommand)?\b|\biex\b|invoke-expression|downloadstring|"
+    r"downloadfile|bitsadmin|certutil|frombase64string|[A-Za-z0-9+/]{60,}={0,2})",
+    re.IGNORECASE,
+)
+
+
+def extract_powershell_history(
+    image_path: str,
+    case_id: Optional[str] = None,
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract PSReadline PowerShell console history per user (native text read).
+
+    Discovers each profile's
+    ``AppData/Roaming/Microsoft/Windows/PowerShell/PSReadLine`` directory and
+    reads every ``*_history.txt`` (ConsoleHost + VSCode/ISE host variants), one
+    CSV row per command line, flagging case-agnostic high-signal patterns.
+
+    PSReadline proves commands were ENTERED in an interactive PS console host
+    under that user - NOT that they executed, that a human (vs automation) typed
+    them, or that earlier commands were not rotated off (default cap 4096 lines).
+    The file is attacker-editable (no chain-of-custody on contents). Corroborate
+    with PowerShell EVTX 4104 + Prefetch + EID 4688.
+
+    image_path MUST be a mounted Windows volume root; a path that is not a
+    Windows volume returns status=error rather than scanning an ambient mount.
+    """
+    tool = "disk.extract_powershell_history"
+    if _state is None or _audit is None:
+        return _not_initialised(tool)
+
+    dirs = _discover_user_dirs(
+        image_path,
+        ("AppData/Roaming/Microsoft/Windows/PowerShell/PSReadLine",),
+    )
+    discovered: list[tuple[str, Path]] = []  # (profile, history_file)
+    for profile_name, psr_dir, _rel in dirs:
+        try:
+            hist_files = sorted(psr_dir.glob("*_history.txt"))
+        except OSError:
+            hist_files = []
+        for hist in hist_files:
+            if _path_is_file(hist):
+                discovered.append((profile_name, hist))
+
+    profiles_checked = sorted({name for name, _ in _iter_user_profile_dirs(image_path)})
+
+    exec_id = _audit.next_execution_id()
+    started_at = time.monotonic()
+    raw_command = "native_psreadline_read <profile>/.../PSReadLine/*_history.txt"
+    _audit.log_execution(
+        execution_id=exec_id, tool_name=tool,
+        parameters={"image_path": image_path, "profiles_checked": profiles_checked},
+        command_line=raw_command,
+    )
+
+    if not _user_activity_volume_roots(image_path):
+        return _useractivity_no_volume_error(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, image_path=image_path,
+        )
+
+    if not discovered:
+        return _useractivity_zero_row_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=[], artifact_label="PSReadline history files",
+            discovered=False,
+        )
+
+    merged_rows: list[dict[str, Any]] = []
+    profiles_with_data: set[str] = set()
+    parser_failures: list[dict[str, Any]] = []
+    for profile_name, hist in discovered:
+        status = "ok"
+        try:
+            text = hist.read_text(encoding="utf-8", errors="replace")
+            mtime = datetime.fromtimestamp(hist.stat().st_mtime, tz=timezone.utc)
+            mtime_iso = mtime.strftime("%Y-%m-%dT%H:%M:%S")
+        except Exception as exc:
+            status = f"parser_error:{type(exc).__name__}"
+            parser_failures.append({
+                "profile": profile_name, "artifact": str(hist), "status": status,
+                "reason": str(exc), "recovered_rows": 0,
+            })
+            continue
+        rows: list[dict[str, Any]] = []
+        for idx, line in enumerate(text.splitlines(), start=1):
+            if line == "":
+                continue
+            rows.append({
+                "command": line,
+                "line_no": idx,
+                "source_history_file": hist.name,
+                "file_mtime_utc": mtime_iso,
+                "high_signal": bool(_PS_HIGH_SIGNAL.search(line)),
+            })
+        if rows:
+            merged_rows.extend(_tag_provenance(
+                rows, source_profile=profile_name, source_hive="",
+                source_artifact_path=str(hist),
+                parser_command="native_psreadline_read", parser_status=status,
+            ))
+            profiles_with_data.add(profile_name)
+
+    if not merged_rows:
+        return _useractivity_zero_row_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=parser_failures,
+            artifact_label="PSReadline command lines", discovered=True,
+        )
+
+    def _finding(durable_csv, total_rows):
+        return Finding(
+            case_id=_case_id(), finding_type="execution", artifact_type="disk",
+            artifact_path=durable_csv or str(discovered[0][1]), tool_name=tool,
+            execution_id=exec_id, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"PowerShell history: parsed {total_rows} command line(s) across "
+                f"{len(profiles_with_data)} profile(s). PSReadline proves commands "
+                "were ENTERED in an interactive console host under that user, NOT "
+                "that they executed or that a human typed them; the file is "
+                "attacker-editable and capped (~4096 lines) so early absence may be "
+                "rotation. Corroborate with EVTX 4104 + Prefetch + EID 4688."
+            ),
+            supporting_indicators=sorted(profiles_with_data)[:20],
+        )
+
+    return _finalize_useractivity_response(
+        tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
+        rows=merged_rows, profiles_checked=profiles_checked,
+        profiles_with_data=sorted(profiles_with_data), parser_failures=parser_failures,
+        tool_short_name="powershell_history", csv_filename="powershell_history.csv",
+        finding_factory=_finding, max_entries=max_entries,
+    )
+
+
+#: Case-agnostic off-path indicators for a scheduled-task command (no hardcoded IOCs).
+_TASK_OFF_PATH = re.compile(
+    r"(\\temp\\|\\appdata\\|\\users\\public\\|\\\$recycle\.bin\\|"
+    r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|-enc(odedcommand)?\b|frombase64string)",
+    re.IGNORECASE,
+)
+
+
+def _parse_task_xml(xml_text: str, task_rel: str) -> dict[str, Any]:
+    """Parse a Task Scheduler XML definition into a flat row dict."""
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(xml_text)
+
+    def _strip(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    def _find_text(parent, *names) -> str:
+        for el in parent.iter():
+            if _strip(el.tag) in names and (el.text or "").strip():
+                return el.text.strip()
+        return ""
+
+    command = _find_text(root, "Command")
+    arguments = _find_text(root, "Arguments")
+    principal_userid = _find_text(root, "UserId")
+    run_level = _find_text(root, "RunLevel")
+    author = _find_text(root, "Author")
+    registration_date = _find_text(root, "Date")
+    uri = _find_text(root, "URI")
+    enabled = _find_text(root, "Enabled")
+    # Serialize trigger element names (a compact summary).
+    triggers: list[str] = []
+    for el in root.iter():
+        if _strip(el.tag) == "Triggers":
+            for child in list(el):
+                triggers.append(_strip(child.tag))
+    trigger_summary = ",".join(triggers)
+    blob = f"{command} {arguments}".strip()
+    off_path = bool(_TASK_OFF_PATH.search(blob)) if blob else False
+    builtin = task_rel.replace("\\", "/").lower().startswith("microsoft/windows/")
+    return {
+        "task_name": task_rel.replace("/", "\\").rsplit("\\", 1)[-1],
+        "task_path": task_rel.replace("/", "\\"),
+        "command": command,
+        "arguments": arguments,
+        "triggers": trigger_summary,
+        "principal_userid": principal_userid,
+        "run_level": run_level,
+        "author": author,
+        "registration_date": registration_date,
+        "uri": uri,
+        "enabled": enabled,
+        "builtin_baseline": builtin,
+        "off_path_command": off_path,
+    }
+
+
+def extract_scheduled_tasks(
+    image_path: str,
+    case_id: Optional[str] = None,
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract on-disk scheduled-task definitions via a native XML parser.
+
+    Walks ``Windows/System32/Tasks/**`` (recursive, extensionless XML) across
+    every volume root, dedups on device/inode (hardlink guard), and parses
+    Command/Arguments/Principal/Author/RegistrationInfo per task. All tasks are
+    emitted (completeness) with a ``builtin_baseline`` flag so analysts can
+    filter the hundreds of legitimate ``\\Microsoft\\Windows\\...`` tasks.
+
+    A task definition proves a task was REGISTERED with a given command/principal
+    as of the registration date - NOT that it ever FIRED. Corroborate with
+    TaskScheduler EVTX 4698/4702 + 200/201, Prefetch of the target binary, and
+    registry TaskCache LastRunTime.
+
+    image_path MUST be a mounted Windows volume root; a path that is not a
+    Windows volume returns status=error rather than scanning an ambient mount.
+    """
+    tool = "disk.extract_scheduled_tasks"
+    if _state is None or _audit is None:
+        return _not_initialised(tool)
+
+    discovered: list[tuple[Path, str]] = []  # (xml_path, task_rel)
+    seen_real: set[str] = set()
+    for root in _user_activity_volume_roots(image_path):
+        tasks_root = root / "Windows" / "System32" / "Tasks"
+        if not _path_is_dir(tasks_root):
+            continue
+        try:
+            candidates = sorted(tasks_root.rglob("*"))
+        except OSError:
+            candidates = []
+        for xml_path in candidates:
+            if not _path_is_file(xml_path):
+                continue
+            # Hardlink guard: dedup on (device, inode) so multiple directory
+            # entries pointing at one inode are counted once. resolve() does NOT
+            # collapse hardlinks (only symlinks), so stat the inode directly;
+            # fall back to the resolved path string when the inode is unavailable.
+            try:
+                st = xml_path.stat()
+                real = (f"{st.st_dev}:{st.st_ino}" if st.st_ino
+                        else str(xml_path.resolve()).lower())
+            except OSError:
+                real = str(xml_path).lower()
+            if real in seen_real:
+                continue
+            seen_real.add(real)
+            try:
+                rel = str(xml_path.relative_to(tasks_root))
+            except ValueError:
+                rel = xml_path.name
+            discovered.append((xml_path, rel))
+
+    # System-path tool: no per-user profiles. "system" stands in for the column.
+    profiles_checked = ["system"] if discovered else []
+
+    exec_id = _audit.next_execution_id()
+    started_at = time.monotonic()
+    raw_command = "native_task_xml <volume>/Windows/System32/Tasks/**"
+    _audit.log_execution(
+        execution_id=exec_id, tool_name=tool,
+        parameters={"image_path": image_path, "profiles_checked": profiles_checked},
+        command_line=raw_command,
+    )
+
+    if not _user_activity_volume_roots(image_path):
+        return _useractivity_no_volume_error(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, image_path=image_path,
+        )
+
+    if not discovered:
+        return _useractivity_zero_row_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=[], artifact_label="scheduled-task XML files (System32\\Tasks)",
+            discovered=False,
+        )
+
+    merged_rows: list[dict[str, Any]] = []
+    parser_failures: list[dict[str, Any]] = []
+    for xml_path, rel in discovered:
+        status = "ok"
+        try:
+            xml_text = xml_path.read_text(encoding="utf-8", errors="replace")
+            row = _parse_task_xml(xml_text, rel)
+        except Exception as exc:
+            status = f"parser_error:{type(exc).__name__}"
+            parser_failures.append({
+                "profile": "system", "artifact": str(xml_path), "status": status,
+                "reason": str(exc), "recovered_rows": 0,
+            })
+            continue
+        merged_rows.extend(_tag_provenance(
+            [row], source_profile="system", source_hive="",
+            source_artifact_path=str(xml_path),
+            parser_command="native_task_xml", parser_status=status,
+        ))
+
+    if not merged_rows:
+        return _useractivity_zero_row_response(
+            tool=tool, exec_id=exec_id, raw_command=raw_command,
+            started_at=started_at, profiles_checked=profiles_checked,
+            parser_failures=parser_failures,
+            artifact_label="scheduled-task definitions", discovered=True,
+        )
+
+    profiles_with_data = ["system"]
+
+    def _finding(durable_csv, total_rows):
+        return Finding(
+            case_id=_case_id(), finding_type="persistence", artifact_type="disk",
+            artifact_path=durable_csv or str(discovered[0][0]), tool_name=tool,
+            execution_id=exec_id, iteration=_current_iteration(),
+            evidence_kind=EvidenceKind.OBSERVATION, finding_status=FindingStatus.ACTIVE,
+            confidence=0.70,
+            description=(
+                f"Scheduled tasks: parsed {total_rows} on-disk task definition(s). "
+                "A definition proves a task was REGISTERED with a given command/"
+                "principal as of the registration date, NOT that it ever FIRED. "
+                "Built-in \\Microsoft\\Windows\\ tasks are flagged builtin_baseline; "
+                "review off_path_command rows. Corroborate with EVTX 4698/4702 + "
+                "200/201, Prefetch, and registry TaskCache LastRunTime."
+            ),
+            supporting_indicators=["system"],
+        )
+
+    return _finalize_useractivity_response(
+        tool=tool, exec_id=exec_id, raw_command=raw_command, started_at=started_at,
+        rows=merged_rows, profiles_checked=profiles_checked,
+        profiles_with_data=profiles_with_data, parser_failures=parser_failures,
+        tool_short_name="scheduled_tasks", csv_filename="scheduled_tasks.csv",
+        finding_factory=_finding, max_entries=max_entries,
+    )

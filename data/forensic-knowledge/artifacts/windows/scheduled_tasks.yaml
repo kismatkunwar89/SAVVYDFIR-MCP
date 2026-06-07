@@ -1,0 +1,98 @@
+# Forensic-knowledge: Windows scheduled-task on-disk XML definitions (System32\Tasks).
+# Generic Windows forensic discipline - no case specifics.
+artifact: scheduled_tasks
+aka:
+  - "Scheduled Tasks"
+  - "Task Scheduler XML"
+  - "System32\\Tasks"
+  - "schtasks / Task definitions"
+
+what_it_is: >
+  Windows Task Scheduler stores each registered task as an extensionless XML file
+  under C:\\Windows\\System32\\Tasks, mirroring the registry TaskCache. Each XML
+  encodes the action (command + arguments), triggers, the principal it runs as
+  (UserId / RunLevel such as HighestAvailable), the registration info (Author,
+  registration Date, URI), and settings (Enabled). On-disk task definitions are a
+  classic persistence (T1053.005) and lateral-movement mechanism and survive even
+  when the TaskScheduler EVTX has rolled over. They are self-contained and richer
+  than the registry side for command/principal detail.
+
+locations:
+  - "C:\\Windows\\System32\\Tasks\\<folder>\\<TaskName> - extensionless XML, nested arbitrarily deep (e.g. \\Microsoft\\Windows\\... for built-in tasks)."
+  - "Registry side: SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Schedule\\TaskCache\\{Tree,Tasks} - holds the GUID-to-task tree and per-task LastRunTime / metadata."
+  - "Files under System32\\Tasks can be hardlinked (multiple directory entries -> one inode); dedup on resolved path/inode to avoid double-counting."
+
+naming_format: >
+  Extensionless UTF-16/UTF-8 XML conforming to the Task Scheduler schema
+  (http://schemas.microsoft.com/windows/2004/02/mit/task). Key elements:
+  RegistrationInfo (Author, Date, URI), Triggers, Principals/Principal (UserId,
+  RunLevel), Actions/Exec (Command, Arguments), Settings (Enabled). Some files may
+  be non-XML or malformed - parse defensively and record a parse failure rather
+  than crashing.
+
+proves:
+  - "A task was REGISTERED with a specific command, arguments, and principal as of its RegistrationInfo Date."
+  - "The identity (UserId/SID) and privilege level (RunLevel, e.g. HighestAvailable) the task is configured to run as."
+  - "The configured triggers (logon, boot, schedule, event) and whether the task is Enabled."
+  - "The author string and (when present) the URI/path of the task within the tree."
+
+does_not_prove:
+  - "A task definition proves the task was REGISTERED, NOT that it ever FIRED - corroborate run with TaskScheduler EVTX 200/201, EID 4698/4702, Prefetch of the target binary, or registry TaskCache LastRunTime."
+  - "The XML file's filesystem LastWrite time is NOT the task creation time - it changes on any edit; use the RegistrationInfo Date for registration timing (itself attacker-settable)."
+  - "It does NOT prove a human (versus a script/installer/malware) created the task."
+  - "Author and RegistrationInfo Date are fields inside an editable XML and can be forged/backdated - treat as claims, not anchors, until corroborated."
+  - "Absence of a malicious task does NOT prove no persistence - it may have been deleted post-execution, registered only in the registry TaskCache, or use a different ASEP."
+
+timestamp_semantics:
+  registration_date: "RegistrationInfo/Date is the claimed task registration time (local time in the XML); standardize to UTC and treat as attacker-editable, corroborate with EVTX 4698."
+  file_lastwrite: "The System32\\Tasks XML file MFT $SI LastWrite reflects the last modification, NOT creation - it updates on any edit and is not the registration time."
+  taskcache_lastrun: "Registry TaskCache holds LastRunTime/NextRunTime - the authoritative on-host record of whether and when the task actually executed."
+  reliability_note: "The unforgeable run evidence is the TaskScheduler Operational EVTX (200/201) and registry TaskCache LastRunTime, not the XML's own date fields."
+
+version_differences:
+  vista_plus: "The System32\\Tasks XML store + TaskCache registry model is used from Windows Vista/Server 2008 onward."
+  legacy_xp: "Windows XP/2003 used .job binary files under C:\\Windows\\Tasks (different format); the XML store does not exist there."
+
+corroborate_with:
+  event_logs_security: "EID 4698 (task created) / 4702 (task updated) record registration with the task content and the registering user - the authoritative registration cross-check."
+  taskscheduler_operational: "TaskScheduler/Operational EID 200 (action started) / 201 (action completed) prove the task actually RAN and when."
+  prefetch: "Prefetch of the task's target binary corroborates that the action executed."
+  registry_taskcache: "TaskCache {Tree,Tasks} LastRunTime confirms execution and the GUID linkage; an XML present with no TaskCache entry (or vice versa) is itself an anomaly."
+  amcache_shimcache: "Amcache/ShimCache corroborate the target binary was present and observed by Windows."
+  event_logs_security_4688: "EID 4688 process creation under the Task Scheduler service (svchost taskeng/taskhostw parent) corroborates the spawned action."
+
+corroboration_escalation:
+  alone: >
+    A task XML ALONE is an OBSERVATION (~0.70) that a task was registered with a
+    given command/principal as of a (editable) date - it does not prove the task
+    ever fired or who created it. Treat a lone off-baseline task as a persistence
+    lead to corroborate, not proof of executed persistence.
+  combinations:
+    - sources: ["scheduled_tasks", "event_logs_security (EID 4698/4702)"]
+      plus_timestamps: "XML command/principal matched to a 4698 task-created event time + registering user"
+      upgrades_to: "PROBABLE registered persistence (~0.85)"
+      rationale: "4698 independently dates the registration and names the user that created the task."
+    - sources: ["scheduled_tasks", "taskscheduler_operational (200/201)", "prefetch"]
+      plus_timestamps: "task action-started (200) aligned with Prefetch last-run of the target binary"
+      upgrades_to: "CONFIRMED executed persistence (~1.0)"
+      rationale: "Registration (XML) + actual run (200/201) + execution proof (Prefetch) form a court-defensible executed-persistence stack."
+  tiers: "1 source = observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)."
+
+heuristics:
+  - "Emit ALL tasks for completeness but baseline the hundreds of legitimate \\Microsoft\\Windows\\ built-ins (builtin_baseline flag) so off-baseline tasks surface."
+  - "Flag off-path/suspicious actions case-agnostically: commands in Temp/AppData/Public/$Recycle.Bin, raw-IP arguments, encoded PowerShell - never hardcode case-specific IOCs."
+  - "RunLevel=HighestAvailable on a non-Microsoft task is a privilege/persistence signal - corroborate the principal and command."
+  - "Use RegistrationInfo Date for registration timing, NOT the file LastWrite (which is edit time); corroborate both against EVTX 4698."
+  - "An XML with no matching registry TaskCache entry (or vice versa) is an anomaly worth noting - possible manual file drop or registry-only registration."
+  - "Dedup hardlinked task files on resolved path/inode before counting."
+
+discipline_reminder: >
+  Registered != fired. A System32\\Tasks XML proves a task was REGISTERED with a
+  given command/principal as of an editable RegistrationInfo Date - an OBSERVATION
+  (~0.70), NOT proof it ever executed or who created it. The XML file LastWrite is
+  edit time, not creation, and Author/Date are forgeable fields. Write defensibly:
+  "a scheduled task {name} is registered to run {command} as {principal}," not
+  "the attacker ran {command} via a scheduled task." Upgrade to PROBABLE (~0.85)
+  with EVTX 4698/4702 and to CONFIRMED (~1.0) with TaskScheduler 200/201 +
+  Prefetch timestamp alignment proving the action actually ran. Negative space
+  matters: a deleted or registry-only task leaves no XML - absence is not innocence.

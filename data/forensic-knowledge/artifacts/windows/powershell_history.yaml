@@ -1,0 +1,96 @@
+# Forensic-knowledge: PowerShell PSReadline console history (ConsoleHost_history.txt).
+# Generic Windows forensic discipline - no case specifics.
+artifact: powershell_history
+aka:
+  - "PSReadline history"
+  - "ConsoleHost_history.txt"
+  - "PowerShell console history"
+  - "PSReadLine command history"
+
+what_it_is: >
+  The PSReadLine module persists every command line ENTERED at an interactive
+  PowerShell console host to a flat UTF-8 text file, one command per line, in
+  append order. It is a per-user usability feature (up-arrow recall) that
+  survives regardless of whether script-block logging (EID 4104) or transcription
+  was enabled, so it frequently contains an attacker's literal interactive
+  commands (download cradles, Invoke-Expression, credential dumps, exfil tooling)
+  even when richer logging is disabled. It is NOT a chain-of-custody artifact -
+  the file is plain text, attacker-editable, and capped.
+
+locations:
+  - "C:\\Users\\<user>\\AppData\\Roaming\\Microsoft\\Windows\\PowerShell\\PSReadLine\\ConsoleHost_history.txt - the default Windows PowerShell console host history."
+  - "Per-host variant filenames in the same PSReadLine directory, e.g. a VS Code or ISE host writes <HostName>_history.txt - glob *_history.txt, do not hardcode ConsoleHost."
+  - "Legacy profiles under Documents and Settings\\<user>\\ on very old systems."
+
+naming_format: >
+  Plain UTF-8 text (occasionally with a BOM or mixed encoding - read defensively).
+  One command line per line, in the order they were entered (append order, not
+  guaranteed wall-clock order). No per-command timestamps are stored. The default
+  MaximumHistoryCount is 4096 lines; once exceeded the oldest lines silently roll
+  off the top, so the absence of an early command may be rotation rather than
+  innocence.
+
+proves:
+  - "A given command line was ENTERED at an interactive PowerShell console host under that user profile."
+  - "The literal text of the command as typed (including obfuscation/encoding the attacker used)."
+  - "Append order of interactive commands within the file."
+
+does_not_prove:
+  - "A history entry proves a command was ENTERED, NOT that it executed successfully or at all (a typed-then-cancelled or erroring command is still recorded)."
+  - "It does NOT prove a human (versus automation/profile script) typed the command."
+  - "It does NOT capture non-interactive activity: powershell.exe -Command one-liners, -EncodedCommand launched by another process, scheduled-task/service runspaces, or remoting runspaces never touch PSReadLine."
+  - "Absence of a command does NOT prove it was never run - PSReadLine may be disabled, the file capped/rotated (~4096 lines), or the command run non-interactively."
+  - "The file is trivially editable and deletable by anyone with write access to the profile - there is NO integrity guarantee on its contents (treat as low-integrity)."
+  - "The file mtime is file-level only and does NOT date individual commands."
+
+timestamp_semantics:
+  file_mtime: "The filesystem modification time of *_history.txt is the ONLY time signal and is file-level - it approximately bounds the LAST appended command, not any specific earlier line. Standardize to UTC."
+  per_command: "There are NO per-command timestamps. Ordering within the file is append order, which usually but not always follows wall-clock order."
+  reliability_note: "Because contents are attacker-editable, neither line order nor mtime is tamper-resistant; corroborate timing against EVTX 4104/4688 which carry real event times."
+
+version_differences:
+  psreadline_module: "PSReadLine ships in-box from Windows 10 / PowerShell 5.x onward; on older systems it may be absent or installed separately, in which case no history file exists."
+  powershell_7: "PowerShell 7 (pwsh) uses the same PSReadLine directory but may write a distinct host history file - glob all *_history.txt."
+
+corroborate_with:
+  powershell_evtx_4104: "PowerShell Operational EID 4104 script-block logging records the actual executed script blocks WITH real timestamps - the authoritative cross-check that a command in history actually ran and when."
+  prefetch: "POWERSHELL.EXE-*.pf (and pwsh.exe) Prefetch proves the PowerShell binary executed and supplies run timestamps."
+  event_logs_security: "EID 4688 process creation with the command line corroborates that a powershell process launched, with user and parent process; EID 4103 module logging adds pipeline detail."
+  amcache: "Amcache/ShimCache corroborate that powershell.exe (or a called LOLBin like certutil/bitsadmin) was present and observed by Windows."
+  mft: "$MFT/$UsnJrnl can date the creation/modification of any payload a history command downloaded or wrote."
+
+corroboration_escalation:
+  alone: >
+    A PSReadLine history line ALONE is an OBSERVATION (~0.70) that a command was
+    typed at an interactive console under that user - it does not prove execution,
+    human authorship, or timing, and the file is attacker-editable. Treat a lone
+    history entry as a lead to corroborate, not proof of action.
+  combinations:
+    - sources: ["powershell_history", "powershell_evtx_4104"]
+      plus_timestamps: "history command text matched to a 4104 script-block with a real event time"
+      upgrades_to: "PROBABLE execution (~0.85)"
+      rationale: "4104 carries the authoritative executed-script-block and timestamp, confirming the typed command actually ran."
+    - sources: ["powershell_history", "event_logs_security (EID 4688)", "prefetch"]
+      plus_timestamps: "4688 powershell process-creation time aligned with Prefetch last-run and the history append window"
+      upgrades_to: "CONFIRMED / definitive interactive execution (~1.0)"
+      rationale: "Process creation (4688) + execution proof (Prefetch) + the typed command (history) form a court-defensible interactive-execution stack."
+  tiers: "1 source = observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)."
+
+heuristics:
+  - "Flag high-signal lines case-agnostically: -enc/-EncodedCommand, IEX/Invoke-Expression, DownloadString/DownloadFile, bitsadmin, certutil, FromBase64String, and long base64 runs - never hardcode case-specific IOCs."
+  - "Cross-reference every high-signal command against EVTX 4104 to confirm it executed and when - history alone does not date or prove execution."
+  - "Treat early-command absence as possible rotation (~4096-line cap), not proof of inactivity - report the observed line count."
+  - "Merge multiple *_history.txt host files per user with a source_history_file provenance column; a VS Code/ISE host history is distinct from ConsoleHost."
+  - "Remember the file is attacker-editable - a missing line or a too-clean history is itself a signal; corroborate against tamper-resistant EVTX."
+
+discipline_reminder: >
+  Entered != executed != human-typed. A PSReadLine history line proves a command
+  was ENTERED at an interactive PowerShell console under a user profile - an
+  OBSERVATION (~0.70), NOT proof it executed, that a human typed it, or when it
+  ran. The file carries no per-command time (only file mtime) and is trivially
+  editable/deletable (no chain-of-custody on contents), and the ~4096-line cap
+  means early absence may be rotation. Write defensibly: "the PSReadLine history
+  for {user} contains the interactive command {x}," not "the user ran {x}".
+  Upgrade to PROBABLE (~0.85) with EVTX 4104 and to CONFIRMED (~1.0) with 4688 +
+  Prefetch timestamp alignment. Negative space matters: non-interactive,
+  -Command, and runspace activity never appear here - absence is not innocence.

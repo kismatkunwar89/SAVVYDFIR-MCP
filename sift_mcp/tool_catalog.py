@@ -114,6 +114,30 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "disk.extract_registry_run_keys": _entry(
         "disk.extract_registry_run_keys", "disk", ("disk", "registry"), "artifact"
     ),
+    "disk.extract_shellbags": _entry(
+        "disk.extract_shellbags", "disk", ("disk", "registry", "file_system"), "artifact"
+    ),
+    "disk.extract_lnk_files": _entry(
+        "disk.extract_lnk_files", "disk", ("disk", "file_system"), "artifact"
+    ),
+    "disk.extract_jump_lists": _entry(
+        "disk.extract_jump_lists", "disk", ("disk", "file_system"), "artifact"
+    ),
+    "disk.extract_browser_history": _entry(
+        "disk.extract_browser_history", "disk", ("disk", "file_system"), "artifact"
+    ),
+    "disk.extract_registry_fileaccess": _entry(
+        "disk.extract_registry_fileaccess", "disk", ("disk", "registry"), "artifact"
+    ),
+    "disk.extract_recycle_bin": _entry(
+        "disk.extract_recycle_bin", "disk", ("disk", "file_system"), "artifact"
+    ),
+    "disk.extract_powershell_history": _entry(
+        "disk.extract_powershell_history", "disk", ("disk", "file_system"), "artifact"
+    ),
+    "disk.extract_scheduled_tasks": _entry(
+        "disk.extract_scheduled_tasks", "disk", ("disk", "file_system", "registry"), "artifact"
+    ),
     "disk.extract_windows_artifacts": _entry(
         "disk.extract_windows_artifacts",
         "disk",
@@ -254,8 +278,8 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     "lifecycle.generate_report": _entry(
         "lifecycle.generate_report", "lifecycle", ("state", "reporting"), "report"
     ),
-    "mounting.mount_image": _entry(
-        "mounting.mount_image", "mounting", ("disk",), "mount"
+    "mounting._ntfs_mount_argv": _entry(
+        "mounting._ntfs_mount_argv", "mounting", ("disk",), "mount"
     ),
     "mounting.load_memory": _entry(
         "mounting.load_memory", "mounting", ("memory",), "mount"
@@ -280,6 +304,12 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
     ),
     "analysis.get_heuristic": _entry(
         "analysis.get_heuristic", "analysis", ("reporting",), "analysis"
+    ),
+    "state.summarize_run": _entry(
+        "state.summarize_run", "state", ("state", "reporting"), "state"
+    ),
+    "state.submit_finding": _entry(
+        "state.submit_finding", "state", ("state",), "state"
     ),
 }
 

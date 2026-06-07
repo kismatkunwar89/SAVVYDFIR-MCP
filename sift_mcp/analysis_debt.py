@@ -74,6 +74,10 @@ EXTRACTION_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("extract_jump_lists", "disk_execution_persistence", "file_access", report_block_when_required=True),
     CatalogEntry("extract_browser_history", "disk_execution_persistence", "file_access", report_block_when_required=True),
     CatalogEntry("extract_registry_fileaccess", "disk_execution_persistence", "file_access", report_block_when_required=True),
+    # --- new FK-only OPTIONAL extractors (extended group; never report-block) -
+    CatalogEntry("extract_recycle_bin", "disk_execution_persistence", "extended", report_block_when_required=False),
+    CatalogEntry("extract_powershell_history", "disk_execution_persistence", "extended", report_block_when_required=False),
+    CatalogEntry("extract_scheduled_tasks", "disk_execution_persistence", "extended", report_block_when_required=False),
 )
 
 _CATALOG_BY_SUFFIX: dict[str, CatalogEntry] = {e.tool_suffix: e for e in EXTRACTION_CATALOG}

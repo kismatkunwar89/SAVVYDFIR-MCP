@@ -80,7 +80,7 @@ ARTIFACT_VOCAB: dict[str, VocabEntry] = {
     "browser": _v("browser", "disk.extract_browser_history"),
     "browser_history": _v("browser", "disk.extract_browser_history"),
     "srum": _v("srum", "disk.extract_srum"),
-    "recycle_bin": _v("recycle_bin", None),
+    "recycle_bin": _v("recycle_bin", "disk.extract_recycle_bin"),
     "usn_journal": _v("usn_journal", "disk.extract_usn_journal"),
     "usnjrnl": _v("usn_journal", "disk.extract_usn_journal"),
     "$usnjrnl": _v("usn_journal", "disk.extract_usn_journal"),
@@ -115,6 +115,12 @@ ARTIFACT_VOCAB: dict[str, VocabEntry] = {
     "i30_index": _v("i30_index", None),
     "$i30_index": _v("i30_index", None),
     "bitmap": _v("bitmap", None),
+    # --- new FK-only OPTIONAL artifact corroborators -------------------------
+    "scheduled_tasks": _v("scheduled_tasks", "disk.extract_scheduled_tasks"),
+    "taskscheduler_operational": _v("evtx_system", "disk.summarize_evtx"),
+    "registry_taskcache": _v("registry_run", "disk.extract_registry_run_keys"),
+    "powershell_history": _v("powershell_history", "disk.extract_powershell_history"),
+    "powershell_evtx_4104": _v("evtx_process_creation", "disk.summarize_evtx"),
 }
 
 # Source classes whose tiering is owned by _derive_execution_confidence.

@@ -71,6 +71,9 @@ from sift_mcp.tools.disk import extract_lnk_files as _extract_lnk_files
 from sift_mcp.tools.disk import extract_jump_lists as _extract_jump_lists
 from sift_mcp.tools.disk import extract_browser_history as _extract_browser_history
 from sift_mcp.tools.disk import extract_registry_fileaccess as _extract_registry_fileaccess
+from sift_mcp.tools.disk import extract_recycle_bin as _extract_recycle_bin
+from sift_mcp.tools.disk import extract_powershell_history as _extract_powershell_history
+from sift_mcp.tools.disk import extract_scheduled_tasks as _extract_scheduled_tasks
 from sift_mcp.tools.disk import (
     is_critical_extraction_failure as _is_critical_extraction_failure,
     classify_extraction_failure as _classify_extraction_failure,
@@ -334,14 +337,16 @@ _FK_MAP = {
     "disk.extract_shellbags":         "shellbags",
     "disk.extract_browser_history":   "browser",
     "disk.extract_registry_fileaccess": "registry_fileaccess",
+    "disk.extract_powershell_history": "powershell_history",
+    "disk.extract_scheduled_tasks":   "scheduled_tasks",
     "memory.scan_processes":          "volatility_memory",
     "memory.scan_network":            "volatility_memory",
     "memory.detect_injection":        "volatility_memory",
     "memory.list_dlls":               "volatility_memory",
     "detection.sigma_hunt":           "hayabusa_alerts",
     # FK-wiring review map-fixes: these call _forensic_envelope() but were
-    # unmapped, so their enriched YAMLs never loaded. (recycle_bin stays mapped
-    # but disk.extract_recycle_bin does NOT call the envelope - documented orphan.)
+    # unmapped, so their enriched YAMLs never loaded. disk.extract_recycle_bin
+    # now exists and calls the envelope (the FK awaited its extractor impl).
     "disk.extract_usn_journal":       "usn_journal",
     "detection.hayabusa_hunt":        "hayabusa_alerts",
     "detection.query_sigma_results":  "hayabusa_alerts",
@@ -2199,6 +2204,89 @@ def extract_registry_fileaccess(
         return _finalize_tool_response("disk.extract_registry_fileaccess", _r)
     except Exception as exc:
         return {"status": "error", "error": str(exc), "tool": "extract_registry_fileaccess"}
+
+
+@mcp.tool()
+def extract_recycle_bin(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract Windows Recycle Bin ($I/$R) metadata per SID (native parser).
+
+    Discovers $Recycle.Bin/<SID>/$I* (+ matching $R*) across volume roots, parses
+    the $I binary header (v1 fixed-260 / v2 length-prefixed), and merges rows with
+    provenance. An entry proves a file was sent to the bin under a SID via the
+    Explorer shell - NOT that a human deleted/opened/ran it. Corroborate with
+    $UsnJrnl rename + $MFT + session (EID 4624); resolve SID via ProfileList.
+
+    image_path MUST be a mounted Windows volume root; a path that is not a Windows
+    volume returns status=error rather than scanning an ambient mount.
+    """
+    try:
+        _r = _extract_recycle_bin(image_path=image_path, case_id=case_id,
+                                  max_entries=max_entries)
+        if isinstance(_r, dict) and _r.get("status") != "error":
+            _r.update(_forensic_envelope("disk.extract_recycle_bin"))
+        return _finalize_tool_response("disk.extract_recycle_bin", _r)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "extract_recycle_bin"}
+
+
+@mcp.tool()
+def extract_powershell_history(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract PSReadline PowerShell console history per user (native text read).
+
+    Discovers each profile's PSReadLine dir and reads every *_history.txt, one row
+    per command line, flagging case-agnostic high-signal patterns. Proves commands
+    were ENTERED in an interactive console host under that user - NOT that they
+    executed, that a human typed them, or that earlier commands were not rotated
+    off (cap ~4096 lines). File is attacker-editable. Corroborate with EVTX 4104 +
+    Prefetch + EID 4688.
+
+    image_path MUST be a mounted Windows volume root; a path that is not a Windows
+    volume returns status=error rather than scanning an ambient mount.
+    """
+    try:
+        _r = _extract_powershell_history(image_path=image_path, case_id=case_id,
+                                         max_entries=max_entries)
+        if isinstance(_r, dict) and _r.get("status") != "error":
+            _r.update(_forensic_envelope("disk.extract_powershell_history"))
+        return _finalize_tool_response("disk.extract_powershell_history", _r)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "extract_powershell_history"}
+
+
+@mcp.tool()
+def extract_scheduled_tasks(
+    image_path: str,
+    case_id: str = "default",
+    max_entries: int = 500,
+) -> dict[str, Any]:
+    """Extract on-disk scheduled-task definitions (native XML parser).
+
+    Walks Windows/System32/Tasks/** recursively, dedups on resolved real path
+    (hardlink guard), parses Command/Arguments/Principal/Author/RegistrationInfo.
+    All tasks emitted with a builtin_baseline flag; off_path_command flags
+    suspicious commands. A definition proves a task was REGISTERED with a given
+    command/principal as of the registration date - NOT that it ever FIRED.
+    Corroborate with EVTX 4698/4702 + 200/201, Prefetch, registry TaskCache.
+
+    image_path MUST be a mounted Windows volume root; a path that is not a Windows
+    volume returns status=error rather than scanning an ambient mount.
+    """
+    try:
+        _r = _extract_scheduled_tasks(image_path=image_path, case_id=case_id,
+                                      max_entries=max_entries)
+        if isinstance(_r, dict) and _r.get("status") != "error":
+            _r.update(_forensic_envelope("disk.extract_scheduled_tasks"))
+        return _finalize_tool_response("disk.extract_scheduled_tasks", _r)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc), "tool": "extract_scheduled_tasks"}
 
 
 # ===========================================================================
