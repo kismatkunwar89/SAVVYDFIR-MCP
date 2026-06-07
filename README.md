@@ -214,11 +214,8 @@ python -c "import sift_mcp.server; print('OK')"
 > **launch `claude` from inside the repo dir** so `.claude/settings.json` (hooks) + `.mcp.json`
 > (MCP server) are picked up. The `(venv)` prefix on your prompt is harmless either way.
 
-> **Why no `~/.claude/settings.json`?** Earlier versions of this installer deployed a global
-> settings file that could fall out of sync with the Claude Code schema (e.g. `claude login` would
-> error on `hooks.PostToolUse[0].hooks: Expected array, but received undefined`). The project-local
-> `.claude/settings.json` at the repo root is now the single source of truth and is committed to
-> git alongside the code that depends on it - schema and hooks stay in lockstep.
+> Settings are **project-local**: `.claude/settings.json` lives in the repo (committed alongside the
+> code), so there is no global `~/.claude/settings.json` — launching from the repo dir is all you need.
 
 For a production deployment to `/opt/SAVVYDFIR-MCP/` (so any user on the box can run investigations), copy after the local install verifies:
 
