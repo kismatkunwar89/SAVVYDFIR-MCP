@@ -19,7 +19,8 @@ what_it_is: >
 
 locations:
   - "C:\\Windows\\System32\\Tasks\\<folder>\\<TaskName> - extensionless XML, nested arbitrarily deep (e.g. \\Microsoft\\Windows\\... for built-in tasks)."
-  - "Registry side: SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Schedule\\TaskCache\\{Tree,Tasks} - holds the GUID-to-task tree and per-task LastRunTime / metadata."
+  - "Registry side (SOFTWARE hive): Microsoft\\Windows NT\\CurrentVersion\\Schedule\\TaskCache - subkeys: Tree (the visible task hierarchy, one key per task with a GUID + the SD security descriptor), Tasks (one key per GUID with the operative metadata), plus Boot / Logon / Plain / Maintenance bucket subkeys grouping tasks by trigger class."
+  - "TaskCache\\Tree\\<...\\TaskName> links to TaskCache\\Tasks\\{GUID} by the shared GUID - resolve Tree (human path + SD) to Tasks (Actions/Triggers/timestamps)."
   - "Files under System32\\Tasks can be hardlinked (multiple directory entries -> one inode); dedup on resolved path/inode to avoid double-counting."
 
 naming_format: >
@@ -53,9 +54,49 @@ version_differences:
   vista_plus: "The System32\\Tasks XML store + TaskCache registry model is used from Windows Vista/Server 2008 onward."
   legacy_xp: "Windows XP/2003 used .job binary files under C:\\Windows\\Tasks (different format); the XML store does not exist there."
 
+# parsing_tools / limitations / anti_forensics / correlation_patterns and the
+# TaskCache value detail below sourced from the operator's reference "DFIR:
+# Advanced Incident Response and Threat Hunting Training Guide" and "reference"
+# notebooks (System32\Tasks XML + TaskCache registry + TaskScheduler EVTX material).
+taskcache_value_semantics:
+  hash: "TaskCache\\Tasks\\{GUID}\\Hash = SHA-256 of the corresponding System32\\Tasks XML file - a tamper-detection control. If the on-disk XML is hand-edited without regenerating this hash, the Task Scheduler service REFUSES to run the task; a Hash that does not match the current XML therefore flags manual tampering."  # reference reference
+  actions: "Actions = binary blob decoding to WHAT the task runs - absolute executable path, command-line arguments, working directory, or the COM object CLSID it launches. Forensically the most important TaskCache value."  # reference reference
+  triggers: "Triggers = binary blob of the run conditions (calendar schedule, specific Windows Event IDs, idle/boot/logon states)."
+  dynamic_info: "DynamicInfo = state tracker blob holding the authoritative Last Run Time and the last return/error code."
+  author: "Author = arbitrary creator string; threat actors routinely spoof it to 'Microsoft Corporation' / 'SYSTEM' to blend malicious persistence into native tasks - treat as a claim, not attribution."  # reference reference
+  sd: "SD (under TaskCache\\Tree\\<task>) = the task's security descriptor; its presence is REQUIRED for the GUI / schtasks / Autoruns to enumerate the task (see anti_forensics ghost-task)."
+
+parsing_tools:
+  - "RECmd / Registry Explorer (Eric Zimmerman) with the TaskCache batch/plugin - parses TaskCache\\{Tree,Tasks}, decoding the Actions and DynamicInfo blobs (command path, args, LastRunTime, return code) and the Tree GUID linkage from the SOFTWARE hive."
+  - "Raw XML read - System32\\Tasks files are plain XML; parse the Actions/Exec Command+Arguments, Triggers, Principal (UserId/RunLevel), RegistrationInfo (Author/Date/URI), Settings (Enabled) directly. Parse defensively - some files are malformed; record a parse failure rather than crashing."
+  - "Autoruns (Sysinternals) - enumerates registered tasks as ASEPs (but relies on the SD value and so MISSES ghost tasks - see anti_forensics)."
+  - "KAPE - triage-collects both System32\\Tasks and the SOFTWARE hive for offline TaskCache parsing."
+  - "rla.exe (Zimmerman) - replay SOFTWARE hive transaction logs (.LOG1/.LOG2) before parsing TaskCache so LastRunTime/registration are accurate."
+
+limitations:
+  - "Registered != fired - the XML/TaskCache prove a task exists; only TaskScheduler EVTX 200/201, DynamicInfo LastRunTime, or Prefetch of the target prove it actually ran."
+  - "The XML filesystem LastWrite is EDIT time, not creation - any edit updates it; use RegistrationInfo Date for registration timing (itself attacker-editable)."
+  - "Author and RegistrationInfo Date live inside an editable XML / spoofable TaskCache value - forgeable, treat as claims until corroborated by EVTX 4698/106."
+  - "Deleted tasks leave no XML and may leave no Tree key - run evidence then survives ONLY in EVTX (4698 carries the raw XML; TaskScheduler 106/200/201 persist longer than the Security log) - absence of an XML is not absence of the activity."
+  - "Hundreds of legitimate \\Microsoft\\Windows\\ built-in tasks create heavy baseline noise - off-baseline tasks must be isolated to be useful."
+
+anti_forensics:
+  techniques:
+    - "Ghost task - delete the SD (security descriptor) value from TaskCache\\Tree\\<task> so the Task Scheduler GUI, schtasks.exe, and Autoruns all fail to enumerate the task while it still runs (technique used by HAFNIUM)."  # DFIR reference
+    - "Registry-only registration - write the TaskCache keys directly without a corresponding System32\\Tasks XML (or vice-versa) to evade tools that look at only one side."
+    - "Backdating / spoofing RegistrationInfo Date and Author (e.g. 'Microsoft Corporation') so the task masquerades as a built-in."
+    - "Delete the task immediately after it fires (cleanup) - removes XML + Tree key, leaving only EVTX."
+    - "Hijack a legitimate task by editing its XML Action to point at a malicious binary (must also regenerate the TaskCache Hash or the service refuses to run it)."
+  detection:
+    - "Ghost-task hunt - enumerate TaskCache\\Tree keys directly and flag any task key LACKING an SD value (invisible to GUI/Autoruns/schtasks but live)."  # DFIR reference
+    - "XML <-> TaskCache reconciliation - an XML with no matching Tasks\\{GUID} (or a Tree/Tasks GUID with no XML) is an anomaly: manual file drop or registry-only registration."
+    - "Hash mismatch - if TaskCache\\Tasks\\{GUID}\\Hash does not match the SHA-256 of the current on-disk XML, the XML was hand-edited (hijack) since registration."  # reference reference
+    - "EVTX recovery of deleted tasks - even with XML+Tree removed, Security EID 4698 contains the raw task XML (revealing the exact <Command>) and TaskScheduler 106/141/200/201 reconstruct the create/delete/run timeline."  # DFIR reference
+    - "Off-baseline + off-path - non-Microsoft task whose Action runs from Temp/AppData/Public/$Recycle.Bin, with a raw-IP argument or encoded PowerShell, especially at RunLevel=HighestAvailable."
+
 corroborate_with:
-  event_logs_security: "EID 4698 (task created) / 4702 (task updated) record registration with the task content and the registering user - the authoritative registration cross-check."
-  taskscheduler_operational: "TaskScheduler/Operational EID 200 (action started) / 201 (action completed) prove the task actually RAN and when."
+  event_logs_security: "Security EID 4698 (task created) / 4699 (deleted) / 4702 (updated) record the action with the registering user - and 4698's payload includes the RAW task XML, revealing the exact <Command> even if the task was immediately deleted (requires Object Access auditing)."  # DFIR reference
+  taskscheduler_operational: "TaskScheduler/Operational log (persists longer than Security): EID 106 task registered (user + task name), 140 updated, 141 deleted, 200 action started, 201 action completed (gives the exact command path executed + return code). The authoritative run/lifecycle timeline that survives task deletion."  # DFIR reference
   prefetch: "Prefetch of the task's target binary corroborates that the action executed."
   registry_taskcache: "TaskCache {Tree,Tasks} LastRunTime confirms execution and the GUID linkage; an XML present with no TaskCache entry (or vice versa) is itself an anomaly."
   amcache_shimcache: "Amcache/ShimCache corroborate the target binary was present and observed by Windows."
@@ -78,12 +119,27 @@ corroboration_escalation:
       rationale: "Registration (XML) + actual run (200/201) + execution proof (Prefetch) form a court-defensible executed-persistence stack."
   tiers: "1 source = observation (~0.70); 2 independent = probable (~0.85); 3+ with timestamp alignment = confirmed/definitive (~1.0)."
 
+correlation_patterns:
+  - name: "Registered-to-executed persistence"
+    chain: "System32\\Tasks XML / TaskCache entry (registration) -> Security 4698 or TaskScheduler 106 (OS processed the registration + user) -> TaskScheduler 200/201 (action started/completed + return code) -> EID 4688 with parent 'svchost.exe -k netsvcs -p -s Schedule' + Prefetch of the target = definitively PROVEN executed persistence."  # DFIR reference
+  - name: "Lateral-movement task drop"
+    chain: "Security EID 4624 Logon Type 3 (network logon) from an external host -> in the SAME second a task is registered (TaskScheduler 106 / Security 4698) -> confirms remote scheduled-task creation as the lateral-movement mechanism (T1053.005)."  # DFIR reference
+  - name: "Ghost-task uncovering"
+    chain: "Task running (4688 under Schedule svchost / TaskScheduler 200) but invisible to Autoruns/schtasks -> hunt TaskCache\\Tree for keys lacking an SD value -> recover the hidden task; pivot 4698 raw XML for the command."  # DFIR reference
+  - name: "Task-hijack detection"
+    chain: "Legitimate task suddenly runs an off-path binary -> compare TaskCache Hash to SHA-256 of the current XML; mismatch proves post-registration XML edit -> 4702/140 dates the modification."  # reference reference
+  - name: "Deleted-task reconstruction"
+    chain: "No XML and no Tree key (cleanup) -> Security 4698 raw XML recovers the command + principal -> TaskScheduler 106/200/201/141 reconstruct create->run->delete timeline -> Prefetch/Amcache of the target prove the action executed before deletion."  # DFIR reference
+
 heuristics:
   - "Emit ALL tasks for completeness but baseline the hundreds of legitimate \\Microsoft\\Windows\\ built-ins (builtin_baseline flag) so off-baseline tasks surface."
   - "Flag off-path/suspicious actions case-agnostically: commands in Temp/AppData/Public/$Recycle.Bin, raw-IP arguments, encoded PowerShell - never hardcode case-specific IOCs."
   - "RunLevel=HighestAvailable on a non-Microsoft task is a privilege/persistence signal - corroborate the principal and command."
   - "Use RegistrationInfo Date for registration timing, NOT the file LastWrite (which is edit time); corroborate both against EVTX 4698."
   - "An XML with no matching registry TaskCache entry (or vice versa) is an anomaly worth noting - possible manual file drop or registry-only registration."
+  - "A spoofed Author ('Microsoft Corporation'/'SYSTEM') on a task whose Action runs from a user-writable path is masquerade - Author is arbitrary text, never attribution."
+  - "Enumerate TaskCache\\Tree directly for keys lacking an SD value - ghost tasks are invisible to the GUI/Autoruns/schtasks but still execute."
+  - "When a task is missing on disk, do NOT conclude 'no persistence' - the run history survives in 4698 (raw XML) and TaskScheduler 106/200/201 which persist longer than the Security log."
   - "Dedup hardlinked task files on resolved path/inode before counting."
 
 discipline_reminder: >
