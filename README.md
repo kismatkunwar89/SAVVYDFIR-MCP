@@ -14,8 +14,10 @@
 > git clone https://github.com/kismatkunwar89/SAVVYDFIR-MCP.git
 > cd SAVVYDFIR-MCP && git checkout v1.1.1
 > ```
-> Commits on `master` after `v1.1.1` are backward-compatible **maintenance** (multi-host graph-pipeline
-> fixes) and are **not** part of the judged submission.
+> Commits on `master` after `v1.1.1` are post-submission **maintenance** — multi-host graph-pipeline
+> fixes. Default behavior is unchanged for existing callers, with one intentional change: cross-host
+> **account correlation now requires prefixed `account:` indicators** (raw description text is no longer
+> scraped, which previously produced false edges). Not part of the judged submission.
 
 ---
 
@@ -42,7 +44,7 @@ Every required turn-in is listed below with its exact location, so judges can ve
 
 ## What It Does
 
-SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It exposes 56 typed forensic tools over stdio transport (see `describe_tool_catalog`), supports cross-artifact correlation between disk and memory evidence via 10 anti-forensics detection checks, and keeps findings traceable through persisted artifacts, state, and audit logs with court-defensible provenance (Section 3-lite evidence schema + CTX heuristic provenance chain).
+SAVVYDFIR-MCP is a purpose-built MCP (Model Context Protocol) server that turns Claude Code into a DFIR investigation interface on SANS SIFT Workstation. It exposes 56 typed forensic tools over stdio transport (see `describe_tool_catalog`), supports cross-artifact correlation between disk and memory evidence via 10 anti-forensics detection checks, and keeps findings traceable through persisted artifacts, state, and a hash-chained audit log, with structured provenance (every CONFIRMED finding cites a resolvable `execution_id`; heuristics carry CTX-NNN references).
 
 **Design: autonomous-first.** You point it at a case `manifest.json` and it
 investigates with minimal interaction — the 7-phase workflow is enforced by **hooks
@@ -109,7 +111,7 @@ flowchart TD
     P --> C["Phase 5 · Correlate<br/>temporal clusters + 10 disk-memory checks"]
     C --> S["Phase 6 · Synthesize<br/>stack 2+ independent sources"]
     S --> G{"Evidence-Provenance Gate<br/>(enforced by code)"}
-    G -->|"execution_id resolves to a real audit row<br/>+ corroborated_by ≥ 2<br/>+ benign alternative ruled out"| CONF["CONFIRMED<br/>court-defensible"]
+    G -->|"execution_id resolves to a real audit row<br/>+ corroborated_by ≥ 2<br/>+ benign alternative ruled out"| CONF["CONFIRMED<br/>(2+ corroborating sources)"]
     G -->|"single source / unresolved"| ACT["ACTIVE<br/>honest lead"]
     G -->|"contradicted by other artifacts"| REJ["REJECTED"]
     CONF --> R["Phase 7 · Report<br/>report.html · graph.html · trace.html"]
