@@ -50,17 +50,16 @@ extract_registry_fileaccess(image_path, case_id) ← UserAssist/RecentDocs/OpenS
 extract_windows_artifacts(case_id) ← stage raw artifacts first when mount_image reports SleuthKit-direct access, OR when a parser returns needs_extract_windows_artifacts=true
 ```
 
-**Staging-retry rule (review 2026-06-06, review).** The Phase-2 order above assumes a
-mounted NTFS volume. If `mount_image` reports SleuthKit-direct access (`access_mode` contains
-`tsk_direct` / `sleuthkit_direct`), OR any parser (e.g. `extract_mft_timeline`) returns
-`status="error"` with `needs_extract_windows_artifacts=true`, that is a **retryable staging
-signal, NOT an extraction failure**:
+**Staging-retry rule.** The Phase-2 order above assumes a mounted NTFS volume. If `mount_image`
+reports SleuthKit-direct access (`access_mode` contains `tsk_direct` / `sleuthkit_direct`), OR any
+parser (e.g. `extract_mft_timeline`) returns `status="error"` with
+`needs_extract_windows_artifacts=true`, that is a **retryable staging signal, NOT an extraction
+failure**:
 1. Call `extract_windows_artifacts(...)` to stage the raw artifacts.
 2. Re-run the parser against the staged durable path.
 3. Analyze the staged output, THEN record the lane.
 **Do NOT `record_analysis_lane(status='COMPLETE_WITH_GAPS', "extraction failed")` on the retryable
-signal** - stage + retry first; only record gaps if the retry itself genuinely fails. (A code-level
-guard in `record_analysis_lane` is the durable backstop; tracked separately.)
+signal** - stage + retry first; only record gaps if the retry itself genuinely fails.
 
 **Note - new file-access / browser artifacts are FK-only.** The five
 user-activity extractors above (`extract_shellbags`, `extract_lnk_files`,
