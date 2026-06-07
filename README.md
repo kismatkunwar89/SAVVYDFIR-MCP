@@ -96,8 +96,9 @@ decision flow below) is on the roadmap, not current scope.
 
 ### Investigation & Decision Flow
 
-The agent does not free-associate over evidence — it runs a deterministic 7-phase
-pipeline where **detection anchors seed hypotheses**, hypotheses drive **targeted
+The agent does not free-associate over evidence — it runs a **documented** 7-phase
+workflow (the sequence below is the intended order; the agent may reorder steps within a
+case) where **detection anchors seed hypotheses**, hypotheses drive **targeted
 queries**, and every conclusion must **earn** its confidence by stacking
 independent sources through an evidence-provenance gate. Negative space (a missing
 artifact) is treated as evidence, not silence.
@@ -133,9 +134,12 @@ when it clears three code-enforced invariants** — not by the model's say-so:
 These are the agent's **autonomously-assigned, evidence-graded** output states
 (`CONFIRMED` / `ACTIVE` / `REJECTED`) — defensible, reviewable conclusions in the
 final report, not raw detector noise. A human reviews the finished report + audit
-trail; the agent is not driven click-by-click. The coverage gate further
-blocks reporting until the mandatory detectors actually ran, and disk↔memory
-contradictions emit **self-correction events** to the audit log. Full layer
+trail; the agent is not driven click-by-click. The coverage gate blocks **strict**
+report generation until configured coverage requirements are satisfied (e.g.
+`generate_graph` completion and conditional anti-forensics follow-up such as `analyze_vss`
+when signals are present); a caller can pass `allow_partial=true` to bypass blocking
+coverage checks (in the Ali run the report was then marked `COMPLETE_WITH_GAPS`).
+disk↔memory contradictions emit **self-correction events** to the audit log. Full layer
 breakdown + interfaces: [`docs/architecture.md`](docs/architecture.md).
 
 ---
@@ -371,7 +375,7 @@ Framework operational properties:
 
 - Audit-backed completion for `sigma_hunt`, `compare_disk_and_memory`, `find_temporal_clusters`, `generate_report`
 - Summary-first MCP responses for heavy disk tools (csv_path + run_analysis mediation)
-- PreToolUse Phase 2 → Phase 3 transition gate prevents agent from running detection tools before mandatory disk extraction completes
+- PreToolUse phase-transition gate **blocks** `sigma_hunt`, `hayabusa_hunt`, and `compare_disk_and_memory` until the eight required Phase 2 disk tools have succeeded or recorded an explicit absence (override: `SAVVYDFIR_SKIP_PHASE3_GATE=1`; state-read errors fail open). Other detection tools (e.g. `detect_injection`) are not covered by this gate, so observed step ordering can still vary
 - Memory-hygiene mitigations (stdout/stderr drop post-audit, gc.collect after heavy tools) - validated under 7.6 GB RAM constraint with 4 GB swap
 - Per-tool Vol3 timeout (malfind: 900 s, overrideable via `SAVVYDFIR_MALFIND_TIMEOUT`)
 - Vol3 `incompatible_profile` classification → `tool_incompatible` outputs_summary marker; coverage gate treats this as a legitimate gap (no zombie retries when the image's kernel build has no matching symbols)
@@ -497,13 +501,20 @@ The `compare_disk_and_memory()` correlation engine runs **10** anti-forensics ch
 
 ## Self-Correction
 
-When physical evidence contradicts itself, the agent:
-1. Logs a `CORRECTION_EVENT` to `audit.jsonl`
-2. Downgrades affected findings to HYPOTHESIS
-3. Runs follow-up tools from the alert's `recommended_followup`
-4. Re-promotes (OBSERVATION) or rejects (REJECTED) based on new evidence
+When `compare_disk_and_memory` detects an evidence contradiction, it can emit a
+correction event and downgrade the affected finding's **confidence**. The intended
+lifecycle is:
+1. Log a `CORRECTION_EVENT` to `audit.jsonl`
+2. Downgrade the affected finding
+3. Run follow-up tools from the alert's `recommended_followup`
+4. Re-promote or reject based on new evidence
 
-This is evidence-triggered - it fires when disk and memory contradict, not when the LLM second-guesses itself.
+It is evidence-triggered — it fires when disk and memory contradict, not when the LLM
+second-guesses itself. **Honesty caveat from the captured traces:** steps 1–2 were
+observed in **3 of 8 runs (16 correction events total)**, where step 2 was a confidence
+demotion (not necessarily a status change to `HYPOTHESIS`). Automated follow-up and
+re-adjudication (steps 3–4) were **not demonstrated** in those traces (`revised_finding_id`
+was always null) — treat them as designed-but-unproven.
 
 ---
 
