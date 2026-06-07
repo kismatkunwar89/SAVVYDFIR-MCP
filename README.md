@@ -88,6 +88,51 @@ decision flow below) is on the roadmap, not current scope.
                                                                 └──────────────┘
 ```
 
+### Knowledge Layers & How to Extend
+
+The forensic *reasoning* is not hard-coded in the engine - it lives in three editable knowledge
+layers that feed the agent at different points. The engine (the "hands") runs tools and enforces
+gates; these layers (the reference the "brain" reads) say what each artifact means and what it does
+**not** prove.
+
+| Layer | Where | Fed to the agent | Carries |
+|-------|-------|------------------|---------|
+| **1. Case manifest** | `case-templates/manifest.json` | `start_investigation()` - the primary structured input | Disk/memory paths + `investigative_taxonomy` (dispute_type, OS, keywords). `dispute_type` drives which extractors are *required* (file-centric disputes pull in the file-access bundle). |
+| **2. Forensic-knowledge YAML** | `data/forensic-knowledge/artifacts/{windows,linux}/*.yaml` (17 files) | Injected into **mapped** tool responses at interpretation time | `forensic_caveat` (what the artifact does NOT prove), `corroborate_with` (what to check next), `discipline_reminder`. |
+| **3. Analyst Markdown KBs** | `.claude/agents/*-analyst.md` (12 files) | The relevant slice rides into the response as `applicable_heuristics`; more via `get_heuristic()` | Per-artifact heuristics (e.g. `mft-analyst.md` = timestomping, sequential entries). Read inline by the main agent; synthesis/corroboration/timeline `.md` are opt-in orchestration roles. |
+
+Layers 2 and 3 are **two different injection paths**: the YAML supplies the caveat/corroboration
+envelope; the analyst `.md` supplies the `applicable_heuristics` slice. Unmapped tools (and
+file-access-only tools) carry the envelope but **no** `applicable_heuristics` slice.
+
+**Confidence vs. CONFIRMED status - three separate mechanisms (often conflated; they are not the same):**
+1. **Base artifact weights** (`semantics.py`) - a per-source confidence *multiplier*: ShimCache 0.70,
+   Amcache 0.75, Registry-Run 0.85, Prefetch / EVTX 4688 / memory-process 1.00 (sigma-corroborated
+   capped at 1.0).
+2. **Execution validation hierarchy** - at corroboration promotion the engine *derives* confidence from
+   source stacking: Observation 0.70 (ShimCache/Amcache alone) -> Probable 0.85 (Prefetch or BAM/DAM)
+   -> Definitive 1.00 (Prefetch + EVTX 4688 + MFT) -> Stacked 1.00 (3+ independent sources).
+3. **CONFIRMED status gate** - a *separate* lifecycle check: a finding reaches CONFIRMED only with ≥2
+   corroborating references **plus** a resolvable `source_execution_id` and a ruled-out alternative.
+   High confidence (1.00) is **not** the same as CONFIRMED status.
+
+**How to extend (capability ladder).** The knowledge layers are the low-friction surface for
+*guidance*; new *capability* (evidence acquisition, deterministic checks) lives in code:
+
+| Change | Touches | Effect | Code? |
+|--------|---------|--------|-------|
+| Edit a mapped FK YAML | `data/forensic-knowledge/` | Refines caveat/corroboration guidance on an existing artifact | No (restart MCP server to pick up) |
+| Edit an analyst `.md` KB | `.claude/agents/*-analyst.md` | Deeper inline heuristics (`applicable_heuristics`) | No (restart) |
+| Add a **new** artifact's FK YAML | YAML + `_FK_MAP` entry + tool wrapper | Enriches a newly mapped tool | Yes (registry entry - not drop-in) |
+| Extend manifest taxonomy | `case-templates/manifest.json` | Per-case coverage policy | No |
+| Add a correlation check | `sift_mcp/correlation.py` | New deterministic cross-artifact reasoning | Yes |
+| Add an extractor (MCP tool) | `sift_mcp/server.py` | New evidence acquisition | Yes |
+
+FK YAML loading is **registry-driven** (`_FK_MAP`), not directory auto-discovery: editing an
+already-mapped YAML needs only a server restart, but a brand-new artifact needs a `_FK_MAP` entry and
+an envelope hookup. An external knowledge pack at `/opt/savvydfir-knowledge/...` shadows the vendored
+copy when present.
+
 ### Investigation & Decision Flow
 
 The agent does not free-associate over evidence - it runs a **documented** 7-phase
