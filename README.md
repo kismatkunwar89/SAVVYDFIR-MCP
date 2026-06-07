@@ -424,31 +424,52 @@ Evidence directories are READ-ONLY. By default output goes to `analysis/` and `r
 
 ## Manifest Fields
 
+The manifest is the **single human input that drives the whole autonomous run.** The analyst
+fills [`case-templates/manifest.json`](case-templates/manifest.json); `start_investigation` reads
+it (the [Usage](#usage) commands point Claude at this file). It is intentionally rich — the
+`investigative_taxonomy` block is **load-bearing**: `dispute_type` decides what the coverage gate
+enforces. For file-centric disputes (`intrusion_response` / `data_exfiltration` / `insider_threat` /
+`ransomware` / `financial_fraud` / `policy_violation`) the gate makes the **file-access extractors
+required** (ShellBags, LNK, Jump Lists, browser history, registry file-access) before a report can be
+generated — so a wrong or blank `dispute_type` changes what the investigation must cover.
+
 ```json
 {
-  "case_id": "CASE-001",
+  "case_id": "VANKO-ZEBRAFISH-2016",
   "mode": "blind",
-  "investigation_goal": "Identify initial access, persistence, and lateral movement.",
+  "investigation_goal": "What the agent must determine (the case questions).",
+  "investigative_taxonomy": {
+    "side": "victim",
+    "dispute_type": "data_exfiltration",
+    "expected_attack_class": "data_exfil",
+    "os_in_scope": ["Windows 10"],
+    "initial_keywords": ["StarkResearch", "Zebrafish", "Level 5 Classified"]
+  },
   "disk_images": [
     {"path": "/evidence/disk/image.E01", "host": "wkstn-01", "image_type": "E01"}
   ],
-  "memory_dumps": [
-    {"path": "/evidence/memory/dump.zip", "host": "wkstn-01"}
-  ],
+  "memory_dumps": [],
   "known_iocs": [],
-  "max_iterations": 4
+  "max_iterations": 4,
+  "incident_date": "2016-06-30"
 }
 ```
 
-| Field | Description |
-|---|---|
-| `case_id` | Unique case identifier |
-| `mode` | `"blind"` (no IOC hints) or `"seeded"` (IOCs provided to agent) |
-| `investigation_goal` | What the agent should determine |
-| `disk_images` | Array of disk images with path, host, and format |
-| `memory_dumps` | Array of memory dumps with path and host |
-| `known_iocs` | IOC array (empty for blind mode) |
-| `max_iterations` | Maximum triage iterations before forced completion |
+| Field | Required | Description |
+|---|:---:|---|
+| `case_id` | ✅ | Unique case identifier (no spaces) |
+| `investigation_goal` | ✅ | What the agent should determine (the case questions) |
+| `investigative_taxonomy.side` | ✅ | `victim` / `attacker` / `neutral` |
+| `investigative_taxonomy.dispute_type` | ✅ | **Load-bearing** — drives the coverage gate (file-centric types require the file-access extractors) |
+| `investigative_taxonomy.os_in_scope` | ✅ | OS list, e.g. `["Windows 10"]` |
+| `disk_images` | ◑ | `{path, host, image_type}`; EWF auto-spans `.E02+` from `.E01`. At least one of disk/memory required |
+| `memory_dumps` | ◑ | `{path, host}`; **`[]` = disk-only** (the memory triage gate auto-relaxes) |
+| `mode` | — | `"blind"` (no IOC hints) or `"seeded"` (IOCs provided to agent) |
+| `investigative_taxonomy.expected_attack_class` | — | Best guess, or `"unknown"` |
+| `investigative_taxonomy.initial_keywords` | — | Case leads to seed the hunt (names, hostnames, paths) |
+| `known_iocs` | — | IOC array (returned to the agent only when `mode="seeded"`) |
+| `max_iterations` | — | Max triage iterations before forced completion (default 4) |
+| `incident_date` | — | Annotates the timeline; never filters rows |
 
 ---
 
