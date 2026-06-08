@@ -27,6 +27,18 @@ are in `scripts/eval/baselines/*.json` (the ground-truth answer keys are publish
 > extractors, durable reuse, case-insensitive/UTF-16 mount fix, triage detection). They are the
 > `v1.1.1` baseline and have not yet been re-scored against `v1.2.0`. See `docs/accuracy-report.md`.
 
+### v1.2.0 re-run (showcase)
+
+| Case | Engine | Recall | Findings | CONFIRMED hyps | Artifacts |
+|------|--------|--------|----------|----------------|-----------|
+| [`ROCBA-2020-FREDS-LAPTOP-v1.2.0`](ROCBA-2020-FREDS-LAPTOP-v1.2.0/) | v1.2.0 | 90% (9/10, 0 halluc) | 127 | 4 of 5 | report·pdf·graph·trace·json + [RUN-NOTES](ROCBA-2020-FREDS-LAPTOP-v1.2.0/RUN-NOTES.md) |
+
+A blind re-run of ROCBA on `v1.2.0` exercising the new native artifacts. **GT recall is identical
+to the v1.1.1 baseline (90%, same single FN GT-007, 0 hallucinations)** - the gain is qualitative
+(4 confirmed hypotheses vs 3, all hypotheses resolved, fuller exfil/anti-forensics narrative), not a
+measured recall improvement. Full breakdown in its `RUN-NOTES.md`. The v1.1.1 judged baseline for
+this case is preserved at [`ROCBA-2020-FREDS-LAPTOP/`](ROCBA-2020-FREDS-LAPTOP/).
+
 ## Multi-host capstone
 
 | Case | Scenario | Hosts | Artifacts |
