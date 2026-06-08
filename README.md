@@ -305,10 +305,17 @@ is silently disabled - so always `cd` into the repo first. There is **no per-too
 UI** today - you review the finished `report.html` + hash-chained audit trail; an interactive
 Approve/Reject review canvas is roadmap, not current scope.
 
-> **Model used for evaluation.** Most of the validated eval runs were executed on **Claude Sonnet 4.6**
+> **Model used for evaluation.** All validated eval runs were executed on **Claude Sonnet 4.6**
 > (the `.claude/settings.json` default), not the flagship Opus tier. The accuracy numbers in this README
 > were therefore achieved on a mid-tier model - the framework's gates and correlation logic carry the
-> rigor, so results do not depend on running the most expensive model.
+> rigor, so results do not depend on running the most expensive model. **Opus was never run**; as a
+> frontier-tier model it should match or exceed these results, but that has not been measured here.
+>
+> **Expect context compaction on larger runs.** A full disk+memory investigation is long enough that
+> Claude Code will compact its context window **at least twice** on the bigger cases. This is by design
+> and safe: the framework persists everything to durable `state.json` + hash-chained `audit.jsonl`, so the
+> agent resumes from on-disk state (findings, lanes, executions) rather than in-context memory - a
+> compaction mid-run does not lose progress or break the coverage/provenance gates.
 
 ### Run a single host - two equivalent styles
 
