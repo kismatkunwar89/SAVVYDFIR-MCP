@@ -1911,7 +1911,7 @@ def evaluate_ir_coverage_gate(
             )
 
     # Analysis-debt detection (PART B, review 2026-06-03). A handle was
-    # extracted but never mined by an analyst finding -- the exact ROCBA miss
+    # extracted but never mined by an analyst finding -- a common miss
     # (extraction without analysis). BLOCK only the taxonomy-required file-access
     # handles; everything else is WARN (returned for report.json/HTML, never
     # blocking). run_analysis ALONE does not clear -- only an analyst finding or a
