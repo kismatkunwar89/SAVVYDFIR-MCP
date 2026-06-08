@@ -3096,7 +3096,7 @@ def render_report_html(payload: dict[str, Any]) -> str:
 </header>
 <main>
   <section id="executive-brief">
-    <h2>Executive Summary</h2>
+    <h2>Summary</h2>
     {_render_executive_summary(payload)}
     <div class="grid" style="margin-top: 1rem;">
       {by_numbers}
