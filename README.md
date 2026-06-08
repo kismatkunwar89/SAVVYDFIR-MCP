@@ -361,6 +361,15 @@ Output: `reports/{case_id}/report.html` and `reports/{case_id}/graph.html`.
 > Chromium-family browser can print it faithfully. `scripts/render_report_pdf.sh <report.html> [out.pdf]`
 > wraps headless Chromium to write `report.pdf` alongside the HTML - there is **no** PDF dependency in
 > the MCP server itself.
+>
+> **Run it as your normal user - do NOT use `sudo`.** On SIFT, Chromium is a snap; running it as root
+> fails (snap namespace + `/run/user/0` errors) and the PDF is not written. Pass the `report.html` path
+> as a **single argument on one line** (a wrapped line drops the arg and prints usage):
+> ```bash
+> ./scripts/render_report_pdf.sh reports/<case_id>/report.html
+> ```
+> (If the script isn't executable after a fresh checkout: `chmod +x scripts/render_report_pdf.sh` or run
+> it as `bash scripts/render_report_pdf.sh ...`.)
 
 ### Multi-host Enterprise Investigation
 
