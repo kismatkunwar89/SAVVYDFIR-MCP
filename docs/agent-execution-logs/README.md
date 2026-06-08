@@ -22,6 +22,11 @@ Recall = granular ground-truth coverage (see `docs/accuracy-report.md`). Per-run
 are in `scripts/eval/baselines/*.json` (the ground-truth answer keys are published under
 `scripts/eval/ground_truth/`; the investigation engine never reads them).
 
+> **Note on timing:** these five runs + their recall and TP/FP baselines were measured on the
+> judged **`v1.1.1`** engine, *before* the `v1.2.0` core features shipped (native file-access
+> extractors, durable reuse, case-insensitive/UTF-16 mount fix, triage detection). They are the
+> `v1.1.1` baseline and have not yet been re-scored against `v1.2.0`. See `docs/accuracy-report.md`.
+
 ## Multi-host capstone
 
 | Case | Scenario | Hosts | Artifacts |

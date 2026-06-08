@@ -56,7 +56,8 @@ answer keys are published under `scripts/eval/ground_truth/` for verifiability).
 | NIST CFReDS - Data Leakage | [cfreds.nist.gov](https://cfreds.nist.gov) (NIST, U.S. Gov - public domain) |
 | NIST CFReDS - Hacking Case ("Mr. Evil") | [cfreds-archive.nist.gov/Hacking_Case.html](https://cfreds-archive.nist.gov/Hacking_Case.html) (NIST - public domain) |
 | Ali Hadi - Web Server Case (DFIR Challenge #1) | [ashemery.com/dfir.html](https://www.ashemery.com/dfir.html) |
-| ROCBA-2020, LONEWOLF-2018 | SANS Institute course material - synthetic data, used per course terms, not redistributed |
+| LONEWOLF-2018 (DESKTOP-PM6C56D) | **Digital Corpora - "2018 Lone Wolf Scenario"** ([digitalcorpora.org/corpora/scenarios/2018-lone-wolf-scenario](https://digitalcorpora.org/corpora/scenarios/2018-lone-wolf-scenario)) - publicly released for research/education |
+| ROCBA-2020 (Fred Rocba case) | SANS Institute course / hackathon material - synthetic data, used per course terms, not redistributed |
 
 ATT&CK® is a registered trademark of The MITRE Corporation.
 

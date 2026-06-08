@@ -8,6 +8,16 @@ definitions in [`eval-methodology.md`](eval-methodology.md). Per-run scores come
 from `scripts/eval/baselines/*.json`; full run artifacts (report, graph,
 hash-chained audit) are under [`agent-execution-logs/`](agent-execution-logs/).
 
+> **When these numbers were measured (read this first).** The five blind-case runs,
+> recall, and TP/FP baselines below were measured on the **judged `v1.1.1` engine** -
+> *before* several core features shipped in `v1.2.0` (the native file-access extractors -
+> Recycle Bin / PowerShell history / scheduled tasks - durable artifact reuse, the
+> case-insensitive / UTF-16 mount fix, and experimental triage-layout detection). These
+> scores therefore reflect the `v1.1.1` baseline and have **not** yet been re-scored against
+> `v1.2.0`. The newer features are additive and backward-compatible; re-scoring on `v1.2.0`
+> is expected to maintain or improve coverage, but until a fresh blind run is published, treat
+> the figures here as the `v1.1.1` baseline, not a `v1.2.0` measurement.
+
 ---
 
 ## 1. Method (summary)
