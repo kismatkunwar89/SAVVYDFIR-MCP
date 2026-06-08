@@ -2540,14 +2540,67 @@ def _render_finding_cards(
                 f'<span class="chip">{html.escape(str(i))}</span>' for i in inds[:6]
             )
             ind_html = f'<div class="chips">{chips}</div>'
+        # CONFIRMED-only provenance expansion (case-agnostic: renders whatever
+        # defensibility fields the finding carries). Keeps the high-bar claims
+        # auditable from the report alone without bloating ACTIVE cards.
+        prov_html = ""
+        if show_corroboration and status == "CONFIRMED":
+            bits: list[str] = []
+            if f.get("execution_id"):
+                bits.append(f'<span class="k">execution_id</span> <span class="mono">{html.escape(str(f.get("execution_id")))}</span>')
+            if f.get("evidence_kind"):
+                bits.append(f'<span class="k">evidence</span> {html.escape(str(f.get("evidence_kind")))}')
+            if f.get("disposition"):
+                bits.append(f'<span class="k">disposition</span> {html.escape(str(f.get("disposition")))}')
+            if f.get("alternative_hypothesis"):
+                bits.append(f'<span class="k">alt. hypothesis</span> {html.escape(_short_description(str(f.get("alternative_hypothesis")), 160))}')
+            _ea = f.get("evidence_against_it") or []
+            if _ea:
+                _ea_txt = ", ".join(str(x) for x in _ea) if isinstance(_ea, list) else str(_ea)
+                bits.append(f'<span class="k">ruled out by</span> {html.escape(_short_description(_ea_txt, 160))}')
+            _ctx = f.get("heuristic_context_refs") or []
+            if _ctx:
+                bits.append(f'<span class="k">heuristics</span> <span class="mono">{html.escape(", ".join(str(x) for x in _ctx))}</span>')
+            if bits:
+                prov_html = '<div class="card-meta">' + " &middot; ".join(bits) + "</div>"
         cards.append(
             '<div class="finding">'
             f'<div class="finding-head"><span class="fid">{fid}</span>'
             f'<span class="tag {scls}">{html.escape(status)}</span>'
             f'<span class="tag info">conf {conf:.2f} ({tier})</span>{mitre_tag}</div>'
-            f'<div class="finding-desc">{desc}</div>{corr_html}{ind_html}</div>'
+            f'<div class="finding-desc">{desc}</div>{corr_html}{prov_html}{ind_html}</div>'
         )
     return "\n".join(cards)
+
+
+def _render_finding_index(findings: list[dict[str, Any]]) -> str:
+    """Compact appendix table of EVERY finding, so a reviewer can look up any
+    F-NNN (status, confidence, evidence kind, tool, execution_id) from the report
+    alone. Case-agnostic: renders whatever findings exist, no hardcoded values."""
+    if not findings:
+        return "<p class='muted'>No findings recorded.</p>"
+    rows: list[str] = []
+    for f in findings:
+        fid = html.escape(str(f.get("finding_id", "")))
+        status = _status_label(f.get("finding_status"))
+        scls = _status_color_class(status)
+        conf = float(f.get("confidence", 0.0) or 0.0)
+        ek = html.escape(str(f.get("evidence_kind") or ""))
+        tech = html.escape(str(f.get("mitre_technique") or ""))
+        tool = html.escape(str(f.get("tool_name") or ""))
+        eid = html.escape(str(f.get("execution_id") or ""))
+        desc = html.escape(_short_description(f.get("description", ""), 160))
+        rows.append(
+            f'<tr><td class="mono">{fid}</td>'
+            f'<td><span class="tag {scls}">{html.escape(status)}</span></td>'
+            f'<td>{conf:.2f}</td><td>{ek}</td><td>{tech}</td>'
+            f'<td class="mono">{tool}</td><td class="mono">{eid}</td><td>{desc}</td></tr>'
+        )
+    return (
+        '<table><thead><tr><th>ID</th><th>Status</th><th>Conf</th><th>Evidence</th>'
+        "<th>MITRE</th><th>Tool</th><th>Execution</th><th>Description</th></tr></thead>"
+        f'<tbody>{"".join(rows)}</tbody></table>'
+    )
 
 
 # Executive summary is for decision-makers (managers, counsel, IR leads), NOT
@@ -2989,7 +3042,7 @@ def render_report_html(payload: dict[str, Any]) -> str:
         ("Triage", html.escape(str(triage_status)), triage_status_class),
         ("Findings", summary.get("findings_count", 0), ""),
         ("Confirmed", confirmed_count, "good"),
-        ("Active Leads", hypothesis_count, "warn"),
+        ("Unconfirmed findings", hypothesis_count, "warn"),
         ("Correction Events", payload.get("correction_events_count", 0), "accent"),
         ("Unresolved", summary.get("unresolved_discrepancies", 0), "warn"),
         ("Sigma Hits", sigma.get("total_hits", 0), "danger"),
@@ -3128,6 +3181,7 @@ def render_report_html(payload: dict[str, Any]) -> str:
 
   <section>
     <h2>Active Leads &amp; Recommended Pivots</h2>
+    <p class="muted" style="font-size: 0.92em;">These are <strong>unconfirmed</strong> findings - single-source observations and leads to pivot on, not corroborated conclusions. Only items in "Top Confirmed Findings" above meet the multi-source CONFIRMED bar.</p>
     <table>
       <thead><tr><th>Severity</th><th>Detector</th><th>Confidence</th><th>Description</th><th>Recommended Next Pivot</th></tr></thead>
       <tbody>{_render_leads(actionable_leads)}</tbody>
@@ -3161,6 +3215,12 @@ def render_report_html(payload: dict[str, Any]) -> str:
   <section>
     <h2>Sigma Anomaly Summary</h2>
     <pre>{html.escape(str(sigma.get('summary_markdown', 'No anomalies detected.')))}</pre>
+  </section>
+
+  <section>
+    <h2>Full Finding Index ({len(payload.get('all_findings') or [])})</h2>
+    <p class="muted" style="font-size: 0.92em;">Every recorded finding, so any <span class="mono">F-NNN</span> can be looked up from this report alone. CONFIRMED = multi-source corroborated conclusion; ACTIVE/OBSERVATION = an unconfirmed lead (a single-source observation, not yet a conclusion).</p>
+    {_render_finding_index(payload.get('all_findings') or [])}
   </section>
 
   <section>
@@ -3718,6 +3778,23 @@ def generate_report_payload(
         if _status_label(finding.get("finding_status")) in {"HYPOTHESIS", "ACTIVE", "OBSERVATION"}
         and str(finding.get("finding_kind") or "validated").lower() != "raw_detector_hit"
     ][:10]
+    # Full finding index for the report appendix (every finding, compact) so any
+    # F-NNN is auditable from the report alone. Case-agnostic: maps over the live
+    # findings list, no hardcoded values; also written into report.json.
+    payload["all_findings"] = [
+        {
+            "finding_id": f.get("finding_id"),
+            "finding_status": _status_label(f.get("finding_status")),
+            "confidence": f.get("confidence"),
+            "evidence_kind": f.get("evidence_kind"),
+            "finding_type": f.get("finding_type"),
+            "mitre_technique": f.get("mitre_technique"),
+            "tool_name": f.get("tool_name"),
+            "execution_id": f.get("execution_id"),
+            "description": _short_description(str(f.get("description", "")), 160),
+        }
+        for f in findings
+    ]
 
     state_manager.update_triage_state(
         triage_status=triage_status,
