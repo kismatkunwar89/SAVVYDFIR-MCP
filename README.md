@@ -106,6 +106,15 @@ Layers 2 and 3 are **two different injection paths**: the YAML supplies the cave
 envelope; the analyst `.md` supplies the `applicable_heuristics` slice. Unmapped tools (and
 file-access-only tools) carry the envelope but **no** `applicable_heuristics` slice.
 
+**A note on the `.claude/agents/` naming (it can mislead):** these files live in Claude Code's
+*subagent* directory, so they look like spawnable agents - but the 8 mapped `*-analyst.md` are **not
+spawned as subagents** in the normal flow. They are **heuristic knowledge bases**: the relevant
+CTX-cited slice is injected *inline* into the main agent's tool responses (`applicable_heuristics`)
+and read as reference text. The directory name reflects their origin in the subagent concept;
+functionally they are reference KBs, not separate agents. The only `*-analyst.md` ever invoked as
+real Task subagents are the optional orchestration playbooks (`synthesis` / `corroboration` /
+`timeline-analyst`), and only when you explicitly opt in.
+
 **Not in the injection layer:** four other `*-analyst.md` files remain in the repo but are **not**
 sliced into tool responses - `browser-analyst.md` is currently unwired (browser extraction uses FK
 YAML only; the post-tool hook routes browser analysis to `registry-analyst`), and
