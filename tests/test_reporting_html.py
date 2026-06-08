@@ -425,8 +425,9 @@ class ReportStructureRenderTests(unittest.TestCase):
         p["top_confirmed_findings"] = []
         narrative = _render_executive_summary(p)
         self.assertIn("No structurally confirmed findings", narrative)
-        # must not raise and must render full document
-        self.assertIn("Executive Summary", render_report_html(p))
+        # must not raise and must render full document (brief heading renamed
+        # "Executive Summary" -> "Summary")
+        self.assertIn("<h2>Summary</h2>", render_report_html(p))
 
     def test_indicator_classifier_conservative(self) -> None:
         from sift_mcp.reporting import _classify_indicator
