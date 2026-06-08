@@ -62,5 +62,5 @@ allowed-tools:
 ## Cross-Artifact Correlation
 | Check | MCP Tool | What It Detects |
 |-------|----------|-----------------|
-| All 6 checks | `compare_disk_and_memory()` | Fileless, cleanup, injection, C2, persistence, timestomping |
+| All 10 checks (6 core + 4 extended) | `compare_disk_and_memory()` | Fileless, cleanup, injection, C2, persistence, timestomping + USN-journal validation, ShimCache-vs-Amcache clearing, EID 1102 log clearing, SRUM exfiltration |
 | Universal anomalies | `sigma_scan()` | Process masquerade, orphans, suspicious persistence, high-value events |

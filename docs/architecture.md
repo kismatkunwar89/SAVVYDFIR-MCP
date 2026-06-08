@@ -271,7 +271,7 @@ Provenance types:
 
 ## Layer 5: Correlation Engine
 
-The correlation engine is the core novel contribution. It reads the authoritative `CaseState` and executes 6 checks:
+The correlation engine is the core novel contribution. It reads the authoritative `CaseState` and executes 10 checks (6 core + 4 extended professional anti-forensics patterns):
 
 ```
 compare_disk_and_memory(case_id)
@@ -301,10 +301,27 @@ compare_disk_and_memory(case_id)
     │           vs MftEntry, DeletedFile for that path
     │   → DiscrepancyAlert (severity: high)
     │
-    └── Check 6: timestamp_mismatch
-        disk:   MftEntry.si_created vs MftEntry.fn_created
-                MftEntry.si_modified vs MftEntry.fn_modified
-        → DiscrepancyAlert (severity: medium)
+    ├── Check 6: timestamp_mismatch
+    │   disk:   MftEntry.si_created vs MftEntry.fn_created
+    │           MftEntry.si_modified vs MftEntry.fn_modified
+    │   → DiscrepancyAlert (severity: medium)
+    │
+    │   --- extended professional anti-forensics patterns ---
+    ├── Check 7: usn_journal_validation
+    │   $UsnJrnl (authoritative) vs MFT $SI; backdating / journal tampering
+    │   → DiscrepancyAlert (severity: high)
+    │
+    ├── Check 8: shimcache_vs_amcache
+    │   ShimCache entry present but no Amcache → selective cache clearing
+    │   → DiscrepancyAlert (severity: medium)
+    │
+    ├── Check 9: event_log_clearing
+    │   EVTX EID 1102 (Security log cleared) → recommend analyze_vss recovery
+    │   → DiscrepancyAlert (severity: critical)
+    │
+    ├── Check 10: srum_exfiltration
+    │   SRUM bytes_sent per process > threshold; correlate with network/EVTX
+    │   → DiscrepancyAlert (severity: high if network match, else medium)
     │
     └── returns CorrelationReport(
             total_checks_run=N,
