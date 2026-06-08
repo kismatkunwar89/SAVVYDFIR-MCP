@@ -160,7 +160,7 @@ artifact) is treated as evidence, not silence.
 
 ```mermaid
 flowchart TD
-    E["Evidence<br/>disk E01 + memory"] --> X["Phase 1-2 · Acquire<br/>mount + extract MFT, EVTX, Prefetch,<br/>Amcache, Registry, SRUM, memory"]
+    E["Evidence<br/>disk E01 + memory<br/>(or CyLR/KAPE/Velociraptor triage)"] --> X["Phase 1-2 · Acquire<br/>mount (or detect_triage_layout) + extract MFT/USN, EVTX,<br/>Prefetch, Amcache, Registry/ShimCache, SRUM, memory,<br/>+ file-access bundle: ShellBags, LNK, JumpLists, browser,<br/>RecentDocs, Recycle Bin, PowerShell history, scheduled tasks"]
     X --> D["Phase 3 · Detect<br/>Sigma/Chainsaw rules · anti-forensics checks"]
     D --> H["Phase 4 · Hypothesize<br/>detection anchors seed 2-5 ranked hypotheses"]
     H --> P["Pivot loop<br/>targeted run_analysis over each artifact CSV<br/>(query the data, never load it into context)"]
@@ -663,55 +663,48 @@ was always null) - treat them as designed-but-unproven.
 
 ```
 SAVVYDFIR-MCP/
-├── CLAUDE.md                          # Business Brain (skills routing + rules)
+├── CLAUDE.md                          # Investigation guide (7-phase workflow + rules)
 ├── README.md                          # This file
+├── THIRD_PARTY.md                     # Third-party tool / dataset attribution
+├── LICENSE                            # MIT
 ├── .mcp.json                          # MCP server connection config
 ├── requirements.txt                   # Python dependencies
 ├── .claude/
 │   ├── settings.json                  # Claude Code MCP + hook config
-│   ├── hooks/
-│   │   ├── session-start.py           # Session bootstrap
-│   │   ├── workflow-enforce-pre.py     # PreToolUse gate (report/lane coverage)
-│   │   ├── workflow-enforce-post.py    # PostToolUse gate (phase transitions)
-│   │   └── stop.py                    # Completion verification from state.json + audit.jsonl
-│   ├── agents/                        # Specialist analysts (MFT, EVTX, registry, memory, etc.)
-│   └── skills/
-│       ├── investigation-workflow/    # Primary investigation sequencing guidance
-│       ├── artifact-routing/          # Artifact-to-specialist routing
-│       ├── pivot-methodology/         # Cross-artifact pivoting patterns
-│       ├── sigma-detection/           # Sigma detection + ATT&CK mapping
-│       └── tools-reference/           # Tool contract reference
+│   ├── hooks/                         # session-start, pre/post coverage gates, stop verification
+│   ├── agents/                        # *-analyst.md: 8 injected heuristic KBs + opt-in specialists (see Knowledge Layers)
+│   └── skills/                        # investigation-workflow, artifact-routing, pivot-methodology, sigma-detection, tools-reference
 ├── case-templates/
 │   └── manifest.json                  # Example case manifest
+├── data/
+│   └── forensic-knowledge/artifacts/
+│       ├── windows/                   # 17 per-artifact FK YAMLs (forensic_caveat / corroborate_with / discipline)
+│       └── analysis_outputs/          # 2 analysis-tool-output FK YAMLs
 ├── sift_mcp/
-│   ├── server.py                      # FastMCP entry point (all tools registered)
+│   ├── server.py                      # FastMCP entry point (65 tools registered)
 │   ├── audit.py                       # JSONL audit logger (fail-closed)
 │   ├── state.py                       # Case state manager
+│   ├── reporting.py                   # Report builder + coverage/provenance gate
+│   ├── analysis_debt.py               # Extraction catalog + analysis-debt gate
+│   ├── tool_catalog.py                # Per-tool domain / result-kind metadata
 │   ├── models/                        # Pydantic data models
-│   ├── tools/                         # MCP tool implementations
+│   ├── tools/                         # MCP tool impls (disk.py, correlation.py, _cache.py durable-reuse, _contracts.py)
 │   └── runners/                       # SafeRunner subprocess wrappers
 ├── scripts/
-│   ├── investigation_graph.py         # Per-case D3 graph builder (called by generate_graph)
-│   ├── merge_graphs.py               # Cross-host IOC graph merger (called by merge_host_graphs)
-│   └── build_index.py                # Reports index generator (called by build_reports_index)
-├── analysis/                          # Default single-host working state
-│   ├── state.json
-│   └── audit.jsonl
+│   ├── run-case.sh                    # Investigation wrapper (investigate -> report -> trace)
+│   ├── extract_heuristic_slice.py     # Injects analyst-KB slices as applicable_heuristics
+│   ├── render_session_trace.py        # Renders trace.html from the session log
+│   ├── render_report_pdf.sh           # Renders report.pdf from report.html (headless Chromium)
+│   ├── investigation_graph.py         # Per-case D3 graph (generate_graph)
+│   ├── merge_graphs.py               # Cross-host IOC graph (merge_host_graphs)
+│   ├── build_index.py                # Reports index (build_reports_index)
+│   └── eval/                          # Baselines + published ground-truth keys + scorer
+├── analysis/                          # Default single-host working state (state.json, audit.jsonl)
 ├── investigations/                    # Optional per-host state roots via SAVVYDFIR_ANALYSIS_DIR
-│   └── {SCENARIO}-{HOST}/
-│       ├── manifest.json
-│       ├── state.json
-│       └── audit.jsonl
 ├── reports/                           # Investigation outputs (gitignored)
-│   ├── index.html                     # Dashboard (build_reports_index)
-│   ├── {case_id}/
-│   │   ├── report.html                # Per-host report (generate_report)
-│   │   ├── graph.html                 # Per-host graph (generate_graph)
-│   │   └── graph.json
-│   └── unified/
-│       ├── graph.html                 # Cross-host graph (merge_host_graphs)
-│       └── graph.json
-└── docs/                              # Architecture and methodology docs
+│   └── {case_id}/                     # report.html · report.json · report.pdf · graph.html · graph.json · trace.html
+└── docs/                              # architecture, accuracy-report, eval-methodology, dataset docs
+    └── agent-execution-logs/          # Committed run artifacts: 5 blind cases + VANKO (report/graph/trace/audit)
 ```
 
 ---
