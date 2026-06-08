@@ -8,7 +8,7 @@
 
 ---
 
-> **📌 Judged submission = tag [`v1.1.1`](https://github.com/kismatkunwar89/SAVVYDFIR-MCP/releases/tag/v1.1.1). Latest release = [`v1.2.0`](https://github.com/kismatkunwar89/SAVVYDFIR-MCP/releases/tag/v1.2.0).**
+> **📌 Judged submission = tag [`v1.1.1`](https://github.com/kismatkunwar89/SAVVYDFIR-MCP/releases/tag/v1.1.1). Latest release = [`v1.2.1`](https://github.com/kismatkunwar89/SAVVYDFIR-MCP/releases/tag/v1.2.1).**
 > `master` tracks the latest code. `v1.1.1` is the immutable judged baseline; post-`v1.1.1` work (released as
 > `v1.2.0`) is backward-compatible and adds native file-access extractors (Recycle Bin, PowerShell history,
 > scheduled tasks), durable artifact reuse, case-insensitive / UTF-16 mount handling, and experimental
