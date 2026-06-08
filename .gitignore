@@ -102,3 +102,7 @@ paperplanhandoff.md
 docs/novel-contribution.md
 Jaswanthreview/
 *.bak
+
+# internal demo-recording aids (not shipped)
+recordplan.md
+scriptforvideo.md
