@@ -160,11 +160,27 @@ artifact) is treated as evidence, not silence.
 
 ```mermaid
 flowchart TD
-    E["Evidence<br/>disk E01 + memory<br/>(or CyLR/KAPE/Velociraptor triage)"] --> X["Phase 1-2 · Acquire<br/>mount (or detect_triage_layout) + extract MFT/USN, EVTX,<br/>Prefetch, Amcache, Registry/ShimCache, SRUM, memory,<br/>+ file-access bundle: ShellBags, LNK, JumpLists, browser,<br/>RecentDocs, Recycle Bin, PowerShell history, scheduled tasks"]
-    X --> D["Phase 3 · Detect<br/>Sigma/Chainsaw rules · anti-forensics checks"]
+    E["Evidence<br/>disk E01 + memory<br/>(or CyLR / KAPE / Velociraptor triage)"] --> ACQ["Phase 1 · Acquire<br/>mount_image (ewfmount) · or detect_triage_layout"]
+
+    subgraph P12["Phase 2 · Extract (per-artifact MCP tools -> durable CSV/JSON handle)"]
+      direction TB
+      ACQ --> MEM["Memory · Volatility 3<br/>list/scan_processes · scan_network<br/>detect_injection · list_dlls"]
+      ACQ --> DSK["Disk · EZ Tools + SleuthKit<br/>MFT / USN · EVTX · Prefetch · Amcache<br/>Registry / ShimCache · SRUM"]
+      ACQ --> FAB["File-access bundle<br/>ShellBags · LNK · JumpLists · browser<br/>RecentDocs · Recycle Bin · PowerShell hist · scheduled tasks"]
+    end
+
+    MEM --> INT["Interpretation envelope on each tool response<br/>(CSV/JSON handle + injected knowledge)"]
+    DSK --> INT
+    FAB --> INT
+
+    FKY[("forensic-knowledge YAML<br/>data/forensic-knowledge/artifacts/**<br/>forensic_caveat · corroborate_with · discipline_reminder")] -. "injected at interpretation (all mapped tools)" .-> INT
+    KBS[(".claude/agents · 8 analyst KBs<br/>applicable_heuristics slice · CTX-NNN provenance<br/>mft·evtx·prefetch·amcache·registry·srum·sigma·memory")] -. "sliced onto mapped tools only" .-> INT
+
+    INT --> RA["run_analysis (Pandas over the CSV)<br/>-> submit_finding (cites execution_id + CTX-NNN)"]
+    RA --> D["Phase 3 · Detect<br/>Sigma / Chainsaw (2,278 rules) · anti-forensics checks"]
     D --> H["Phase 4 · Hypothesize<br/>detection anchors seed 2-5 ranked hypotheses"]
     H --> P["Pivot loop<br/>targeted run_analysis over each artifact CSV<br/>(query the data, never load it into context)"]
-    P --> C["Phase 5 · Correlate<br/>temporal clusters + 10 disk-memory checks"]
+    P --> C["Phase 5 · Correlate<br/>temporal clusters + 10 correlation checks (6 core + 4 extended)"]
     C --> S["Phase 6 · Synthesize<br/>stack 2+ independent sources"]
     S --> G{"Evidence-Provenance Gate<br/>(enforced by code)"}
     G -->|"execution_id resolves to a real audit row<br/>+ corroborated_by ≥ 2<br/>+ benign alternative ruled out"| CONF["CONFIRMED<br/>(2+ corroborating sources)"]
