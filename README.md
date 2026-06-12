@@ -35,6 +35,11 @@ Every required turn-in is listed below with its exact location, so judges can ve
 
 > **Demonstration video:** <https://youtu.be/2tDT23DmE1I> - a live start on the ROCBA case plus a walkthrough of a completed run, the deliverables (report.html / report.pdf / graph.html), and a self-correction event.
 
+> **👉 Judges / reviewers start here:** [`docs/REVIEWER-GUIDE.md`](docs/REVIEWER-GUIDE.md) maps
+> the six judging criteria to exact files and gives **pre-verified finding→tool-execution traces
+> you can reproduce in ~30 seconds** (the three-claim trace), the self-correction events in the
+> hash-chained logs, the architectural guardrails + their bypass tests, and a claim-to-code map.
+
 ---
 
 ## What It Does
