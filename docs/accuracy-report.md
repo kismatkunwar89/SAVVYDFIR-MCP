@@ -57,7 +57,7 @@ hash-chained audit) are under [`agent-execution-logs/`](agent-execution-logs/).
 | LONEWOLF-2018-DESKTOP-PM6C56D | mass-shooting plot (Windows) | **91.7%** (11/12) | 0 | 1/6 | 2 |
 | NIST-DATALEAK-2015-PC | insider data leak (Windows, disk-only) | **60%** (9/15) | 0 | 4/6 | 4 |
 | ALI-WEBSERVER-WIN-L0ZZQ76PMUF | web-server breach (Win Server 2008) | **92.3%** (12/13) | 0 | 7/8 | 2 |
-| NIST-HACKINGCASE-2004-MREVIL | war-driving / credential theft (Win XP) | **86.7%** (13/15) | 0 | 5/6 | 3 |
+| NIST-HACKINGCASE-2004-MREVIL | war-driving / credential theft (Win XP, disk-only) | **86.7%** (13/15) | 0 | 5/6 | 3 |
 
 **Headline: ~84% mean recall, 0 *scored* hallucinations across all five cases.** A *scored
 hallucination* is a reported finding that asserts an artifact or event with no support in the
