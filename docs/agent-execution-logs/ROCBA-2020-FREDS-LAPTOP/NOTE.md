@@ -15,7 +15,8 @@ hash-chained `audit.jsonl`; see those directories for the per-tool-call executio
 
 **For the full ROCBA execution trail, see the v1.2.0 re-run.** A blind re-run of this same
 case on the `v1.2.0` engine ships the richer artifact set — report, PDF, graph, session
-**`trace.html`** (timestamps + token usage), and `RUN-NOTES.md`:
+**`trace.html`** (timestamps + token usage), the hash-chained **`audit.jsonl`** (483 entries,
+5 correction events; the report's cited `execution_id`s resolve in it), and `RUN-NOTES.md`:
 
 → [`../ROCBA-2020-FREDS-LAPTOP-v1.2.0/`](../ROCBA-2020-FREDS-LAPTOP-v1.2.0/)
 

@@ -43,7 +43,7 @@ are in `scripts/eval/baselines/*.json` (the ground-truth answer keys are publish
 
 | Case | Engine | Recall | Findings | CONFIRMED hyps | Artifacts |
 |------|--------|--------|----------|----------------|-----------|
-| [`ROCBA-2020-FREDS-LAPTOP-v1.2.0`](ROCBA-2020-FREDS-LAPTOP-v1.2.0/) | v1.2.0 | 90% (9/10, 0 halluc) | 127 | 4 of 5 | report·pdf·graph·trace·json + [RUN-NOTES](ROCBA-2020-FREDS-LAPTOP-v1.2.0/RUN-NOTES.md) |
+| [`ROCBA-2020-FREDS-LAPTOP-v1.2.0`](ROCBA-2020-FREDS-LAPTOP-v1.2.0/) | v1.2.0 | 90% (9/10, 0 halluc) | 127 | 4 of 5 | report·pdf·graph·trace·json·**audit** + [RUN-NOTES](ROCBA-2020-FREDS-LAPTOP-v1.2.0/RUN-NOTES.md) |
 
 A blind re-run of ROCBA on `v1.2.0` exercising the new native artifacts. **GT recall is identical
 to the v1.1.1 baseline (90%, same single FN GT-007, 0 hallucinations)** - the gain is qualitative
