@@ -2,9 +2,27 @@
 
 **SAVVYDFIR-MCP** is a purpose-built MCP server that layers cross-artifact correlation and evidence-triggered self-correction on top of Protocol SIFT. This document describes all architectural layers, their interfaces, and the design decisions behind each.
 
+**Architectural pattern: Custom MCP Server.** The submission is a purpose-built Model
+Context Protocol (MCP) server exposing typed forensic tools to the Claude Code agent over
+stdio JSON-RPC 2.0 - not an LLM wrapper or a prompt-only harness. Claude Code supplies the
+runtime, model, and MCP plumbing; this project contributes the tools, the deterministic
+guardrails, the correlation engine, and the reporting layer.
+
 ---
 
 ## Top-Level System Diagram
+
+> **Trust & security boundaries (how to read the diagram below).**
+> - **Read-only evidence boundary** - `/evidence/` and `/mnt/` are mounted read-only; the
+>   SafeRunner `DENY_PATHS` layer blocks any write/destructive command targeting them, so
+>   neither the model nor a tool can alter source evidence (enforced in code, not by prompt).
+> - **Untrusted-model vs. code-enforced-gate boundary** - the Claude Code agent loop is the
+>   *untrusted reasoning* zone (it proposes tool calls and interpretations); everything below
+>   the `stdio JSON-RPC` line is *trusted, deterministic* code. Coverage gates, the provenance
+>   gate, and the CONFIRMED-status invariants live on the trusted side and constrain what the
+>   model is allowed to call complete or confirmed.
+> - **Evidence-integrity boundary** - hashes are verified at investigation start and end; a
+>   mismatch raises a CRITICAL alert. See "Evidence Integrity Model" below.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐

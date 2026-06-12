@@ -22,6 +22,18 @@ Recall = granular ground-truth coverage (see `docs/accuracy-report.md`). Per-run
 are in `scripts/eval/baselines/*.json` (the ground-truth answer keys are published under
 `scripts/eval/ground_truth/`; the investigation engine never reads them).
 
+> **Where to find timestamps and token usage.** Per-tool-call **timestamps**, durations,
+> exit codes, and the hash chain live in each case's **`audit.jsonl`** (`timestamp`,
+> `duration_seconds`, `prev_entry_hash` / `entry_hash`). **Token usage** is recorded in the
+> rendered session **`trace.html`** (the Claude Code session trace), not in `audit.jsonl` —
+> see the cases that ship a `trace` artifact (e.g. the
+> [`ROCBA-2020-FREDS-LAPTOP-v1.2.0`](ROCBA-2020-FREDS-LAPTOP-v1.2.0/) re-run and its
+> `RUN-NOTES.md` token/cost breakdown).
+
+> **ROCBA `v1.1.1` directory has no `audit.jsonl`** (it predates audit-log retention) — this
+> is disclosed, not an omission. See [`ROCBA-2020-FREDS-LAPTOP/NOTE.md`](ROCBA-2020-FREDS-LAPTOP/NOTE.md);
+> the full hash-chained trail for ROCBA is in the v1.2.0 re-run below.
+
 > **Note on timing:** these five runs + their recall and TP/FP baselines were measured on the
 > judged **`v1.1.1`** engine, *before* the `v1.2.0` core features shipped (native file-access
 > extractors, durable reuse, case-insensitive/UTF-16 mount fix, triage detection). They are the
