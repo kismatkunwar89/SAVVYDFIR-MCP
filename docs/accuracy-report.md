@@ -68,6 +68,20 @@ finding is backed by ≥2 independent corroborating sources and a ruled-out beni
 evidence-provenance gate; see `eval-methodology.md` §3). ACTIVE findings are reported as *leads*,
 not assertions of fact.
 
+**Measurement caveats (read this before trusting the headline).** These five blind evaluations are
+Windows-only (Sonnet 4.6, judged `v1.1.1` engine), with recall from 60% to 92.3%. Ground-truth keys
+are non-exhaustive, so **precision is not measured**: findings without a GT match stay *unscored*,
+not false positives. "0 scored hallucinations" means **no scoreable finding shared a distinctive
+anchor with a published known-negative** (~a few per case) - the automated scorer does **not**
+independently verify every cited artifact or rebut every plausible-but-wrong inference. Most findings
+remain **ACTIVE** leads for human review; only a small corroborated subset reaches **CONFIRMED** (the
+CONFIRMED gate bounds *what is elevated to court-defensible claims*; the hallucination metric is a
+separate, narrower bar). Matching uses project-authored distinctive-anchor rules and can over- or
+under-credit when an identifier appears out of context. The scorer and keys are **published for
+independent re-scoring**, but were developed by the project; the Ali Hadi key relies on reconciled
+community sources, not an official answer key. These results describe **performance on this corpus -
+not a general zero-error guarantee.**
+
 ---
 
 ## 3. Per-case notes (honest coverage)
