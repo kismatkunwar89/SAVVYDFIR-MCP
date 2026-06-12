@@ -27,13 +27,13 @@ Every required turn-in is listed below with its exact location, so judges can ve
 | 3 | README with setup instructions | This file, [Installation](#installation) | DONE |
 | 4 | Step-by-step run instructions | This file, [Usage](#usage) | DONE |
 | 5 | Text description of features | This file, [What It Does](#what-it-does) + [Architecture](#architecture) | DONE |
-| 6 | Demonstration video | **[ADD VIDEO URL BEFORE SUBMIT]** (see note below) | TODO |
+| 6 | Demonstration video | <https://youtu.be/2tDT23DmE1I> | DONE |
 | 7 | Architecture diagram | This file, [Architecture](#architecture), plus [`docs/architecture.md`](docs/architecture.md) | DONE |
 | 8 | Evidence dataset documentation | [`docs/dataset-documentation.md`](docs/dataset-documentation.md) | DONE |
 | 9 | Accuracy report | [`docs/accuracy-report.md`](docs/accuracy-report.md) | DONE |
 | 10 | Agent execution logs | [`docs/agent-execution-logs/`](docs/agent-execution-logs/) - rendered `report.html` + `graph.html` for all 5 cases; hash-chained `audit.jsonl` for 4/5 (ROCBA predates audit retention, disclosed) | DONE |
 
-> **ACTION REQUIRED before submitting:** replace the requirement #6 placeholder above with the live demonstration video URL. This is the only component that cannot be completed from the repository alone.
+> **Demonstration video:** <https://youtu.be/2tDT23DmE1I> - a live start on the ROCBA case plus a walkthrough of a completed run, the deliverables (report.html / report.pdf / graph.html), and a self-correction event.
 
 ---
 
