@@ -120,23 +120,22 @@ not a general zero-error guarantee.**
 
 Evidence is protected by code, not by asking the model to behave. Three mechanisms enforce it:
 
-1. **Read-only enforcement.** `SafeRunner` validates every command against `DENY_PATHS`;
-   any write/destructive operation targeting `/evidence/` or `/mnt/` is blocked before
-   execution (`subprocess.run(shell=False)`, path validation + deny list). The model cannot
-   prompt its way past this - it is a hard gate in the server, exercised by
-   `tests/test_evidence_integrity_bypass.py`.
-2. **Hash verification at start and end.** The investigation verifies evidence hashes when it
-   begins and again when it ends; a mismatch raises a CRITICAL alert (see
-   `docs/architecture.md` "Evidence Integrity Model"), so silent tampering or accidental
-   modification surfaces in the audit trail rather than passing unnoticed.
+1. **Read-only enforcement.** The `SafeRunner` runner validates commands against its
+   `DENIED_PATHS` / `WRITE_PROTECTED_PATHS` prefixes and runs `subprocess.run(shell=False)`, so
+   forensic tool calls routed through it are blocked from writing to or destroying `/evidence/`
+   or `/mnt/`. Bypass attempts are exercised by `tests/test_evidence_integrity_bypass.py`.
+2. **On-demand hash verification.** Evidence hashes can be computed and checked via the
+   `verify_integrity` tool (`ewfverify` / `sha256sum`); the case model carries optional
+   `integrity_hash_start` / `integrity_hash_end` fields for recording them. This is an
+   available check, not an automatic start/end comparison wired into the run lifecycle.
 3. **Provenance gate.** A CONFIRMED finding's `source_execution_id` must resolve to a real
    `audit.jsonl` row in the current ledger; inherited/placeholder/auto-generated IDs are
-   auto-demoted (`tests/test_confirmed_integrity.py`). This ties every court-defensible claim
-   back to a logged, hash-chained tool execution.
+   auto-demoted (`tests/test_confirmed_integrity.py`). This ties a CONFIRMED claim back to a
+   logged, hash-chained execution record.
 
-Net effect: source evidence is immutable to the agent, and every elevated conclusion is
-traceable to a verifiable execution record - the integrity properties are guaranteed
-structurally, independent of model behavior.
+Net effect: source evidence is protected from writes by tools routed through `SafeRunner`, and
+CONFIRMED conclusions are tied to a verifiable execution record. These are code-level properties,
+not prompt instructions.
 
 *Recall = granular ground-truth coverage. ROCBA predates audit-log retention, so
 its execution-log directory ships report/graph/json without `audit.jsonl`.*

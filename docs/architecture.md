@@ -13,16 +13,17 @@ guardrails, the correlation engine, and the reporting layer.
 ## Top-Level System Diagram
 
 > **Trust & security boundaries (how to read the diagram below).**
-> - **Read-only evidence boundary** - `/evidence/` and `/mnt/` are mounted read-only; the
->   SafeRunner `DENY_PATHS` layer blocks any write/destructive command targeting them, so
->   neither the model nor a tool can alter source evidence (enforced in code, not by prompt).
+> - **Read-only evidence boundary** - `/evidence/` and `/mnt/` are treated as read-only; the
+>   `SafeRunner` runner blocks commands that resolve to its `DENIED_PATHS` / `WRITE_PROTECTED_PATHS`
+>   prefixes, so forensic tool calls routed through it cannot write to or destroy source evidence
+>   (enforced in code, not by prompt).
 > - **Untrusted-model vs. code-enforced-gate boundary** - the Claude Code agent loop is the
->   *untrusted reasoning* zone (it proposes tool calls and interpretations); everything below
->   the `stdio JSON-RPC` line is *trusted, deterministic* code. Coverage gates, the provenance
->   gate, and the CONFIRMED-status invariants live on the trusted side and constrain what the
->   model is allowed to call complete or confirmed.
-> - **Evidence-integrity boundary** - hashes are verified at investigation start and end; a
->   mismatch raises a CRITICAL alert. See "Evidence Integrity Model" below.
+>   *untrusted reasoning* zone (it proposes tool calls and interpretations). Coverage gates, the
+>   provenance gate, and the CONFIRMED-status invariants are deterministic code that constrains
+>   what the model is allowed to call complete or confirmed.
+> - **Evidence-integrity boundary** - evidence hashes can be computed and checked on demand via
+>   the `verify_integrity` tool (`ewfverify` / `sha256sum`); the case model carries optional
+>   `integrity_hash_start` / `integrity_hash_end` fields for recording them.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐

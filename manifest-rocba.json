@@ -1,0 +1,20 @@
+{
+  "case_id": "ROCBA-2020-FREDS-LAPTOP",
+  "mode": "blind",
+  "investigation_goal": "Fred Rocba, an engineer at Stark Research Labs, reported a physical break-in during the evening of 2020-11-13 while he was away on vacation, having departed on 2020-11-10. His SRL-issued Windows 10 Surface was reportedly left logged in. Determine: (1) which SRL projects or intellectual property were accessible, (2) whether data was taken, (3) whether and where it was transferred, (4) what methods were used, and (5) when the relevant activity occurred. Distinguish activity associated with the reported break-in from Fred's legitimate earlier activity. Known owner accounts are frocba@stark-research-labs.com, fred.rocba@gmail.com, and fred.rocba@outlook.com. The environment used Dropbox, OneDrive, Google Drive, iCloud, and Office 365; their presence alone is not evidence of exfiltration. The system timezone is EST5EDT; on 2020-11-13 Eastern local time was EST (UTC-5). Normalize reported timestamps to UTC and preserve local-time context.",
+  "investigative_taxonomy": {
+    "side": "victim",
+    "dispute_type": "data_exfiltration",
+    "expected_attack_class": "unknown",
+    "os_in_scope": ["Windows 10"],
+    "initial_keywords": []
+  },
+  "disk_images": [
+    {"path": "/evidence/srl-2018/rocba/disk/rocba-cdrive.e01", "host": "FREDS-LAPTOP", "image_type": "E01"}
+  ],
+  "memory_dumps": [
+    {"path": "/evidence/srl-2018/rocba/memory/rocba-memory.raw", "host": "FREDS-LAPTOP"}
+  ],
+  "known_iocs": [],
+  "max_iterations": 4
+}
