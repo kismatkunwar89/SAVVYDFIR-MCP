@@ -15,10 +15,10 @@ records each dataset's provenance, scope, and source. Results are in
 | Case ID | Scenario | OS | Source | Provenance |
 |---------|----------|----|--------|------------|
 | `NIST-DATALEAK-2015-PC` | insider data leak | Windows (disk-only) | [NIST CFReDS](https://cfreds.nist.gov) "Data Leakage" | NIST (U.S. Gov, public domain). GT from the official answer key. |
-| `NIST-HACKINGCASE-2004-MREVIL` | war-driving / credential theft | Windows XP | [NIST CFReDS Hacking Case](https://cfreds-archive.nist.gov/Hacking_Case.html) | NIST (public domain). GT from the official 31-question answer key. EnCase image, MD5 `aee4fcd9301c03b3b054623ca261959a`. |
+| `NIST-HACKINGCASE-2004-MREVIL` | war-driving / credential theft | Windows XP (disk-only) | [NIST CFReDS Hacking Case](https://cfreds-archive.nist.gov/Hacking_Case.html) | NIST (public domain). GT from the official 31-question answer key. EnCase image, MD5 `aee4fcd9301c03b3b054623ca261959a`. |
 | `ALI-WEBSERVER-WIN-L0ZZQ76PMUF` | web-server breach (XAMPP/DVWA) | Windows Server 2008 | [Ali Hadi DFIR Challenge #1](https://www.ashemery.com/dfir.html) | Public training case. GT cross-corroborated from published walkthroughs (instructor key not public). |
 | `ROCBA-2020-FREDS-LAPTOP` | insider IP theft | Windows | SANS course material | Synthetic course dataset (not public); used per course terms. |
-| `LONEWOLF-2018-DESKTOP-PM6C56D` | mass-shooting plot | Windows | SANS course material | Synthetic course dataset (not public); used per course terms. |
+| `LONEWOLF-2018-DESKTOP-PM6C56D` | mass-shooting plot | Windows | [Digital Corpora "2018 Lone Wolf Scenario"](https://digitalcorpora.org/corpora/scenarios/2018-lone-wolf-scenario) | Publicly released for research/education. GT from scenario materials + manual analysis. |
 
 ## Ground-truth methodology
 
