@@ -104,23 +104,45 @@ Each row records a single agent action. Key fields:
 
 ## Why the hash chain matters
 
-The log is a linked hash chain: altering or deleting any row breaks the chain at
-that point, which is detectable. This is what makes the execution trail defensible
-rather than just a convenience log. Verify it with:
+The log is a linked hash chain: each row's `entry_hash` is the SHA-256 of the row's own
+content, and each row embeds the previous row's `entry_hash` as `prev_entry_hash`. Altering
+**or** deleting any row both changes that row's recomputed hash and breaks the link in the next
+row — so tampering is detectable. Verifying *only* the links (`prev == previous.entry_hash`) is
+**not** sufficient: a tamperer who recomputes the chain could pass a link-only check. A real
+verification **recomputes each `entry_hash`** with the canonical algorithm from
+`sift_mcp/audit.py` (`sort_keys=True, ensure_ascii=True, separators=(",",":")`, excluding the
+`entry_hash` field itself):
 
 ```python
-import json
-rows = [json.loads(line) for line in open("audit.jsonl")]
-ok = all(rows[i]["prev_entry_hash"] == rows[i - 1]["entry_hash"]
-         for i in range(1, len(rows)))
-print("chain intact:", ok)
+import json, hashlib
+
+rows = [json.loads(line) for line in open("audit.jsonl") if line.strip()]
+
+def entry_hash(e):                       # must match sift_mcp/audit.py _compute_entry_hash
+    payload = {k: v for k, v in e.items() if k != "entry_hash"}
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=True,
+                           separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+hash_ok  = all(entry_hash(e) == e["entry_hash"] for e in rows if e.get("entry_hash"))
+chain_ok = all(rows[i].get("prev_entry_hash") == rows[i - 1].get("entry_hash")
+               for i in range(1, len(rows)))
+print("rows:", len(rows), "| entry_hash recomputes:", hash_ok, "| chain links:", chain_ok)
 ```
+
+This recomputes-and-links check passes on every committed `audit.jsonl` (e.g. the
+ROCBA-v1.2.0 ledger: 483 rows, both `True`). You can also bind a deliverable to the ledger:
+the last successful `generate_report` row carries an `artifact_hashes` entry whose `sha256`
+should equal `sha256sum report.html`.
 
 ## Notes
 
 - Paths in the artifacts reflect the standard SANS SIFT workstation layout (e.g.
   `/home/referenceensics/...`, the default SIFT user); the `audit.jsonl` hash chains
   are **unmodified** so they remain independently verifiable.
-- `ROCBA-2020-FREDS-LAPTOP` predates audit-log retention, so it ships report/graph/json only.
+- `ROCBA-2020-FREDS-LAPTOP` (the **judged v1.1.1 baseline**) predates audit-log retention, so it
+  ships report/graph/json only — see its [`NOTE.md`](ROCBA-2020-FREDS-LAPTOP/NOTE.md). The
+  hash-chained ledger for ROCBA lives in the v1.2.0 re-run dir, which carries a full
+  provenance/restoration disclosure in its `RUN-NOTES.md`.
 - On a live run the framework writes the log to `analysis/audit.jsonl` alongside
   per-case state; these are copies of completed runs, committed for visibility.

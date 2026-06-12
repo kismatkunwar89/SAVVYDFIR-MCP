@@ -14,12 +14,12 @@ folder is an additional showcase run, **not** a replacement of the judged baseli
 ## Run stats
 | Metric | Value |
 |---|---|
-| Wall-clock | 2026-06-07T23:32:23Z -> 2026-06-08T01:14:40Z (**~1h 42m**) |
+| Wall-clock (analysis) | 2026-06-07T23:32:23Z -> 2026-06-08T01:14:40Z (**~1h 42m**) |
 | Tokens (total) | **63.3M** (output 523k · cache-write 2.39M · cache-read 60.4M) |
 | Agent turns | 597 (context compacted multiple times; resumed from durable state) |
 | Approx cost (Sonnet 4.6) | **~$35** (out $7.8 + cache-write $9.0 + cache-read $18.1) |
 | Findings | **127** (2 CONFIRMED, 125 ACTIVE) |
-| Executions | 165 |
+| Executions | **166** tool-execution records (`report.json:executions_count`) |
 | Hypotheses | **5 - 4 CONFIRMED, 1 SUSPENDED** (all resolved) |
 | Heuristic CTX refs cited | 6 |
 
@@ -74,4 +74,39 @@ resolved (vs 10 left open), a fuller exfil + anti-forensics narrative, and the n
 exercised - at the same 90% / 0-hallucination bar.
 
 ## Output files (this folder)
-`report.html` · `report.pdf` (8 pp) · `report.json` · `graph.html` · `graph.json` · `trace.html`
+`report.html` · `report.pdf` (8 pp) · `report.json` · `graph.html` · `graph.json` · `trace.html` · `audit.jsonl`
+
+## Provenance & restoration (full disclosure)
+
+So a reviewer can trust this folder without guessing how it was assembled:
+
+- **The `audit.jsonl` is the genuine June-7/8 run ledger, restored from retained VM storage.**
+  The hash-chained ledger was produced by this run on `2026-06-07/08`, retained on the
+  workstation at `~/demo-assets/rocba-audit.jsonl`, and committed to the repo on
+  **2026-06-12** (commit `cfd787a`). It was **restored, not regenerated** - the byte content
+  is the original run output.
+- **Integrity is independently verifiable.** The ledger has **483 rows**, the chain validates
+  with **0 `entry_hash` recompute mismatches and 0 broken links** under the canonical algorithm
+  in `sift_mcp/audit.py` (see the verifier in [`../README.md`](../README.md)), and it records
+  **5 correction events**.
+- **The committed `report.html` is cryptographically bound to the ledger.** Its SHA-256
+  (`0f02f915…a376a8`) matches the `artifact_hashes` seal written by execution **E-219**.
+- **Post-analysis report regeneration is disclosed, not hidden.** Analysis ended ~`01:14:40Z`
+  (the ledger's first `generate_report`, E-217, sealed the original `report.html` =
+  `dbd294…953ab3`). The committed report is from a **second** `generate_report` (E-219) at
+  `02:00:22Z` that re-rendered the report after three review-approved presentation fixes
+  (CONFIRMED-only provenance block, a Full Finding Index, and an "unconfirmed findings" metric
+  relabel). The fixes changed **rendering only**, not the findings/state; the ledger records
+  **both** generations, so the 46-minute gap between `01:14` analysis-end and the `02:00` final
+  seal is accounted for in the log itself.
+- **Count semantics (so the numbers reconcile).** The ledger contains **483 rows** and
+  allocates **220 `execution_id`s** (`E-001`–`E-220`; a single tool call emits multiple rows -
+  `started`/`completed`/`linked`/`context_bundle` - and a few warm-up IDs go unused). The
+  **166** above is `report.json:executions_count` = the count of persisted tool-execution
+  *records* in `state.json`. These three figures (483 / 220 / 166) measure different things and
+  are not expected to be equal.
+- **Scope limit, stated plainly.** Only artifacts whose SHA-256 the framework sealed into the
+  ledger are cryptographically bound to it (here: the final `report.html`). `report.json`,
+  `graph.*`, `trace.html`, and `report.pdf` are run outputs that are **not** independently
+  hash-bound by this chain. For per-turn session timestamps and token usage, see `trace.html`,
+  not the ledger.

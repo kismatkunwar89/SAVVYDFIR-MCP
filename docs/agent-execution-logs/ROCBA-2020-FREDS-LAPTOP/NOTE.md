@@ -4,8 +4,8 @@
 baseline run for the ROCBA case, captured *before* hash-chained `audit.jsonl` retention was
 wired into the run-export path. The run is therefore preserved here as its
 `report.html` / `report.json` / `graph.html` deliverables — the tool sequence and findings
-are reconstructable from `report.json` (each finding carries its `source_execution_id`), but
-this specific run does **not** ship the hash-chained execution log.
+are reconstructable from `report.json` (each finding carries its `execution_id` /
+`execution_ids`), but this specific run does **not** ship the hash-chained execution ledger.
 
 **This is a disclosed gap, not an omission.** The other four blind cases
 (`LONEWOLF`, `NIST-DATALEAK`, `ALI-WEBSERVER`, `NIST-HACKINGCASE`) each ship a full
@@ -13,10 +13,12 @@ hash-chained `audit.jsonl`; see those directories for the per-tool-call executio
 (`execution_id`, `command_line`, `exit_code`, `duration_seconds`, `prev_entry_hash` /
 `entry_hash`).
 
-**For the full ROCBA execution trail, see the v1.2.0 re-run.** A blind re-run of this same
-case on the `v1.2.0` engine ships the richer artifact set — report, PDF, graph, session
-**`trace.html`** (timestamps + token usage), the hash-chained **`audit.jsonl`** (483 entries,
-5 correction events; the report's cited `execution_id`s resolve in it), and `RUN-NOTES.md`:
+**For a hash-chained ROCBA tool-execution ledger, see the v1.2.0 re-run.** A blind re-run of
+this same case on the `v1.2.0` engine ships the richer artifact set — report, PDF, graph,
+session **`trace.html`** (per-turn timestamps + token usage), the hash-chained
+**`audit.jsonl`** (483 rows, chain validates with 0 mismatches, 5 correction events; the
+report's cited `execution_id`s resolve in it), and `RUN-NOTES.md` (with a full
+provenance/restoration disclosure):
 
 → [`../ROCBA-2020-FREDS-LAPTOP-v1.2.0/`](../ROCBA-2020-FREDS-LAPTOP-v1.2.0/)
 
