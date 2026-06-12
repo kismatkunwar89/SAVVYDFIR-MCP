@@ -107,13 +107,6 @@ Jaswanthreview/
 recordplan.md
 scriptforvideo.md
 
-# internal dev-process notes + private config (never publish)
+# local scratch / editor config (never published)
 /.cursor/
-/scratch.md
-/review-*.md
-/plan-*.md
-/blueprint-*.md
-/research-*.md
-/PLAN-FIND-EVIL*.md
-/HANDOFF.md
-/savvydfir_baseline*.md
+/_local/
