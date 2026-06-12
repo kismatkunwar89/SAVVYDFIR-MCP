@@ -31,7 +31,7 @@ Every required turn-in is listed below with its exact location, so judges can ve
 | 7 | Architecture diagram | This file, [Architecture](#architecture), plus [`docs/architecture.md`](docs/architecture.md) | DONE |
 | 8 | Evidence dataset documentation | [`docs/dataset-documentation.md`](docs/dataset-documentation.md) | DONE |
 | 9 | Accuracy report | [`docs/accuracy-report.md`](docs/accuracy-report.md) | DONE |
-| 10 | Agent execution logs | [`docs/agent-execution-logs/`](docs/agent-execution-logs/) - rendered `report.html` + `graph.html` for all 5 cases; hash-chained `audit.jsonl` for 4/5 (ROCBA predates audit retention, disclosed) | DONE |
+| 10 | Agent execution logs | [`docs/agent-execution-logs/`](docs/agent-execution-logs/) - rendered `report.html` + `graph.html` for all 5 cases; hash-chained `audit.jsonl` for 4/5 (ROCBA predates audit retention, disclosed). Known issue: historical `find_temporal_clusters` rows show `"0 clusters found"` due to a fixed count-key mismatch - see the [audit-log erratum](docs/agent-execution-logs/README.md#erratum-find_temporal_clusters-audit-summary-count-pre-fix). | DONE |
 
 > **Demonstration video:** <https://youtu.be/2tDT23DmE1I> - a live start on the ROCBA case plus a walkthrough of a completed run, the deliverables (report.html / report.pdf / graph.html), and a self-correction event.
 

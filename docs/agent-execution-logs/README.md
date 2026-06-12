@@ -137,23 +137,26 @@ should equal `sha256sum report.html`.
 
 ## Erratum: `find_temporal_clusters` audit-summary count (pre-fix)
 
-Across every committed case, the `correlation.find_temporal_clusters` row in `audit.jsonl`
-records `outputs_summary: "0 clusters found"`, even on runs that did find clusters. This is a
-logging-string defect, not a zero-result execution: the server wrapper built the summary from a
-`total_clusters` key, but the tool returns the count under `cluster_count`, so the summary always
-read zero. The tool's actual JSON response (which the agent acted on) carried the real
-`cluster_count` and `clusters[]`.
+In each of the five committed audit ledgers, the `correlation.find_temporal_clusters` row in
+`audit.jsonl` records `outputs_summary: "0 clusters found"`. **That summary string cannot be used
+to determine whether the execution actually returned zero clusters.** The server wrapper built the
+summary from a `total_clusters` key, while the tool returns the count under `cluster_count`; the
+two never matched, so the summary always read zero regardless of the real result.
 
-For example, the ROCBA v1.2.0 session `trace.html` records "Five temporal clusters found"
-immediately after that execution, and the resulting CONFIRMED findings (e.g. F-124, F-125) list
-their corroborating sibling findings in `corroborated_by`. The cluster is reproducible: running
-the tool against the saved state returns the same windows.
+What the repo does preserve points the other way for ROCBA v1.2.0: the session `trace.html`
+records the agent stating "Five temporal clusters found" immediately after that execution
+(`E-206`), and the resulting CONFIRMED findings (F-124, F-125) list their corroborating sibling
+findings in `corroborated_by` (visible in the committed `report.json`). Note this is the agent's
+narration plus the corroboration links, not a sealed copy of the raw tool response, which the
+ledger does not retain.
 
 The defect is fixed in code (`outputs_summary` now reads `cluster_count`; regression test
 `tests/test_temporal_cluster_audit_summary.py`). The historical `audit.jsonl` files are retained
-unchanged so their hash chains stay verifiable. To verify a cluster finding, use the session
-`trace.html` or re-invoke the tool against the saved state, not the `outputs_summary` string on
-that one row.
+**unchanged** so their hash chains stay verifiable. To assess a cluster finding from a clone:
+read its `corroborated_by` in `report.json`, then read the session-trace narration after the cited
+`execution_id`. Do not treat the `"0 clusters found"` string in a historical ledger row as ground
+truth. (On the investigation VM with the retained `state.json`, re-invoking the tool reproduces the
+windows; that state is not committed beside these artifacts.)
 
 ## Notes
 
