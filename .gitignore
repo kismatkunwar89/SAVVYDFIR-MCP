@@ -106,3 +106,14 @@ Jaswanthreview/
 # internal demo-recording aids (not shipped)
 recordplan.md
 scriptforvideo.md
+
+# internal dev-process notes + private config (never publish)
+/.cursor/
+/scratch.md
+/review-*.md
+/plan-*.md
+/blueprint-*.md
+/research-*.md
+/PLAN-FIND-EVIL*.md
+/HANDOFF.md
+/savvydfir_baseline*.md

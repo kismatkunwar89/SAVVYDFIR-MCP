@@ -7,7 +7,6 @@
 # DISK-ONLY case (Windows XP, 2004; no memory image).
 #
 # SOURCE OF TRUTH: TestAnswers.pdf — the OFFICIAL NIST answer key (31 questions),
-# ingested into reference notebook REDACTED; facts extracted via RAG 2026-06-06.
 # AUTHORITATIVE (official key), like the NIST Data Leakage GT — every fact below
 # is image_extractable: true. Qn = the official question number.
 #
@@ -272,7 +271,6 @@ eval_targets:
 provenance:
   source_document: "TestAnswers.pdf — official NIST CFReDS Hacking Case answer key (31 questions)"
   authority: "AUTHORITATIVE (official NIST answer key), same tier as the NIST Data Leakage GT"
-  reference_notebook: "REDACTED (NIST Hacking Case (Mr Evil) GT)"
   extracted_utc: "2026-06-06"
   image_source: "https://cfreds-archive.nist.gov/Hacking_Case.html (EnCase: 4Dell Latitude CPi.E01+E02; DD: SCHARDT.001-.008) — DOWNLOAD DEFERRED"
   timezone_note: "host TZ Central Daylight Time (UTC-5); answer-key times local"

@@ -38,7 +38,7 @@ class EvalScorerBoundaryTests(unittest.TestCase):
             ],
             "sigma_scan": {"detectors_run": ["log_clear"]},
         }
-        score = score_report(report, "DFIR MFT Amcache Prefetch Defender")
+        score = score_report(report, "MFT Amcache Prefetch Defender")
         self.assertIn("log_clear", score["detectors_present"])
         self.assertTrue(score["sections"]["structured_pivots"])
 

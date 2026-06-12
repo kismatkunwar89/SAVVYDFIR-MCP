@@ -75,7 +75,7 @@ limitations:
   - "Removable thumb/USB flash drives and mapped network drives bypass the bin - deletions there leave no $I/$R."
   - "Viewing raw $Recycle.Bin contents requires administrative permissions / offline image access."
   - "Orphaned pairs: an $I without a matching $R (or vice versa) commonly indicates the bin was emptied with one half surviving in MFT/unallocated, or an interrupted wipe/AV quarantine."
-  - "Cloud-synced folders (OneDrive/Dropbox): deleting a file inside a synced folder while the client runs routes it to the CLOUD provider's remote recycle bin, bypassing the local $Recycle.Bin - no $I/$R is generated locally, though the local $UsnJrnl still records the delete. Cloud sync engines also rewrite $STANDARD_INFORMATION timestamps to match the server (modified often pre-dating created), which can mimic/confuse timestomping analysis."  # DFIR reference
+  - "Cloud-synced folders (OneDrive/Dropbox): deleting a file inside a synced folder while the client runs routes it to the CLOUD provider's remote recycle bin, bypassing the local $Recycle.Bin - no $I/$R is generated locally, though the local $UsnJrnl still records the delete. Cloud sync engines also rewrite $STANDARD_INFORMATION timestamps to match the server (modified often pre-dating created), which can mimic/confuse timestomping analysis."
 
 anti_forensics:
   techniques:

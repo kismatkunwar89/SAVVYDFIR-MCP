@@ -2,9 +2,8 @@
 # ===================================================================
 # Insider intellectual-property theft at "Stark Research Labs".
 #
-# SOURCE OF TRUTH: docs/agent-execution-logs/case-reference.md (SANS DFIR
-# courseware, 6601 lines). ALL source_lines below cite THAT file. The
-# courseware is ~95% generic teaching theory; concrete case evidence survives
+# SOURCE OF TRUTH: the case reference material. ALL source_lines below cite that
+# material, which is ~95% generic teaching theory; concrete case evidence survives
 # in a few textual zones: the `fredr` ShellBags exercise (~L2867-2941), the
 # capstone case-summary takeaways (~L5952-6099), the capstone questions
 # (~L6003-6024), and the Edge-downloads exercise (~L6502-6524). Everything
@@ -22,11 +21,11 @@
 # / post_exploitation_cleanup. `file_access` / `attribution` / `account` /
 # `content` records below fall OUTSIDE the strict 9-type scope and are
 # flagged; the methodology needs an insider-case extension to score them.
-# They are retained because they are court-defensible, courseware-stated facts.
+# They are retained because they are court-defensible, reference-stated facts.
 #
 # PATH NOTE: `registry_paths` are canonical Windows ASEP locations; fields
 # named `paths_to_verify` are EXPECTED locations to confirm against the real
-# image, NOT values asserted by the courseware text. Do not score them as
+# image, NOT values asserted by the reference material. Do not score them as
 # observations until confirmed on the image.
 # ===================================================================
 
@@ -160,7 +159,7 @@ findings:
     # VERIFIED 2026-06-04 against the actual evidence image: "Natasha Romanoff"
     # is ABSENT from SAM, SOFTWARE, SYSTEM, SECURITY, both NTUSER.DAT hives, the
     # live-mount SAM, and all user profiles (only fredr + srl-h accounts exist).
-    # The name lives ONLY in the DFIR courseware (case-reference.md:6317) as a
+    # The name lives ONLY in the case reference material as a
     # themed capstone persona ("Steve.Rogers, Natasha Romanoff, Rocba"). It is
     # NOT image-extractable, so an evidence-bound investigation cannot surface it
     # without fabricating. Excluded from image-recall; surfacing it would be a
@@ -176,7 +175,7 @@ findings:
     expected_status: OBSERVATION
     value: "Edge download activity exists for 11/14/2020 (counts/files are image-only — see eval_targets)"
     description: >
-      The courseware directs the analyst to Edge/Chromium download records and
+      The reference material directs the analyst to Edge/Chromium download records and
       asks (a) which download is most important to the investigation, (b) how
       many downloads completed on 11/14/2020, and (c) the largest download of
       all time for this user. This confirms a BROWSER-DOWNLOADS evidence
@@ -265,7 +264,7 @@ timeline:
     source_lines: "6093"
 
   - id: TL-002
-    utc: null                              # NOTE: courseware poses this as a question; no timestamp value in source
+    utc: null                              # NOTE: the reference material poses this as a question; no timestamp value in source
     phase: recon_or_access
     summary: "Eval target: earliest known access to Rocba-related files"
     finding_ids: []
@@ -322,7 +321,7 @@ timeline:
     source_lines: "6099"
 
 # -------------------------------------------------------------------
-# EVAL TARGETS — capstone questions WITHOUT values in the courseware text.
+# EVAL TARGETS — capstone questions WITHOUT values in the reference material.
 # NOT scoreable as TP/FN (no ground-truth answer present). Answering requires
 # the actual ROCBA image. Do NOT fabricate values.
 # -------------------------------------------------------------------
@@ -344,7 +343,7 @@ eval_targets:
     question: "What IP addresses are involved?"
     account: Rocba
     confidence: eval_target
-    note: "No IPs in courseware text — do not fabricate"
+    note: "No IPs in the reference material — do not fabricate"
     source_lines: "6024"
 
   - id: E-004
@@ -389,7 +388,7 @@ ambiguous:
     source_lines: "3070-3234"
 
 # -------------------------------------------------------------------
-# KNOWN NEGATIVES / DECOYS — concrete-LOOKING values that are SANS teaching
+# KNOWN NEGATIVES / DECOYS — concrete-LOOKING values that are reference-material
 # examples, NOT ROCBA-2020-FREDS-LAPTOP evidence.
 # An agent that reports any of these as a case finding => FALSE POSITIVE.
 # -------------------------------------------------------------------
@@ -417,11 +416,11 @@ known_negatives:
 # EXTRACTION PROVENANCE
 # -------------------------------------------------------------------
 provenance:
-  source_file: docs/agent-execution-logs/case-reference.md
+  source_file: case-reference-material
   source_total_lines: 6601
   method: >
     Full-file token grep + parallel chunk review across ALL 6601 lines of
-    case-reference.md. Case tokens (fredr|rocba|pegasus|crimsonguard|cobra|stark|
+    the case reference material. Case tokens (fredr|rocba|pegasus|crimsonguard|cobra|stark|
     sdelete|2020-11-14|opensavepidl|typedpaths) plus a full timestamp/path
     sweep localized concrete evidence to L2867-2941, L5952-6099, L6003-6024,
     L6317, and L6502-6524. All other ranges verified as generic theory /
@@ -433,13 +432,13 @@ provenance:
     GT-008 DropboxUninstaller, GT-009 fredr, GT-010 Stark Research Labs,
     GT-011 P.E.G.A.S.U.S, full registry paths on GT-002, and the timeline +
     eval_targets sections were added by a second pass. ALL source_lines
-    citations corrected to reference case-reference.md (a prior pass had
-    mis-cited a non-existent 'case-reference-extract.txt'); every citation
-    re-verified against case-reference.md via grep.
+    citations corrected to reference the case material (a prior pass had
+    mis-cited a non-existent extract); every citation
+    re-verified against the case reference material via grep.
   notes: >
-    The courseware is a redacted/OCR'd PDF; many lab "Takeaway" slides were
+    The reference material is a redacted/OCR'd PDF; many lab "Takeaway" slides were
     image-only and did not survive text extraction, so concrete values are
-    sparser than the full DFIR case. Findings above are the court-defensible
+    sparser than the full case. Findings above are the court-defensible
     subset stated in plain text. Treat as a STARTER answer key — enrich from
     the actual ROCBA-2020-FREDS-LAPTOP image (precise paths, hashes, USN/MFT
     timestamps, SRUM byte counts, IPs) when available.

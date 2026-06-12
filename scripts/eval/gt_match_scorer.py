@@ -25,7 +25,7 @@ Recall = TP / (TP + FN) over GT `findings`.
 Hallucination = report findings sharing a distinctive anchor with a
 `known_negatives` entry.
 Precision is reported only when the GT declares `exhaustive: true`; otherwise
-"N/A - GT non-exhaustive" (courseware GTs are thin; naive FP is meaningless).
+"N/A - GT non-exhaustive" (reference-only GTs are thin; naive FP is meaningless).
 
 Deterministic: same (GT, findings) -> same score.
 
@@ -211,7 +211,7 @@ def score(gt: dict[str, Any], findings: list[dict[str, Any]]) -> dict[str, Any]:
     gt_rows = gt.get("findings", []) or []
     per_gt = []
     tp = fn = 0
-    courseware_only = []  # GT entries flagged not image-extractable (excluded from recall)
+    non_extractable = []  # GT entries flagged not image-extractable (excluded from recall)
     for g in gt_rows:
         ga = distinctive_anchors(gt_anchor_text(g))
         best = None
@@ -219,14 +219,14 @@ def score(gt: dict[str, Any], findings: list[dict[str, Any]]) -> dict[str, Any]:
             shared = ga & fa
             if shared and (best is None or len(shared) > len(best[1])):
                 best = (fid, shared)
-        # An entry explicitly flagged image_extractable: false is courseware-only -
+        # An entry explicitly flagged image_extractable: false is non-image-extractable -
         # the fact is not present in the evidence image, so an evidence-bound run
         # cannot surface it without fabricating. Excluded from the recall
         # denominator (reported separately) so we never reward hallucination.
         extractable = g.get("image_extractable", True)
         if extractable is False:
-            verdict = "COURSEWARE_ONLY_FOUND" if best else "COURSEWARE_ONLY"
-            courseware_only.append({
+            verdict = "NON_EXTRACTABLE_FOUND" if best else "NON_EXTRACTABLE"
+            non_extractable.append({
                 "gt_id": g.get("id"), "finding_type": g.get("finding_type"),
                 "verdict": verdict,
                 "matched_finding": best[0] if best else None,

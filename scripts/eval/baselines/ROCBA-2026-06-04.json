@@ -12,7 +12,7 @@
     "hallucinations": 0,
     "eval_target_coverage": "3/6",
     "scorer": "scripts/eval/gt_match_scorer.py (anchored, generic-token-reject)",
-    "gt_006_excluded": "Natasha Romanoff = courseware-only (image_extractable:false), verified absent from SAM/registry/profiles"
+    "gt_006_excluded": "Natasha Romanoff = non-image-extractable (image_extractable:false), verified absent from SAM/registry/profiles"
   },
   "report": {
     "triage_status": "COMPLETE_WITH_GAPS",

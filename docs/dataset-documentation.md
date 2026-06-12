@@ -40,7 +40,7 @@ YAML with distinctive anchors and known-negatives. The scorer
 
 ## Not included
 
-A multi-host enterprise corpus (SANS Realistic Lab, SRL-2018) is supported by the
+A multi-host enterprise corpus (a synthetic enterprise training lab, SRL-2018) is supported by the
 framework's multi-host pipeline (`merge_host_graphs`, `build_reports_index`) but was
 **not** run for this submission - it is deferred future work, not part of the
 reported results above.

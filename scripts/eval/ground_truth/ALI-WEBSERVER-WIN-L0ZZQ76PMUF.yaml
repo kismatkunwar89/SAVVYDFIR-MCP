@@ -310,7 +310,6 @@ provenance:
     - "[medium1] Bilyaminu Umar Shehu walkthrough (Feb 2026) - VistaSP1x86 profile, cmd PID 612 vs 1972, netscan 192.168.56.1, webshell.zip=c99.php+webshell.php, brute-force"
     - "[medium2] DDFAN 'Web Server Case #3' walkthrough (Apr 2026) - EVTX 4720 ABSENT, PHP reverse shell ->192.168.56.102:4545, phpshell2.php, shells DELETED (files-added=None), no exfil/lateral movement"
     - "[review] independent research round 2026-06-05 (corrections: Q5 wording, zip=c99.php+webshell.php, 2nd sqlmap dropper pair, profile, Administrator RID-500 miscount)"
-  reference_notebook: "REDACTED (Ali Hadi Web Server Case GT; sources: medium1.md + medium2.md)"
   authority: "community-sourced + cross-corroborated across 2 walkthroughs AND an independent source reconciliation review; still LOWER authority than official answer keys (NIST) or forensic reports (LoneWolf) - reconciled across sources where sources disagreed"
   unresolved_open_items:
     - "exact user1 password state at compromise (Root@psut vs earlier attempts)"

@@ -6,11 +6,9 @@
 # check ("D-Day"). DISK-ONLY case (no memory image).
 #
 # SOURCE OF TRUTH: leakage-answers.pdf v1.32 (the official 60-question answer key,
-# last updated 2018-07-23), ingested into reference notebook REDACTED; facts
-# extracted via targeted RAG queries 2026-06-05. The answer key is derived from
+# last updated 2018-07-23). The answer key is derived from
 # the real PC/RM images, so every fact below is image_extractable: true.
-# Citations [n] in the source are reference reference markers + the answer key's
-# own Question numbers (Qn).
+# Citations [n] are the answer key's own Question numbers (Qn).
 #
 # TIMEZONE: the answer key reports local time UTC-05. timestamp_utc fields below
 # are CONVERTED to UTC (+5h); the local UTC-05 wall time is noted in description.
@@ -312,7 +310,6 @@ eval_targets:
 # -------------------------------------------------------------------
 provenance:
   source_document: "leakage-answers.pdf v1.32 (official 60-question answer key, 2018-07-23)"
-  reference_notebook: "REDACTED (NIST Data Leakage 2015 GT)"
   extracted_utc: "2026-06-05"
   image_source: "https://cfreds-archive.nist.gov/data_leakage_case/data-leakage-case.html"
   timezone_note: "answer key is local UTC-05; timestamp_utc fields converted to UTC (+5h)"

@@ -385,7 +385,7 @@ def _init_fk() -> None:
     except Exception:
         pass
 
-    # Extend MFT caveat with complete $SI/$FN timestamp matrix (SANS DFIR Windows FA poster)
+    # Extend MFT caveat with complete $SI/$FN timestamp matrix (Windows forensic-analysis reference)
     # These rules are NOT fully covered in the base mft.yaml corpus
     _mft_extra = [
         "Cross-volume file copy — $SI and $FN timestamps are INHERITED from the original: "
