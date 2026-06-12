@@ -51,16 +51,6 @@ to the v1.1.1 baseline (90%, same single FN GT-007, 0 hallucinations)** - the ga
 measured recall improvement. Full breakdown in its `RUN-NOTES.md`. The v1.1.1 judged baseline for
 this case is preserved at [`ROCBA-2020-FREDS-LAPTOP/`](ROCBA-2020-FREDS-LAPTOP/).
 
-## Multi-host capstone
-
-| Case | Scenario | Hosts | Artifacts |
-|------|----------|-------|-----------|
-| [`CRIMSON-OSPREY-ENTERPRISE`](CRIMSON-OSPREY-ENTERPRISE/) | SRL-2018 enterprise intrusion (lead-driven cross-host pivot) | 5 (DMZ-FTP → WKSTN-01 → RD-01 → FILE → DC) | per-host report·graph·trace·audit + **unified cross-host graph** |
-
-A showcase of the multi-host pipeline (IOC pivot host→host + unified correlation graph),
-not a GT-scored eval. See its [README](CRIMSON-OSPREY-ENTERPRISE/README.md) for the attack
-chain and the unified graph. Methodology: `docs/multihost-pivot-methodology.md`.
-
 ## Integration / execution evidence (not GT-scored)
 
 | Case | Scenario / OS | Findings | CONFIRMED | Artifacts |
