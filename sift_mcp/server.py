@@ -2883,7 +2883,7 @@ def find_temporal_clusters(
     -------
     dict
         clusters[]: each has window_start, window_end, source_count,
-        event_count, finding_ids[]; total_clusters; checked_at; execution_id.
+        event_count, finding_ids[]; cluster_count; checked_at; execution_id.
     """
     import time as _time
     _tool = "correlation.find_temporal_clusters"
@@ -2903,7 +2903,7 @@ def find_temporal_clusters(
             min_events=min_events,
         )
         duration = _time.monotonic() - _t0
-        outputs_summary = f"{result.get('total_clusters', 0)} clusters found"
+        outputs_summary = f"{result.get('cluster_count', 0)} clusters found"
         _completed = _audit_logger.log_result(
             execution_id=_eid,
             exit_code=0,

@@ -135,6 +135,26 @@ ROCBA-v1.2.0 ledger: 483 rows, both `True`). You can also bind a deliverable to 
 the last successful `generate_report` row carries an `artifact_hashes` entry whose `sha256`
 should equal `sha256sum report.html`.
 
+## Erratum: `find_temporal_clusters` audit-summary count (pre-fix)
+
+Across every committed case, the `correlation.find_temporal_clusters` row in `audit.jsonl`
+records `outputs_summary: "0 clusters found"`, even on runs that did find clusters. This is a
+logging-string defect, not a zero-result execution: the server wrapper built the summary from a
+`total_clusters` key, but the tool returns the count under `cluster_count`, so the summary always
+read zero. The tool's actual JSON response (which the agent acted on) carried the real
+`cluster_count` and `clusters[]`.
+
+For example, the ROCBA v1.2.0 session `trace.html` records "Five temporal clusters found"
+immediately after that execution, and the resulting CONFIRMED findings (e.g. F-124, F-125) list
+their corroborating sibling findings in `corroborated_by`. The cluster is reproducible: running
+the tool against the saved state returns the same windows.
+
+The defect is fixed in code (`outputs_summary` now reads `cluster_count`; regression test
+`tests/test_temporal_cluster_audit_summary.py`). The historical `audit.jsonl` files are retained
+unchanged so their hash chains stay verifiable. To verify a cluster finding, use the session
+`trace.html` or re-invoke the tool against the saved state, not the `outputs_summary` string on
+that one row.
+
 ## Notes
 
 - Paths in the artifacts reflect the standard SANS SIFT workstation layout (e.g.
