@@ -8,31 +8,6 @@
 
 ---
 
-> **📌 Judged submission = tag [`v1.1.1`](https://github.com/kismatkunwar89/SAVVYDFIR-MCP/releases/tag/v1.1.1). Latest release = [`v1.2.2`](https://github.com/kismatkunwar89/SAVVYDFIR-MCP/releases/tag/v1.2.2).**
-> `master` tracks the latest code. `v1.1.1` is the immutable judged baseline; post-`v1.1.1` work (released as
-> `v1.2.0`) is backward-compatible and adds native file-access extractors (Recycle Bin, PowerShell history,
-> scheduled tasks), durable artifact reuse, case-insensitive / UTF-16 mount handling, and experimental
-> triage-layout detection. To reproduce the hackathon evaluation exactly: `git checkout v1.1.1`.
-
----
-
-## FIND-EVIL Hackathon Submission Checklist
-
-Every required turn-in is listed below with its exact location, so judges can verify completeness at a glance. All paths are relative to the repository root.
-
-| # | Required component | Where to find it | Status |
-|---|---|---|:---:|
-| 1 | Public code repository | <https://github.com/kismatkunwar89/SAVVYDFIR-MCP> | DONE |
-| 2 | Open-source license (MIT) | [`LICENSE`](LICENSE) | DONE |
-| 3 | README with setup instructions | This file, [Installation](#installation) | DONE |
-| 4 | Step-by-step run instructions | This file, [Usage](#usage) | DONE |
-| 5 | Text description of features | This file, [What It Does](#what-it-does) + [Architecture](#architecture) | DONE |
-| 6 | Demonstration video | <https://youtu.be/2tDT23DmE1I> | DONE |
-| 7 | Architecture diagram | This file, [Architecture](#architecture), plus [`docs/architecture.md`](docs/architecture.md) | DONE |
-| 8 | Evidence dataset documentation | [`docs/dataset-documentation.md`](docs/dataset-documentation.md) | DONE |
-| 9 | Accuracy report | [`docs/accuracy-report.md`](docs/accuracy-report.md) | DONE |
-| 10 | Agent execution logs | [`docs/agent-execution-logs/`](docs/agent-execution-logs/) - rendered `report.html` + `graph.html` for all 5 cases; hash-chained `audit.jsonl` for 4/5 (ROCBA predates audit retention, disclosed). Known issue: historical `find_temporal_clusters` rows show `"0 clusters found"` due to a fixed count-key mismatch - see the [audit-log erratum](docs/agent-execution-logs/README.md#erratum-find_temporal_clusters-audit-summary-count-pre-fix). | DONE |
-
 > **Demonstration video:** <https://youtu.be/2tDT23DmE1I> - a live start on the ROCBA case plus a walkthrough of a completed run, the deliverables (report.html / report.pdf / graph.html), and a self-correction event.
 
 ---
